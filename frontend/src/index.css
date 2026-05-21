@@ -1,0 +1,2 @@
+@tailwind base;@tailwind components;@tailwind utilities;
+body{@apply bg-slate-50 text-slate-900} input,select,textarea{@apply border rounded px-3 py-2 w-full} button{@apply rounded px-3 py-2 bg-slate-900 text-white disabled:opacity-50} a{@apply text-blue-700}

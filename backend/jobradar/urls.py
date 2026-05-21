@@ -1,0 +1,16 @@
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import *
+
+router=DefaultRouter()
+router.register('jobs', JobLeadViewSet, basename='jobs')
+router.register('evaluations', EvaluationViewSet, basename='evaluations')
+router.register('notes', NoteViewSet, basename='notes')
+router.register('followups', FollowUpViewSet, basename='followups')
+
+urlpatterns=[
+ path('auth/csrf/', csrf), path('auth/login/', login_view), path('auth/logout/', logout_view), path('auth/me/', me),
+ path('public/submit/', public_submit), path('prompts/generate/', generate_prompt), path('prompts/enrich/', generate_enrichment_prompt), path('prompts/bulk-links/', generate_bulk_links_prompt), path('evaluations/import/', import_eval), path('stats/', stats),
+ path('export/jobs.json', export_jobs_json), path('export/jobs.csv', export_jobs_csv), path('export/chatgpt-brief.md', export_chatgpt_brief),
+ path('', include(router.urls)),
+]
