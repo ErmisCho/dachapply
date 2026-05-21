@@ -1,5 +1,5 @@
 from django.contrib.auth import authenticate, login, logout
-from django.db.models import Avg, Count, Q
+from django.db.models import Avg, Case, Count, IntegerField, Q, Value, When
 from django.http import HttpResponse
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -8,10 +8,29 @@ from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp
-from .serializers import JobLeadSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, PublicSubmissionSerializer
-from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt
-from .services.json_importer import import_any_json
+from .serializers import JobLeadSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, PublicSubmissionSerializer, normalize_job_url
+from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt
+from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
+
+
+def find_existing_by_url(url):
+    if not url: return None
+    url=normalize_job_url(url)
+    variants={url, url.rstrip('/')}
+    if not url.endswith('/'): variants.add(url + '/')
+    return JobLead.objects.filter(url__in=variants).first()
+
+
+def extract_links(text):
+    import re
+    text=text or ''
+    found=re.findall(r'https?://[^\s,;]+|https-[^\s,;]+|http-[^\s,;]+|(?:www\.)?[-\w]+\.[a-zA-Z]{2,}[^\s,;]*', text)
+    links=[]
+    for f in found:
+        link=normalize_job_url(f.strip('()[]<>"\''))
+        if link and link not in links: links.append(link)
+    return links
 
 @ensure_csrf_cookie
 @api_view(['GET'])
@@ -47,7 +66,26 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             s=p['skill']; qs=qs.filter(Q(evaluations__matched_skills__icontains=s)|Q(evaluations__required_skills__icontains=s)|Q(raw_description__icontains=s))
         if p.get('search'):
             s=p['search']; qs=qs.filter(Q(company__icontains=s)|Q(title__icontains=s)|Q(raw_description__icontains=s)|Q(url__icontains=s))
+        qs=qs.annotate(
+            stale_rank=Case(When(status__in=['applied','interview'], status_date__lt=timezone.localdate()-timezone.timedelta(days=21), then=Value(1)), default=Value(0), output_field=IntegerField()),
+            status_rank=Case(When(status='new', then=Value(0)), When(status='to_apply', then=Value(1)), When(status='reviewed', then=Value(2)), When(status='interview', then=Value(3)), When(status='applied', then=Value(4)), default=Value(5), output_field=IntegerField()),
+            priority_rank=Case(When(evaluations__priority='high', then=Value(0)), When(evaluations__priority='medium', then=Value(1)), When(evaluations__priority='low', then=Value(2)), default=Value(3), output_field=IntegerField())
+        ).order_by('stale_rank','status_rank','priority_rank','-evaluations__fit_score','-created_at')
         return qs.distinct()
+    def create(self, request, *args, **kwargs):
+        ser=self.get_serializer(data=request.data); ser.is_valid(raise_exception=True)
+        url=ser.validated_data.get('url')
+        action=request.data.get('duplicate_action')
+        existing=find_existing_by_url(url)
+        if existing and not action:
+            return Response({'ok':False,'type':'duplicate_conflicts','message':'This job link already exists.','conflicts':[{'index':0,'url':url,'incoming':{'company':ser.validated_data.get('company') or 'Unknown company','title':ser.validated_data.get('title') or 'Untitled role'},'existing_jobs':[JobLeadSerializer(existing).data]}]}, status=400)
+        if existing and action=='override':
+            for k,v in ser.validated_data.items(): setattr(existing,k,v)
+            existing.created_by=request.user; existing.save(); return Response(JobLeadSerializer(existing).data)
+        if existing and action=='duplicate':
+            ser.validated_data['title']=duplicate_title(ser.validated_data.get('title') or 'Untitled role')
+        if existing and action=='skip': return Response(JobLeadSerializer(existing).data)
+        obj=ser.save(created_by=request.user); return Response(JobLeadSerializer(obj).data, status=201)
     def perform_create(self, serializer): serializer.save(created_by=self.request.user)
     @action(detail=True, methods=['get','post'])
     def evaluations(self, request, pk=None):
@@ -77,9 +115,46 @@ class FollowUpViewSet(viewsets.ModelViewSet):
     http_method_names=['get','patch','head','options']
 
 @api_view(['POST'])
+def bulk_create_jobs(request):
+    links=extract_links((request.data.get('url') or '') + '\n' + (request.data.get('raw_description') or ''))
+    if not links:
+        links=['']
+    conflicts=[]; created=[]; updated=[]; action=request.data.get('duplicate_action') or request.data.get('duplicate_strategy')
+    for i, link in enumerate(links):
+        existing=find_existing_by_url(link) if link else None
+        if existing and not action:
+            conflicts.append({'index':i,'url':link,'incoming':{'company':request.data.get('company') or 'Unknown company','title':request.data.get('title') or 'Untitled role'},'existing_jobs':[JobLeadSerializer(existing).data]})
+    if conflicts:
+        return Response({'ok':False,'type':'duplicate_conflicts','message':'One or more job links already exist. Nothing was added yet.','conflicts':conflicts}, status=400)
+    for i, link in enumerate(links):
+        data=request.data.copy(); data['url']=link; data['company']=data.get('company') or 'Unknown company'; data['title']=data.get('title') or 'Untitled role'
+        if len(links)>1 and (not request.data.get('title')): data['title']=f'Untitled role {i+1}'
+        existing=find_existing_by_url(link) if link else None
+        if existing and action=='skip': continue
+        if existing and action=='override':
+            for f in ['company','title','location','url','source','raw_description','salary_info','language_requirements','work_mode']:
+                if data.get(f): setattr(existing,f,data.get(f))
+            existing.save(); updated.append(JobLeadSerializer(existing).data); continue
+        if existing and action=='duplicate': data['title']=duplicate_title(data.get('title') or 'Untitled role')
+        ser=JobLeadSerializer(data=data); ser.is_valid(raise_exception=True); obj=ser.save(created_by=request.user); created.append(JobLeadSerializer(obj).data)
+    return Response({'ok':True,'count':len(created)+len(updated),'created':created,'updated':updated}, status=201)
+
+@api_view(['POST'])
 @permission_classes([AllowAny])
 def public_submit(request):
-    ser=PublicSubmissionSerializer(data=request.data); ser.is_valid(raise_exception=True); job=ser.save(); return Response(JobLeadSerializer(job).data, status=201)
+    ser=PublicSubmissionSerializer(data=request.data); ser.is_valid(raise_exception=True)
+    url=ser.validated_data.get('url'); action=request.data.get('duplicate_action')
+    existing=find_existing_by_url(url)
+    if existing and not action:
+        return Response({'ok':False,'type':'duplicate_conflicts','message':'This job link already exists.','conflicts':[{'index':0,'url':url,'incoming':{'company':ser.validated_data.get('company') or 'Unknown company','title':ser.validated_data.get('title') or 'Untitled role'},'existing_jobs':[JobLeadSerializer(existing).data]}]}, status=400)
+    if existing and action=='override':
+        data=dict(ser.validated_data); data.pop('invite_code',None); data.pop('website',None)
+        for k,v in data.items(): setattr(existing,k,v or getattr(existing,k))
+        existing.save(); return Response(JobLeadSerializer(existing).data)
+    if existing and action=='skip': return Response(JobLeadSerializer(existing).data)
+    job=ser.save()
+    if existing and action=='duplicate': job.title=duplicate_title(job.title); job.save(update_fields=['title'])
+    return Response(JobLeadSerializer(job).data, status=201)
 
 @api_view(['POST'])
 def generate_prompt(request):
@@ -87,6 +162,13 @@ def generate_prompt(request):
     jobs=JobLead.objects.filter(id__in=ids)
     if not ids or jobs.count()!=len(set(ids)): return Response({'detail':'Provide valid job_ids'}, status=400)
     return Response({'generated_prompt': build_prompt(jobs, request.data.get('custom_instructions',''))})
+
+@api_view(['POST'])
+def generate_combined_prompt(request):
+    ids=request.data.get('job_ids') or []
+    jobs=JobLead.objects.filter(id__in=ids)
+    if not ids or jobs.count()!=len(set(ids)): return Response({'detail':'Provide valid job_ids'}, status=400)
+    return Response({'generated_prompt': build_combined_prompt(jobs, request.data.get('custom_instructions',''))})
 
 @api_view(['POST'])
 def generate_bulk_links_prompt(request):

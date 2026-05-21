@@ -1,16 +1,26 @@
+import re
+from urllib.parse import urlsplit, urlunsplit
+from django.utils import timezone
 from rest_framework import serializers
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode
+from .services.skill_matcher import smart_skill_status
 
 
 def normalize_job_url(value):
     """Accept normal URLs plus common copy/paste mistakes like
     https-www.karriere.at-jobs-7794074 -> https://www.karriere.at/jobs/7794074.
+    Also repairs markdown/corrupted values such as https://[https://example.com/job.
     """
-    value=(value or '').strip()
+    raw=(value or '').strip()
+    value=raw.replace('https://[https://','https://').replace('http://[http://','http://').strip('[]()<>.,;')
+    embedded=re.findall(r'https?://[^\s\[\])>"}]+', value)
+    if embedded:
+        value=embedded[-1].strip('[]()<>.,;')
     if not value:
         return ''
     if value.startswith('http://') or value.startswith('https://'):
-        return value
+        parts=urlsplit(value)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip('/'), '', ''))
     if value.startswith('https-') or value.startswith('http-'):
         scheme, rest=value.split('-', 1)
         parts=rest.split('-')
@@ -22,7 +32,10 @@ def normalize_job_url(value):
 
 
 def value_is_valid_url(value):
-    value=normalize_job_url(value)
+    raw=str(value or '').strip()
+    if '](' in raw or (' ' in raw and not raw.startswith(('http://','https://','http-','https-'))):
+        return False
+    value=normalize_job_url(raw)
     if not value:
         return False
     try:
@@ -32,9 +45,34 @@ def value_is_valid_url(value):
         return False
 
 
+def extract_url_from_text(value):
+    text=str(value or '')
+    m=re.search(r'https?://[^\s)\]]+', text)
+    if not m: return ''
+    return normalize_job_url(m.group(0).split('%22')[0].split('"')[0].rstrip('.,;'))
+
+
+def clean_label_text(value):
+    text=str(value or '').strip()
+    if not text: return ''
+    if '](' in text:
+        before=text.split('](',1)[0].lstrip('[').strip()
+        suffix=text.split(')',1)[1].strip() if ')' in text else ''
+        text=(before + (' ' + suffix if suffix else '')).strip()
+    text=re.sub(r'https?://[^\s)\]]+', '', text)
+    text=text.replace('[','').replace(']','').replace('(','').replace(')','').replace('%22','').replace('"','')
+    return re.sub(r'\s+', ' ', text).strip(' ,;:-')
+
+
 class JobEvaluationSerializer(serializers.ModelSerializer):
+    skill_statuses=serializers.SerializerMethodField()
     class Meta:
         model=JobEvaluation; fields='__all__'; read_only_fields=('created_at','updated_at')
+    def get_skill_statuses(self, obj):
+        skills=[]
+        for s in (obj.required_skills or []) + (obj.nice_to_have_skills or []) + (obj.missing_skills or []) + (obj.matched_skills or []):
+            if s and s not in skills: skills.append(s)
+        return {s: smart_skill_status(s) for s in skills}
     def validate_fit_score(self, v):
         if v < 0 or v > 100: raise serializers.ValidationError('fit_score must be 0..100')
         return v
@@ -61,9 +99,16 @@ class JobLeadSerializer(serializers.ModelSerializer):
             serializers.URLField(max_length=1000).run_validation(value)
         return value
     def validate(self, attrs):
+        embedded=extract_url_from_text(attrs.get('url')) or extract_url_from_text(attrs.get('company')) or extract_url_from_text(attrs.get('title'))
+        if embedded and not attrs.get('url'):
+            attrs['url']=embedded
+        if attrs.get('url'):
+            attrs['url']=normalize_job_url(extract_url_from_text(attrs.get('url')) or attrs.get('url'))
         if not attrs.get('url') and value_is_valid_url(attrs.get('company')):
             attrs['url']=normalize_job_url(attrs.get('company'))
             attrs['company']=''
+        if 'company' in attrs: attrs['company']=clean_label_text(attrs.get('company'))
+        if 'title' in attrs: attrs['title']=clean_label_text(attrs.get('title'))
         current=self.instance
         has_content = any([
             attrs.get('url') or (current and current.url),
@@ -77,7 +122,16 @@ class JobLeadSerializer(serializers.ModelSerializer):
     def create(self, attrs):
         attrs['company']=attrs.get('company') or 'Unknown company'
         attrs['title']=attrs.get('title') or 'Untitled role'
+        if attrs.get('status') in ['applied','interview'] and not attrs.get('status_date'):
+            attrs['status_date']=timezone.localdate()
         return super().create(attrs)
+    def update(self, instance, attrs):
+        new_status=attrs.get('status')
+        if new_status in ['applied','interview'] and instance.status != new_status and not attrs.get('status_date'):
+            attrs['status_date']=timezone.localdate()
+        if new_status and new_status not in ['applied','interview'] and instance.status != new_status and 'status_date' not in attrs:
+            attrs['status_date']=None
+        return super().update(instance, attrs)
     def get_latest_evaluation(self, obj):
         ev=obj.evaluations.first()
         return JobEvaluationSerializer(ev).data if ev else None
@@ -107,9 +161,16 @@ class PublicSubmissionSerializer(serializers.Serializer):
         return code
     def validate(self, attrs):
         if attrs.get('website'): raise serializers.ValidationError('Spam rejected')
+        embedded=extract_url_from_text(attrs.get('url')) or extract_url_from_text(attrs.get('company')) or extract_url_from_text(attrs.get('title'))
+        if embedded and not attrs.get('url'):
+            attrs['url']=embedded
+        if attrs.get('url'):
+            attrs['url']=normalize_job_url(extract_url_from_text(attrs.get('url')) or attrs.get('url'))
         if not attrs.get('url') and value_is_valid_url(attrs.get('company')):
             attrs['url']=normalize_job_url(attrs.get('company'))
             attrs['company']=''
+        if 'company' in attrs: attrs['company']=clean_label_text(attrs.get('company'))
+        if 'title' in attrs: attrs['title']=clean_label_text(attrs.get('title'))
         if not (attrs.get('url') or attrs.get('raw_description') or attrs.get('company') or attrs.get('title')):
             raise serializers.ValidationError('Provide at least a job URL, description, company, or title')
         return attrs

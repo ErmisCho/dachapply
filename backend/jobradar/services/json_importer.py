@@ -1,4 +1,6 @@
 import json
+import re
+from urllib.parse import urlsplit, urlunsplit
 from django.db import transaction
 from jobradar.models import JobLead, JobEvaluation, ApplicationNote
 from rest_framework import serializers
@@ -10,9 +12,14 @@ JOB_UPDATE_FIELDS={'company','title','location','url','source','raw_description'
 
 
 def normalize_job_url(value):
-    value=(value or '').strip()
+    raw=(value or '').strip()
+    value=raw.replace('https://[https://','https://').replace('http://[http://','http://').strip('[]()<>.,;')
+    embedded=re.findall(r'https?://[^\s\[\])>"}]+', value)
+    if embedded: value=embedded[-1].strip('[]()<>.,;')
     if not value: return ''
-    if value.startswith('http://') or value.startswith('https://'): return value
+    if value.startswith('http://') or value.startswith('https://'):
+        parts=urlsplit(value)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip('/'), '', ''))
     if value.startswith('https-') or value.startswith('http-'):
         scheme, rest=value.split('-', 1); parts=rest.split('-')
         if len(parts) >= 2 and '.' in parts[0]: return f'{scheme}://' + parts[0] + '/' + '/'.join(parts[1:])
@@ -21,7 +28,9 @@ def normalize_job_url(value):
 
 
 def value_is_valid_url(value):
-    value=normalize_job_url(value)
+    raw=str(value or '').strip()
+    if '](' in raw or (' ' in raw and not raw.startswith(('http://','https://','http-','https-'))): return False
+    value=normalize_job_url(raw)
     if not value: return False
     try:
         serializers.URLField(max_length=1000).run_validation(value)
@@ -30,13 +39,47 @@ def value_is_valid_url(value):
         return False
 
 
+def extract_url_from_text(value):
+    text=str(value or '')
+    m=re.search(r'https?://[^\s)\]]+', text)
+    if not m: return ''
+    url=m.group(0).split('%22')[0].split('"')[0].rstrip('.,;')
+    return normalize_job_url(url)
+
+
+def clean_label_text(value):
+    text=str(value or '').strip()
+    if not text: return ''
+    # Fix ChatGPT/markdown accidents like:
+    # Enlivion](https://www.karriere.at/jobs/10019854%22,%22company%22:%22Enlivion) GmbH
+    if '](' in text:
+        before=text.split('](',1)[0].lstrip('[').strip()
+        suffix=''
+        if ')' in text:
+            suffix=text.split(')',1)[1].strip()
+        text=(before + (' ' + suffix if suffix else '')).strip()
+    text=re.sub(r'https?://[^\s)\]]+', '', text)
+    text=text.replace('[','').replace(']','').replace('(','').replace(')','')
+    text=text.replace('%22','').replace('"','').replace('company:', '').replace('title:', '')
+    text=re.sub(r'\s+', ' ', text).strip(' ,;:-')
+    return text
+
+
 def clean_job_record(rec):
     rec=dict(rec)
-    if not rec.get('url') and value_is_valid_url(rec.get('company')):
-        rec['url']=normalize_job_url(rec.get('company'))
-        rec['company']=''
+    embedded_url=extract_url_from_text(rec.get('url')) or extract_url_from_text(rec.get('company')) or extract_url_from_text(rec.get('title'))
+    if embedded_url and not rec.get('url'):
+        rec['url']=embedded_url
     if rec.get('url'):
-        rec['url']=normalize_job_url(rec.get('url'))
+        rec['url']=normalize_job_url(extract_url_from_text(rec.get('url')) or rec.get('url'))
+    if value_is_valid_url(rec.get('company')):
+        if not rec.get('url'): rec['url']=normalize_job_url(rec.get('company'))
+        rec['company']=''
+    if value_is_valid_url(rec.get('title')):
+        if not rec.get('url'): rec['url']=normalize_job_url(rec.get('title'))
+        rec['title']=''
+    if 'company' in rec: rec['company']=clean_label_text(rec.get('company'))
+    if 'title' in rec: rec['title']=clean_label_text(rec.get('title'))
     return rec
 
 
@@ -60,31 +103,74 @@ def create_evaluation(job, ev):
         risk_notes=ev.get('risk_notes',''), next_action=ev.get('next_action',''), structured_json_raw=ev)
 
 
+def duplicate_title(title):
+    base=title or 'Untitled role'
+    n=1
+    candidate=f'{base} ({n})'
+    while JobLead.objects.filter(title=candidate).exists():
+        n+=1; candidate=f'{base} ({n})'
+    return candidate
+
+
+def action_for_duplicate(data, index):
+    for a in data.get('duplicate_actions') or []:
+        if a.get('index') == index: return a
+    strategy=data.get('duplicate_strategy')
+    return {'index': index, 'action': strategy} if strategy else None
+
+
 def import_jobs_data(data):
     errors=[]; records=data.get('job_updates') or data.get('jobs') or data.get('job_details') or data.get('new_jobs')
     if not isinstance(records, list): return {'ok':False,'errors':['Root must contain jobs, new_jobs, or job_updates list']}
     records=[clean_job_record(rec) for rec in records]
+    conflicts=[]; eval_conflicts=[]
     for i, rec in enumerate(records):
+        if rec.get('job_id') and isinstance(rec.get('evaluation'), dict) and JobEvaluation.objects.filter(job_id=rec['job_id']).exists() and not action_for_duplicate(data, i) and not data.get('evaluation_strategy'):
+            eval_conflicts.append({'index':i,'job_id':rec['job_id'],'incoming':{'company':rec.get('company'),'title':rec.get('title')},'existing_evaluations':list(JobEvaluation.objects.filter(job_id=rec['job_id']).values('id','fit_score','priority','recommendation','created_at')[:10])})
+        if not rec.get('job_id') and rec.get('url'):
+            existing=list(JobLead.objects.filter(url=rec['url']).values('id','company','title','url','status')[:10])
+            if existing and not action_for_duplicate(data, i):
+                conflicts.append({'index':i,'url':rec['url'],'incoming':{'company':rec.get('company') or 'Unknown company','title':rec.get('title') or 'Untitled role'},'existing_jobs':existing})
         if rec.get('job_id') and not JobLead.objects.filter(id=rec['job_id']).exists(): errors.append(f'jobs[{i}].job_id does not exist: {rec["job_id"]}')
         if rec.get('work_mode') and rec.get('work_mode') not in ['onsite','hybrid','remote','unknown']: errors.append(f'jobs[{i}].work_mode invalid')
         if not rec.get('job_id') and not (rec.get('url') or rec.get('raw_description') or rec.get('company') or rec.get('title')): errors.append(f'jobs[{i}] needs at least url, description, company, or title')
         if isinstance(rec.get('evaluation'), dict): errors += validate_eval(rec['evaluation'], i, require_job_id=False)
+    if conflicts: return {'ok':False,'type':'duplicate_conflicts','message':'Some jobs already exist. Choose override, duplicate, skip, or abort.','conflicts':conflicts}
+    if eval_conflicts: return {'ok':False,'type':'evaluation_conflicts','message':'These jobs already have evaluations. Choose override, duplicate, skip, or abort.','conflicts':eval_conflicts}
     if errors: return {'ok':False,'errors':errors}
     results=[]; eval_ids=[]
     with transaction.atomic():
-        for rec in records:
+        for i, rec in enumerate(records):
+            dup_action=action_for_duplicate(data, i)
             if rec.get('job_id'):
                 job=JobLead.objects.get(id=rec['job_id']); action='updated'; changed=[]
                 for f in JOB_UPDATE_FIELDS:
                     val=normalize_job_url(rec.get(f)) if f=='url' else rec.get(f)
                     if val is not None and val != '': setattr(job, f, val); changed.append(f)
                 job.save()
+            elif dup_action and dup_action.get('action') == 'skip':
+                results.append({'job_id':None,'action':'skipped_duplicate','updated_fields':[]}); continue
+            elif dup_action and dup_action.get('action') == 'override':
+                existing_qs=JobLead.objects.filter(url=rec.get('url'))
+                job=JobLead.objects.filter(id=dup_action.get('existing_job_id')).first() if dup_action.get('existing_job_id') else existing_qs.first()
+                action='overridden'; changed=[]
+                for f in JOB_UPDATE_FIELDS:
+                    val=normalize_job_url(rec.get(f)) if f=='url' else rec.get(f)
+                    if val is not None and val != '': setattr(job, f, val); changed.append(f)
+                job.save()
             else:
-                job=JobLead.objects.create(company=rec.get('company') or 'Unknown company', title=rec.get('title') or 'Untitled role', location=rec.get('location',''), url=normalize_job_url(rec.get('url','')), source=rec.get('source','bulk_links'), raw_description=rec.get('raw_description',''), salary_info=rec.get('salary_info',''), language_requirements=rec.get('language_requirements',''), work_mode=rec.get('work_mode') or 'unknown')
-                action='created'; changed=sorted(JOB_UPDATE_FIELDS)
+                title=rec.get('title') or 'Untitled role'
+                if dup_action and dup_action.get('action') == 'duplicate': title=duplicate_title(title)
+                job=JobLead.objects.create(company=rec.get('company') or 'Unknown company', title=title, location=rec.get('location',''), url=normalize_job_url(rec.get('url','')), source=rec.get('source','bulk_links'), raw_description=rec.get('raw_description',''), salary_info=rec.get('salary_info',''), language_requirements=rec.get('language_requirements',''), work_mode=rec.get('work_mode') or 'unknown')
+                action='created_duplicate' if dup_action and dup_action.get('action') == 'duplicate' else 'created'; changed=sorted(JOB_UPDATE_FIELDS)
             note=rec.get('notes') or rec.get('note') or rec.get('uncertainty')
             if note: ApplicationNote.objects.create(job=job, note=str(note), note_type='general')
-            if isinstance(rec.get('evaluation'), dict): eval_ids.append(create_evaluation(job, rec['evaluation']).id)
+            if isinstance(rec.get('evaluation'), dict):
+                ev_action=(action_for_duplicate(data, i) or {}).get('action') or data.get('evaluation_strategy')
+                if ev_action == 'skip': pass
+                else:
+                    if ev_action == 'override': JobEvaluation.objects.filter(job=job).delete()
+                    eval_ids.append(create_evaluation(job, rec['evaluation']).id)
             results.append({'job_id':job.id,'action':action,'updated_fields':sorted(changed)})
     return {'ok':True,'type':'jobs','jobs':results,'evaluation_ids':eval_ids,'count':len(results)}
 

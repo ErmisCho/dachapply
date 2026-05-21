@@ -20,9 +20,37 @@ def test_create_url_only_job(client):
     r=client.post('/api/jobs/', {'url':'https://x.test/job'}, format='json')
     assert r.status_code==201 and r.data['company']=='Unknown company' and r.data['title']=='Untitled role'
 
+def test_manual_duplicate_job_requires_choice(client):
+    JobLead.objects.create(company='A', title='T', url='https://manual.test/job')
+    r=client.post('/api/jobs/', {'company':'B','title':'T2','url':'https://manual.test/job'}, format='json')
+    assert r.status_code==400 and r.data['type']=='duplicate_conflicts'
+
+def test_manual_duplicate_job_detects_trailing_slash_and_query(client):
+    JobLead.objects.create(company='A', title='T', url='https://manual.test/job')
+    r=client.post('/api/jobs/', {'company':'B','title':'T2','url':'https://manual.test/job/?utm=x'}, format='json')
+    assert r.status_code==400 and r.data['type']=='duplicate_conflicts'
+
+def test_manual_duplicate_job_can_duplicate(client):
+    JobLead.objects.create(company='A', title='T', url='https://manual.test/job')
+    r=client.post('/api/jobs/', {'company':'B','title':'T','url':'https://manual.test/job','duplicate_action':'duplicate'}, format='json')
+    assert r.status_code==201 and r.data['title']=='T (1)'
+
+def test_bulk_create_multiple_links_from_notes(client):
+    r=client.post('/api/jobs/bulk-create/', {'raw_description':'https://a.test/job1\nhttps://b.test/job2'}, format='json')
+    assert r.status_code==201 and r.data['count']==2 and JobLead.objects.filter(url__in=['https://a.test/job1','https://b.test/job2']).count()==2
+
+def test_bulk_create_duplicate_requires_choice(client):
+    JobLead.objects.create(company='A', title='T', url='https://a.test/job1')
+    r=client.post('/api/jobs/bulk-create/', {'url':'https://a.test/job1\nhttps://b.test/job2'}, format='json')
+    assert r.status_code==400 and r.data['type']=='duplicate_conflicts' and JobLead.objects.filter(url='https://b.test/job2').count()==0
+
 def test_normalizes_pasted_hyphen_url(client):
     r=client.post('/api/jobs/', {'url':'https-www.karriere.at-jobs-7794074'}, format='json')
     assert r.status_code==201 and r.data['url']=='https://www.karriere.at/jobs/7794074'
+
+def test_repairs_markdown_corrupted_url(client):
+    r=client.post('/api/jobs/', {'url':'https://[https://www.karriere.at/jobs/7803497','company':'epunkt','title':'Senior Software Entwickler - Python/Odoo'}, format='json')
+    assert r.status_code==201 and r.data['url']=='https://www.karriere.at/jobs/7803497'
 
 def test_moves_url_accidentally_pasted_as_company(client):
     r=client.post('/api/jobs/', {'company':'https-www.karriere.at-jobs-7794074'}, format='json')
@@ -43,6 +71,14 @@ def test_update_job_status(client, job):
     r=client.patch(f'/api/jobs/{job.id}/', {'status':'to_apply'}, format='json')
     assert r.status_code==200 and r.data['status']=='to_apply'
 
+def test_applied_status_sets_status_date(client, job):
+    r=client.patch(f'/api/jobs/{job.id}/', {'status':'applied'}, format='json')
+    assert r.status_code==200 and r.data['status_date'] is not None
+
+def test_can_override_status_date(client, job):
+    r=client.patch(f'/api/jobs/{job.id}/', {'status':'interview','status_date':'2026-01-02'}, format='json')
+    assert r.status_code==200 and r.data['status_date']=='2026-01-02'
+
 def test_generate_prompt(client, job):
     r=client.post('/api/prompts/generate/', {'job_ids':[job.id]}, format='json')
     assert r.status_code==200 and 'CANDIDATE PROFILE' in r.data['generated_prompt']
@@ -50,6 +86,10 @@ def test_generate_prompt(client, job):
 def test_generate_enrichment_prompt(client, job):
     r=client.post('/api/prompts/enrich/', {'job_ids':[job.id]}, format='json')
     assert r.status_code==200 and 'job_updates' in r.data['generated_prompt']
+
+def test_generate_combined_prompt(client, job):
+    r=client.post('/api/prompts/combined/', {'job_ids':[job.id]}, format='json')
+    assert r.status_code==200 and 'evaluation' in r.data['generated_prompt'] and 'job_id' in r.data['generated_prompt']
 
 def test_generate_bulk_links_prompt(client):
     r=client.post('/api/prompts/bulk-links/', {'links':'https-www.karriere.at-jobs-7794074\nhttps://example.com/job'}, format='json')
@@ -61,6 +101,13 @@ def valid_payload(job):
 def test_import_valid_evaluation(client, job):
     r=client.post('/api/evaluations/import/', {'json':json.dumps(valid_payload(job))}, format='json')
     assert r.status_code==201 and JobEvaluation.objects.count()==1
+
+def test_smart_skill_statuses_include_profile_aliases(client, job):
+    payload=valid_payload(job); payload['evaluations'][0]['required_skills']=['Python 3','SQL','React']; payload['evaluations'][0]['matched_skills']=[]; payload['evaluations'][0]['missing_skills']=['Python 3','SQL','React']
+    client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
+    r=client.get(f'/api/jobs/{job.id}/')
+    statuses=r.data['latest_evaluation']['skill_statuses']
+    assert statuses['Python 3']=='match' and statuses['SQL']=='match' and statuses['React']=='weak'
 
 def test_reject_invalid_evaluation(client, job):
     r=client.post('/api/evaluations/import/', {'json':'{"evaluations":[{}]}'}, format='json')
@@ -77,11 +124,45 @@ def test_import_bulk_jobs_with_evaluations(client):
     r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
     assert r.status_code==201 and JobLead.objects.filter(company='Karriere Co').exists() and JobEvaluation.objects.count()==1
 
+def test_combined_import_existing_evaluation_requires_choice(client, job):
+    JobEvaluation.objects.create(job=job, fit_score=70, priority='medium', recommendation='maybe', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
+    payload={'jobs':[{'job_id':job.id,'company':job.company,'title':job.title,'evaluation':{'fit_score':82,'priority':'high','recommendation':'apply','summary':'Good fit','main_match_reasons':['Python'],'main_gaps':[],'required_skills':['Python'],'nice_to_have_skills':[],'matched_skills':['Python'],'missing_skills':[],'cv_adjustment_notes':'','interview_prep_notes':'','risk_notes':'','next_action':'Apply'}}]}
+    r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
+    assert r.status_code==400 and r.data['type']=='evaluation_conflicts'
+
 def test_import_bulk_job_moves_company_url_to_url(client):
     payload={'jobs':[{'company':'https-www.karriere.at-jobs-7794074','title':'Unknown'}]}
     r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
     job=JobLead.objects.get(title='Unknown')
     assert r.status_code==201 and job.url=='https://www.karriere.at/jobs/7794074' and job.company=='Unknown company'
+
+def test_bulk_import_duplicate_requires_choice(client):
+    JobLead.objects.create(company='A', title='T', url='https://dup.test/job')
+    payload={'jobs':[{'company':'B','title':'T2','url':'https://dup.test/job'}]}
+    r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
+    assert r.status_code==400 and r.data['type']=='duplicate_conflicts'
+
+def test_bulk_import_duplicate_can_duplicate(client):
+    JobLead.objects.create(company='A', title='T', url='https://dup.test/job')
+    payload={'duplicate_strategy':'duplicate','jobs':[{'company':'B','title':'T','url':'https://dup.test/job'}]}
+    r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
+    assert r.status_code==201 and JobLead.objects.filter(url='https://dup.test/job').count()==2 and JobLead.objects.filter(title='T (1)').exists()
+
+def test_bulk_import_duplicate_can_override(client):
+    existing=JobLead.objects.create(company='A', title='T', url='https://dup.test/job')
+    payload={'duplicate_strategy':'override','jobs':[{'company':'B','title':'T2','url':'https://dup.test/job'}]}
+    r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
+    existing.refresh_from_db()
+    assert r.status_code==201 and existing.company=='B' and existing.title=='T2'
+
+def test_import_bulk_job_cleans_markdown_corrupted_company(client):
+    bad='Enlivion](https://www.karriere.at/jobs/10019854%22,%22company%22:%22Enlivion) GmbH'
+    payload={'jobs':[{'company':bad,'title':'Software Engineer AI Agent Design & KNX-Integration'}]}
+    r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
+    job=JobLead.objects.get(title='Software Engineer AI Agent Design & KNX-Integration')
+    assert r.status_code==201
+    assert job.company=='Enlivion GmbH'
+    assert job.url=='https://www.karriere.at/jobs/10019854'
 
 def test_export_jobs(client, job): assert client.get('/api/export/jobs.json').status_code==200
 
@@ -89,3 +170,14 @@ def test_filtering_jobs(client, job):
     JobLead.objects.create(company='Other', title='Java')
     r=client.get('/api/jobs/?search=ACME')
     assert len(r.data)==1
+
+def test_default_sort_new_first_then_priority_and_fit(client):
+    old=JobLead.objects.create(company='Old', title='Applied', status='applied')
+    low=JobLead.objects.create(company='Low', title='New low', status='new')
+    high=JobLead.objects.create(company='High', title='New high', status='new')
+    JobEvaluation.objects.create(job=old, fit_score=99, priority='high', recommendation='apply', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
+    JobEvaluation.objects.create(job=low, fit_score=20, priority='low', recommendation='skip', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
+    JobEvaluation.objects.create(job=high, fit_score=90, priority='high', recommendation='apply', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
+    r=client.get('/api/jobs/')
+    ids=[x['id'] for x in r.data]
+    assert ids.index(high.id) < ids.index(low.id) < ids.index(old.id)

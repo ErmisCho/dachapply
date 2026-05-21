@@ -19,8 +19,8 @@ DACHApply is a private job intelligence dashboard for a Software Engineer job se
 5. Owner pastes ChatGPT's `job_updates` or `jobs` JSON into `/import`; the app updates or creates the correct job records.
 6. Owner selects completed jobs in `/prompts` and generates an Evaluation Prompt with embedded candidate profile.
 7. Owner pastes strict evaluation JSON into `/import`.
-7. Backend validates required fields and stores `JobEvaluation` records.
-8. Dashboard/job detail pages show score, priority, recommendation, gaps, status, next action.
+8. Backend validates required fields and stores `JobEvaluation` records.
+9. Dashboard/job detail pages show score, priority, recommendation, gaps, status, and next action with clear badges.
 
 This reduces repeated LLM token usage by centralizing reusable prompts and structured imports while avoiding paid LLM API calls.
 
@@ -183,11 +183,13 @@ Environment variables:
 - Export backups manually from the app/admin.
 
 ## Screenshots
-- Dashboard: _placeholder_
-- Friend submission form: _placeholder_
-- Prompt generator: _placeholder_
-- Import evaluation page: _placeholder_
-- Job detail: _placeholder_
+Add screenshots here after running locally:
+
+- Dashboard: searchable/filterable job table with status, priority, and recommendation badges.
+- Friend submission form: simple invite-code + URL-first submission page.
+- Prompt generator: bulk links area, existing-job selector, selected preview, generated prompt, copy button.
+- Import evaluation page: JSON textarea, clear validation errors, success summary listing created/updated jobs.
+- Job detail: clean metadata header, badges, fit score card, match/gap cards, next action, raw description, notes.
 
 ## Security notes
 - Django CSRF/session authentication enabled.

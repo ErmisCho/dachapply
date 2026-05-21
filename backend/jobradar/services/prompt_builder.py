@@ -21,6 +21,23 @@ def build_bulk_links_prompt(links, custom_instructions=''):
     return '\n'.join(lines)
 
 
+def build_combined_prompt(jobs, custom_instructions=''):
+    lines=[
+        'For each existing job below, first fill missing/incorrect job details, then evaluate the job against the candidate profile.',
+        'Preserve job_id exactly. Put links only in url. Never put URLs in company or title. Do not invent experience or facts; use unknown/empty values when needed.',
+        'Return valid JSON only. No markdown.',
+        '', 'CANDIDATE PROFILE:', CANDIDATE_PROFILE, '',
+        'EXPECTED JSON SCHEMA:',
+        '{"jobs":[{"job_id":1,"url":"https://...","company":"...","title":"...","location":"...","source":"...","raw_description":"...","salary_info":"...","language_requirements":"...","work_mode":"onsite|hybrid|remote|unknown","evaluation":{"fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}}],"strategic_advice":"..."}',
+        ''
+    ]
+    if custom_instructions: lines += ['CUSTOM INSTRUCTIONS:', custom_instructions, '']
+    lines += ['JOBS:']
+    for j in jobs:
+        lines += [f'Job ID: {j.id}', f'Current company: {j.company}', f'Current title: {j.title}', f'URL: {j.url}', f'Location: {j.location}', f'Work mode: {j.work_mode}', f'Salary: {j.salary_info}', f'Languages: {j.language_requirements}', f'Description: {(j.raw_description or "")[:3500]}', '---']
+    return '\n'.join(lines)
+
+
 def build_enrichment_prompt(jobs, custom_instructions=''):
     lines=[
         'Extract missing structured job details from the provided job URLs/descriptions. Use only information visible in the text or URL context. If a detail is unknown, use an empty string or unknown. Do not invent facts.',

@@ -17,6 +17,7 @@ class JobLead(models.Model):
     language_requirements=models.CharField(max_length=250, blank=True)
     work_mode=models.CharField(max_length=20, choices=WORK_MODES, default='unknown')
     status=models.CharField(max_length=20, choices=STATUSES, default='new')
+    status_date=models.DateField(null=True, blank=True)
     created_by=models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
     created_at=models.DateTimeField(auto_now_add=True)
     updated_at=models.DateTimeField(auto_now=True)
