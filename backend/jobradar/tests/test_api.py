@@ -107,7 +107,8 @@ def test_smart_skill_statuses_include_profile_aliases(client, job):
     client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
     r=client.get(f'/api/jobs/{job.id}/')
     statuses=r.data['latest_evaluation']['skill_statuses']
-    assert statuses['Python 3']=='match' and statuses['SQL']=='match' and statuses['React']=='weak'
+    assert statuses['Python 3']['status']=='match' and statuses['Python 3']['display']=='Python'
+    assert statuses['SQL']['status']=='match' and statuses['React']['status']=='weak'
 
 def test_reject_invalid_evaluation(client, job):
     r=client.post('/api/evaluations/import/', {'json':'{"evaluations":[{}]}'}, format='json')

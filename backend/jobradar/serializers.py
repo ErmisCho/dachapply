@@ -3,7 +3,7 @@ from urllib.parse import urlsplit, urlunsplit
 from django.utils import timezone
 from rest_framework import serializers
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode
-from .services.skill_matcher import smart_skill_status
+from .services.skill_matcher import smart_skill_status, display_skill_name
 
 
 def normalize_job_url(value):
@@ -72,7 +72,7 @@ class JobEvaluationSerializer(serializers.ModelSerializer):
         skills=[]
         for s in (obj.required_skills or []) + (obj.nice_to_have_skills or []) + (obj.missing_skills or []) + (obj.matched_skills or []):
             if s and s not in skills: skills.append(s)
-        return {s: smart_skill_status(s) for s in skills}
+        return {s: {'status': smart_skill_status(s), 'display': display_skill_name(s)} for s in skills}
     def validate_fit_score(self, v):
         if v < 0 or v > 100: raise serializers.ValidationError('fit_score must be 0..100')
         return v

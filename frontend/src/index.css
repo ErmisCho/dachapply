@@ -1,2 +1,106 @@
 @tailwind base;@tailwind components;@tailwind utilities;
-body{@apply bg-slate-50 text-slate-900} input,select,textarea{@apply border rounded px-3 py-2 w-full} button{@apply rounded px-3 py-2 bg-slate-900 text-white disabled:opacity-50} a{@apply text-blue-700}
+:root{color-scheme:light} .dark{color-scheme:dark}
+body{@apply bg-slate-50 text-slate-900 antialiased} 
+body:before{content:"";position:fixed;inset:0;z-index:-1;background:radial-gradient(circle at 10% 10%,rgba(59,130,246,.14),transparent 28rem),radial-gradient(circle at 90% 0%,rgba(168,85,247,.12),transparent 24rem),linear-gradient(180deg,#f8fafc,#eef2ff 55%,#f8fafc)}
+.dark body{@apply bg-slate-950 text-slate-100}.dark body:before{background:radial-gradient(circle at 12% 8%,rgba(37,99,235,.22),transparent 30rem),radial-gradient(circle at 88% 4%,rgba(147,51,234,.20),transparent 28rem),linear-gradient(180deg,#020617,#0f172a 55%,#020617)}
+input,select,textarea{@apply w-full rounded-lg border border-slate-200 bg-white/90 px-3 py-2 text-slate-900 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100}
+.dark input,.dark select,.dark textarea{@apply border-slate-700 bg-slate-900/80 text-slate-100 focus:border-blue-400 focus:ring-blue-950}
+button{@apply rounded-lg px-3 py-2 bg-slate-900 text-white disabled:opacity-50 transition} a{@apply text-blue-700}.dark a{@apply text-blue-300}
+.btn{@apply inline-flex items-center gap-1 rounded-full border border-slate-200/80 bg-white/60 px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm shadow-slate-200/40 backdrop-blur hover:border-slate-300 hover:bg-white hover:text-slate-900 disabled:opacity-50}
+.btn-primary{@apply inline-flex items-center gap-1 rounded-full border border-slate-900 bg-slate-900 px-3 py-1.5 text-xs font-medium text-white shadow-sm shadow-slate-300/40 hover:bg-slate-800}
+.btn-danger{@apply inline-flex items-center gap-1 rounded-full border border-red-200/80 bg-white/60 px-3 py-1.5 text-xs font-medium text-red-600 shadow-sm backdrop-blur hover:bg-red-50 hover:text-red-700}
+.btn-muted{@apply inline-flex items-center gap-1 rounded-full border border-transparent bg-slate-100/70 px-3 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-200/80 hover:text-slate-800}
+.dark .btn{@apply border-slate-700 bg-slate-900/70 text-slate-200 hover:bg-slate-800}.dark .btn-primary{@apply border-blue-500/40 bg-blue-500/20 text-blue-100 hover:bg-blue-500/30}.dark .btn-danger{@apply border-red-500/30 bg-red-500/10 text-red-200 hover:bg-red-500/20}.dark .btn-muted{@apply bg-slate-800 text-slate-300 hover:bg-slate-700}
+.premium-card{@apply rounded-2xl border border-white/60 bg-white/75 shadow-xl shadow-slate-200/60 backdrop-blur-xl}.dark .premium-card{@apply border-slate-700/60 bg-slate-900/65 shadow-black/30}
+.dark .bg-white{background-color:rgba(15,23,42,.72)!important}.dark .bg-slate-50{background-color:rgba(30,41,59,.55)!important}.dark .text-slate-900{color:#f8fafc!important}.dark .text-slate-800{color:#e2e8f0!important}.dark .text-slate-700{color:#cbd5e1!important}.dark .text-slate-600,.dark .text-slate-500{color:#94a3b8!important}.dark .border,.dark .border-t,.dark .border-b{border-color:rgba(71,85,105,.75)!important}.dark thead{background-color:rgba(15,23,42,.9)!important}.dark tr:hover{background-color:rgba(30,41,59,.7)!important}
+
+.app-nav{background:rgba(255,255,255,.76);border-color:rgba(226,232,240,.72);box-shadow:0 8px 30px rgba(15,23,42,.07)}
+.app-brand-mark{background:linear-gradient(135deg,#2563eb,#7c3aed);box-shadow:0 10px 24px rgba(37,99,235,.22)}
+.nav-link{@apply rounded-full px-3 py-1.5 text-sm font-medium text-slate-500 transition hover:bg-slate-100/70 hover:text-slate-950}
+.dark .app-nav{background:rgba(3,7,18,.82)!important;border-color:rgba(255,255,255,.08)!important;box-shadow:0 12px 46px rgba(0,0,0,.48)!important}
+.dark .app-brand-mark{background:linear-gradient(135deg,rgba(39,39,42,.98),rgba(63,63,70,.95));border:1px solid rgba(255,255,255,.14);box-shadow:none;color:#fafafa}
+.dark .nav-link{color:#d4d4d8!important;border:1px solid transparent}.dark .nav-link:hover{background:rgba(255,255,255,.07)!important;border-color:rgba(255,255,255,.10);color:#fff!important}
+.filter-input{@apply h-9 rounded-full border-slate-200/80 bg-white/70 px-3 py-1 text-sm shadow-sm backdrop-blur}.dark .filter-input{@apply border-slate-700 bg-slate-900/60}
+
+/* Premium dark mode overrides */
+.dark body{@apply bg-[#070b14] text-slate-100}.dark body:before{background:radial-gradient(circle at 18% 0%,rgba(59,130,246,.30),transparent 32rem),radial-gradient(circle at 78% 8%,rgba(168,85,247,.24),transparent 30rem),radial-gradient(circle at 50% 100%,rgba(20,184,166,.10),transparent 26rem),linear-gradient(180deg,#030712,#0b1020 48%,#050816)}
+.dark input,.dark select,.dark textarea{@apply border-slate-600/70 bg-[#0b1220]/90 text-slate-50 placeholder:text-slate-400 focus:border-cyan-300 focus:ring-cyan-400/20}
+.dark .btn{@apply border-slate-500/40 bg-white/10 text-slate-100 shadow-black/20 hover:border-cyan-300/50 hover:bg-white/15 hover:text-white}.dark .btn-primary{@apply border-cyan-300/40 bg-cyan-300/15 text-cyan-50 shadow-cyan-950/40 hover:bg-cyan-300/25}.dark .btn-danger{@apply border-red-300/30 bg-red-400/10 text-red-100 hover:bg-red-400/20}.dark .btn-muted{@apply bg-white/10 text-slate-200 hover:bg-white/15 hover:text-white}
+.dark .premium-card{@apply border-white/10 bg-[#0b1220]/80 shadow-2xl shadow-black/40 ring-1 ring-white/5}
+.dark .nav-link{@apply text-slate-200 hover:bg-white/10 hover:text-white}
+.dark .filter-input{@apply border-white/10 bg-white/10 text-slate-50 placeholder:text-slate-400}
+.dark .bg-white{background-color:rgba(11,18,32,.86)!important}.dark .bg-slate-50{background-color:rgba(15,23,42,.8)!important}.dark .bg-blue-50{background-color:rgba(14,116,144,.16)!important}.dark .bg-green-50{background-color:rgba(22,163,74,.14)!important}.dark .bg-yellow-50{background-color:rgba(202,138,4,.14)!important}.dark .bg-red-50{background-color:rgba(220,38,38,.14)!important}.dark .bg-slate-100{background-color:rgba(30,41,59,.92)!important}
+.dark .text-slate-900{color:#f8fafc!important}.dark .text-slate-800{color:#f1f5f9!important}.dark .text-slate-700{color:#e2e8f0!important}.dark .text-slate-600{color:#cbd5e1!important}.dark .text-slate-500{color:#94a3b8!important}.dark .text-blue-900{color:#dbeafe!important}.dark .text-blue-700{color:#93c5fd!important}.dark .text-green-900{color:#bbf7d0!important}.dark .text-yellow-950{color:#fef3c7!important}.dark .text-red-700{color:#fecaca!important}
+.dark .border,.dark .border-t,.dark .border-b{border-color:rgba(148,163,184,.18)!important}.dark thead{background:linear-gradient(180deg,rgba(15,23,42,.98),rgba(15,23,42,.82))!important;color:#cbd5e1!important}.dark tr{border-color:rgba(148,163,184,.14)!important}.dark tr:hover{background-color:rgba(30,41,59,.72)!important}.dark .ring-blue-200{--tw-ring-color:rgba(103,232,249,.45)!important}.dark .shadow,.dark .shadow-sm,.dark .shadow-lg,.dark .shadow-xl{--tw-shadow-color:rgba(0,0,0,.45)!important}
+
+/* AMOLED-style dark refinement */
+.dark body{@apply bg-black text-zinc-100}.dark body:before{background:radial-gradient(circle at 18% -10%,rgba(37,99,235,.18),transparent 26rem),radial-gradient(circle at 88% 0%,rgba(124,58,237,.13),transparent 24rem),linear-gradient(180deg,#000,#030407 55%,#000)}
+.dark .premium-card{background:rgba(3,7,18,.88)!important;border-color:rgba(255,255,255,.08)!important;box-shadow:0 18px 60px rgba(0,0,0,.55)!important}
+.dark .bg-white{background-color:rgba(3,7,18,.90)!important}.dark .bg-slate-50{background-color:rgba(9,12,20,.86)!important}.dark .bg-slate-100{background-color:rgba(18,24,38,.9)!important}
+.dark input,.dark select,.dark textarea{background:rgba(2,6,23,.92)!important;border-color:rgba(255,255,255,.10)!important;color:#f4f4f5!important}.dark .filter-input{background:rgba(2,6,23,.72)!important;border-color:rgba(255,255,255,.08)!important}
+.dark .btn{background:rgba(255,255,255,.055)!important;border-color:rgba(255,255,255,.10)!important;color:#e4e4e7!important;box-shadow:none!important}.dark .btn:hover{background:rgba(255,255,255,.09)!important;border-color:rgba(255,255,255,.18)!important}.dark .btn-primary{background:rgba(39,39,42,.92)!important;border-color:rgba(255,255,255,.16)!important;color:#fff!important;box-shadow:none!important}.dark .btn-primary:hover{background:rgba(63,63,70,.95)!important}.dark .btn-muted{background:rgba(255,255,255,.06)!important;color:#d4d4d8!important}.dark .btn-danger{background:rgba(127,29,29,.22)!important;border-color:rgba(248,113,113,.22)!important;color:#fecaca!important}
+.dark .nav-link{color:#d4d4d8!important}.dark .nav-link:hover{background:rgba(255,255,255,.07)!important;color:#fff!important}
+.dark thead{background:#05070d!important;color:#a1a1aa!important}.dark tr:hover{background:rgba(255,255,255,.045)!important}.dark .border,.dark .border-t,.dark .border-b{border-color:rgba(255,255,255,.08)!important}
+.dark .text-slate-900,.dark .text-slate-800{color:#fafafa!important}.dark .text-slate-700{color:#e4e4e7!important}.dark .text-slate-600{color:#d4d4d8!important}.dark .text-slate-500{color:#a1a1aa!important}
+
+/* Usability refinement: obvious buttons + missing filters */
+.btn,.btn-primary,.btn-danger,.btn-muted{cursor:pointer;letter-spacing:.01em}.btn{background:linear-gradient(#fff,#f8fafc)!important;border-color:#cbd5e1!important;color:#334155!important}.btn:hover{border-color:#64748b!important;box-shadow:0 2px 10px rgba(15,23,42,.10)!important}.btn-primary{background:#111827!important;border-color:#111827!important;color:#fff!important}.btn-danger{background:#fff!important;border-color:#fecaca!important;color:#b91c1c!important}.btn-muted{background:#f1f5f9!important;border-color:#e2e8f0!important;color:#475569!important}
+.dark .btn{background:linear-gradient(rgba(39,39,42,.95),rgba(24,24,27,.95))!important;border-color:rgba(161,161,170,.42)!important;color:#f4f4f5!important}.dark .btn:hover{border-color:rgba(228,228,231,.72)!important;background:rgba(63,63,70,.95)!important}.dark .btn-primary{background:#e5e7eb!important;border-color:#f9fafb!important;color:#030712!important}.dark .btn-danger{background:rgba(127,29,29,.55)!important;border-color:rgba(248,113,113,.55)!important;color:#fee2e2!important}.dark .btn-muted{background:rgba(39,39,42,.9)!important;border-color:rgba(113,113,122,.45)!important;color:#e4e4e7!important}
+.filter-input[value=""], .filter-input:not(:focus):placeholder-shown{background:#fff1f2!important;border-color:#fecdd3!important}.dark .filter-input[value=""],.dark .filter-input:not(:focus):placeholder-shown{background:rgba(127,29,29,.22)!important;border-color:rgba(248,113,113,.28)!important}
+
+/* Revert filter missing tint; use red only for missing labels/badges */
+.filter-input[value=""], .filter-input:not(:focus):placeholder-shown{background:rgba(255,255,255,.7)!important;border-color:rgba(226,232,240,.8)!important}.dark .filter-input[value=""],.dark .filter-input:not(:focus):placeholder-shown{background:rgba(2,6,23,.72)!important;border-color:rgba(255,255,255,.08)!important}
+
+/* Make labels readable as labels in dark mode */
+.dark .bg-emerald-50{background:rgba(16,185,129,.16)!important}.dark .text-emerald-800{color:#a7f3d0!important}.dark .border-emerald-300{border-color:rgba(110,231,183,.45)!important}
+.dark .bg-rose-50{background:rgba(244,63,94,.18)!important}.dark .text-rose-800{color:#fecdd3!important}.dark .border-rose-300{border-color:rgba(253,164,175,.50)!important}
+.dark .bg-amber-50{background:rgba(245,158,11,.18)!important}.dark .text-amber-900{color:#fde68a!important}.dark .border-amber-300{border-color:rgba(252,211,77,.50)!important}
+.dark .bg-slate-100{background:rgba(63,63,70,.55)!important}.dark .text-slate-700{color:#e4e4e7!important}.dark .border-slate-300{border-color:rgba(161,161,170,.45)!important}
+
+/* Premium readable label palette override */
+.dark .bg-green-100{background:rgba(20,83,45,.72)!important}.dark .text-green-800{color:#dcfce7!important}.dark .ring-green-200\/70{--tw-ring-color:rgba(134,239,172,.28)!important}
+.dark .bg-red-100{background:rgba(127,29,29,.72)!important}.dark .text-red-800{color:#fee2e2!important}.dark .ring-red-200\/70{--tw-ring-color:rgba(252,165,165,.30)!important}
+.dark .bg-yellow-100{background:rgba(113,63,18,.72)!important}.dark .text-yellow-800{color:#fef3c7!important}.dark .ring-yellow-200\/70{--tw-ring-color:rgba(253,224,71,.28)!important}
+.dark .bg-blue-100{background:rgba(30,64,175,.62)!important}.dark .text-blue-800{color:#dbeafe!important}.dark .ring-blue-200\/70{--tw-ring-color:rgba(147,197,253,.28)!important}
+.dark .bg-purple-100{background:rgba(88,28,135,.62)!important}.dark .text-purple-800{color:#f3e8ff!important}.dark .ring-purple-200\/70{--tw-ring-color:rgba(216,180,254,.28)!important}
+.dark .bg-slate-100{background:rgba(51,65,85,.78)!important}.dark .text-slate-700{color:#e2e8f0!important}.dark .ring-slate-200\/80{--tw-ring-color:rgba(203,213,225,.20)!important}
+
+/* Final premium badge contrast */
+.bg-green-100{background:#dcfce7!important}.text-green-800{color:#064e3b!important}
+.bg-red-100{background:#fee2e2!important}.text-red-800{color:#7f1d1d!important}
+.bg-yellow-100{background:#fef3c7!important}.text-yellow-800{color:#713f12!important}
+.bg-blue-100{background:#dbeafe!important}.text-blue-800{color:#1e3a8a!important}
+.bg-purple-100{background:#f3e8ff!important}.text-purple-800{color:#581c87!important}
+.bg-slate-100{background:#f1f5f9!important}.text-slate-700{color:#334155!important}
+.dark .bg-green-100{background:#052e1a!important}.dark .text-green-800{color:#bbf7d0!important}
+.dark .bg-red-100{background:#3b0a0a!important}.dark .text-red-800{color:#fecaca!important}
+.dark .bg-yellow-100{background:#3a2506!important}.dark .text-yellow-800{color:#fde68a!important}
+.dark .bg-blue-100{background:#0b1f4d!important}.dark .text-blue-800{color:#bfdbfe!important}
+.dark .bg-purple-100{background:#2d0b4e!important}.dark .text-purple-800{color:#e9d5ff!important}
+.dark .bg-slate-100{background:#18181b!important}.dark .text-slate-700{color:#f4f4f5!important}
+
+/* Soft polished labels */
+.app-badge{border:1px solid transparent;box-shadow:inset 0 1px 0 rgba(255,255,255,.72),0 1px 2px rgba(15,23,42,.05);line-height:1.35;letter-spacing:.005em}
+.app-badge-green{background:#ecfdf5;color:#065f46;border-color:#bbf7d0}
+.app-badge-red{background:#fff1f2;color:#9f1239;border-color:#fecdd3}
+.app-badge-yellow{background:#fffbeb;color:#92400e;border-color:#fde68a}
+.app-badge-blue{background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe}
+.app-badge-purple{background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe}
+.app-badge-slate{background:#f8fafc;color:#475569;border-color:#e2e8f0}
+.dark .app-badge{box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 1px 2px rgba(0,0,0,.18)}
+.dark .app-badge-green{background:rgba(6,78,59,.30);color:#bbf7d0;border-color:rgba(52,211,153,.28)}
+.dark .app-badge-red{background:rgba(136,19,55,.28);color:#fecdd3;border-color:rgba(251,113,133,.30)}
+.dark .app-badge-yellow{background:rgba(146,64,14,.28);color:#fde68a;border-color:rgba(251,191,36,.30)}
+.dark .app-badge-blue{background:rgba(30,64,175,.30);color:#bfdbfe;border-color:rgba(96,165,250,.30)}
+.dark .app-badge-purple{background:rgba(91,33,182,.30);color:#ddd6fe;border-color:rgba(167,139,250,.30)}
+.dark .app-badge-slate{background:rgba(51,65,85,.42);color:#e2e8f0;border-color:rgba(148,163,184,.24)}
+
+/* Final navbar polish */
+.app-nav{background:rgba(255,255,255,.78)!important;border-color:rgba(226,232,240,.75)!important}
+.app-nav .nav-link{border:1px solid transparent}
+.app-nav .nav-link:hover{border-color:rgba(203,213,225,.72)}
+.dark .app-nav{background:rgba(3,7,18,.86)!important;border-color:rgba(255,255,255,.08)!important;box-shadow:0 14px 50px rgba(0,0,0,.55)!important}
+.dark .app-nav .nav-link{color:#d4d4d8!important;border:1px solid transparent!important}
+.dark .app-nav .nav-link:hover{background:rgba(255,255,255,.065)!important;border-color:rgba(255,255,255,.12)!important;color:#fff!important}
+.dark .app-nav .btn{background:rgba(255,255,255,.065)!important;border-color:rgba(255,255,255,.12)!important;color:#e4e4e7!important;box-shadow:none!important}
+.dark .app-nav .btn:hover{background:rgba(255,255,255,.10)!important;border-color:rgba(255,255,255,.20)!important;color:#fff!important}

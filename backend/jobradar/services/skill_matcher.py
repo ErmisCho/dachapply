@@ -1,5 +1,17 @@
 import re
 
+DISPLAY_NAMES = {
+    'python': 'Python', 'python 3': 'Python', 'python3': 'Python',
+    'django rest framework': 'DRF', 'drf': 'DRF',
+    'postgres': 'PostgreSQL', 'postgresql': 'PostgreSQL',
+    'mysql': 'MySQL', 'rest api': 'REST APIs', 'rest apis': 'REST APIs', 'api': 'REST APIs', 'apis': 'REST APIs',
+    'elasticsearch': 'Elasticsearch/OpenSearch', 'opensearch': 'Elasticsearch/OpenSearch', 'open search': 'Elasticsearch/OpenSearch',
+    'k8s': 'Kubernetes', 'kubernetes': 'Kubernetes',
+    'microsoft azure': 'Azure', 'amazon web services': 'AWS',
+    'retrieval augmented generation': 'RAG', 'retrieval augmented': 'RAG',
+    'vector search': 'Semantic search', 'embeddings': 'Semantic search',
+}
+
 PROFILE_SKILL_GROUPS = {
     'python': ['python', 'python3', 'python 3'],
     'django': ['django', 'django rest framework', 'drf'],
@@ -40,6 +52,15 @@ WEAKER_FIT = {
 
 def norm(s):
     return re.sub(r'[^a-z0-9]+', ' ', (s or '').lower()).strip()
+
+
+def display_skill_name(skill):
+    n=norm(skill)
+    if n in DISPLAY_NAMES: return DISPLAY_NAMES[n]
+    for key, val in DISPLAY_NAMES.items():
+        if key in n: return val
+    words=(skill or '').strip().replace('_',' ').replace('-', ' ')
+    return ' '.join(w.capitalize() if w.islower() else w for w in words.split())[:32]
 
 
 def smart_skill_status(skill):
