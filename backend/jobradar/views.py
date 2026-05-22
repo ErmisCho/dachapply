@@ -128,7 +128,11 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         profile=getattr(self.request.user, 'jobradar_profile', None)
         if profile and (profile.submit_for_id or profile.requested_submit_for_id):
             qs=qs.filter(created_by=self.request.user, submitted_for=profile.submit_for, source='friend')
-        if p.get('status'): qs=qs.filter(status=p['status'])
+        if p.get('status'):
+            statuses=[s for s in p.get('status','').split(',') if s]
+            qs=qs.filter(status__in=statuses)
+        else:
+            qs=qs.exclude(status='archived')
         if p.get('work_mode'): qs=qs.filter(work_mode=p['work_mode'])
         if p.get('company'): qs=qs.filter(company__icontains=p['company'])
         if p.get('location'): qs=qs.filter(location__icontains=p['location'])
