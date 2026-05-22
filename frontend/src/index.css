@@ -117,3 +117,14 @@ button{@apply rounded-lg px-3 py-2 bg-slate-900 text-white disabled:opacity-50 t
 .dark .app-nav .nav-link:hover{background:rgba(255,255,255,.065)!important;border-color:rgba(255,255,255,.12)!important;color:#fff!important}
 .dark .app-nav .btn{background:rgba(255,255,255,.065)!important;border-color:rgba(255,255,255,.12)!important;color:#e4e4e7!important;box-shadow:none!important}
 .dark .app-nav .btn:hover{background:rgba(255,255,255,.10)!important;border-color:rgba(255,255,255,.20)!important;color:#fff!important}
+
+/* Responsive job table: keep content contained on narrow screens. */
+.job-table{min-width:980px;table-layout:fixed}
+.job-table th,.job-table td{max-width:12rem;overflow-wrap:anywhere;word-break:break-word;white-space:normal;vertical-align:top}
+.job-table a,.job-table pre,.job-table div,.job-table span{overflow-wrap:anywhere;word-break:break-word;max-width:100%}
+@media (max-width: 768px){
+  .job-table{min-width:760px;font-size:10px}
+  .job-table th,.job-table td{padding-left:.25rem!important;padding-right:.25rem!important;max-width:9rem}
+  .premium-card{border-radius:1rem}
+  input,select,textarea{min-width:0!important}
+}
