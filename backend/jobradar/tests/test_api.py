@@ -216,6 +216,18 @@ def test_import_csv_file(client):
     assert r.status_code == 200
     assert JobLead.objects.filter(company='CSV Imported', created_by__username='owner').exists()
 
+def test_import_conflict_list_for_existing_url(client):
+    user = User.objects.get(username='owner')
+    JobLead.objects.create(company='Existing', title='Role', url='https://conflict.test/job', created_by=user)
+    payload = {'schema_version': 1, 'app': 'dachapply', 'data': {'jobs': [{'id': 901, 'company': 'Incoming', 'title': 'Role', 'url': 'https://conflict.test/job'}], 'evaluations': [], 'notes': [], 'followups': []}}
+    r = client.post('/api/import/', {'json': json.dumps(payload)}, format='json')
+    assert r.status_code == 400
+    assert r.data['type'] == 'import_conflicts'
+    assert r.data['conflicts'][0]['kind'] == 'duplicate_url'
+    r = client.post('/api/import/', {'json': json.dumps({**payload, 'duplicate_strategy': 'skip'})}, format='json')
+    assert r.status_code == 200
+    assert r.data['skipped']['jobs'] == 1
+
 def test_import_does_not_overwrite_another_users_data(client, db):
     other = User.objects.create_user('other', password='pw')
     other_job = JobLead.objects.create(id=1234, company='Other Co', title='Secret', url='https://other.test/job', created_by=other)

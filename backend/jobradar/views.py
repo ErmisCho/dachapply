@@ -318,7 +318,7 @@ def import_user_data(request):
     except ValueError as exc:
         return Response({'created': {}, 'updated': {}, 'skipped': {}, 'errors': [str(exc)]}, status=400)
     summary = import_user_export(request.user, payload)
-    return Response(summary, status=400 if summary.get('errors') else 200)
+    return Response(summary, status=400 if summary.get('errors') or summary.get('type') == 'import_conflicts' else 200)
 
 @api_view(['GET'])
 def export_jobs_json(request): return HttpResponse(jobs_json(), content_type='application/json')

@@ -138,14 +138,24 @@ def _payload_from_xlsx_file(file_obj):
     return {'schema_version': SCHEMA_VERSION, 'app': APP_NAME, 'data': data}
 
 def parse_import_payload(request):
+    def with_options(payload):
+        if hasattr(request, 'data'):
+            if request.data.get('duplicate_strategy'):
+                payload['duplicate_strategy'] = request.data.get('duplicate_strategy')
+            if request.data.get('duplicate_actions'):
+                try:
+                    payload['duplicate_actions'] = json.loads(request.data.get('duplicate_actions')) if isinstance(request.data.get('duplicate_actions'), str) else request.data.get('duplicate_actions')
+                except json.JSONDecodeError:
+                    raise ValueError('duplicate_actions must be valid JSON')
+        return payload
     try:
         upload = request.FILES.get('file') if hasattr(request, 'FILES') else None
         if upload:
             name = upload.name.lower()
             if name.endswith('.csv'):
-                return _payload_from_csv_file(upload)
+                return with_options(_payload_from_csv_file(upload))
             if name.endswith('.xlsx'):
-                return _payload_from_xlsx_file(upload)
+                return with_options(_payload_from_xlsx_file(upload))
             if not name.endswith('.json'):
                 raise ValueError('Unsupported import file type. Use JSON, CSV, or XLSX.')
             parsed = json.loads(upload.read().decode('utf-8-sig'))
@@ -160,7 +170,7 @@ def parse_import_payload(request):
             parsed = json.loads(parsed['json'])
         except json.JSONDecodeError as exc:
             raise ValueError(f'Invalid JSON: {exc.msg}')
-    return parsed
+    return with_options(parsed)
 
 def _parse_value(field, value):
     if value in ('', None):
@@ -193,6 +203,39 @@ def _find_owned_by_import_id(model, old_id, user, job_map=None):
         return model.objects.filter(id=old_id, job__in=owned_jobs(user)).first()
     return None
 
+def _import_action(payload, index):
+    for action in payload.get('duplicate_actions') or []:
+        if action.get('index') == index:
+            return action.get('action') or 'skip'
+    return payload.get('duplicate_strategy')
+
+def _changed_fields(obj, fields, data):
+    changed = []
+    for field in fields:
+        if field not in data:
+            continue
+        if getattr(obj, field) != _parse_value(field, data[field]):
+            changed.append(field)
+    return changed
+
+def _job_conflicts(user, payload):
+    conflicts = []
+    for i, item in enumerate(payload.get('data', {}).get('jobs', [])):
+        if not isinstance(item, dict) or _import_action(payload, i):
+            continue
+        owned = owned_jobs(user)
+        by_id = _find_owned_by_import_id(JobLead, item.get('id'), user)
+        if by_id:
+            changed = _changed_fields(by_id, JOB_FIELDS, item)
+            if changed:
+                conflicts.append({'index': i, 'kind': 'update', 'incoming': {'company': item.get('company'), 'title': item.get('title'), 'url': item.get('url')}, 'existing_jobs': [{'id': by_id.id, 'company': by_id.company, 'title': by_id.title, 'url': by_id.url, 'status': by_id.status}], 'changed_fields': changed})
+            continue
+        if item.get('url'):
+            existing = list(owned.filter(url=item.get('url')).values('id', 'company', 'title', 'url', 'status')[:10])
+            if existing:
+                conflicts.append({'index': i, 'kind': 'duplicate_url', 'url': item.get('url'), 'incoming': {'company': item.get('company') or 'Unknown company', 'title': item.get('title') or 'Untitled role', 'url': item.get('url')}, 'existing_jobs': existing})
+    return conflicts
+
 def import_user_export(user, payload):
     if not isinstance(payload, dict):
         return {'created': {}, 'updated': {}, 'skipped': {}, 'errors': ['Import payload must be a JSON object']}
@@ -200,6 +243,10 @@ def import_user_export(user, payload):
         return {'created': {}, 'updated': {}, 'skipped': {}, 'errors': ['Unsupported schema_version']}
     if payload.get('app') != APP_NAME or not isinstance(payload.get('data'), dict):
         return {'created': {}, 'updated': {}, 'skipped': {}, 'errors': ['Invalid export structure']}
+
+    conflicts = _job_conflicts(user, payload)
+    if conflicts:
+        return {'type': 'import_conflicts', 'message': 'Some imported records conflict with existing data. Choose override, duplicate, skip, or abort.', 'conflicts': conflicts, 'created': {}, 'updated': {}, 'skipped': {}, 'errors': []}
 
     summary = {'created': defaultdict(int), 'updated': defaultdict(int), 'skipped': defaultdict(int), 'errors': []}
     data = payload['data']
@@ -210,13 +257,21 @@ def import_user_export(user, payload):
             profile, created = UserProfile.objects.get_or_create(user=user)
             summary['created' if created else 'skipped']['profile'] += 1
 
-        for item in data.get('jobs', []):
+        for i, item in enumerate(data.get('jobs', [])):
             if not isinstance(item, dict):
                 summary['errors'].append('Skipped invalid job record')
                 continue
             if not item.get('submitted_by') and item.get('created_by_username'):
                 item = {**item, 'submitted_by': item.get('created_by_username')}
+            action = _import_action(payload, i)
             obj = _find_owned_by_import_id(JobLead, item.get('id'), user)
+            if not obj and item.get('url') and action == 'override':
+                obj = owned_jobs(user).filter(url=item.get('url')).first()
+            if action == 'skip':
+                summary['skipped']['jobs'] += 1
+                continue
+            if obj and action == 'duplicate':
+                obj = None
             if obj:
                 changed = _assign_fields(obj, JOB_FIELDS, item)
                 obj.created_by = user
