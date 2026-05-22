@@ -49,6 +49,8 @@ jobs:
             -x "*/__pycache__/*" \
             -x ".pytest_cache/*" \
             -x "*/.pytest_cache/*" \
+            -x ".cache/*" \
+            -x "*/.cache/*" \
             -x "*.sqlite" \
             -x "*.sqlite3" \
             -x "*.db"
