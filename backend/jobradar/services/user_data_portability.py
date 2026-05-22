@@ -39,7 +39,13 @@ def _clean_record(obj, fields, extra=None):
     return data
 
 def owned_jobs(user):
-    return JobLead.objects.filter(Q(created_by=user) | Q(submitted_for=user)).distinct()
+    qs = JobLead.objects.filter(Q(created_by=user) | Q(submitted_for=user))
+    if getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False):
+        # Legacy MVP data may predate user ownership and have both owner fields empty.
+        # Only staff/superusers may export/import against these unowned local records;
+        # regular users must not receive ambiguous records from other accounts.
+        qs = qs | JobLead.objects.filter(created_by__isnull=True, submitted_for__isnull=True)
+    return qs.distinct()
 
 def build_user_export(user):
     jobs = owned_jobs(user).prefetch_related('evaluations', 'notes', 'followups')

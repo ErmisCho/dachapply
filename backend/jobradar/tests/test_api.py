@@ -200,6 +200,22 @@ def test_authenticated_user_data_export(client):
     assert r.data['data']['jobs'][0]['company'] == 'Mine'
     assert 'password' not in json.dumps(r.data).lower()
 
+def test_staff_export_includes_legacy_unowned_jobs(db):
+    staff = User.objects.create_user('staff', password='pw', is_staff=True)
+    JobLead.objects.create(company='Legacy', title='Unowned')
+    c = APIClient(); c.force_authenticate(staff)
+    r = c.get('/api/export/')
+    assert r.status_code == 200
+    assert 'Legacy' in [j['company'] for j in r.data['data']['jobs']]
+
+def test_regular_export_excludes_legacy_unowned_jobs(db):
+    user = User.objects.create_user('regular', password='pw')
+    JobLead.objects.create(company='Legacy', title='Unowned')
+    c = APIClient(); c.force_authenticate(user)
+    r = c.get('/api/export/')
+    assert r.status_code == 200
+    assert 'Legacy' not in [j['company'] for j in r.data['data']['jobs']]
+
 def test_unauthenticated_user_data_export_blocked(db):
     r = APIClient().get('/api/export/')
     assert r.status_code in (401, 403)
