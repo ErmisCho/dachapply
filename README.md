@@ -65,7 +65,7 @@ Useful pages:
 - Friend submission: `http://localhost:5173/public-submit`
 - Prompt generator: `http://localhost:5173/prompts`
 - Import evaluation JSON: `http://localhost:5173/import`
-- Exports: `http://localhost:5173/export`
+- Data export/import: `http://localhost:5173/export`
 - Django admin: `http://127.0.0.1:8000/admin/`
 
 Seed invite code:
@@ -96,6 +96,15 @@ python manage.py runserver 127.0.0.1:8000
 ```
 
 Open `http://127.0.0.1:8000`.
+
+## User data export/import
+Logged-in users can open `/export` and click **Download JSON export** to save their own DACHApply data. The export includes the user's jobs plus related evaluations, notes, and follow-ups only. It does not include passwords, sessions, tokens, permissions, admin logs, invite codes, or secrets.
+
+To restore a previous export, open `/export`, choose the `.json` file, and click **Import selected file**. Imports run server-side in a database transaction and imported records are assigned to the currently logged-in user; uploaded files are read by the browser and are not stored permanently.
+
+API endpoints are also available for authenticated users:
+- `GET /api/export/`
+- `POST /api/import/`
 
 ## Seed data
 ```bash

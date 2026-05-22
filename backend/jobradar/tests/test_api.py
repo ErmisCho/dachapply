@@ -2,7 +2,7 @@ import json
 import pytest
 from django.contrib.auth.models import User
 from rest_framework.test import APIClient
-from jobradar.models import InviteCode, JobLead, JobEvaluation
+from jobradar.models import InviteCode, JobLead, JobEvaluation, ApplicationNote
 
 @pytest.fixture
 def client(db):
@@ -166,6 +166,51 @@ def test_import_bulk_job_cleans_markdown_corrupted_company(client):
     assert job.url=='https://www.karriere.at/jobs/10019854'
 
 def test_export_jobs(client, job): assert client.get('/api/export/jobs.json').status_code==200
+
+def test_authenticated_user_data_export(client):
+    user = User.objects.get(username='owner')
+    job = JobLead.objects.create(company='Mine', title='Backend', url='https://mine.test/job', created_by=user)
+    JobEvaluation.objects.create(job=job, fit_score=88, priority='high', recommendation='apply', summary='Good', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
+    ApplicationNote.objects.create(job=job, note='Private note', created_by=user)
+    r = client.get('/api/export/')
+    assert r.status_code == 200
+    assert r.data['schema_version'] == 1
+    assert r.data['app'] == 'dachapply'
+    assert len(r.data['data']['jobs']) == 1
+    assert r.data['data']['jobs'][0]['company'] == 'Mine'
+    assert 'password' not in json.dumps(r.data).lower()
+
+def test_unauthenticated_user_data_export_blocked(db):
+    r = APIClient().get('/api/export/')
+    assert r.status_code in (401, 403)
+
+def test_import_valid_user_data_file(client):
+    payload = {'schema_version': 1, 'app': 'dachapply', 'exported_at': '2026-05-22T00:00:00Z', 'user': {'email': 'old@example.test'}, 'data': {'jobs': [{'id': 500, 'company': 'Imported Co', 'title': 'Imported Role', 'url': 'https://import.test/job', 'work_mode': 'remote', 'status': 'new'}], 'evaluations': [{'id': 600, 'job': 500, 'fit_score': 91, 'priority': 'high', 'recommendation': 'apply', 'summary': 'Strong', 'main_match_reasons': ['Python'], 'main_gaps': [], 'required_skills': ['Python'], 'nice_to_have_skills': [], 'matched_skills': ['Python'], 'missing_skills': []}], 'notes': [{'id': 700, 'job': 500, 'note': 'Remember follow up', 'note_type': 'general'}], 'followups': []}}
+    r = client.post('/api/import/', {'json': json.dumps(payload)}, format='json')
+    assert r.status_code == 200
+    user = User.objects.get(username='owner')
+    job = JobLead.objects.get(url='https://import.test/job')
+    assert job.created_by == user and job.submitted_for is None
+    assert JobEvaluation.objects.filter(job=job, fit_score=91).exists()
+    assert ApplicationNote.objects.filter(job=job, created_by=user).exists()
+    assert r.data['created']['jobs'] == 1
+
+def test_import_invalid_json(client):
+    r = client.post('/api/import/', data='not-json', content_type='application/json')
+    assert r.status_code == 400
+    assert r.data['errors']
+
+def test_import_does_not_overwrite_another_users_data(client, db):
+    other = User.objects.create_user('other', password='pw')
+    other_job = JobLead.objects.create(id=1234, company='Other Co', title='Secret', url='https://other.test/job', created_by=other)
+    payload = {'schema_version': 1, 'app': 'dachapply', 'exported_at': '2026-05-22T00:00:00Z', 'user': {}, 'data': {'jobs': [{'id': other_job.id, 'company': 'Hacked', 'title': 'Changed', 'url': 'https://new.test/job'}], 'evaluations': [], 'notes': [], 'followups': []}}
+    r = client.post('/api/import/', {'json': json.dumps(payload)}, format='json')
+    assert r.status_code == 200
+    other_job.refresh_from_db()
+    assert other_job.company == 'Other Co'
+    assert JobLead.objects.filter(company='Hacked', created_by__username='owner').exists()
+    exported = client.get('/api/export/').data
+    assert 'Other Co' not in json.dumps(exported)
 
 def test_filtering_jobs(client, job):
     JobLead.objects.create(company='Other', title='Java')

@@ -13,11 +13,12 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
-from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, UserProfile
+from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, UserProfile, InviteCode
 from .serializers import JobLeadSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, PublicSubmissionSerializer, normalize_job_url
 from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
+from .services.user_data_portability import build_user_export, import_user_export, parse_import_payload
 
 
 def find_existing_by_url(url, owner=None):
@@ -212,11 +213,16 @@ def bulk_create_jobs(request):
     return Response({'ok':True,'count':len(created)+len(updated),'created':created,'updated':updated}, status=201)
 
 @api_view(['POST'])
+@permission_classes([AllowAny])
 def public_submit(request):
+    if not request.user.is_authenticated:
+        code=(request.data.get('invite_code') or '').strip()
+        invite=InviteCode.objects.filter(code=code).first()
+        if not invite or not invite.is_valid(): return Response({'detail':'Invalid invite code'}, status=400)
     profile=getattr(request.user, 'jobradar_profile', None)
     if profile and profile.requested_submit_for_id and not profile.submit_for_id:
         return Response({'detail':'Your friend has not approved this submission link yet.'}, status=403)
-    owner=profile.submit_for if profile and profile.submit_for_id else request.user
+    owner=profile.submit_for if profile and profile.submit_for_id else (request.user if request.user.is_authenticated else None)
     links=extract_links((request.data.get('url') or '') + '\n' + (request.data.get('raw_description') or '')) or ['']
     strategy=request.data.get('duplicate_strategy') or request.data.get('duplicate_action')
     action_map={a.get('index'):a.get('action') for a in request.data.get('duplicate_actions',[])}
@@ -236,7 +242,9 @@ def public_submit(request):
         data=request.data.copy(); data['url']=link; data['company']=data.get('company') or 'Unknown company'; data['title']=data.get('title') or ('Untitled role' if len(links)==1 else f'Untitled role {i+1}')
         if existing and action=='duplicate': data['title']=duplicate_title(data.get('title') or 'Untitled role')
         ser=PublicSubmissionSerializer(data=data); ser.is_valid(raise_exception=True)
-        job=ser.save(); job.created_by=request.user; job.submitted_for=profile.submit_for if profile else None; job.save(update_fields=['created_by','submitted_for'])
+        job=ser.save()
+        if request.user.is_authenticated:
+            job.created_by=request.user; job.submitted_for=profile.submit_for if profile else None; job.save(update_fields=['created_by','submitted_for'])
         created.append(JobLeadSerializer(job).data)
     remaining=[c for c in conflicts if c['index'] not in action_map]
     if remaining:
@@ -287,6 +295,21 @@ def stats(request):
         jobs=jobs.filter(created_by=request.user, submitted_for=profile.submit_for, source='friend')
     today=timezone.localdate(); evaluations=JobEvaluation.objects.filter(job__in=jobs)
     return Response({'total_jobs':jobs.count(), 'jobs_by_status':dict(jobs.values_list('status').annotate(c=Count('id'))), 'average_fit_score':evaluations.aggregate(a=Avg('fit_score'))['a'] or 0, 'high_priority_jobs':evaluations.filter(priority='high').values('job').distinct().count(), 'applications_sent':jobs.filter(status='applied').count(), 'interviews':jobs.filter(status='interview').count(), 'rejected':jobs.filter(status='rejected').count(), 'jobs_needing_follow_up':FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).count()})
+
+@api_view(['GET'])
+def export_user_data(request):
+    response = Response(build_user_export(request.user))
+    response['Content-Disposition'] = 'attachment; filename="dachapply-export.json"'
+    return response
+
+@api_view(['POST'])
+def import_user_data(request):
+    try:
+        payload = parse_import_payload(request)
+    except ValueError as exc:
+        return Response({'created': {}, 'updated': {}, 'skipped': {}, 'errors': [str(exc)]}, status=400)
+    summary = import_user_export(request.user, payload)
+    return Response(summary, status=400 if summary.get('errors') else 200)
 
 @api_view(['GET'])
 def export_jobs_json(request): return HttpResponse(jobs_json(), content_type='application/json')
