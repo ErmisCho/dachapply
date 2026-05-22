@@ -305,6 +305,8 @@ def import_user_export(user, payload):
         return {'type': 'import_conflicts', 'message': 'Some imported records conflict with existing data. Choose override, duplicate, skip, or abort.', 'conflicts': conflicts, 'created': {}, 'updated': {}, 'skipped': {}, 'errors': []}
 
     summary = {'created': defaultdict(int), 'updated': defaultdict(int), 'skipped': defaultdict(int), 'errors': []}
+    if payload.get('frontend_preferences'):
+        summary['frontend_preferences'] = payload.get('frontend_preferences')
     data = payload['data']
     job_map = {}
 
