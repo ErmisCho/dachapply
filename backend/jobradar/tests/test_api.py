@@ -265,6 +265,17 @@ def test_filtering_jobs(client, job):
     r=client.get('/api/jobs/?search=ACME')
     assert len(r.data)==1
 
+def test_jobs_default_excludes_archived_and_status_filter_allows_multiple(client):
+    JobLead.objects.create(company='Archived', title='Old', status='archived')
+    JobLead.objects.create(company='Applied', title='Sent', status='applied')
+    JobLead.objects.create(company='Interview', title='Call', status='interview')
+    r=client.get('/api/jobs/')
+    assert 'Archived' not in [x['company'] for x in r.data]
+    r=client.get('/api/jobs/?status=applied,interview')
+    assert {x['status'] for x in r.data} == {'applied','interview'}
+    r=client.get('/api/jobs/?status=archived')
+    assert [x['company'] for x in r.data] == ['Archived']
+
 def test_default_sort_new_first_then_priority_and_fit(client):
     old=JobLead.objects.create(company='Old', title='Applied', status='applied')
     low=JobLead.objects.create(company='Low', title='New low', status='new')
