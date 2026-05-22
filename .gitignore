@@ -8,3 +8,7 @@ backend/staticfiles/
 frontend/node_modules/
 frontend/dist/
 .pytest_cache/
+
+dachapply-*.json
+dachapply-*.csv
+dachapply-*.xlsx
