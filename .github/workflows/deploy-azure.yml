@@ -1,0 +1,61 @@
+name: Deploy to Azure App Service
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Package application
+        run: |
+          rm -f release.zip
+          zip -r release.zip . \
+            -x "release.zip" \
+            -x ".git/*" \
+            -x ".venv/*" \
+            -x "frontend/node_modules/*" \
+            -x "__pycache__/*" \
+            -x "*/__pycache__/*" \
+            -x ".pytest_cache/*" \
+            -x "*/.pytest_cache/*" \
+            -x "*.sqlite" \
+            -x "*.sqlite3" \
+            -x "*.db"
+
+      - name: Deploy to Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: dachapply
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: release.zip

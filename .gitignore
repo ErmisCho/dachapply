@@ -1,4 +1,5 @@
 *.pyc
+*.PublishSettings
 __pycache__/
 .venv/
 .env
