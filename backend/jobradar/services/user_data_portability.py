@@ -77,18 +77,42 @@ def _unflatten_value(value):
             return value
     return value
 
-def export_user_data_csv(user):
+def _prefs_rows(preferences):
+    preferences = preferences or {}
+    return [{'preference': key, 'value': _flatten_for_table(value)} for key, value in preferences.items()]
+
+def export_preferences_csv(preferences):
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=['preference', 'value'])
+    writer.writeheader()
+    writer.writerows(_prefs_rows(preferences))
+    return output.getvalue()
+
+def export_user_data_csv(user, preferences=None, kind='jobs'):
+    if kind == 'preferences':
+        return export_preferences_csv(preferences)
     export = build_user_export(user)
+    if kind == 'full':
+        output = StringIO()
+        writer = csv.DictWriter(output, fieldnames=['resource', 'index', 'field', 'value'])
+        writer.writeheader()
+        for resource, rows in export['data'].items():
+            for index, row in enumerate(rows):
+                for field, value in row.items():
+                    writer.writerow({'resource': resource, 'index': index, 'field': field, 'value': _flatten_for_table(value)})
+        for row in _prefs_rows(preferences):
+            writer.writerow({'resource': 'preferences', 'index': 0, 'field': row['preference'], 'value': row['value']})
+        return output.getvalue()
     rows = export['data']['jobs']
     output = StringIO()
-    fields = ['id'] + JOB_FIELDS
+    fields = ['id'] + JOB_FIELDS + ['created_by_username', 'submitted_for_username']
     writer = csv.DictWriter(output, fieldnames=fields, extrasaction='ignore')
     writer.writeheader()
     for row in rows:
         writer.writerow({field: _flatten_for_table(row.get(field)) for field in fields})
     return output.getvalue()
 
-def export_user_data_xlsx(user):
+def export_user_data_xlsx(user, preferences=None, kind='jobs'):
     if Workbook is None:
         raise RuntimeError('openpyxl is required for XLSX export')
     export = build_user_export(user)
@@ -97,33 +121,60 @@ def export_user_data_xlsx(user):
     workbook.remove(default)
     sheet_fields = {
         'profile': ['id'],
-        'jobs': ['id'] + JOB_FIELDS,
+        'jobs': ['id'] + JOB_FIELDS + ['created_by_username', 'submitted_for_username'],
         'evaluations': ['id', 'job'] + EVALUATION_FIELDS,
         'notes': ['id', 'job'] + NOTE_FIELDS,
         'followups': ['id', 'job'] + FOLLOWUP_FIELDS,
     }
-    for name, fields in sheet_fields.items():
-        sheet = workbook.create_sheet(name)
-        sheet.append(fields)
-        for row in export['data'].get(name, []):
-            sheet.append([_flatten_for_table(row.get(field)) for field in fields])
+    if kind in ('jobs', 'full'):
+        for name, fields in sheet_fields.items():
+            sheet = workbook.create_sheet(name)
+            sheet.append(fields)
+            for row in export['data'].get(name, []):
+                sheet.append([_flatten_for_table(row.get(field)) for field in fields])
+    if kind in ('preferences', 'full'):
+        sheet = workbook.create_sheet('preferences')
+        sheet.append(['preference', 'value'])
+        for row in _prefs_rows(preferences):
+            sheet.append([row['preference'], row['value']])
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()
 
 def _payload_from_csv_file(file_obj):
     text = file_obj.read().decode('utf-8-sig')
-    rows = []
-    for row in csv.DictReader(StringIO(text)):
-        rows.append({k: _unflatten_value(v) for k, v in row.items() if k})
-    return {'schema_version': SCHEMA_VERSION, 'app': APP_NAME, 'data': {'jobs': rows, 'evaluations': [], 'notes': [], 'followups': [], 'profile': []}}
+    rows = list(csv.DictReader(StringIO(text)))
+    if not rows:
+        return {'schema_version': SCHEMA_VERSION, 'app': APP_NAME, 'data': {'jobs': [], 'evaluations': [], 'notes': [], 'followups': [], 'profile': []}}
+    headers = set(rows[0].keys())
+    if {'preference', 'value'} <= headers:
+        return {'schema_version': SCHEMA_VERSION, 'app': APP_NAME, 'frontend_preferences': {r.get('preference'): _unflatten_value(r.get('value', '')) for r in rows if r.get('preference')}, 'data': {'jobs': [], 'evaluations': [], 'notes': [], 'followups': [], 'profile': []}}
+    if {'resource', 'index', 'field', 'value'} <= headers:
+        data = {'profile': [], 'jobs': [], 'evaluations': [], 'notes': [], 'followups': []}
+        prefs = {}
+        grouped = {}
+        for r in rows:
+            resource = r.get('resource')
+            if resource == 'preferences':
+                prefs[r.get('field')] = _unflatten_value(r.get('value', ''))
+                continue
+            if resource not in data:
+                continue
+            key = (resource, r.get('index') or '0')
+            grouped.setdefault(key, {})[r.get('field')] = _unflatten_value(r.get('value', ''))
+        for (resource, _), row in grouped.items():
+            data[resource].append(row)
+        return {'schema_version': SCHEMA_VERSION, 'app': APP_NAME, 'frontend_preferences': prefs, 'data': data}
+    jobs = [{k: _unflatten_value(v) for k, v in row.items() if k} for row in rows]
+    return {'schema_version': SCHEMA_VERSION, 'app': APP_NAME, 'data': {'jobs': jobs, 'evaluations': [], 'notes': [], 'followups': [], 'profile': []}}
 
 def _payload_from_xlsx_file(file_obj):
     if load_workbook is None:
         raise ValueError('XLSX import is not available')
     workbook = load_workbook(filename=BytesIO(file_obj.read()), data_only=True)
     data = {'profile': [], 'jobs': [], 'evaluations': [], 'notes': [], 'followups': []}
-    for sheet_name in data.keys():
+    preferences = {}
+    for sheet_name in list(data.keys()) + ['preferences']:
         if sheet_name not in workbook.sheetnames:
             continue
         sheet = workbook[sheet_name]
@@ -133,9 +184,14 @@ def _payload_from_xlsx_file(file_obj):
         headers = [str(h) if h is not None else '' for h in rows[0]]
         for values in rows[1:]:
             row = {headers[i]: _unflatten_value('' if values[i] is None else str(values[i])) for i in range(min(len(headers), len(values))) if headers[i]}
-            if any(v not in ('', None) for v in row.values()):
+            if not any(v not in ('', None) for v in row.values()):
+                continue
+            if sheet_name == 'preferences':
+                if row.get('preference'):
+                    preferences[row['preference']] = row.get('value', '')
+            else:
                 data[sheet_name].append(row)
-    return {'schema_version': SCHEMA_VERSION, 'app': APP_NAME, 'data': data}
+    return {'schema_version': SCHEMA_VERSION, 'app': APP_NAME, 'frontend_preferences': preferences, 'data': data}
 
 def parse_import_payload(request):
     def with_options(payload):

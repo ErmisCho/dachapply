@@ -18,7 +18,7 @@ from .serializers import JobLeadSerializer, JobEvaluationSerializer, Application
 from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
-from .services.user_data_portability import build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
+from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
 
 
 def find_existing_by_url(url, owner=None):
@@ -296,19 +296,27 @@ def stats(request):
     today=timezone.localdate(); evaluations=JobEvaluation.objects.filter(job__in=jobs)
     return Response({'total_jobs':jobs.count(), 'jobs_by_status':dict(jobs.values_list('status').annotate(c=Count('id'))), 'average_fit_score':evaluations.aggregate(a=Avg('fit_score'))['a'] or 0, 'high_priority_jobs':evaluations.filter(priority='high').values('job').distinct().count(), 'applications_sent':jobs.filter(status='applied').count(), 'interviews':jobs.filter(status='interview').count(), 'rejected':jobs.filter(status='rejected').count(), 'jobs_needing_follow_up':FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).count()})
 
-@api_view(['GET'])
+@api_view(['GET', 'POST'])
 def export_user_data(request):
-    fmt=(request.query_params.get('type') or 'json').lower()
+    fmt=(request.query_params.get('type') or request.data.get('type') or 'json').lower()
+    kind=(request.query_params.get('kind') or request.data.get('kind') or 'jobs').lower()
+    preferences=request.data.get('preferences') if hasattr(request, 'data') and isinstance(request.data, dict) else None
     if fmt == 'csv':
-        response=HttpResponse(export_user_data_csv(request.user), content_type='text/csv')
-        response['Content-Disposition']='attachment; filename="dachapply-export.csv"'
+        response=HttpResponse(export_user_data_csv(request.user, preferences, kind), content_type='text/csv')
+        response['Content-Disposition']=f'attachment; filename="dachapply-{kind}.csv"'
         return response
     if fmt == 'xlsx':
-        response=HttpResponse(export_user_data_xlsx(request.user), content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-        response['Content-Disposition']='attachment; filename="dachapply-export.xlsx"'
+        response=HttpResponse(export_user_data_xlsx(request.user, preferences, kind), content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition']=f'attachment; filename="dachapply-{kind}.xlsx"'
         return response
-    response = Response(build_user_export(request.user))
-    response['Content-Disposition'] = 'attachment; filename="dachapply-export.json"'
+    if kind == 'preferences':
+        payload={'schema_version': SCHEMA_VERSION, 'app': APP_NAME, 'exported_at': timezone.now().isoformat(), 'type': 'preferences', 'frontend_preferences': preferences or {}}
+    else:
+        payload=build_user_export(request.user)
+        if kind == 'full':
+            payload['frontend_preferences']=preferences or {}
+    response = Response(payload)
+    response['Content-Disposition'] = f'attachment; filename="dachapply-{kind}.json"'
     return response
 
 @api_view(['POST'])

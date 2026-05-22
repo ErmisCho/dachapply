@@ -98,7 +98,7 @@ python manage.py runserver 127.0.0.1:8000
 Open `http://127.0.0.1:8000`.
 
 ## User data export/import
-Logged-in users can open `/export` and export jobs/application data, dashboard preferences, or both. Jobs can be downloaded as JSON, CSV, or XLSX. Preferences are JSON and include theme, column visibility, skill overrides, and work-mode badge colors. The full JSON export contains both jobs and preferences. Exports do not include passwords, sessions, tokens, permissions, admin logs, invite codes, or secrets.
+Logged-in users can open `/export` and export jobs/application data, dashboard preferences, or both. Each export option supports JSON, CSV, and XLSX. Preferences include theme, column visibility, skill overrides, and work-mode badge colors. Exports do not include passwords, sessions, tokens, permissions, admin logs, invite codes, or secrets.
 
 To restore data, open `/export` and drop or click-to-select a `.json`, `.csv`, or `.xlsx` file. Import automatically detects whether the file contains jobs, preferences, or both. Job imports run server-side in a database transaction and imported records are assigned to the currently logged-in user; uploaded files are processed immediately and are not stored permanently.
 
