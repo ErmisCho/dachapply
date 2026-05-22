@@ -143,7 +143,7 @@ class JobLeadSerializer(serializers.ModelSerializer):
         return JobEvaluationSerializer(ev).data if ev else None
 
 class PublicSubmissionSerializer(serializers.Serializer):
-    invite_code=serializers.CharField(max_length=80)
+    invite_code=serializers.CharField(max_length=80, required=False, allow_blank=True)
     company=serializers.CharField(max_length=200, required=False, allow_blank=True)
     title=serializers.CharField(max_length=250, required=False, allow_blank=True)
     location=serializers.CharField(max_length=200, required=False, allow_blank=True)
@@ -160,11 +160,6 @@ class PublicSubmissionSerializer(serializers.Serializer):
         if value:
             serializers.URLField(max_length=1000).run_validation(value)
         return value
-    def validate_invite_code(self, code):
-        try: inv=InviteCode.objects.get(code=code)
-        except InviteCode.DoesNotExist: raise serializers.ValidationError('Invalid invite code')
-        if not inv.is_valid(): raise serializers.ValidationError('Inactive or expired invite code')
-        return code
     def validate(self, attrs):
         if attrs.get('website'): raise serializers.ValidationError('Spam rejected')
         embedded=extract_url_from_text(attrs.get('url')) or extract_url_from_text(attrs.get('company')) or extract_url_from_text(attrs.get('title'))
