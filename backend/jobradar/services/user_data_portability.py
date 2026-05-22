@@ -214,6 +214,8 @@ def import_user_export(user, payload):
             if not isinstance(item, dict):
                 summary['errors'].append('Skipped invalid job record')
                 continue
+            if not item.get('submitted_by') and item.get('created_by_username'):
+                item = {**item, 'submitted_by': item.get('created_by_username')}
             obj = _find_owned_by_import_id(JobLead, item.get('id'), user)
             if obj:
                 changed = _assign_fields(obj, JOB_FIELDS, item)

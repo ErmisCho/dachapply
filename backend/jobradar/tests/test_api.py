@@ -219,11 +219,12 @@ def test_import_csv_file(client):
 def test_import_does_not_overwrite_another_users_data(client, db):
     other = User.objects.create_user('other', password='pw')
     other_job = JobLead.objects.create(id=1234, company='Other Co', title='Secret', url='https://other.test/job', created_by=other)
-    payload = {'schema_version': 1, 'app': 'dachapply', 'exported_at': '2026-05-22T00:00:00Z', 'user': {}, 'data': {'jobs': [{'id': other_job.id, 'company': 'Hacked', 'title': 'Changed', 'url': 'https://new.test/job'}], 'evaluations': [], 'notes': [], 'followups': []}}
+    payload = {'schema_version': 1, 'app': 'dachapply', 'exported_at': '2026-05-22T00:00:00Z', 'user': {}, 'data': {'jobs': [{'id': other_job.id, 'company': 'Hacked', 'title': 'Changed', 'url': 'https://new.test/job', 'created_by_username': 'other'}], 'evaluations': [], 'notes': [], 'followups': []}}
     r = client.post('/api/import/', {'json': json.dumps(payload)}, format='json')
     assert r.status_code == 200
     other_job.refresh_from_db()
     assert other_job.company == 'Other Co'
+    assert JobLead.objects.get(company='Hacked').submitted_by == 'other'
     assert JobLead.objects.filter(company='Hacked', created_by__username='owner').exists()
     exported = client.get('/api/export/').data
     assert 'Other Co' not in json.dumps(exported)

@@ -98,7 +98,7 @@ python manage.py runserver 127.0.0.1:8000
 Open `http://127.0.0.1:8000`.
 
 ## User data export/import
-Logged-in users can open `/export` and download their DACHApply data as JSON, CSV, or XLSX. JSON and XLSX include jobs plus related evaluations, notes, and follow-ups; CSV is a simple jobs table. Exports do not include passwords, sessions, tokens, permissions, admin logs, invite codes, or secrets.
+Logged-in users can open `/export` and download their DACHApply data as JSON, CSV, or XLSX. JSON and XLSX include jobs plus related evaluations, notes, and follow-ups; CSV is a simple jobs table. JSON downloaded from the web UI also includes dashboard preferences such as theme, column visibility, skill overrides, and work-mode badge colors. Exports do not include passwords, sessions, tokens, permissions, admin logs, invite codes, or secrets.
 
 To restore a previous export, open `/export` and drop or click-to-select a `.json`, `.csv`, or `.xlsx` file. Imports run server-side in a database transaction and imported records are assigned to the currently logged-in user; uploaded files are processed immediately and are not stored permanently.
 
