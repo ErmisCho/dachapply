@@ -45,6 +45,25 @@ def test_bulk_create_duplicate_requires_choice(client):
     r=client.post('/api/jobs/bulk-create/', {'url':'https://a.test/job1\nhttps://b.test/job2'}, format='json')
     assert r.status_code==400 and r.data['type']=='duplicate_conflicts' and JobLead.objects.filter(url='https://b.test/job2').count()==0
 
+def test_bulk_create_per_conflict_skip_removes_from_conflicts(client):
+    JobLead.objects.create(company='A', title='T', url='https://a.test/job1')
+    JobLead.objects.create(company='B', title='T', url='https://b.test/job2')
+    body={'url':'https://a.test/job1\nhttps://b.test/job2\nhttps://c.test/job3','duplicate_actions':[{'index':0,'action':'skip'}]}
+    r=client.post('/api/jobs/bulk-create/', body, format='json')
+    assert r.status_code==400 and [c['index'] for c in r.data['conflicts']]==[1]
+    assert r.data['skipped'][0]['index']==0
+    assert not JobLead.objects.filter(url='https://c.test/job3').exists()
+
+def test_bulk_create_per_conflict_duplicate_and_override(client):
+    a=JobLead.objects.create(company='A', title='T', url='https://a.test/job1')
+    JobLead.objects.create(company='B', title='T', url='https://b.test/job2')
+    body={'company':'New','title':'New title','url':'https://a.test/job1\nhttps://b.test/job2','duplicate_actions':[{'index':0,'action':'override'},{'index':1,'action':'duplicate'}]}
+    r=client.post('/api/jobs/bulk-create/', body, format='json')
+    a.refresh_from_db()
+    assert r.status_code==201
+    assert a.company=='New'
+    assert JobLead.objects.filter(url='https://b.test/job2').count()==2
+
 def test_normalizes_pasted_hyphen_url(client):
     r=client.post('/api/jobs/', {'url':'https-www.karriere.at-jobs-7794074'}, format='json')
     assert r.status_code==201 and r.data['url']=='https://www.karriere.at/jobs/7794074'
