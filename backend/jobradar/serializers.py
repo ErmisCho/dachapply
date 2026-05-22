@@ -129,8 +129,14 @@ class JobLeadSerializer(serializers.ModelSerializer):
         new_status=attrs.get('status')
         if new_status in ['applied','interview'] and instance.status != new_status and not attrs.get('status_date'):
             attrs['status_date']=timezone.localdate()
+        if new_status and instance.status != new_status and not attrs.get('last_update_date'):
+            attrs['last_update_date']=timezone.localdate()
         if new_status and new_status not in ['applied','interview'] and instance.status != new_status and 'status_date' not in attrs:
             attrs['status_date']=None
+            attrs['feedback_due_date']=None
+        if new_status and new_status != 'interview':
+            attrs['interview_stage']=None
+            attrs['interview_total']=None
         return super().update(instance, attrs)
     def get_latest_evaluation(self, obj):
         ev=obj.evaluations.first()
