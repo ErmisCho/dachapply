@@ -136,8 +136,12 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         if p.get('work_mode'): qs=qs.filter(work_mode=p['work_mode'])
         if p.get('company'): qs=qs.filter(company__icontains=p['company'])
         if p.get('location'): qs=qs.filter(location__icontains=p['location'])
-        if p.get('priority'): qs=qs.filter(evaluations__priority=p['priority'])
-        if p.get('recommendation'): qs=qs.filter(evaluations__recommendation=p['recommendation'])
+        if p.get('priority'):
+            priorities=[x for x in p.get('priority','').split(',') if x]
+            qs=qs.filter(evaluations__priority__in=priorities)
+        if p.get('recommendation'):
+            recommendations=[x for x in p.get('recommendation','').split(',') if x]
+            qs=qs.filter(evaluations__recommendation__in=recommendations)
         if p.get('min_fit_score'): qs=qs.filter(evaluations__fit_score__gte=p['min_fit_score'])
         if p.get('skill'):
             s=p['skill']; qs=qs.filter(Q(evaluations__matched_skills__icontains=s)|Q(evaluations__required_skills__icontains=s)|Q(raw_description__icontains=s))
@@ -164,6 +168,19 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         if existing and action=='skip': return Response(JobLeadSerializer(existing).data)
         obj=ser.save(created_by=request.user); return Response(JobLeadSerializer(obj).data, status=201)
     def perform_create(self, serializer): serializer.save(created_by=self.request.user)
+    def destroy(self, request, pk=None):
+        qs=JobLead.objects.all()
+        profile=getattr(request.user, 'jobradar_profile', None)
+        if profile and (profile.submit_for_id or profile.requested_submit_for_id):
+            qs=qs.filter(created_by=request.user, submitted_for=profile.submit_for, source='friend')
+        try:
+            job=qs.get(pk=pk)
+        except JobLead.DoesNotExist:
+            return Response({'detail':'Not found'}, status=404)
+        if job.status != 'archived':
+            return Response({'detail':'Only archived jobs can be permanently deleted'}, status=400)
+        job.delete()
+        return Response(status=204)
     @action(detail=True, methods=['get','post'])
     def evaluations(self, request, pk=None):
         job=self.get_object()

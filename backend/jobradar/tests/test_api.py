@@ -276,6 +276,28 @@ def test_jobs_default_excludes_archived_and_status_filter_allows_multiple(client
     r=client.get('/api/jobs/?status=archived')
     assert [x['company'] for x in r.data] == ['Archived']
 
+def test_delete_archived_job_without_status_filter(client):
+    archived=JobLead.objects.create(company='Archived', title='Delete me', status='archived')
+    active=JobLead.objects.create(company='Active', title='Keep me', status='new')
+    r=client.delete(f'/api/jobs/{archived.id}/')
+    assert r.status_code == 204
+    assert not JobLead.objects.filter(id=archived.id).exists()
+    r=client.delete(f'/api/jobs/{active.id}/')
+    assert r.status_code == 400
+    assert JobLead.objects.filter(id=active.id).exists()
+
+def test_jobs_priority_and_recommendation_filters_allow_multiple(client):
+    high=JobLead.objects.create(company='High', title='A')
+    low=JobLead.objects.create(company='Low', title='B')
+    skip=JobLead.objects.create(company='Skip', title='C')
+    JobEvaluation.objects.create(job=high, fit_score=90, priority='high', recommendation='apply', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
+    JobEvaluation.objects.create(job=low, fit_score=50, priority='low', recommendation='maybe', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
+    JobEvaluation.objects.create(job=skip, fit_score=20, priority='medium', recommendation='skip', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
+    r=client.get('/api/jobs/?priority=high,low')
+    assert {x['company'] for x in r.data} == {'High','Low'}
+    r=client.get('/api/jobs/?recommendation=apply,maybe')
+    assert {x['company'] for x in r.data} == {'High','Low'}
+
 def test_default_sort_new_first_then_priority_and_fit(client):
     old=JobLead.objects.create(company='Old', title='Applied', status='applied')
     low=JobLead.objects.create(company='Low', title='New low', status='new')
