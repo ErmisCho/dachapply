@@ -2,7 +2,7 @@ import re
 from urllib.parse import urlsplit, urlunsplit
 from django.utils import timezone
 from rest_framework import serializers
-from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode
+from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, UserProfile
 from .services.skill_matcher import smart_skill_status, display_skill_name
 
 
@@ -89,6 +89,8 @@ class FollowUpSerializer(serializers.ModelSerializer):
 
 class JobLeadSerializer(serializers.ModelSerializer):
     latest_evaluation=serializers.SerializerMethodField()
+    created_by_username=serializers.SerializerMethodField()
+    submitted_for_username=serializers.SerializerMethodField()
     url=serializers.CharField(max_length=1000, required=False, allow_blank=True)
     class Meta:
         model=JobLead; fields='__all__'; read_only_fields=('created_by','created_at','updated_at')
@@ -141,6 +143,8 @@ class JobLeadSerializer(serializers.ModelSerializer):
     def get_latest_evaluation(self, obj):
         ev=obj.evaluations.first()
         return JobEvaluationSerializer(ev).data if ev else None
+    def get_created_by_username(self, obj): return obj.created_by.username if obj.created_by else ''
+    def get_submitted_for_username(self, obj): return obj.submitted_for.username if obj.submitted_for else ''
 
 class PublicSubmissionSerializer(serializers.Serializer):
     invite_code=serializers.CharField(max_length=80, required=False, allow_blank=True)

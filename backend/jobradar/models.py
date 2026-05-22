@@ -2,6 +2,13 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+class UserProfile(models.Model):
+    user=models.OneToOneField(settings.AUTH_USER_MODEL, related_name='jobradar_profile', on_delete=models.CASCADE)
+    submit_for=models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, related_name='friend_submitters', on_delete=models.SET_NULL)
+    requested_submit_for=models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, related_name='friend_submit_requests', on_delete=models.SET_NULL)
+    created_at=models.DateTimeField(auto_now_add=True)
+    def __str__(self): return f'{self.user} -> {self.submit_for or self.requested_submit_for or "self"}'
+
 class JobLead(models.Model):
     WORK_MODES=[('onsite','Onsite'),('hybrid','Hybrid'),('remote','Remote'),('unknown','Unknown')]
     STATUSES=[('new','New'),('reviewed','Reviewed'),('to_apply','To apply'),('applied','Applied'),('interview','Interview'),('rejected','Rejected'),('skipped','Skipped'),('archived','Archived')]
@@ -23,6 +30,7 @@ class JobLead(models.Model):
     last_update_date=models.DateField(null=True, blank=True)
     feedback_due_date=models.DateField(null=True, blank=True)
     created_by=models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    submitted_for=models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, related_name='submitted_job_leads', on_delete=models.SET_NULL)
     created_at=models.DateTimeField(auto_now_add=True)
     updated_at=models.DateTimeField(auto_now=True)
     class Meta: ordering=['-created_at']

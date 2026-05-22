@@ -12,8 +12,8 @@ INSTALLED_APPS = [
  'rest_framework','corsheaders','jobradar'
 ]
 MIDDLEWARE = [
- 'django.middleware.security.SecurityMiddleware','whitenoise.middleware.WhiteNoiseMiddleware','corsheaders.middleware.CorsMiddleware','django.contrib.sessions.middleware.SessionMiddleware',
- 'django.middleware.common.CommonMiddleware','django.middleware.csrf.CsrfViewMiddleware','django.contrib.auth.middleware.AuthenticationMiddleware',
+ 'django.middleware.security.SecurityMiddleware','whitenoise.middleware.WhiteNoiseMiddleware','corsheaders.middleware.CorsMiddleware',
+ 'django.middleware.common.CommonMiddleware','django.middleware.csrf.CsrfViewMiddleware','config.middleware.SplitAdminSessionMiddleware','django.contrib.auth.middleware.AuthenticationMiddleware',
  'django.contrib.messages.middleware.MessageMiddleware','django.middleware.clickjacking.XFrameOptionsMiddleware'
 ]
 ROOT_URLCONF='config.urls'
@@ -34,3 +34,11 @@ REST_FRAMEWORK={'DEFAULT_AUTHENTICATION_CLASSES':['rest_framework.authentication
 CORS_ALLOWED_ORIGINS=[o.strip() for o in os.getenv('CORS_ALLOWED_ORIGINS','http://localhost:5173').split(',') if o.strip()]
 CORS_ALLOW_CREDENTIALS=True
 LOGIN_URL='/login'
+DEFAULT_FROM_EMAIL=os.getenv('DEFAULT_FROM_EMAIL','noreply@dachapply.local')
+EMAIL_BACKEND=os.getenv('EMAIL_BACKEND','django.core.mail.backends.console.EmailBackend')
+EMAIL_HOST=os.getenv('EMAIL_HOST','localhost')
+EMAIL_PORT=int(os.getenv('EMAIL_PORT','25'))
+EMAIL_HOST_USER=os.getenv('EMAIL_HOST_USER','')
+EMAIL_HOST_PASSWORD=os.getenv('EMAIL_HOST_PASSWORD','')
+EMAIL_USE_TLS=os.getenv('EMAIL_USE_TLS','False').lower() in ('1','true','yes')
+FRONTEND_URL=os.getenv('FRONTEND_URL','http://localhost:5173')

@@ -1,5 +1,31 @@
 from django.contrib import admin
-from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode
+from django.contrib.auth.admin import UserAdmin
+from django.contrib.auth import get_user_model
+from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, UserProfile
+
+User=get_user_model()
+try:
+    admin.site.unregister(User)
+except admin.sites.NotRegistered:
+    pass
+
+class UserProfileInline(admin.StackedInline):
+    model=UserProfile
+    can_delete=False
+    extra=0
+    fk_name='user'
+
+@admin.register(User)
+class CustomUserAdmin(UserAdmin):
+    inlines=(UserProfileInline,)
+    list_display=('username','email','is_staff','is_active','date_joined')
+    search_fields=('username','email')
+
+@admin.register(UserProfile)
+class UserProfileAdmin(admin.ModelAdmin):
+    list_display=('user','submit_for','requested_submit_for','created_at')
+    search_fields=('user__username','submit_for__username','requested_submit_for__username')
+    list_filter=('created_at',)
 
 @admin.register(JobLead)
 class JobLeadAdmin(admin.ModelAdmin):

@@ -95,6 +95,19 @@ button{@apply rounded-lg px-3 py-2 bg-slate-900 text-white disabled:opacity-50 t
 .dark .app-badge-purple{background:rgba(91,33,182,.30);color:#ddd6fe;border-color:rgba(167,139,250,.30)}
 .dark .app-badge-slate{background:rgba(51,65,85,.42);color:#e2e8f0;border-color:rgba(148,163,184,.24)}
 
+/* Dashboard column visibility */
+.hide-col-prio th:nth-child(1),.hide-col-prio td:nth-child(1),
+.hide-col-fit th:nth-child(2),.hide-col-fit td:nth-child(2),
+.hide-col-position th:nth-child(3),.hide-col-position td:nth-child(3),
+.hide-col-loc th:nth-child(4),.hide-col-loc td:nth-child(4),
+.hide-col-status th:nth-child(5),.hide-col-status td:nth-child(5),
+.hide-col-application th:nth-child(6),.hide-col-application td:nth-child(6),
+.hide-col-lastupdate th:nth-child(7),.hide-col-lastupdate td:nth-child(7),
+.hide-col-feedback th:nth-child(8),.hide-col-feedback td:nth-child(8),
+.hide-col-matchgap th:nth-child(9),.hide-col-matchgap td:nth-child(9),
+.hide-col-skills th:nth-child(10),.hide-col-skills td:nth-child(10),
+.hide-col-addedby th:nth-child(11),.hide-col-addedby td:nth-child(11){display:none}
+
 /* Final navbar polish */
 .app-nav{background:rgba(255,255,255,.78)!important;border-color:rgba(226,232,240,.75)!important}
 .app-nav .nav-link{border:1px solid transparent}
