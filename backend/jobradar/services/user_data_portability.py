@@ -1,4 +1,11 @@
 import json
+
+import csv
+from io import BytesIO, StringIO
+try:
+    from openpyxl import Workbook, load_workbook
+except ImportError:  # pragma: no cover - dependency is declared in requirements.txt
+    Workbook = load_workbook = None
 from collections import defaultdict
 from django.db import transaction
 from django.db.models import Q
@@ -52,12 +59,102 @@ def build_user_export(user):
         },
     }
 
+
+def _flatten_for_table(value):
+    if value is None:
+        return ''
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return _iso(value)
+
+def _unflatten_value(value):
+    if value == '':
+        return ''
+    if isinstance(value, str) and value[:1] in ('[', '{'):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+def export_user_data_csv(user):
+    export = build_user_export(user)
+    rows = export['data']['jobs']
+    output = StringIO()
+    fields = ['id'] + JOB_FIELDS
+    writer = csv.DictWriter(output, fieldnames=fields, extrasaction='ignore')
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({field: _flatten_for_table(row.get(field)) for field in fields})
+    return output.getvalue()
+
+def export_user_data_xlsx(user):
+    if Workbook is None:
+        raise RuntimeError('openpyxl is required for XLSX export')
+    export = build_user_export(user)
+    workbook = Workbook()
+    default = workbook.active
+    workbook.remove(default)
+    sheet_fields = {
+        'profile': ['id'],
+        'jobs': ['id'] + JOB_FIELDS,
+        'evaluations': ['id', 'job'] + EVALUATION_FIELDS,
+        'notes': ['id', 'job'] + NOTE_FIELDS,
+        'followups': ['id', 'job'] + FOLLOWUP_FIELDS,
+    }
+    for name, fields in sheet_fields.items():
+        sheet = workbook.create_sheet(name)
+        sheet.append(fields)
+        for row in export['data'].get(name, []):
+            sheet.append([_flatten_for_table(row.get(field)) for field in fields])
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+def _payload_from_csv_file(file_obj):
+    text = file_obj.read().decode('utf-8-sig')
+    rows = []
+    for row in csv.DictReader(StringIO(text)):
+        rows.append({k: _unflatten_value(v) for k, v in row.items() if k})
+    return {'schema_version': SCHEMA_VERSION, 'app': APP_NAME, 'data': {'jobs': rows, 'evaluations': [], 'notes': [], 'followups': [], 'profile': []}}
+
+def _payload_from_xlsx_file(file_obj):
+    if load_workbook is None:
+        raise ValueError('XLSX import is not available')
+    workbook = load_workbook(filename=BytesIO(file_obj.read()), data_only=True)
+    data = {'profile': [], 'jobs': [], 'evaluations': [], 'notes': [], 'followups': []}
+    for sheet_name in data.keys():
+        if sheet_name not in workbook.sheetnames:
+            continue
+        sheet = workbook[sheet_name]
+        rows = list(sheet.iter_rows(values_only=True))
+        if not rows:
+            continue
+        headers = [str(h) if h is not None else '' for h in rows[0]]
+        for values in rows[1:]:
+            row = {headers[i]: _unflatten_value('' if values[i] is None else str(values[i])) for i in range(min(len(headers), len(values))) if headers[i]}
+            if any(v not in ('', None) for v in row.values()):
+                data[sheet_name].append(row)
+    return {'schema_version': SCHEMA_VERSION, 'app': APP_NAME, 'data': data}
+
 def parse_import_payload(request):
-    raw = request.body.decode('utf-8') if request.body else ''
     try:
-        parsed = json.loads(raw) if raw else request.data
+        upload = request.FILES.get('file') if hasattr(request, 'FILES') else None
+        if upload:
+            name = upload.name.lower()
+            if name.endswith('.csv'):
+                return _payload_from_csv_file(upload)
+            if name.endswith('.xlsx'):
+                return _payload_from_xlsx_file(upload)
+            if not name.endswith('.json'):
+                raise ValueError('Unsupported import file type. Use JSON, CSV, or XLSX.')
+            parsed = json.loads(upload.read().decode('utf-8-sig'))
+        else:
+            parsed = request.data
     except json.JSONDecodeError as exc:
         raise ValueError(f'Invalid JSON: {exc.msg}')
+    except Exception as exc:
+        raise ValueError(str(exc))
     if isinstance(parsed, dict) and isinstance(parsed.get('json'), str):
         try:
             parsed = json.loads(parsed['json'])

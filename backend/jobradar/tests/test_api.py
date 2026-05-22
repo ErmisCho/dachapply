@@ -1,6 +1,7 @@
 import json
 import pytest
 from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 from jobradar.models import InviteCode, JobLead, JobEvaluation, ApplicationNote
 
@@ -184,6 +185,14 @@ def test_unauthenticated_user_data_export_blocked(db):
     r = APIClient().get('/api/export/')
     assert r.status_code in (401, 403)
 
+def test_user_data_export_csv_and_xlsx(client):
+    user = User.objects.get(username='owner')
+    JobLead.objects.create(company='CSV Co', title='Role', created_by=user)
+    assert client.get('/api/export/?type=csv').status_code == 200
+    r = client.get('/api/export/?type=xlsx')
+    assert r.status_code == 200
+    assert r['Content-Type'] == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
 def test_import_valid_user_data_file(client):
     payload = {'schema_version': 1, 'app': 'dachapply', 'exported_at': '2026-05-22T00:00:00Z', 'user': {'email': 'old@example.test'}, 'data': {'jobs': [{'id': 500, 'company': 'Imported Co', 'title': 'Imported Role', 'url': 'https://import.test/job', 'work_mode': 'remote', 'status': 'new'}], 'evaluations': [{'id': 600, 'job': 500, 'fit_score': 91, 'priority': 'high', 'recommendation': 'apply', 'summary': 'Strong', 'main_match_reasons': ['Python'], 'main_gaps': [], 'required_skills': ['Python'], 'nice_to_have_skills': [], 'matched_skills': ['Python'], 'missing_skills': []}], 'notes': [{'id': 700, 'job': 500, 'note': 'Remember follow up', 'note_type': 'general'}], 'followups': []}}
     r = client.post('/api/import/', {'json': json.dumps(payload)}, format='json')
@@ -199,6 +208,13 @@ def test_import_invalid_json(client):
     r = client.post('/api/import/', data='not-json', content_type='application/json')
     assert r.status_code == 400
     assert r.data['errors']
+
+def test_import_csv_file(client):
+    csv_data = b'id,company,title,url,status\n900,CSV Imported,CSV Role,https://csv.test/job,new\n'
+    upload = SimpleUploadedFile('dachapply.csv', csv_data, content_type='text/csv')
+    r = client.post('/api/import/', {'file': upload}, format='multipart')
+    assert r.status_code == 200
+    assert JobLead.objects.filter(company='CSV Imported', created_by__username='owner').exists()
 
 def test_import_does_not_overwrite_another_users_data(client, db):
     other = User.objects.create_user('other', password='pw')

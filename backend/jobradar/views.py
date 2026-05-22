@@ -18,7 +18,7 @@ from .serializers import JobLeadSerializer, JobEvaluationSerializer, Application
 from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
-from .services.user_data_portability import build_user_export, import_user_export, parse_import_payload
+from .services.user_data_portability import build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
 
 
 def find_existing_by_url(url, owner=None):
@@ -298,6 +298,15 @@ def stats(request):
 
 @api_view(['GET'])
 def export_user_data(request):
+    fmt=(request.query_params.get('type') or 'json').lower()
+    if fmt == 'csv':
+        response=HttpResponse(export_user_data_csv(request.user), content_type='text/csv')
+        response['Content-Disposition']='attachment; filename="dachapply-export.csv"'
+        return response
+    if fmt == 'xlsx':
+        response=HttpResponse(export_user_data_xlsx(request.user), content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition']='attachment; filename="dachapply-export.xlsx"'
+        return response
     response = Response(build_user_export(request.user))
     response['Content-Disposition'] = 'attachment; filename="dachapply-export.json"'
     return response
