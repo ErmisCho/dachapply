@@ -228,6 +228,13 @@ def test_import_invalid_json(client):
     assert r.status_code == 400
     assert r.data['errors']
 
+def test_import_returns_preferences_from_full_payload(client):
+    payload = {'schema_version': 1, 'app': 'dachapply', 'frontend_preferences': {'work_mode_tones': {'remote': 'green'}}, 'data': {'jobs': [{'id': 910, 'company': 'Pref Co', 'title': 'Role'}], 'evaluations': [], 'notes': [], 'followups': []}}
+    r = client.post('/api/import/', {'json': json.dumps(payload)}, format='json')
+    assert r.status_code == 200
+    assert r.data['frontend_preferences']['work_mode_tones']['remote'] == 'green'
+    assert JobLead.objects.filter(company='Pref Co').exists()
+
 def test_import_csv_file(client):
     csv_data = b'id,company,title,url,status\n900,CSV Imported,CSV Role,https://csv.test/job,new\n'
     upload = SimpleUploadedFile('dachapply.csv', csv_data, content_type='text/csv')
