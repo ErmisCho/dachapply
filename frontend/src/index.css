@@ -122,7 +122,7 @@ button{@apply rounded-lg px-3 py-2 bg-slate-900 text-white disabled:opacity-50 t
 .job-table{min-width:980px;table-layout:fixed}
 .job-table th,.job-table td{max-width:12rem;overflow-wrap:anywhere;word-break:break-word;white-space:normal;vertical-align:top}
 .job-table a,.job-table pre,.job-table div,.job-table span{overflow-wrap:anywhere;word-break:break-word;max-width:100%}
-@media (max-width: 768px){
+@media (max-width: 1023px){
   .job-table{min-width:760px;font-size:10px}
   .job-table th,.job-table td{padding-left:.25rem!important;padding-right:.25rem!important;max-width:9rem}
   .premium-card{border-radius:1rem}
@@ -131,7 +131,7 @@ button{@apply rounded-lg px-3 py-2 bg-slate-900 text-white disabled:opacity-50 t
 
 
 /* Compact mobile job cards */
-@media (max-width: 767px){
+@media (max-width: 1023px){
   .mobile-job-fields{line-height:1.2}
   .mobile-job-fields>div,.mobile-job-fields>label{min-width:0;border:1px solid rgba(226,232,240,.9);border-radius:.75rem;background:rgba(248,250,252,.75);padding:.35rem .45rem;overflow:hidden}
   .mobile-job-fields b{display:block;margin-bottom:.12rem;font-size:.58rem;line-height:1;letter-spacing:.045em;text-transform:uppercase;color:#64748b;font-weight:700}
