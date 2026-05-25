@@ -128,3 +128,22 @@ button{@apply rounded-lg px-3 py-2 bg-slate-900 text-white disabled:opacity-50 t
   .premium-card{border-radius:1rem}
   input,select,textarea{min-width:0!important}
 }
+
+
+/* Compact mobile job cards */
+@media (max-width: 767px){
+  .mobile-job-fields{line-height:1.2}
+  .mobile-job-fields>div,.mobile-job-fields>label{min-width:0;border:1px solid rgba(226,232,240,.9);border-radius:.75rem;background:rgba(248,250,252,.75);padding:.35rem .45rem;overflow:hidden}
+  .mobile-job-fields b{display:block;margin-bottom:.12rem;font-size:.58rem;line-height:1;letter-spacing:.045em;text-transform:uppercase;color:#64748b;font-weight:700}
+  .mobile-job-fields input,.mobile-job-fields select{height:1.75rem!important;border-radius:.55rem!important;padding:.15rem .45rem!important;font-size:.7rem!important;line-height:1!important}
+  .mobile-job-fields .btn-muted,.mobile-job-fields .btn,.mobile-job-fields .btn-primary{min-height:1.6rem;padding:.18rem .45rem!important;font-size:.65rem!important;line-height:1!important}
+  .mobile-job-fields .app-badge{padding:.08rem .38rem!important;font-size:.62rem!important;line-height:1.15!important}
+  .mobile-job-fields .flex{gap:.25rem!important}
+  .mobile-skills>div{display:flex!important;flex-wrap:wrap!important;overflow:visible;max-width:100%;padding-bottom:0}
+  .mobile-skills button{flex:0 1 auto}
+  .mobile-skills .app-badge{white-space:normal;max-width:100%;overflow:visible;text-overflow:clip}
+  .mobile-job-fields ul{margin-top:.15rem;padding-left:.8rem}
+  .mobile-job-fields li{margin:0}
+  .dark .mobile-job-fields>div,.dark .mobile-job-fields>label{background:rgba(15,23,42,.72);border-color:rgba(255,255,255,.08)}
+  .dark .mobile-job-fields b{color:#94a3b8}
+}
