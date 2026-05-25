@@ -9,6 +9,22 @@ from django.utils.cache import patch_vary_headers
 from django.utils.http import http_date
 
 
+class NoCacheHtmlMiddleware:
+    """Prevent stale SPA HTML from pointing phones to old hashed JS bundles."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        content_type = response.get('Content-Type', '')
+        if 'text/html' in content_type and not request.path.startswith(('/api/', '/admin/', settings.STATIC_URL)):
+            response['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+            response['Pragma'] = 'no-cache'
+            response['Expires'] = '0'
+        return response
+
+
 class SplitAdminSessionMiddleware(SessionMiddleware):
     """Use separate session cookies for Django admin and the main app/API.
 
