@@ -65,6 +65,12 @@ def clean_label_text(value):
     return text
 
 
+def clean_job_title(value):
+    text=clean_label_text(value)
+    text=re.sub(r'\s*[-–—,;:]*\s*\(?\s*[mwfdx](?:\s*/\s*[mwfdx]){1,3}\s*\)?\s*$', '', text, flags=re.IGNORECASE)
+    return re.sub(r'\s+', ' ', text).strip(' ,;:-')
+
+
 def clean_job_record(rec):
     rec=dict(rec)
     embedded_url=extract_url_from_text(rec.get('url')) or extract_url_from_text(rec.get('company')) or extract_url_from_text(rec.get('title'))
@@ -79,7 +85,7 @@ def clean_job_record(rec):
         if not rec.get('url'): rec['url']=normalize_job_url(rec.get('title'))
         rec['title']=''
     if 'company' in rec: rec['company']=clean_label_text(rec.get('company'))
-    if 'title' in rec: rec['title']=clean_label_text(rec.get('title'))
+    if 'title' in rec: rec['title']=clean_job_title(rec.get('title'))
     return rec
 
 
