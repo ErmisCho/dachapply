@@ -64,6 +64,12 @@ def clean_label_text(value):
     return re.sub(r'\s+', ' ', text).strip(' ,;:-')
 
 
+def clean_job_title(value):
+    text=clean_label_text(value)
+    text=re.sub(r'\s*[-–—,;:]*\s*\(?\s*[mwfdx](?:\s*/\s*[mwfdx]){1,3}\s*\)?\s*$', '', text, flags=re.IGNORECASE)
+    return re.sub(r'\s+', ' ', text).strip(' ,;:-')
+
+
 class JobEvaluationSerializer(serializers.ModelSerializer):
     skill_statuses=serializers.SerializerMethodField()
     class Meta:
@@ -110,7 +116,7 @@ class JobLeadSerializer(serializers.ModelSerializer):
             attrs['url']=normalize_job_url(attrs.get('company'))
             attrs['company']=''
         if 'company' in attrs: attrs['company']=clean_label_text(attrs.get('company'))
-        if 'title' in attrs: attrs['title']=clean_label_text(attrs.get('title'))
+        if 'title' in attrs: attrs['title']=clean_job_title(attrs.get('title'))
         current=self.instance
         has_content = any([
             attrs.get('url') or (current and current.url),
@@ -175,7 +181,7 @@ class PublicSubmissionSerializer(serializers.Serializer):
             attrs['url']=normalize_job_url(attrs.get('company'))
             attrs['company']=''
         if 'company' in attrs: attrs['company']=clean_label_text(attrs.get('company'))
-        if 'title' in attrs: attrs['title']=clean_label_text(attrs.get('title'))
+        if 'title' in attrs: attrs['title']=clean_job_title(attrs.get('title'))
         if not (attrs.get('url') or attrs.get('raw_description') or attrs.get('company') or attrs.get('title')):
             raise serializers.ValidationError('Provide at least a job URL, description, company, or title')
         return attrs

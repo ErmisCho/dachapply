@@ -17,6 +17,15 @@ def test_create_job(client):
     r=client.post('/api/jobs/', {'company':'X','title':'Backend','url':'https://x.test'}, format='json')
     assert r.status_code==201 and r.data['company']=='X'
 
+@pytest.mark.parametrize('title,expected', [
+    ('Backend Engineer m/f/d', 'Backend Engineer'),
+    ('AI Engineer (w/m/d)', 'AI Engineer'),
+    ('Senior Developer - F/M/D', 'Senior Developer'),
+])
+def test_create_job_strips_gender_marker_from_title(client, title, expected):
+    r=client.post('/api/jobs/', {'company':'X','title':title,'url':f'https://x.test/{expected.lower().replace(" ","-")}'}, format='json')
+    assert r.status_code==201 and r.data['title']==expected
+
 def test_create_url_only_job(client):
     r=client.post('/api/jobs/', {'url':'https://x.test/job'}, format='json')
     assert r.status_code==201 and r.data['company']=='Unknown company' and r.data['title']=='Untitled role'
@@ -139,6 +148,12 @@ def test_import_job_updates(client, job):
     r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
     job.refresh_from_db()
     assert r.status_code==201 and job.company=='NewCo' and job.title=='Senior Backend Engineer'
+
+def test_import_job_updates_strips_gender_marker_from_title(client, job):
+    payload={'job_updates':[{'job_id':job.id,'title':'Senior Backend Engineer (m/f/d)'}]}
+    r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
+    job.refresh_from_db()
+    assert r.status_code==201 and job.title=='Senior Backend Engineer'
 
 def test_import_bulk_jobs_with_evaluations(client):
     payload={'jobs':[{'url':'https-www.karriere.at-jobs-7794074','company':'Karriere Co','title':'Python Engineer','location':'Vienna','work_mode':'hybrid','raw_description':'Python Django','evaluation':{'fit_score':82,'priority':'high','recommendation':'apply','summary':'Good fit','main_match_reasons':['Python'],'main_gaps':['Unknown cloud depth'],'required_skills':['Python'],'nice_to_have_skills':['Django'],'matched_skills':['Python'],'missing_skills':[],'cv_adjustment_notes':'Emphasize backend','interview_prep_notes':'APIs','risk_notes':'Low','next_action':'Apply'}}]}
