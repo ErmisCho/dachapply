@@ -2,6 +2,7 @@ import json
 import pytest
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.utils import timezone
 from rest_framework.test import APIClient
 from jobradar.models import InviteCode, JobLead, JobEvaluation, ApplicationNote
 
@@ -335,6 +336,29 @@ def test_jobs_priority_and_recommendation_filters_allow_multiple(client):
     assert {x['company'] for x in r.data} == {'High','Low'}
     r=client.get('/api/jobs/?recommendation=apply,maybe')
     assert {x['company'] for x in r.data} == {'High','Low'}
+
+def test_stats_include_application_pace(client):
+    today = timezone.localdate()
+    week_start = today - timezone.timedelta(days=today.weekday())
+    last_week = week_start - timezone.timedelta(days=1)
+    JobLead.objects.create(company='Applied', title='This week', status='applied', status_date=today)
+    JobLead.objects.create(company='Interview', title='Also counts', status='interview', status_date=week_start)
+    JobLead.objects.create(company='Old', title='Last week', status='applied', status_date=last_week)
+    JobLead.objects.create(company='Rejected', title='No longer active', status='rejected', status_date=today)
+    new_high = JobLead.objects.create(company='New high', title='Priority', status='new')
+    applied_high = JobLead.objects.create(company='Applied high', title='Priority', status='applied')
+    for job in [new_high, applied_high]:
+        JobEvaluation.objects.create(job=job, fit_score=90, priority='high', recommendation='apply', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
+    r = client.get('/api/stats/')
+    assert r.status_code == 200
+    assert r.data['high_priority_jobs'] == 1
+    assert r.data['applications_this_week'] == 3
+    assert r.data['applications_per_workday'] >= 0
+    assert len(r.data['workday_applications']) >= 20
+    assert len(r.data['month_week_applications']) >= 4
+    assert r.data['month_week_applications'][0]['range'].startswith('1-')
+    assert len(r.data['weekly_applications']) == 4
+    assert r.data['weekly_applications'][-1]['count'] == 3
 
 def test_default_sort_new_first_then_priority_and_fit(client):
     old=JobLead.objects.create(company='Old', title='Applied', status='applied')

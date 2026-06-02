@@ -1,0 +1,74 @@
+For each existing job below, first fill missing/incorrect job details, then evaluate the job against the candidate profile.
+Preserve job_id exactly. Put links only in url. Never put URLs in company or title. Do not invent experience or facts; use unknown/empty values when needed.
+Return valid JSON only. No markdown.
+
+CANDIDATE PROFILE:
+Software Engineer based in Vienna. Strong Python backend experience. Django, FastAPI, REST APIs, Java. RAG, semantic search, LangChain, LangGraph. Elasticsearch/OpenSearch. SQL, PostgreSQL, MySQL. Docker, Linux, Kubernetes basics, AWS basics, Azure learning in progress. RabbitMQ, Redis, async/background processing from personal projects. Enterprise background in finance, telecom, and AI/search systems. German: professional working proficiency, B2 completed, C1 in progress. English: C2 certified.
+
+Strongest fits:
+Python Backend Engineer, Backend Engineer, AI Engineer, RAG/Search Engineer, Data Engineer when Python/SQL/backend-heavy, automation/backend integration roles, reliability-focused backend roles, platform-adjacent roles where Python/backend/internal tooling is central.
+
+Weaker fits:
+Frontend-heavy React/TypeScript roles, pure DevOps/SRE roles, pure ML research roles, SAP-heavy roles, roles requiring deep professional cloud/Spark/Terraform/Kubernetes/observability ownership if not balanced by Python/backend/automation work.
+
+Experience truth rules:
+Do not invent experience. Be honest about gaps and hiring risk.
+Distinguish clearly between:
+
+* professional production experience
+* professional exposure
+* personal project experience
+* basics/learning only
+* no experience
+
+RabbitMQ, Redis, async/background processing are demonstrated mainly through personal projects unless the job description can be matched to professional experience from the CV/profile.
+Kubernetes and AWS are basics/exposure, not deep professional ownership.
+Azure is learning in progress.
+Terraform, deep IaC ownership, production EKS ownership, ArgoCD/GitOps ownership, and full observability platform ownership should be treated as gaps unless explicitly stated.
+
+SCORING CALIBRATION:
+90-100 = near-perfect fit with direct professional experience in almost all hard requirements.
+80-89 = strong fit, only minor gaps, likely worth prioritizing.
+70-79 = good fit with notable but manageable gaps, apply if interested.
+60-69 = partial/stretch fit, apply only if role emphasis matches candidate strengths.
+50-59 = weak fit, apply only with referral, recruiter encouragement, or strong interest.
+Below 50 = skip unless there is a special strategic reason.
+
+Penalty and cap rules:
+
+* Do not give high scores based on keyword overlap alone.
+* Required skills matter much more than nice-to-have skills.
+* If a job requires deep professional cloud/Kubernetes/Terraform/platform ownership and the candidate has only basics or exposure, cap fit_score at 70 unless the role is clearly backend-first.
+* If a job requires 10+ years of backend experience, architect-level ownership, or senior platform ownership and the candidate does not clearly have that level, cap fit_score at 72.
+* If three or more hard requirements are only basic/partial matches, cap fit_score at 68.
+* If the role is a pure DevOps/SRE/platform role centered on AWS EKS, Terraform/IaC, Kubernetes production operations, CI/CD ownership, and observability, and Python/backend is secondary, score usually between 50 and 65.
+* If Python/Django/FastAPI/backend/internal tooling is central and platform topics are secondary or learnable, score may be higher, but still penalize missing deep cloud/IaC/observability experience.
+* Personal projects can support fit but should not be scored like professional production experience.
+* “Platform” in the title is not automatically a strong match. Check whether the platform work is Python/backend/internal tooling or deep infrastructure ownership.
+* If the candidate matches the programming language but misses the main operational ownership of the job, recommendation should usually be maybe, not apply.
+* If the candidate would need to learn several core tools from day one, explicitly mention hiring risk.
+
+Priority rules:
+high = strong realistic fit and worth prioritizing now.
+medium = worth applying if interested, with some risk or need for tailoring.
+low = weak/stretch fit, only apply with referral, recruiter confirmation, or strategic reason.
+
+Recommendation rules:
+apply = realistic fit with acceptable gaps.
+maybe = meaningful overlap but significant hiring risk or unclear role emphasis.
+skip = low fit or role mostly targets gaps.
+
+EXPECTED JSON SCHEMA:
+{"jobs":[{"job_id":1,"url":"[https://...","company":"...","title":"...","location":"...","source":"...","raw_description":"...","salary_info":"...","language_requirements":"...","work_mode":"onsite|hybrid|remote|unknown","evaluation":{"fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}}],"strategic_advice](https://...%22,%22company%22:%22...%22,%22title%22:%22...%22,%22location%22:%22...%22,%22source%22:%22...%22,%22raw_description%22:%22...%22,%22salary_info%22:%22...%22,%22language_requirements%22:%22...%22,%22work_mode%22:%22onsite|hybrid|remote|unknown%22,%22evaluation%22:{%22fit_score%22:0,%22priority%22:%22high|medium|low%22,%22recommendation%22:%22apply|maybe|skip%22,%22summary%22:%22...%22,%22main_match_reasons%22:[%22...%22],%22main_gaps%22:[%22...%22],%22required_skills%22:[%22...%22],%22nice_to_have_skills%22:[%22...%22],%22matched_skills%22:[%22...%22],%22missing_skills%22:[%22...%22],%22cv_adjustment_notes%22:%22...%22,%22interview_prep_notes%22:%22...%22,%22risk_notes%22:%22...%22,%22next_action%22:%22...%22}}],%22strategic_advice)":"..."}
+
+JOBS:
+Job ID: 24
+Current company: apsa personnel concepts gmbh / Hirebuddy
+Current title: Senior Backend Engineer / Architect with Platform Focus f/m/x
+URL: https://jobs.derstandard.at/detail/f6a0631c-843d-3778-9293-a7a762e38356
+Location: Wien, Vienna
+Work mode: hybrid
+Salary: from EUR 75,000 yearly
+Languages: Very good English; German is a plus
+Description: Full-time hybrid senior backend/platform role in Vienna for an established HR SaaS company via apsa/Hirebuddy. Salary from EUR 75,000/year. Responsibilities include Python, Django, Django REST Framework, FastAPI, refactoring and technical debt reduction, DDD, modular monolith/microservices, hexagonal architecture, REST APIs, PostgreSQL schema/query optimization, async/event-driven systems such as RabbitMQ/Kafka, internal platform services, AWS infrastructure including EKS/S3/SES/Lambda, Docker, Kubernetes, Terraform, CI/CD with GitHub Actions/ArgoCD, observability with logging/metrics/tracing/monitoring/alerting, security/access/compliance, agile collaboration and quality via clean code, testing, reviews, documentation and knowledge sharing. Requires 10+ years backend experience ideally with architecture responsibility, strong Python/Django/DRF, FastAPI or willingness, PostgreSQL tuning, productive RabbitMQ/Kafka, Docker/Kubernetes, AWS, Terraform, CI/CD, observability, very good English; German plus.
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
