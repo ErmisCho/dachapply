@@ -1,4 +1,8 @@
 CANDIDATE_PROFILE = '''Software Engineer based in Vienna. Strong Python backend experience. Django, FastAPI, REST APIs, Java. RAG, semantic search, LangChain, LangGraph. Elasticsearch/OpenSearch. SQL, PostgreSQL, MySQL. Docker, Linux, Kubernetes basics, AWS basics, Azure learning in progress. RabbitMQ, Redis, async/background processing from personal projects. Enterprise background in finance, telecom, and AI/search systems. German: professional working proficiency, B2 completed, C1 in progress. English: C2 certified. Stronger fit for Python Backend, AI Engineer, RAG, Search, Data Engineering, Platform, and reliability-focused roles. Weaker fit for frontend-heavy React/TypeScript roles, pure DevOps/SRE roles, pure ML research roles, and roles requiring deep professional cloud/Spark/Terraform experience. Do not invent experience. Be honest about gaps and hiring risk.'''
+RECOMMENDATION_RULES = '''Recommendation rules:
+apply = realistic fit with acceptable gaps.
+maybe = meaningful overlap but significant hiring risk or unclear role emphasis.
+skip = low fit or role mostly targets gaps.'''
 
 def build_bulk_links_prompt(links, custom_instructions=''):
     lines=[
@@ -9,6 +13,8 @@ def build_bulk_links_prompt(links, custom_instructions=''):
         '',
         'CANDIDATE PROFILE:',
         CANDIDATE_PROFILE,
+        '',
+        RECOMMENDATION_RULES,
         '',
         'EXPECTED JSON SCHEMA:',
         '{"jobs":[{"temp_id":"link_1","url":"https://...","company":"...","title":"...","location":"...","source":"...","raw_description":"...","salary_info":"...","language_requirements":"...","work_mode":"onsite|hybrid|remote|unknown","evaluation":{"fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}}],"strategic_advice":"..."}',
@@ -26,7 +32,7 @@ def build_combined_prompt(jobs, custom_instructions=''):
         'For each existing job below, first fill missing/incorrect job details, then evaluate the job against the candidate profile.',
         'Preserve job_id exactly. Put links only in url. Never put URLs in company or title. Do not invent experience or facts; use unknown/empty values when needed.',
         'Return valid JSON only. No markdown.',
-        '', 'CANDIDATE PROFILE:', CANDIDATE_PROFILE, '',
+        '', 'CANDIDATE PROFILE:', CANDIDATE_PROFILE, '', RECOMMENDATION_RULES, '',
         'EXPECTED JSON SCHEMA:',
         '{"jobs":[{"job_id":1,"url":"https://...","company":"...","title":"...","location":"...","source":"...","raw_description":"...","salary_info":"...","language_requirements":"...","work_mode":"onsite|hybrid|remote|unknown","evaluation":{"fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}}],"strategic_advice":"..."}',
         ''
@@ -59,7 +65,7 @@ def build_prompt(jobs, custom_instructions=''):
         'Evaluate these DACH software engineering jobs against the candidate profile.',
         'Be honest, direct, and do not invent experience. Consider DACH market fit, German/English requirements, Python, Django, FastAPI, backend, AI/RAG, search, data, Docker, Linux, SQL, Redis, RabbitMQ, Elasticsearch/OpenSearch, Azure basics, and reliability engineering.',
         'Return valid JSON only. No markdown.',
-        '', 'CANDIDATE PROFILE:', CANDIDATE_PROFILE, ''
+        '', 'CANDIDATE PROFILE:', CANDIDATE_PROFILE, '', RECOMMENDATION_RULES, ''
     ]
     if custom_instructions: lines += ['CUSTOM INSTRUCTIONS:', custom_instructions, '']
     lines += ['EXPECTED JSON SCHEMA:', '{"evaluations":[{"job_id":1,"company":"...","title":"...","fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}],"overall_ranking":[{"job_id":1,"rank":1,"reason":"..."}],"strategic_advice":"..."}', '', 'JOBS:']

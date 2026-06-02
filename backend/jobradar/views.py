@@ -325,7 +325,35 @@ def stats(request):
     if profile and (profile.submit_for_id or profile.requested_submit_for_id):
         jobs=jobs.filter(created_by=request.user, submitted_for=profile.submit_for, source='friend')
     today=timezone.localdate(); evaluations=JobEvaluation.objects.filter(job__in=jobs)
-    return Response({'total_jobs':jobs.count(), 'jobs_by_status':dict(jobs.values_list('status').annotate(c=Count('id'))), 'average_fit_score':evaluations.aggregate(a=Avg('fit_score'))['a'] or 0, 'high_priority_jobs':evaluations.filter(priority='high').values('job').distinct().count(), 'applications_sent':jobs.filter(status='applied').count(), 'interviews':jobs.filter(status='interview').count(), 'rejected':jobs.filter(status='rejected').count(), 'jobs_needing_follow_up':FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).count()})
+    application_date_jobs=jobs.filter(status_date__isnull=False)
+    week_start=today-timezone.timedelta(days=today.weekday())
+    month_start=today.replace(day=1)
+    next_month=(today.replace(year=today.year+1, month=1, day=1) if today.month == 12 else today.replace(month=today.month+1, day=1))
+    month_end=next_month-timezone.timedelta(days=1)
+    weekly_applications=[]
+    for i in range(3,-1,-1):
+        start=week_start-timezone.timedelta(days=i*7)
+        end=start+timezone.timedelta(days=6)
+        weekly_applications.append({'label':start.strftime('%d %b'), 'start':start.isoformat(), 'end':end.isoformat(), 'count':application_date_jobs.filter(status_date__gte=start, status_date__lte=end).count()})
+    month_week_applications=[]
+    suffixes=['st','nd','rd']
+    cursor=month_start
+    idx=1
+    while cursor <= month_end:
+        end=min(cursor+timezone.timedelta(days=6), month_end)
+        suffix=suffixes[idx-1] if idx <= 3 else 'th'
+        month_week_applications.append({'label':f'{idx}{suffix} week', 'range':f'{cursor.day}-{end.day} {end.strftime("%b")}', 'start':cursor.isoformat(), 'end':end.isoformat(), 'count':application_date_jobs.filter(status_date__gte=cursor, status_date__lte=end).count()})
+        cursor=end+timezone.timedelta(days=1)
+        idx+=1
+    workday_applications=[]
+    cursor=month_start
+    while cursor <= month_end:
+        if cursor.weekday() < 5:
+            workday_applications.append({'label':cursor.strftime('%d %b'), 'date':cursor.isoformat(), 'count':application_date_jobs.filter(status_date=cursor).count()})
+        cursor+=timezone.timedelta(days=1)
+    applications_this_week=application_date_jobs.filter(status_date__gte=week_start, status_date__lte=today).count()
+    elapsed_workdays=sum(1 for i in range(min(today.weekday(), 4)+1))
+    return Response({'total_jobs':jobs.count(), 'jobs_by_status':dict(jobs.values_list('status').annotate(c=Count('id'))), 'average_fit_score':evaluations.aggregate(a=Avg('fit_score'))['a'] or 0, 'high_priority_jobs':evaluations.filter(priority='high', job__status='new').values('job').distinct().count(), 'applications_sent':jobs.filter(status='applied').count(), 'applications_this_week':applications_this_week, 'applications_per_workday':round(applications_this_week/max(elapsed_workdays,1), 1), 'workday_applications':workday_applications, 'month_week_applications':month_week_applications, 'weekly_applications':weekly_applications, 'interviews':jobs.filter(status='interview').count(), 'rejected':jobs.filter(status='rejected').count(), 'jobs_needing_follow_up':FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).count()})
 
 @api_view(['GET', 'POST'])
 def export_user_data(request):
