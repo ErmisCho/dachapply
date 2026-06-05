@@ -4,6 +4,7 @@ from django.utils import timezone
 from rest_framework import serializers
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, UserProfile
 from .services.skill_matcher import smart_skill_status, display_skill_name
+from .services.access import accessible_jobs
 
 
 def normalize_job_url(value):
@@ -74,6 +75,11 @@ class JobEvaluationSerializer(serializers.ModelSerializer):
     skill_statuses=serializers.SerializerMethodField()
     class Meta:
         model=JobEvaluation; fields='__all__'; read_only_fields=('created_at','updated_at')
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request=self.context.get('request') if hasattr(self, 'context') else None
+        if request and 'job' in self.fields:
+            self.fields['job'].queryset=accessible_jobs(request.user)
     def get_skill_statuses(self, obj):
         skills=[]
         for s in (obj.required_skills or []) + (obj.nice_to_have_skills or []) + (obj.missing_skills or []) + (obj.matched_skills or []):
@@ -86,12 +92,22 @@ class JobEvaluationSerializer(serializers.ModelSerializer):
 class ApplicationNoteSerializer(serializers.ModelSerializer):
     class Meta:
         model=ApplicationNote; fields='__all__'; read_only_fields=('created_by','created_at')
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request=self.context.get('request') if hasattr(self, 'context') else None
+        if request and 'job' in self.fields:
+            self.fields['job'].queryset=accessible_jobs(request.user)
 
 class FollowUpSerializer(serializers.ModelSerializer):
     company=serializers.CharField(source='job.company', read_only=True)
     title=serializers.CharField(source='job.title', read_only=True)
     class Meta:
         model=FollowUp; fields='__all__'; read_only_fields=('created_at','updated_at')
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request=self.context.get('request') if hasattr(self, 'context') else None
+        if request and 'job' in self.fields:
+            self.fields['job'].queryset=accessible_jobs(request.user)
 
 class JobLeadSerializer(serializers.ModelSerializer):
     latest_evaluation=serializers.SerializerMethodField()
@@ -99,7 +115,7 @@ class JobLeadSerializer(serializers.ModelSerializer):
     submitted_for_username=serializers.SerializerMethodField()
     url=serializers.CharField(max_length=1000, required=False, allow_blank=True)
     class Meta:
-        model=JobLead; fields='__all__'; read_only_fields=('created_by','created_at','updated_at')
+        model=JobLead; fields='__all__'; read_only_fields=('created_by','submitted_for','created_at','updated_at')
         extra_kwargs={'company': {'required': False, 'allow_blank': True}, 'title': {'required': False, 'allow_blank': True}}
     def validate_url(self, value):
         value=normalize_job_url(value)

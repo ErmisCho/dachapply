@@ -19,14 +19,15 @@ from .services.prompt_builder import build_prompt, build_enrichment_prompt, buil
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
+from .services.access import accessible_jobs, job_create_defaults
 
 
-def find_existing_by_url(url, owner=None):
+def find_existing_by_url(url, owner=None, queryset=None):
     if not url: return None
     url=normalize_job_url(url)
     variants={url, url.rstrip('/')}
     if not url.endswith('/'): variants.add(url + '/')
-    qs=JobLead.objects.filter(url__in=variants)
+    qs=(queryset if queryset is not None else JobLead.objects.all()).filter(url__in=variants)
     if owner:
         qs=qs.filter(Q(created_by=owner)|Q(submitted_for=owner))
     return qs.first()
@@ -124,10 +125,7 @@ class JobLeadViewSet(viewsets.ModelViewSet):
     serializer_class=JobLeadSerializer
     queryset=JobLead.objects.all().prefetch_related('evaluations')
     def get_queryset(self):
-        qs=super().get_queryset(); p=self.request.query_params
-        profile=getattr(self.request.user, 'jobradar_profile', None)
-        if profile and (profile.submit_for_id or profile.requested_submit_for_id):
-            qs=qs.filter(created_by=self.request.user, submitted_for=profile.submit_for, source='friend')
+        qs=accessible_jobs(self.request.user).prefetch_related('evaluations'); p=self.request.query_params
         if p.get('status'):
             statuses=[s for s in p.get('status','').split(',') if s]
             qs=qs.filter(status__in=statuses)
@@ -157,22 +155,20 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         ser=self.get_serializer(data=request.data); ser.is_valid(raise_exception=True)
         url=ser.validated_data.get('url')
         action=request.data.get('duplicate_action')
-        existing=find_existing_by_url(url)
+        existing=find_existing_by_url(url, queryset=accessible_jobs(request.user))
         if existing and not action:
             return Response({'ok':False,'type':'duplicate_conflicts','message':'This job link already exists.','conflicts':[{'index':0,'url':url,'incoming':{'company':ser.validated_data.get('company') or 'Unknown company','title':ser.validated_data.get('title') or 'Untitled role'},'existing_jobs':[JobLeadSerializer(existing).data]}]}, status=400)
         if existing and action=='override':
             for k,v in ser.validated_data.items(): setattr(existing,k,v)
-            existing.created_by=request.user; existing.save(); return Response(JobLeadSerializer(existing).data)
+            for k,v in job_create_defaults(request.user).items(): setattr(existing,k,v)
+            existing.save(); return Response(JobLeadSerializer(existing).data)
         if existing and action=='duplicate':
-            ser.validated_data['title']=duplicate_title(ser.validated_data.get('title') or 'Untitled role')
+            ser.validated_data['title']=duplicate_title(ser.validated_data.get('title') or 'Untitled role', accessible_jobs(request.user))
         if existing and action=='skip': return Response(JobLeadSerializer(existing).data)
-        obj=ser.save(created_by=request.user); return Response(JobLeadSerializer(obj).data, status=201)
-    def perform_create(self, serializer): serializer.save(created_by=self.request.user)
+        obj=ser.save(**job_create_defaults(request.user)); return Response(JobLeadSerializer(obj).data, status=201)
+    def perform_create(self, serializer): serializer.save(**job_create_defaults(self.request.user))
     def destroy(self, request, pk=None):
-        qs=JobLead.objects.all()
-        profile=getattr(request.user, 'jobradar_profile', None)
-        if profile and (profile.submit_for_id or profile.requested_submit_for_id):
-            qs=qs.filter(created_by=request.user, submitted_for=profile.submit_for, source='friend')
+        qs=accessible_jobs(request.user)
         try:
             job=qs.get(pk=pk)
         except JobLead.DoesNotExist:
@@ -185,28 +181,31 @@ class JobLeadViewSet(viewsets.ModelViewSet):
     def evaluations(self, request, pk=None):
         job=self.get_object()
         if request.method=='GET': return Response(JobEvaluationSerializer(job.evaluations.all(), many=True).data)
-        ser=JobEvaluationSerializer(data={**request.data, 'job': job.id}); ser.is_valid(raise_exception=True); ser.save(); return Response(ser.data, status=201)
+        ser=JobEvaluationSerializer(data={**request.data, 'job': job.id}, context={'request': request}); ser.is_valid(raise_exception=True); ser.save(); return Response(ser.data, status=201)
     @action(detail=True, methods=['get','post'])
     def notes(self, request, pk=None):
         job=self.get_object()
         if request.method=='GET': return Response(ApplicationNoteSerializer(job.notes.all(), many=True).data)
-        ser=ApplicationNoteSerializer(data={**request.data,'job':job.id}); ser.is_valid(raise_exception=True); ser.save(created_by=request.user); return Response(ser.data, status=201)
+        ser=ApplicationNoteSerializer(data={**request.data,'job':job.id}, context={'request': request}); ser.is_valid(raise_exception=True); ser.save(created_by=request.user); return Response(ser.data, status=201)
     @action(detail=True, methods=['get','post'])
     def followups(self, request, pk=None):
         job=self.get_object()
         if request.method=='GET': return Response(FollowUpSerializer(job.followups.all(), many=True).data)
-        ser=FollowUpSerializer(data={**request.data,'job':job.id}); ser.is_valid(raise_exception=True); ser.save(); return Response(ser.data, status=201)
+        ser=FollowUpSerializer(data={**request.data,'job':job.id}, context={'request': request}); ser.is_valid(raise_exception=True); ser.save(); return Response(ser.data, status=201)
 
 class EvaluationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class=JobEvaluationSerializer; queryset=JobEvaluation.objects.select_related('job').all()
+    def get_queryset(self): return JobEvaluation.objects.select_related('job').filter(job__in=accessible_jobs(self.request.user))
 
 class NoteViewSet(viewsets.GenericViewSet):
     serializer_class=ApplicationNoteSerializer; queryset=ApplicationNote.objects.all()
+    def get_queryset(self): return ApplicationNote.objects.select_related('job').filter(job__in=accessible_jobs(self.request.user))
     def destroy(self, request, pk=None): self.get_object().delete(); return Response(status=204)
 
 class FollowUpViewSet(viewsets.ModelViewSet):
     serializer_class=FollowUpSerializer; queryset=FollowUp.objects.select_related('job').all()
     http_method_names=['get','patch','head','options']
+    def get_queryset(self): return FollowUp.objects.select_related('job').filter(job__in=accessible_jobs(self.request.user))
 
 @api_view(['POST'])
 def bulk_create_jobs(request):
@@ -216,8 +215,9 @@ def bulk_create_jobs(request):
     conflicts=[]; created=[]; updated=[]; skipped=[]
     strategy=request.data.get('duplicate_action') or request.data.get('duplicate_strategy')
     action_map={a.get('index'):a.get('action') for a in request.data.get('duplicate_actions',[])}
+    owned_qs=accessible_jobs(request.user)
     for i, link in enumerate(links):
-        existing=find_existing_by_url(link) if link else None
+        existing=find_existing_by_url(link, queryset=owned_qs) if link else None
         action=action_map.get(i) or strategy
         if existing and not action:
             conflicts.append({'index':i,'url':link,'incoming':{'company':request.data.get('company') or 'Unknown company','title':request.data.get('title') or 'Untitled role'},'existing_jobs':[JobLeadSerializer(existing).data]})
@@ -228,16 +228,17 @@ def bulk_create_jobs(request):
             continue
         data=request.data.copy(); data['url']=link; data['company']=data.get('company') or 'Unknown company'; data['title']=data.get('title') or 'Untitled role'
         if len(links)>1 and (not request.data.get('title')): data['title']=f'Untitled role {i+1}'
-        existing=find_existing_by_url(link) if link else None
+        existing=find_existing_by_url(link, queryset=owned_qs) if link else None
         action=action_map.get(i) or strategy
         if existing and action=='skip':
             skipped.append({'index':i,'url':link}); continue
         if existing and action=='override':
             for f in ['company','title','location','url','source','raw_description','salary_info','language_requirements','work_mode']:
                 if data.get(f): setattr(existing,f,data.get(f))
-            existing.created_by=request.user; existing.save(); updated.append(JobLeadSerializer(existing).data); continue
-        if existing and action=='duplicate': data['title']=duplicate_title(data.get('title') or 'Untitled role')
-        ser=JobLeadSerializer(data=data); ser.is_valid(raise_exception=True); obj=ser.save(created_by=request.user); created.append(JobLeadSerializer(obj).data)
+            for k,v in job_create_defaults(request.user).items(): setattr(existing,k,v)
+            existing.save(); updated.append(JobLeadSerializer(existing).data); continue
+        if existing and action=='duplicate': data['title']=duplicate_title(data.get('title') or 'Untitled role', owned_qs)
+        ser=JobLeadSerializer(data=data); ser.is_valid(raise_exception=True); obj=ser.save(**job_create_defaults(request.user)); created.append(JobLeadSerializer(obj).data)
     remaining=[c for c in conflicts if c['index'] not in action_map]
     if remaining:
         return Response({'ok':False,'type':'duplicate_conflicts','message':'One or more job links still need a duplicate choice.','conflicts':remaining,'created':created,'updated':updated,'skipped':skipped}, status=400)
@@ -271,7 +272,7 @@ def public_submit(request):
         if action_map and i not in action_map: continue
         if existing and action!='duplicate': skipped.append({'index':i,'url':link}); continue
         data=request.data.copy(); data['url']=link; data['company']=data.get('company') or 'Unknown company'; data['title']=data.get('title') or ('Untitled role' if len(links)==1 else f'Untitled role {i+1}')
-        if existing and action=='duplicate': data['title']=duplicate_title(data.get('title') or 'Untitled role')
+        if existing and action=='duplicate': data['title']=duplicate_title(data.get('title') or 'Untitled role', JobLead.objects.filter(Q(created_by=owner)|Q(submitted_for=owner)) if owner else None)
         ser=PublicSubmissionSerializer(data=data); ser.is_valid(raise_exception=True)
         job=ser.save()
         if request.user.is_authenticated:
@@ -285,14 +286,14 @@ def public_submit(request):
 @api_view(['POST'])
 def generate_prompt(request):
     ids=request.data.get('job_ids') or []
-    jobs=JobLead.objects.filter(id__in=ids)
+    jobs=accessible_jobs(request.user).filter(id__in=ids)
     if not ids or jobs.count()!=len(set(ids)): return Response({'detail':'Provide valid job_ids'}, status=400)
     return Response({'generated_prompt': build_prompt(jobs, request.data.get('custom_instructions',''))})
 
 @api_view(['POST'])
 def generate_combined_prompt(request):
     ids=request.data.get('job_ids') or []
-    jobs=JobLead.objects.filter(id__in=ids)
+    jobs=accessible_jobs(request.user).filter(id__in=ids)
     if not ids or jobs.count()!=len(set(ids)): return Response({'detail':'Provide valid job_ids'}, status=400)
     return Response({'generated_prompt': build_combined_prompt(jobs, request.data.get('custom_instructions',''))})
 
@@ -306,24 +307,23 @@ def generate_bulk_links_prompt(request):
 @api_view(['POST'])
 def generate_enrichment_prompt(request):
     ids=request.data.get('job_ids') or []
+    owned_qs=accessible_jobs(request.user)
     if ids:
-        jobs=JobLead.objects.filter(id__in=ids)
+        jobs=owned_qs.filter(id__in=ids)
         if jobs.count()!=len(set(ids)): return Response({'detail':'Provide valid job_ids'}, status=400)
     else:
-        jobs=JobLead.objects.filter(Q(company__in=['','Unknown company'])|Q(title__in=['','Untitled role'])|Q(raw_description=''))[:25]
+        jobs=owned_qs.filter(Q(company__in=['','Unknown company'])|Q(title__in=['','Untitled role'])|Q(raw_description=''))[:25]
     if not jobs: return Response({'detail':'No jobs need detail enrichment'}, status=400)
     return Response({'generated_prompt': build_enrichment_prompt(jobs, request.data.get('custom_instructions',''))})
 
 @api_view(['POST'])
 def import_eval(request):
-    result=import_any_json(request.data.get('json') or request.data.get('pasted_json') or request.data)
+    result=import_any_json(request.data.get('json') or request.data.get('pasted_json') or request.data, user=request.user)
     return Response(result, status=201 if result.get('ok') else 400)
 
 @api_view(['GET'])
 def stats(request):
-    jobs=JobLead.objects.all(); profile=getattr(request.user, 'jobradar_profile', None)
-    if profile and (profile.submit_for_id or profile.requested_submit_for_id):
-        jobs=jobs.filter(created_by=request.user, submitted_for=profile.submit_for, source='friend')
+    jobs=accessible_jobs(request.user)
     today=timezone.localdate(); evaluations=JobEvaluation.objects.filter(job__in=jobs)
     application_date_jobs=jobs.filter(status_date__isnull=False)
     week_start=today-timezone.timedelta(days=today.weekday())
@@ -388,9 +388,9 @@ def import_user_data(request):
     return Response(summary, status=400 if summary.get('errors') or summary.get('type') == 'import_conflicts' else 200)
 
 @api_view(['GET'])
-def export_jobs_json(request): return HttpResponse(jobs_json(), content_type='application/json')
+def export_jobs_json(request): return HttpResponse(jobs_json(accessible_jobs(request.user)), content_type='application/json')
 @api_view(['GET'])
 def export_jobs_csv(request):
-    r=HttpResponse(jobs_csv(), content_type='text/csv'); r['Content-Disposition']='attachment; filename="jobs.csv"'; return r
+    r=HttpResponse(jobs_csv(accessible_jobs(request.user)), content_type='text/csv'); r['Content-Disposition']='attachment; filename="jobs.csv"'; return r
 @api_view(['GET'])
-def export_chatgpt_brief(request): return HttpResponse(chatgpt_brief(), content_type='text/markdown')
+def export_chatgpt_brief(request): return HttpResponse(chatgpt_brief(accessible_jobs(request.user)), content_type='text/markdown')
