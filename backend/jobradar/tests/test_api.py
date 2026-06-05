@@ -81,6 +81,19 @@ def test_bulk_create_per_conflict_duplicate_and_override(client):
     assert a.company=='New'
     assert JobLead.objects.filter(url='https://b.test/job2').count()==2
 
+
+def test_bulk_create_rejects_malformed_url_only_input(client):
+    r=client.post('/api/jobs/bulk-create/', {'url':'not a job link'}, format='json')
+    assert r.status_code==400
+    assert JobLead.objects.count()==0
+
+
+def test_bulk_create_ignores_malformed_text_and_normalizes_valid_links(client):
+    r=client.post('/api/jobs/bulk-create/', {'url':'ignore this\nhttps-www.karriere.at-jobs-7794074\nhttps://example.com/job/?utm=x'}, format='json')
+    assert r.status_code==201 and r.data['count']==2
+    assert JobLead.objects.filter(url='https://www.karriere.at/jobs/7794074', status='new').exists()
+    assert JobLead.objects.filter(url='https://example.com/job', status='new').exists()
+
 def test_normalizes_pasted_hyphen_url(client):
     r=client.post('/api/jobs/', {'url':'https-www.karriere.at-jobs-7794074'}, format='json')
     assert r.status_code==201 and r.data['url']=='https://www.karriere.at/jobs/7794074'

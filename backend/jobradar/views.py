@@ -218,8 +218,11 @@ class FollowUpViewSet(viewsets.ModelViewSet):
 
 @api_view(['POST'])
 def bulk_create_jobs(request):
-    links=extract_links((request.data.get('url') or '') + '\n' + (request.data.get('raw_description') or ''))
+    pasted=(request.data.get('url') or '') + '\n' + (request.data.get('raw_description') or '')
+    links=extract_links(pasted)
     if not links:
+        if (request.data.get('url') or '').strip() and not any((request.data.get(f) or '').strip() for f in ['company','title','raw_description']):
+            return Response({'detail':'Paste at least one valid link, or add company/title/description details.'}, status=400)
         links=['']
     conflicts=[]; created=[]; updated=[]; skipped=[]
     strategy=request.data.get('duplicate_action') or request.data.get('duplicate_strategy')
