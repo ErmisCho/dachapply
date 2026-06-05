@@ -1,6 +1,5 @@
 import csv, io, json
-from jobradar.models import JobLead
-from .prompt_builder import CANDIDATE_PROFILE
+from jobradar.models import DEFAULT_CANDIDATE_PROFILE, JobLead
 
 def jobs_json(queryset=None):
     rows=[]
@@ -19,8 +18,8 @@ def jobs_csv(queryset=None):
         w.writerow([j.id,j.company,j.title,j.location,j.url,j.work_mode,j.status, ev.fit_score if ev else '', ev.priority if ev else '', ev.recommendation if ev else '', j.created_at.isoformat()])
     return buf.getvalue()
 
-def chatgpt_brief(queryset=None):
-    parts=['# DACHApply ChatGPT Brief','', '## Candidate profile', CANDIDATE_PROFILE, '', '## Jobs']
+def chatgpt_brief(queryset=None, candidate_profile=None):
+    parts=['# DACHApply ChatGPT Brief','', '## Candidate profile', candidate_profile or DEFAULT_CANDIDATE_PROFILE, '', '## Jobs']
     qs=queryset if queryset is not None else JobLead.objects.all()
     for j in qs[:100]:
         parts.append(f'- #{j.id} {j.company} — {j.title} ({j.location}, {j.work_mode}) {j.url}')

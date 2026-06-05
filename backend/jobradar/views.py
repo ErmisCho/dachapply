@@ -14,8 +14,8 @@ from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, UserProfile, InviteCode
-from .serializers import JobLeadSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, PublicSubmissionSerializer, normalize_job_url
-from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt
+from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, PublicSubmissionSerializer, normalize_job_url
+from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, user_profile_settings
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
@@ -120,6 +120,15 @@ def friend_requests(request):
     except UserProfile.DoesNotExist: return Response({'detail':'Request not found'}, status=404)
     profile.submit_for=request.user; profile.requested_submit_for=None; profile.save(update_fields=['submit_for','requested_submit_for'])
     return Response({'ok':True,'username':username})
+
+@api_view(['GET','PATCH','PUT'])
+def profile_settings(request):
+    profile=user_profile_settings(request.user)
+    if request.method == 'GET':
+        return Response(CandidateProfileSerializer(profile).data)
+    ser=CandidateProfileSerializer(profile, data=request.data, partial=True)
+    ser.is_valid(raise_exception=True); ser.save()
+    return Response(ser.data)
 
 class JobLeadViewSet(viewsets.ModelViewSet):
     serializer_class=JobLeadSerializer
@@ -288,21 +297,24 @@ def generate_prompt(request):
     ids=request.data.get('job_ids') or []
     jobs=accessible_jobs(request.user).filter(id__in=ids)
     if not ids or jobs.count()!=len(set(ids)): return Response({'detail':'Provide valid job_ids'}, status=400)
-    return Response({'generated_prompt': build_prompt(jobs, request.data.get('custom_instructions',''))})
+    profile=user_profile_settings(request.user)
+    return Response({'generated_prompt': build_prompt(jobs, request.data.get('custom_instructions',''), build_candidate_profile_text(request.user), profile.evaluation_prompt_template)})
 
 @api_view(['POST'])
 def generate_combined_prompt(request):
     ids=request.data.get('job_ids') or []
     jobs=accessible_jobs(request.user).filter(id__in=ids)
     if not ids or jobs.count()!=len(set(ids)): return Response({'detail':'Provide valid job_ids'}, status=400)
-    return Response({'generated_prompt': build_combined_prompt(jobs, request.data.get('custom_instructions',''))})
+    profile=user_profile_settings(request.user)
+    return Response({'generated_prompt': build_combined_prompt(jobs, request.data.get('custom_instructions',''), build_candidate_profile_text(request.user), profile.combined_prompt_template)})
 
 @api_view(['POST'])
 def generate_bulk_links_prompt(request):
     raw=request.data.get('links') or request.data.get('text') or ''
     links=[x.strip() for x in raw.replace(',', '\n').splitlines() if x.strip()]
     if not links: return Response({'detail':'Provide one or more links'}, status=400)
-    return Response({'generated_prompt': build_bulk_links_prompt(links, request.data.get('custom_instructions',''))})
+    profile=user_profile_settings(request.user)
+    return Response({'generated_prompt': build_bulk_links_prompt(links, request.data.get('custom_instructions',''), build_candidate_profile_text(request.user), profile.bulk_links_prompt_template)})
 
 @api_view(['POST'])
 def generate_enrichment_prompt(request):
@@ -314,7 +326,8 @@ def generate_enrichment_prompt(request):
     else:
         jobs=owned_qs.filter(Q(company__in=['','Unknown company'])|Q(title__in=['','Untitled role'])|Q(raw_description=''))[:25]
     if not jobs: return Response({'detail':'No jobs need detail enrichment'}, status=400)
-    return Response({'generated_prompt': build_enrichment_prompt(jobs, request.data.get('custom_instructions',''))})
+    profile=user_profile_settings(request.user)
+    return Response({'generated_prompt': build_enrichment_prompt(jobs, request.data.get('custom_instructions',''), build_candidate_profile_text(request.user), profile.enrichment_prompt_template)})
 
 @api_view(['POST'])
 def import_eval(request):
@@ -393,4 +406,4 @@ def export_jobs_json(request): return HttpResponse(jobs_json(accessible_jobs(req
 def export_jobs_csv(request):
     r=HttpResponse(jobs_csv(accessible_jobs(request.user)), content_type='text/csv'); r['Content-Disposition']='attachment; filename="jobs.csv"'; return r
 @api_view(['GET'])
-def export_chatgpt_brief(request): return HttpResponse(chatgpt_brief(accessible_jobs(request.user)), content_type='text/markdown')
+def export_chatgpt_brief(request): return HttpResponse(chatgpt_brief(accessible_jobs(request.user), build_candidate_profile_text(request.user)), content_type='text/markdown')

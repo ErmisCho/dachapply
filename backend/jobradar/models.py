@@ -2,10 +2,24 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+DEFAULT_CANDIDATE_PROFILE = '''Software Engineer based in Vienna. Strong Python backend experience. Django, FastAPI, REST APIs, Java. RAG, semantic search, LangChain, LangGraph. Elasticsearch/OpenSearch. SQL, PostgreSQL, MySQL. Docker, Linux, Kubernetes basics, AWS basics, Azure learning in progress. RabbitMQ, Redis, async/background processing from personal projects. Enterprise background in finance, telecom, and AI/search systems. German: professional working proficiency, B2 completed, C1 in progress. English: C2 certified. Stronger fit for Python Backend, AI Engineer, RAG, Search, Data Engineering, Platform, and reliability-focused roles. Weaker fit for frontend-heavy React/TypeScript roles, pure DevOps/SRE roles, pure ML research roles, and roles requiring deep professional cloud/Spark/Terraform experience. Do not invent experience. Be honest about gaps and hiring risk.'''
+
 class UserProfile(models.Model):
     user=models.OneToOneField(settings.AUTH_USER_MODEL, related_name='jobradar_profile', on_delete=models.CASCADE)
     submit_for=models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, related_name='friend_submitters', on_delete=models.SET_NULL)
     requested_submit_for=models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, related_name='friend_submit_requests', on_delete=models.SET_NULL)
+    candidate_profile=models.TextField(blank=True, default=DEFAULT_CANDIDATE_PROFILE)
+    target_roles=models.TextField(blank=True, default='')
+    preferred_locations=models.TextField(blank=True, default='')
+    salary_expectations=models.TextField(blank=True, default='')
+    language_levels=models.TextField(blank=True, default='')
+    preferred_stack=models.TextField(blank=True, default='')
+    red_flags=models.TextField(blank=True, default='')
+    selling_points=models.TextField(blank=True, default='')
+    evaluation_prompt_template=models.TextField(blank=True, default='')
+    combined_prompt_template=models.TextField(blank=True, default='')
+    enrichment_prompt_template=models.TextField(blank=True, default='')
+    bulk_links_prompt_template=models.TextField(blank=True, default='')
     created_at=models.DateTimeField(auto_now_add=True)
     def __str__(self): return f'{self.user} -> {self.submit_for or self.requested_submit_for or "self"}'
 

@@ -2,9 +2,10 @@ import re
 from urllib.parse import urlsplit, urlunsplit
 from django.utils import timezone
 from rest_framework import serializers
-from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, UserProfile
+from .models import DEFAULT_CANDIDATE_PROFILE, JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, UserProfile
 from .services.skill_matcher import smart_skill_status, display_skill_name
 from .services.access import accessible_jobs
+from .services.prompt_builder import decode_profile_value, encode_profile_value
 
 
 def normalize_job_url(value):
@@ -70,6 +71,21 @@ def clean_job_title(value):
     text=re.sub(r'\s*[-–—,;:]*\s*\(?\s*[mwfdx](?:\s*/\s*[mwfdx]){1,3}\s*\)?\s*$', '', text, flags=re.IGNORECASE)
     return re.sub(r'\s+', ' ', text).strip(' ,;:-')
 
+
+class CandidateProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model=UserProfile
+        fields=('candidate_profile','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
+    def to_representation(self, instance):
+        data=super().to_representation(instance)
+        return {k: decode_profile_value(v) for k,v in data.items()}
+    def validate_candidate_profile(self, value):
+        return value or DEFAULT_CANDIDATE_PROFILE
+    def update(self, instance, validated_data):
+        for field, value in validated_data.items():
+            setattr(instance, field, encode_profile_value(field, value))
+        instance.save(update_fields=list(validated_data.keys()))
+        return instance
 
 class JobEvaluationSerializer(serializers.ModelSerializer):
     skill_statuses=serializers.SerializerMethodField()
