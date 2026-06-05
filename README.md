@@ -8,7 +8,7 @@ DACHApply is a private job intelligence dashboard for a Software Engineer job se
 ## Architecture
 - `backend/`: Django, Django REST Framework, SQLite, Django auth/admin, pytest tests
 - `frontend/`: React + TypeScript + Tailwind CSS (Vite)
-- Production later: PostgreSQL-compatible environment variable hooks, but SQLite works for MVP and Azure App Service Free testing
+- Production: PostgreSQL via `DATABASE_URL` is supported; SQLite remains suitable only for local/MVP testing
 - React production build is served by Django/WhiteNoise
 
 ## Core workflow
@@ -157,8 +157,72 @@ Manual MVP verification checklist:
 - `GET /api/stats/`
 - `GET /api/export/jobs.json`, `.csv`, `/api/export/chatgpt-brief.md`
 
-## Azure App Service Free deployment
-SQLite is acceptable for the first free MVP deployment. PostgreSQL can be added later when moving beyond free testing.
+## Production deployment configuration
+
+DACHApply is configured through environment variables. In production (`DEBUG=False`) the app refuses to start if critical values are missing.
+
+Required production variables:
+
+```text
+SECRET_KEY=strong-unique-secret
+DEBUG=False
+ALLOWED_HOSTS=your-domain.example.com
+FRONTEND_URL=https://your-domain.example.com
+CSRF_TRUSTED_ORIGINS=https://your-domain.example.com
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME
+DEFAULT_FROM_EMAIL=DACHApply <noreply@your-domain.example.com>
+EMAIL_HOST=smtp.example.com
+```
+
+Recommended production variables:
+
+```text
+CORS_ALLOWED_ORIGINS=https://your-domain.example.com
+SECURE_SSL_REDIRECT=True
+USE_X_FORWARDED_PROTO=True
+SESSION_COOKIE_SECURE=True
+CSRF_COOKIE_SECURE=True
+DB_CONN_MAX_AGE=600
+DB_SSL_REQUIRE=True
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_HOST_USER=smtp-user
+EMAIL_HOST_PASSWORD=smtp-password
+```
+
+Optional hardening after HTTPS is verified:
+
+```text
+SECURE_HSTS_SECONDS=31536000
+SECURE_HSTS_INCLUDE_SUBDOMAINS=True
+SECURE_HSTS_PRELOAD=True
+```
+
+See `.env.example` for a full template.
+
+### Deployment checklist
+
+Before public deployment:
+
+1. Set `DEBUG=False`.
+2. Generate and set a strong `SECRET_KEY`; never use `dev-only-change-me` publicly.
+3. Set `ALLOWED_HOSTS` to the exact production hostnames.
+4. Set `FRONTEND_URL` and `CSRF_TRUSTED_ORIGINS` with `https://` origins.
+5. Use PostgreSQL via `DATABASE_URL`; do not rely on SQLite for public multi-user production.
+6. Set SMTP email variables and test password reset delivery.
+7. Keep `SESSION_COOKIE_SECURE=True` and `CSRF_COOKIE_SECURE=True`.
+8. Enable `SECURE_SSL_REDIRECT=True` and `USE_X_FORWARDED_PROTO=True` behind a TLS-terminating proxy/load balancer.
+9. Run migrations and collect static files.
+10. Create a non-shared admin account and use strong passwords.
+11. Verify login, CSRF-protected POSTs, export/import, prompt generation, and password reset on the deployed domain.
+12. After HTTPS is stable, enable HSTS.
+13. Configure database/backups outside the app.
+14. Review logs for `DisallowedHost`, CSRF, email, and database connection errors.
+
+## Azure App Service deployment
+
+Use PostgreSQL for public deployment. SQLite can still be used for local testing or throwaway demos only.
 
 Suggested build steps:
 ```bash
@@ -177,16 +241,20 @@ cd backend && gunicorn config.wsgi --bind=0.0.0.0:$PORT
 ```
 `gunicorn` is included in `requirements.txt` for this startup command.
 
-Environment variables:
+Minimum Azure environment variables:
 - `SECRET_KEY`
 - `DEBUG=False`
 - `ALLOWED_HOSTS=your-app.azurewebsites.net`
+- `FRONTEND_URL=https://your-app.azurewebsites.net`
 - `CSRF_TRUSTED_ORIGINS=https://your-app.azurewebsites.net`
-- `DB_NAME=/home/site/wwwroot/backend/db.sqlite3` (adjust if needed)
+- `DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME`
+- `SECURE_SSL_REDIRECT=True`
+- `USE_X_FORWARDED_PROTO=True`
+- SMTP email variables listed above
 
 ### Azure cost-control checklist
 - Use Free F1 App Service for testing.
-- Keep SQLite for MVP; avoid paid Azure PostgreSQL initially.
+- For private throwaway demos only, SQLite can reduce cost; for any public deployment use PostgreSQL via `DATABASE_URL`.
 - Disable always-on features not available/free.
 - Avoid Application Insights paid ingestion until needed.
 - Export backups manually from the app/admin.
