@@ -177,8 +177,9 @@ def import_jobs_data(data):
                 else:
                     if ev_action == 'override': JobEvaluation.objects.filter(job=job).delete()
                     eval_ids.append(create_evaluation(job, rec['evaluation']).id)
-            results.append({'job_id':job.id,'action':action,'updated_fields':sorted(changed)})
-    return {'ok':True,'type':'jobs','jobs':results,'evaluation_ids':eval_ids,'count':len(results)}
+            results.append({'job_id':job.id,'company':job.company,'title':job.title,'action':action,'updated_fields':sorted(changed)})
+    imported_jobs=[r for r in results if r.get('job_id')]
+    return {'ok':True,'type':'jobs','jobs':results,'imported_jobs':imported_jobs,'evaluation_ids':eval_ids,'count':len(results),'jobs_found':len(imported_jobs)}
 
 
 def import_any_json(pasted):

@@ -160,6 +160,9 @@ def test_import_bulk_jobs_with_evaluations(client):
     payload={'jobs':[{'url':'https-www.karriere.at-jobs-7794074','company':'Karriere Co','title':'Python Engineer','location':'Vienna','work_mode':'hybrid','raw_description':'Python Django','evaluation':{'fit_score':82,'priority':'high','recommendation':'apply','summary':'Good fit','main_match_reasons':['Python'],'main_gaps':['Unknown cloud depth'],'required_skills':['Python'],'nice_to_have_skills':['Django'],'matched_skills':['Python'],'missing_skills':[],'cv_adjustment_notes':'Emphasize backend','interview_prep_notes':'APIs','risk_notes':'Low','next_action':'Apply'}}]}
     r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
     assert r.status_code==201 and JobLead.objects.filter(company='Karriere Co').exists() and JobEvaluation.objects.count()==1
+    assert r.data['jobs_found']==1
+    assert r.data['imported_jobs'][0]['company']=='Karriere Co'
+    assert r.data['imported_jobs'][0]['title']=='Python Engineer'
 
 def test_combined_import_existing_evaluation_requires_choice(client, job):
     JobEvaluation.objects.create(job=job, fit_score=70, priority='medium', recommendation='maybe', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
