@@ -75,7 +75,20 @@ STATICFILES_STORAGE='whitenoise.storage.CompressedManifestStaticFilesStorage'
 FRONTEND_DIST=BASE_DIR.parent/'frontend'/'dist'
 if FRONTEND_DIST.exists(): STATICFILES_DIRS.append(FRONTEND_DIST)
 DEFAULT_AUTO_FIELD='django.db.models.BigAutoField'
-REST_FRAMEWORK={'DEFAULT_AUTHENTICATION_CLASSES':['rest_framework.authentication.SessionAuthentication'], 'DEFAULT_PERMISSION_CLASSES':['rest_framework.permissions.IsAuthenticated']}
+REST_FRAMEWORK={
+    'DEFAULT_AUTHENTICATION_CLASSES':['rest_framework.authentication.SessionAuthentication'],
+    'DEFAULT_PERMISSION_CLASSES':['rest_framework.permissions.IsAuthenticated'],
+    'DEFAULT_THROTTLE_RATES':{
+        'login_ip': os.getenv('RATE_LIMIT_LOGIN_IP', '60/minute' if DEBUG else '10/minute'),
+        'login_account': os.getenv('RATE_LIMIT_LOGIN_ACCOUNT', '20/minute' if DEBUG else '5/minute'),
+        'register_ip': os.getenv('RATE_LIMIT_REGISTER_IP', '20/hour' if DEBUG else '5/hour'),
+        'password_reset_ip': os.getenv('RATE_LIMIT_PASSWORD_RESET_IP', '20/hour' if DEBUG else '5/hour'),
+        'password_reset_email': os.getenv('RATE_LIMIT_PASSWORD_RESET_EMAIL', '5/hour'),
+        'public_submit_ip': os.getenv('RATE_LIMIT_PUBLIC_SUBMIT_IP', '60/hour' if DEBUG else '20/hour'),
+        'import_user': os.getenv('RATE_LIMIT_IMPORT_USER', '120/hour' if DEBUG else '60/hour'),
+    },
+    'EXCEPTION_HANDLER':'jobradar.throttles.api_exception_handler',
+}
 CORS_ALLOW_CREDENTIALS=True
 LOGIN_URL='/login'
 

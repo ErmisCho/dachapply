@@ -191,6 +191,18 @@ EMAIL_HOST_USER=smtp-user
 EMAIL_HOST_PASSWORD=smtp-password
 ```
 
+Abuse protection is enabled with Django REST Framework cache-backed throttles on login, registration, password reset requests, public submissions, and import endpoints. Optional rate-limit overrides:
+
+```text
+RATE_LIMIT_LOGIN_IP=10/minute
+RATE_LIMIT_LOGIN_ACCOUNT=5/minute
+RATE_LIMIT_REGISTER_IP=5/hour
+RATE_LIMIT_PASSWORD_RESET_IP=5/hour
+RATE_LIMIT_PASSWORD_RESET_EMAIL=5/hour
+RATE_LIMIT_PUBLIC_SUBMIT_IP=20/hour
+RATE_LIMIT_IMPORT_USER=60/hour
+```
+
 Optional hardening after HTTPS is verified:
 
 ```text
