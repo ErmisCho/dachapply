@@ -3,6 +3,7 @@ import re
 from urllib.parse import urlsplit, urlunsplit
 from django.db import transaction
 from jobradar.models import JobLead, JobEvaluation, ApplicationNote
+from jobradar.services.access import accessible_jobs, job_create_defaults
 from rest_framework import serializers
 
 REQ={'job_id', 'company', 'title', 'fit_score', 'priority', 'recommendation', 'summary', 'main_match_reasons', 'main_gaps', 'required_skills', 'nice_to_have_skills', 'matched_skills', 'missing_skills', 'cv_adjustment_notes', 'interview_prep_notes', 'risk_notes', 'next_action'}
@@ -109,11 +110,12 @@ def create_evaluation(job, ev):
         risk_notes=ev.get('risk_notes',''), next_action=ev.get('next_action',''), structured_json_raw=ev)
 
 
-def duplicate_title(title):
+def duplicate_title(title, queryset=None):
     base=title or 'Untitled role'
+    qs=queryset if queryset is not None else JobLead.objects.all()
     n=1
     candidate=f'{base} ({n})'
-    while JobLead.objects.filter(title=candidate).exists():
+    while qs.filter(title=candidate).exists():
         n+=1; candidate=f'{base} ({n})'
     return candidate
 
@@ -125,19 +127,20 @@ def action_for_duplicate(data, index):
     return {'index': index, 'action': strategy} if strategy else None
 
 
-def import_jobs_data(data):
+def import_jobs_data(data, user=None):
+    owned_qs=accessible_jobs(user) if user is not None else JobLead.objects.all()
     errors=[]; records=data.get('job_updates') or data.get('jobs') or data.get('job_details') or data.get('new_jobs')
     if not isinstance(records, list): return {'ok':False,'errors':['Root must contain jobs, new_jobs, or job_updates list']}
     records=[clean_job_record(rec) for rec in records]
     conflicts=[]; eval_conflicts=[]
     for i, rec in enumerate(records):
-        if rec.get('job_id') and isinstance(rec.get('evaluation'), dict) and JobEvaluation.objects.filter(job_id=rec['job_id']).exists() and not action_for_duplicate(data, i) and not data.get('evaluation_strategy'):
-            eval_conflicts.append({'index':i,'job_id':rec['job_id'],'incoming':{'company':rec.get('company'),'title':rec.get('title')},'existing_evaluations':list(JobEvaluation.objects.filter(job_id=rec['job_id']).values('id','fit_score','priority','recommendation','created_at')[:10])})
+        if rec.get('job_id') and isinstance(rec.get('evaluation'), dict) and JobEvaluation.objects.filter(job_id=rec['job_id'], job__in=owned_qs).exists() and not action_for_duplicate(data, i) and not data.get('evaluation_strategy'):
+            eval_conflicts.append({'index':i,'job_id':rec['job_id'],'incoming':{'company':rec.get('company'),'title':rec.get('title')},'existing_evaluations':list(JobEvaluation.objects.filter(job_id=rec['job_id'], job__in=owned_qs).values('id','fit_score','priority','recommendation','created_at')[:10])})
         if not rec.get('job_id') and rec.get('url'):
-            existing=list(JobLead.objects.filter(url=rec['url']).values('id','company','title','url','status')[:10])
+            existing=list(owned_qs.filter(url=rec['url']).values('id','company','title','url','status')[:10])
             if existing and not action_for_duplicate(data, i):
                 conflicts.append({'index':i,'url':rec['url'],'incoming':{'company':rec.get('company') or 'Unknown company','title':rec.get('title') or 'Untitled role'},'existing_jobs':existing})
-        if rec.get('job_id') and not JobLead.objects.filter(id=rec['job_id']).exists(): errors.append(f'jobs[{i}].job_id does not exist: {rec["job_id"]}')
+        if rec.get('job_id') and not owned_qs.filter(id=rec['job_id']).exists(): errors.append(f'jobs[{i}].job_id does not exist: {rec["job_id"]}')
         if rec.get('work_mode') and rec.get('work_mode') not in ['onsite','hybrid','remote','unknown']: errors.append(f'jobs[{i}].work_mode invalid')
         if not rec.get('job_id') and not (rec.get('url') or rec.get('raw_description') or rec.get('company') or rec.get('title')): errors.append(f'jobs[{i}] needs at least url, description, company, or title')
         if isinstance(rec.get('evaluation'), dict): errors += validate_eval(rec['evaluation'], i, require_job_id=False)
@@ -149,7 +152,7 @@ def import_jobs_data(data):
         for i, rec in enumerate(records):
             dup_action=action_for_duplicate(data, i)
             if rec.get('job_id'):
-                job=JobLead.objects.get(id=rec['job_id']); action='updated'; changed=[]
+                job=owned_qs.get(id=rec['job_id']); action='updated'; changed=[]
                 for f in JOB_UPDATE_FIELDS:
                     val=normalize_job_url(rec.get(f)) if f=='url' else rec.get(f)
                     if val is not None and val != '': setattr(job, f, val); changed.append(f)
@@ -157,20 +160,29 @@ def import_jobs_data(data):
             elif dup_action and dup_action.get('action') == 'skip':
                 results.append({'job_id':None,'action':'skipped_duplicate','updated_fields':[]}); continue
             elif dup_action and dup_action.get('action') == 'override':
-                existing_qs=JobLead.objects.filter(url=rec.get('url'))
-                job=JobLead.objects.filter(id=dup_action.get('existing_job_id')).first() if dup_action.get('existing_job_id') else existing_qs.first()
-                action='overridden'; changed=[]
-                for f in JOB_UPDATE_FIELDS:
-                    val=normalize_job_url(rec.get(f)) if f=='url' else rec.get(f)
-                    if val is not None and val != '': setattr(job, f, val); changed.append(f)
-                job.save()
+                existing_qs=owned_qs.filter(url=rec.get('url'))
+                job=owned_qs.filter(id=dup_action.get('existing_job_id')).first() if dup_action.get('existing_job_id') else existing_qs.first()
+                if job:
+                    action='overridden'; changed=[]
+                    for f in JOB_UPDATE_FIELDS:
+                        val=normalize_job_url(rec.get(f)) if f=='url' else rec.get(f)
+                        if val is not None and val != '': setattr(job, f, val); changed.append(f)
+                    job.save()
+                else:
+                    title=rec.get('title') or 'Untitled role'
+                    create_defaults=job_create_defaults(user) if user is not None else {}
+                    source=create_defaults.pop('source', rec.get('source','bulk_links'))
+                    job=JobLead.objects.create(company=rec.get('company') or 'Unknown company', title=title, location=rec.get('location',''), url=normalize_job_url(rec.get('url','')), source=source, raw_description=rec.get('raw_description',''), salary_info=rec.get('salary_info',''), language_requirements=rec.get('language_requirements',''), work_mode=rec.get('work_mode') or 'unknown', **create_defaults)
+                    action='created'; changed=sorted(JOB_UPDATE_FIELDS)
             else:
                 title=rec.get('title') or 'Untitled role'
-                if dup_action and dup_action.get('action') == 'duplicate': title=duplicate_title(title)
-                job=JobLead.objects.create(company=rec.get('company') or 'Unknown company', title=title, location=rec.get('location',''), url=normalize_job_url(rec.get('url','')), source=rec.get('source','bulk_links'), raw_description=rec.get('raw_description',''), salary_info=rec.get('salary_info',''), language_requirements=rec.get('language_requirements',''), work_mode=rec.get('work_mode') or 'unknown')
+                if dup_action and dup_action.get('action') == 'duplicate': title=duplicate_title(title, owned_qs)
+                create_defaults=job_create_defaults(user) if user is not None else {}
+                source=create_defaults.pop('source', rec.get('source','bulk_links'))
+                job=JobLead.objects.create(company=rec.get('company') or 'Unknown company', title=title, location=rec.get('location',''), url=normalize_job_url(rec.get('url','')), source=source, raw_description=rec.get('raw_description',''), salary_info=rec.get('salary_info',''), language_requirements=rec.get('language_requirements',''), work_mode=rec.get('work_mode') or 'unknown', **create_defaults)
                 action='created_duplicate' if dup_action and dup_action.get('action') == 'duplicate' else 'created'; changed=sorted(JOB_UPDATE_FIELDS)
             note=rec.get('notes') or rec.get('note') or rec.get('uncertainty')
-            if note: ApplicationNote.objects.create(job=job, note=str(note), note_type='general')
+            if note: ApplicationNote.objects.create(job=job, note=str(note), note_type='general', created_by=user if user is not None else None)
             if isinstance(rec.get('evaluation'), dict):
                 ev_action=(action_for_duplicate(data, i) or {}).get('action') or data.get('evaluation_strategy')
                 if ev_action == 'skip': pass
@@ -182,15 +194,15 @@ def import_jobs_data(data):
     return {'ok':True,'type':'jobs','jobs':results,'imported_jobs':imported_jobs,'evaluation_ids':eval_ids,'count':len(results),'jobs_found':len(imported_jobs)}
 
 
-def import_any_json(pasted):
+def import_any_json(pasted, user=None):
     try: data=json.loads(pasted) if isinstance(pasted, str) else pasted
     except json.JSONDecodeError as e: return {'ok':False,'errors':[f'Invalid JSON: {e}']}
     if not isinstance(data, dict): return {'ok':False,'errors':['Root must be a JSON object']}
-    if any(k in data for k in ['job_updates','jobs','job_details','new_jobs']): return import_jobs_data(data)
-    return import_evaluations(data)
+    if any(k in data for k in ['job_updates','jobs','job_details','new_jobs']): return import_jobs_data(data, user=user)
+    return import_evaluations(data, user=user)
 
 
-def import_evaluations(pasted):
+def import_evaluations(pasted, user=None):
     if isinstance(pasted, str):
         try: data=json.loads(pasted)
         except json.JSONDecodeError as e: return {'ok':False,'errors':[f'Invalid JSON: {e}']}
@@ -198,12 +210,13 @@ def import_evaluations(pasted):
     errors=[]
     if not isinstance(data, dict) or not isinstance(data.get('evaluations'), list): errors.append('Root must contain evaluations list')
     if errors: return {'ok':False,'errors':errors}
+    owned_qs=accessible_jobs(user) if user is not None else JobLead.objects.all()
     created=[]
     for i, ev in enumerate(data['evaluations']):
         errors += validate_eval(ev, i, require_job_id=True)
-        if 'job_id' in ev and not JobLead.objects.filter(id=ev['job_id']).exists(): errors.append(f'evaluation[{i}].job_id does not exist: {ev["job_id"]}')
+        if 'job_id' in ev and not owned_qs.filter(id=ev['job_id']).exists(): errors.append(f'evaluation[{i}].job_id does not exist: {ev["job_id"]}')
     if errors: return {'ok':False,'errors':errors}
     with transaction.atomic():
         for ev in data['evaluations']:
-            job=JobLead.objects.get(id=ev['job_id']); created.append(create_evaluation(job, ev).id)
+            job=owned_qs.get(id=ev['job_id']); created.append(create_evaluation(job, ev).id)
     return {'ok':True,'created_ids':created,'count':len(created)}

@@ -4,15 +4,22 @@ from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 from rest_framework.test import APIClient
-from jobradar.models import InviteCode, JobLead, JobEvaluation, ApplicationNote
+from jobradar.models import InviteCode, JobLead, JobEvaluation, ApplicationNote, FollowUp, UserProfile
 
 @pytest.fixture
-def client(db):
-    u=User.objects.create_user('owner', password='pw')
-    c=APIClient(); c.force_authenticate(u); return c
+def owner(db):
+    return User.objects.create_user('owner', password='pw')
 
 @pytest.fixture
-def job(db): return JobLead.objects.create(company='ACME', title='Python Engineer', raw_description='Python Django SQL')
+def client(db, owner):
+    c=APIClient(); c.force_authenticate(owner); c.user=owner; return c
+
+def make_job(client, **kwargs):
+    kwargs.setdefault('created_by', client.user)
+    return JobLead.objects.create(**kwargs)
+
+@pytest.fixture
+def job(db, owner): return JobLead.objects.create(company='ACME', title='Python Engineer', raw_description='Python Django SQL', created_by=owner)
 
 def test_create_job(client):
     r=client.post('/api/jobs/', {'company':'X','title':'Backend','url':'https://x.test'}, format='json')
@@ -32,17 +39,17 @@ def test_create_url_only_job(client):
     assert r.status_code==201 and r.data['company']=='Unknown company' and r.data['title']=='Untitled role'
 
 def test_manual_duplicate_job_requires_choice(client):
-    JobLead.objects.create(company='A', title='T', url='https://manual.test/job')
+    make_job(client, company='A', title='T', url='https://manual.test/job')
     r=client.post('/api/jobs/', {'company':'B','title':'T2','url':'https://manual.test/job'}, format='json')
     assert r.status_code==400 and r.data['type']=='duplicate_conflicts'
 
 def test_manual_duplicate_job_detects_trailing_slash_and_query(client):
-    JobLead.objects.create(company='A', title='T', url='https://manual.test/job')
+    make_job(client, company='A', title='T', url='https://manual.test/job')
     r=client.post('/api/jobs/', {'company':'B','title':'T2','url':'https://manual.test/job/?utm=x'}, format='json')
     assert r.status_code==400 and r.data['type']=='duplicate_conflicts'
 
 def test_manual_duplicate_job_can_duplicate(client):
-    JobLead.objects.create(company='A', title='T', url='https://manual.test/job')
+    make_job(client, company='A', title='T', url='https://manual.test/job')
     r=client.post('/api/jobs/', {'company':'B','title':'T','url':'https://manual.test/job','duplicate_action':'duplicate'}, format='json')
     assert r.status_code==201 and r.data['title']=='T (1)'
 
@@ -51,13 +58,13 @@ def test_bulk_create_multiple_links_from_notes(client):
     assert r.status_code==201 and r.data['count']==2 and JobLead.objects.filter(url__in=['https://a.test/job1','https://b.test/job2']).count()==2
 
 def test_bulk_create_duplicate_requires_choice(client):
-    JobLead.objects.create(company='A', title='T', url='https://a.test/job1')
+    make_job(client, company='A', title='T', url='https://a.test/job1')
     r=client.post('/api/jobs/bulk-create/', {'url':'https://a.test/job1\nhttps://b.test/job2'}, format='json')
     assert r.status_code==400 and r.data['type']=='duplicate_conflicts' and JobLead.objects.filter(url='https://b.test/job2').count()==0
 
 def test_bulk_create_per_conflict_skip_removes_from_conflicts(client):
-    JobLead.objects.create(company='A', title='T', url='https://a.test/job1')
-    JobLead.objects.create(company='B', title='T', url='https://b.test/job2')
+    make_job(client, company='A', title='T', url='https://a.test/job1')
+    make_job(client, company='B', title='T', url='https://b.test/job2')
     body={'url':'https://a.test/job1\nhttps://b.test/job2\nhttps://c.test/job3','duplicate_actions':[{'index':0,'action':'skip'}]}
     r=client.post('/api/jobs/bulk-create/', body, format='json')
     assert r.status_code==400 and [c['index'] for c in r.data['conflicts']]==[1]
@@ -65,8 +72,8 @@ def test_bulk_create_per_conflict_skip_removes_from_conflicts(client):
     assert not JobLead.objects.filter(url='https://c.test/job3').exists()
 
 def test_bulk_create_per_conflict_duplicate_and_override(client):
-    a=JobLead.objects.create(company='A', title='T', url='https://a.test/job1')
-    JobLead.objects.create(company='B', title='T', url='https://b.test/job2')
+    a=make_job(client, company='A', title='T', url='https://a.test/job1')
+    make_job(client, company='B', title='T', url='https://b.test/job2')
     body={'company':'New','title':'New title','url':'https://a.test/job1\nhttps://b.test/job2','duplicate_actions':[{'index':0,'action':'override'},{'index':1,'action':'duplicate'}]}
     r=client.post('/api/jobs/bulk-create/', body, format='json')
     a.refresh_from_db()
@@ -177,19 +184,19 @@ def test_import_bulk_job_moves_company_url_to_url(client):
     assert r.status_code==201 and job.url=='https://www.karriere.at/jobs/7794074' and job.company=='Unknown company'
 
 def test_bulk_import_duplicate_requires_choice(client):
-    JobLead.objects.create(company='A', title='T', url='https://dup.test/job')
+    make_job(client, company='A', title='T', url='https://dup.test/job')
     payload={'jobs':[{'company':'B','title':'T2','url':'https://dup.test/job'}]}
     r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
     assert r.status_code==400 and r.data['type']=='duplicate_conflicts'
 
 def test_bulk_import_duplicate_can_duplicate(client):
-    JobLead.objects.create(company='A', title='T', url='https://dup.test/job')
+    make_job(client, company='A', title='T', url='https://dup.test/job')
     payload={'duplicate_strategy':'duplicate','jobs':[{'company':'B','title':'T','url':'https://dup.test/job'}]}
     r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
     assert r.status_code==201 and JobLead.objects.filter(url='https://dup.test/job').count()==2 and JobLead.objects.filter(title='T (1)').exists()
 
 def test_bulk_import_duplicate_can_override(client):
-    existing=JobLead.objects.create(company='A', title='T', url='https://dup.test/job')
+    existing=make_job(client, company='A', title='T', url='https://dup.test/job')
     payload={'duplicate_strategy':'override','jobs':[{'company':'B','title':'T2','url':'https://dup.test/job'}]}
     r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
     existing.refresh_from_db()
@@ -303,14 +310,14 @@ def test_import_does_not_overwrite_another_users_data(client, db):
     assert 'Other Co' not in json.dumps(exported)
 
 def test_filtering_jobs(client, job):
-    JobLead.objects.create(company='Other', title='Java')
+    make_job(client, company='Other', title='Java')
     r=client.get('/api/jobs/?search=ACME')
     assert len(r.data)==1
 
 def test_jobs_default_excludes_archived_and_status_filter_allows_multiple(client):
-    JobLead.objects.create(company='Archived', title='Old', status='archived')
-    JobLead.objects.create(company='Applied', title='Sent', status='applied')
-    JobLead.objects.create(company='Interview', title='Call', status='interview')
+    make_job(client, company='Archived', title='Old', status='archived')
+    make_job(client, company='Applied', title='Sent', status='applied')
+    make_job(client, company='Interview', title='Call', status='interview')
     r=client.get('/api/jobs/')
     assert 'Archived' not in [x['company'] for x in r.data]
     r=client.get('/api/jobs/?status=applied,interview')
@@ -319,8 +326,8 @@ def test_jobs_default_excludes_archived_and_status_filter_allows_multiple(client
     assert [x['company'] for x in r.data] == ['Archived']
 
 def test_delete_archived_job_without_status_filter(client):
-    archived=JobLead.objects.create(company='Archived', title='Delete me', status='archived')
-    active=JobLead.objects.create(company='Active', title='Keep me', status='new')
+    archived=make_job(client, company='Archived', title='Delete me', status='archived')
+    active=make_job(client, company='Active', title='Keep me', status='new')
     r=client.delete(f'/api/jobs/{archived.id}/')
     assert r.status_code == 204
     assert not JobLead.objects.filter(id=archived.id).exists()
@@ -329,9 +336,9 @@ def test_delete_archived_job_without_status_filter(client):
     assert JobLead.objects.filter(id=active.id).exists()
 
 def test_jobs_priority_and_recommendation_filters_allow_multiple(client):
-    high=JobLead.objects.create(company='High', title='A')
-    low=JobLead.objects.create(company='Low', title='B')
-    skip=JobLead.objects.create(company='Skip', title='C')
+    high=make_job(client, company='High', title='A')
+    low=make_job(client, company='Low', title='B')
+    skip=make_job(client, company='Skip', title='C')
     JobEvaluation.objects.create(job=high, fit_score=90, priority='high', recommendation='apply', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
     JobEvaluation.objects.create(job=low, fit_score=50, priority='low', recommendation='maybe', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
     JobEvaluation.objects.create(job=skip, fit_score=20, priority='medium', recommendation='skip', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
@@ -344,12 +351,12 @@ def test_stats_include_application_pace(client):
     today = timezone.localdate()
     week_start = today - timezone.timedelta(days=today.weekday())
     last_week = week_start - timezone.timedelta(days=1)
-    JobLead.objects.create(company='Applied', title='This week', status='applied', status_date=today)
-    JobLead.objects.create(company='Interview', title='Also counts', status='interview', status_date=week_start)
-    JobLead.objects.create(company='Old', title='Last week', status='applied', status_date=last_week)
-    JobLead.objects.create(company='Rejected', title='No longer active', status='rejected', status_date=today)
-    new_high = JobLead.objects.create(company='New high', title='Priority', status='new')
-    applied_high = JobLead.objects.create(company='Applied high', title='Priority', status='applied')
+    make_job(client, company='Applied', title='This week', status='applied', status_date=today)
+    make_job(client, company='Interview', title='Also counts', status='interview', status_date=week_start)
+    make_job(client, company='Old', title='Last week', status='applied', status_date=last_week)
+    make_job(client, company='Rejected', title='No longer active', status='rejected', status_date=today)
+    new_high = make_job(client, company='New high', title='Priority', status='new')
+    applied_high = make_job(client, company='Applied high', title='Priority', status='applied')
     for job in [new_high, applied_high]:
         JobEvaluation.objects.create(job=job, fit_score=90, priority='high', recommendation='apply', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
     r = client.get('/api/stats/')
@@ -364,12 +371,142 @@ def test_stats_include_application_pace(client):
     assert r.data['weekly_applications'][-1]['count'] == 3
 
 def test_default_sort_new_first_then_priority_and_fit(client):
-    old=JobLead.objects.create(company='Old', title='Applied', status='applied')
-    low=JobLead.objects.create(company='Low', title='New low', status='new')
-    high=JobLead.objects.create(company='High', title='New high', status='new')
+    old=make_job(client, company='Old', title='Applied', status='applied')
+    low=make_job(client, company='Low', title='New low', status='new')
+    high=make_job(client, company='High', title='New high', status='new')
     JobEvaluation.objects.create(job=old, fit_score=99, priority='high', recommendation='apply', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
     JobEvaluation.objects.create(job=low, fit_score=20, priority='low', recommendation='skip', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
     JobEvaluation.objects.create(job=high, fit_score=90, priority='high', recommendation='apply', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
     r=client.get('/api/jobs/')
     ids=[x['id'] for x in r.data]
     assert ids.index(high.id) < ids.index(low.id) < ids.index(old.id)
+
+
+def test_user_a_cannot_list_retrieve_update_or_delete_user_b_job(db):
+    user_a = User.objects.create_user('a', password='pw')
+    user_b = User.objects.create_user('b', password='pw')
+    b_job = JobLead.objects.create(company='SecretCo', title='Secret Role', status='archived', created_by=user_b)
+    c = APIClient(); c.force_authenticate(user_a)
+
+    r = c.get('/api/jobs/')
+    assert b_job.id not in [row['id'] for row in r.data]
+    assert c.get(f'/api/jobs/{b_job.id}/').status_code == 404
+    assert c.patch(f'/api/jobs/{b_job.id}/', {'company': 'Hacked'}, format='json').status_code == 404
+    assert c.delete(f'/api/jobs/{b_job.id}/').status_code == 404
+    b_job.refresh_from_db()
+    assert b_job.company == 'SecretCo'
+
+
+def test_user_a_cannot_access_or_mutate_user_b_related_records(db):
+    user_a = User.objects.create_user('a', password='pw')
+    user_b = User.objects.create_user('b', password='pw')
+    b_job = JobLead.objects.create(company='SecretCo', title='Secret Role', created_by=user_b)
+    ev = JobEvaluation.objects.create(job=b_job, fit_score=88, priority='high', recommendation='apply', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
+    note = ApplicationNote.objects.create(job=b_job, note='private', created_by=user_b)
+    followup = FollowUp.objects.create(job=b_job, follow_up_date=timezone.localdate(), reason='private')
+    c = APIClient(); c.force_authenticate(user_a)
+
+    assert ev.id not in [row['id'] for row in c.get('/api/evaluations/').data]
+    assert c.get(f'/api/evaluations/{ev.id}/').status_code == 404
+    assert c.delete(f'/api/notes/{note.id}/').status_code == 404
+    assert c.patch(f'/api/followups/{followup.id}/', {'completed': True}, format='json').status_code == 404
+    followup.refresh_from_db()
+    assert followup.completed is False
+
+
+def test_user_a_exports_do_not_include_user_b_jobs(db):
+    user_a = User.objects.create_user('a', password='pw')
+    user_b = User.objects.create_user('b', password='pw')
+    mine = JobLead.objects.create(company='MineCo', title='Mine', created_by=user_a)
+    JobLead.objects.create(company='SecretCo', title='Secret Role', created_by=user_b)
+    c = APIClient(); c.force_authenticate(user_a)
+
+    payload = c.get('/api/export/').data
+    assert [j['id'] for j in payload['data']['jobs']] == [mine.id]
+    assert 'SecretCo' not in json.dumps(payload)
+    legacy_json = c.get('/api/export/jobs.json').content.decode()
+    assert 'MineCo' in legacy_json and 'SecretCo' not in legacy_json
+    legacy_csv = c.get('/api/export/jobs.csv').content.decode()
+    assert 'MineCo' in legacy_csv and 'SecretCo' not in legacy_csv
+    brief = c.get('/api/export/chatgpt-brief.md').content.decode()
+    assert 'MineCo' in brief and 'SecretCo' not in brief
+
+
+def test_user_a_cannot_prompt_generate_user_b_job(db):
+    user_a = User.objects.create_user('a', password='pw')
+    user_b = User.objects.create_user('b', password='pw')
+    b_job = JobLead.objects.create(company='SecretCo', title='Secret Role', raw_description='secret', created_by=user_b)
+    c = APIClient(); c.force_authenticate(user_a)
+
+    assert c.post('/api/prompts/generate/', {'job_ids': [b_job.id]}, format='json').status_code == 400
+    assert c.post('/api/prompts/combined/', {'job_ids': [b_job.id]}, format='json').status_code == 400
+    assert c.post('/api/prompts/enrich/', {'job_ids': [b_job.id]}, format='json').status_code == 400
+
+
+def test_user_a_cannot_import_eval_or_update_for_user_b_job(db):
+    user_a = User.objects.create_user('a', password='pw')
+    user_b = User.objects.create_user('b', password='pw')
+    b_job = JobLead.objects.create(company='SecretCo', title='Secret Role', created_by=user_b)
+    c = APIClient(); c.force_authenticate(user_a)
+
+    r = c.post('/api/evaluations/import/', {'json': json.dumps(valid_payload(b_job))}, format='json')
+    assert r.status_code == 400
+    assert JobEvaluation.objects.count() == 0
+
+    payload = {'job_updates': [{'job_id': b_job.id, 'company': 'Hacked', 'title': 'Changed'}]}
+    r = c.post('/api/evaluations/import/', {'json': json.dumps(payload)}, format='json')
+    assert r.status_code == 400
+    b_job.refresh_from_db()
+    assert b_job.company == 'SecretCo'
+
+
+def test_user_a_user_data_import_does_not_overwrite_user_b_job(db):
+    user_a = User.objects.create_user('a', password='pw')
+    user_b = User.objects.create_user('b', password='pw')
+    b_job = JobLead.objects.create(company='SecretCo', title='Secret Role', url='https://secret.test/job', created_by=user_b)
+    c = APIClient(); c.force_authenticate(user_a)
+    payload = {'schema_version': 1, 'app': 'dachapply', 'data': {'jobs': [{'id': b_job.id, 'company': 'Incoming', 'title': 'Mine now', 'url': 'https://mine-new.test/job'}], 'evaluations': [], 'notes': [], 'followups': []}}
+
+    r = c.post('/api/import/', {'json': json.dumps(payload)}, format='json')
+    assert r.status_code == 200
+    b_job.refresh_from_db()
+    assert b_job.company == 'SecretCo'
+    assert JobLead.objects.filter(company='Incoming', created_by=user_a).exists()
+
+
+def test_approved_friend_submitter_flow_remains_accessible_to_owner_and_submitter(db):
+    owner = User.objects.create_user('owner2', password='pw')
+    friend = User.objects.create_user('friend', password='pw')
+    stranger = User.objects.create_user('stranger', password='pw')
+    UserProfile.objects.create(user=friend, submit_for=owner)
+    friend_client = APIClient(); friend_client.force_authenticate(friend)
+
+    r = friend_client.post('/api/public/submit/', {'company': 'FriendCo', 'title': 'Referral', 'url': 'https://friend.test/job'}, format='json')
+    assert r.status_code == 201
+    job = JobLead.objects.get(url='https://friend.test/job')
+    assert job.created_by == friend and job.submitted_for == owner and job.source == 'friend'
+
+    owner_client = APIClient(); owner_client.force_authenticate(owner)
+    assert job.id in [row['id'] for row in owner_client.get('/api/jobs/').data]
+    assert job.id in [row['id'] for row in friend_client.get('/api/jobs/').data]
+    stranger_client = APIClient(); stranger_client.force_authenticate(stranger)
+    assert job.id not in [row['id'] for row in stranger_client.get('/api/jobs/').data]
+
+
+def test_user_a_cannot_create_or_update_job_into_user_b_dashboard(db):
+    user_a = User.objects.create_user('a', password='pw')
+    user_b = User.objects.create_user('b', password='pw')
+    c = APIClient(); c.force_authenticate(user_a)
+
+    r = c.post('/api/jobs/', {'company': 'Injected', 'title': 'Role', 'submitted_for': user_b.id}, format='json')
+    assert r.status_code == 201
+    job = JobLead.objects.get(id=r.data['id'])
+    assert job.created_by == user_a and job.submitted_for is None
+
+    r = c.patch(f'/api/jobs/{job.id}/', {'submitted_for': user_b.id}, format='json')
+    assert r.status_code == 200
+    job.refresh_from_db()
+    assert job.submitted_for is None
+
+    b_client = APIClient(); b_client.force_authenticate(user_b)
+    assert job.id not in [row['id'] for row in b_client.get('/api/jobs/').data]
