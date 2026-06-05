@@ -2,6 +2,7 @@ from django.contrib.auth import authenticate, login, logout, get_user_model
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
+from django.db import transaction
 from django.db.models import Avg, Case, Count, IntegerField, Q, Value, When
 from django.http import HttpResponse
 from django.utils import timezone
@@ -106,6 +107,27 @@ def password_reset_confirm(request):
     if len(password)<6: return Response({'detail':'Password must be at least 6 characters'}, status=400)
     user.set_password(password); user.save(update_fields=['password'])
     return Response({'detail':'Password reset successful'})
+
+@api_view(['DELETE'])
+def delete_account(request):
+    user=request.user
+    password=request.data.get('password') or request.data.get('current_password') or ''
+    if user.has_usable_password() and not user.check_password(password):
+        return Response({'detail':'Current password is required to delete your account.'}, status=400)
+    with transaction.atomic():
+        owned_jobs=JobLead.objects.filter(Q(created_by=user)|Q(submitted_for=user)).distinct()
+        counts={
+            'jobs': owned_jobs.count(),
+            'evaluations': JobEvaluation.objects.filter(job__in=owned_jobs).count(),
+            'notes': ApplicationNote.objects.filter(Q(job__in=owned_jobs)|Q(created_by=user)).distinct().count(),
+            'followups': FollowUp.objects.filter(job__in=owned_jobs).count(),
+            'profile': 1 if hasattr(user, 'jobradar_profile') else 0,
+        }
+        owned_jobs.delete()
+        ApplicationNote.objects.filter(created_by=user).update(created_by=None)
+        logout(request)
+        user.delete()
+    return Response({'detail':'Account deleted.', 'deleted': counts})
 
 @api_view(['GET'])
 def me(request):

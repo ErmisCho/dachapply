@@ -156,6 +156,21 @@ Manual MVP verification checklist:
 - `POST /api/evaluations/import/` for evaluation JSON, `job_updates` JSON, or bulk `jobs` JSON
 - `GET /api/stats/`
 - `GET /api/export/jobs.json`, `.csv`, `/api/export/chatgpt-brief.md`
+- `DELETE /api/auth/account/` to delete the current account and owned dashboard data
+
+## Data and privacy notes
+
+DACHApply stores the data needed to provide a private job-search dashboard:
+
+- Account username/email and Django password hash.
+- Candidate profile, scoring rules, optional structured profile fields, and prompt templates.
+- Job leads, URLs, descriptions, salary/language/work-mode fields, application statuses, status dates, follow-up dates, and source metadata.
+- Imported/generated evaluations, fit scores, recommendation fields, skills, gaps, notes, and follow-ups.
+- Friend-submission relationships and submitted-by metadata when enabled.
+
+Exports are available from the Data page and include the current user's profile/jobs/evaluations/notes/follow-ups plus optional frontend preferences. Invite codes, passwords, sessions, permissions, and other credentials are intentionally excluded from exports.
+
+Users can delete their account from the Data page. Account deletion removes the user, profile, and owned dashboard jobs; evaluations, notes, and follow-ups attached to those jobs are deleted by cascade. Any remaining references created by Django relations are anonymized via nullable user fields.
 
 ## Production deployment configuration
 
