@@ -660,3 +660,53 @@ def test_user_data_import_rate_limit_returns_429(client):
         r = client.post('/api/import/', data='not-json', content_type='application/json')
         assert r.status_code == 400
         assert_rate_limited(client.post('/api/import/', data='not-json', content_type='application/json'))
+
+
+def test_account_deletion_deletes_current_user_data_and_account(db):
+    user = User.objects.create_user('delete-me@example.test', email='delete-me@example.test', password='secretpw')
+    other = User.objects.create_user('keep-me@example.test', password='pw')
+    UserProfile.objects.create(user=user, candidate_profile='DELETE_PROFILE')
+    job = JobLead.objects.create(company='DeleteCo', title='Delete Role', created_by=user)
+    JobEvaluation.objects.create(job=job, fit_score=80, priority='high', recommendation='apply', summary='delete', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])
+    ApplicationNote.objects.create(job=job, note='delete note', created_by=user)
+    FollowUp.objects.create(job=job, follow_up_date=timezone.localdate(), reason='delete followup')
+    other_job = JobLead.objects.create(company='KeepCo', title='Keep Role', created_by=other)
+
+    c = APIClient(); c.force_authenticate(user)
+    r = c.delete('/api/auth/account/', {'password': 'wrong'}, format='json')
+    assert r.status_code == 400
+    assert User.objects.filter(username='delete-me@example.test').exists()
+
+    r = c.delete('/api/auth/account/', {'password': 'secretpw'}, format='json')
+    assert r.status_code == 200
+    assert r.data['deleted']['jobs'] == 1
+    assert not User.objects.filter(username='delete-me@example.test').exists()
+    assert not UserProfile.objects.filter(candidate_profile='DELETE_PROFILE').exists()
+    assert not JobLead.objects.filter(company='DeleteCo').exists()
+    assert not JobEvaluation.objects.filter(summary='delete').exists()
+    assert not ApplicationNote.objects.filter(note='delete note').exists()
+    assert not FollowUp.objects.filter(reason='delete followup').exists()
+    assert JobLead.objects.filter(id=other_job.id, company='KeepCo').exists()
+
+
+def test_export_before_account_delete_contains_user_data_then_delete_removes_it(db):
+    user = User.objects.create_user('export-delete@example.test', email='export-delete@example.test', password='secretpw')
+    UserProfile.objects.create(user=user, candidate_profile='EXPORT_DELETE_PROFILE')
+    job = JobLead.objects.create(company='ExportDeleteCo', title='Role', url='https://export-delete.test/job', created_by=user)
+    JobEvaluation.objects.create(job=job, fit_score=92, priority='high', recommendation='apply', summary='export delete eval', main_match_reasons=['Python'], main_gaps=[], required_skills=['Python'], nice_to_have_skills=[], matched_skills=['Python'], missing_skills=[])
+    ApplicationNote.objects.create(job=job, note='export delete note', created_by=user)
+    FollowUp.objects.create(job=job, follow_up_date=timezone.localdate(), reason='export delete followup')
+
+    c = APIClient(); c.force_authenticate(user)
+    exported = c.get('/api/export/')
+    assert exported.status_code == 200
+    assert exported.data['data']['profile'][0]['candidate_profile'] == 'EXPORT_DELETE_PROFILE'
+    assert exported.data['data']['jobs'][0]['company'] == 'ExportDeleteCo'
+    assert exported.data['data']['evaluations'][0]['summary'] == 'export delete eval'
+    assert exported.data['data']['notes'][0]['note'] == 'export delete note'
+    assert exported.data['data']['followups'][0]['reason'] == 'export delete followup'
+
+    r = c.delete('/api/auth/account/', {'password': 'secretpw'}, format='json')
+    assert r.status_code == 200
+    assert not User.objects.filter(username='export-delete@example.test').exists()
+    assert not JobLead.objects.filter(company='ExportDeleteCo').exists()
