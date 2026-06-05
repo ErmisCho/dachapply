@@ -10,7 +10,7 @@ from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import viewsets, status
-from rest_framework.decorators import api_view, permission_classes, action
+from rest_framework.decorators import api_view, permission_classes, action, throttle_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, UserProfile, InviteCode
@@ -20,6 +20,7 @@ from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
 from .services.access import accessible_jobs, job_create_defaults
+from .throttles import ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
 
 def find_existing_by_url(url, owner=None, queryset=None):
@@ -50,6 +51,7 @@ def csrf(request): return Response({'detail':'ok'})
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([LoginIPThrottle, LoginAccountThrottle])
 def login_view(request):
     user=authenticate(request, username=request.data.get('username'), password=request.data.get('password'))
     if not user: return Response({'detail':'Invalid credentials'}, status=400)
@@ -57,6 +59,7 @@ def login_view(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([RegisterIPThrottle])
 def register_view(request):
     email=(request.data.get('email') or request.data.get('username') or '').strip().lower()
     username=email
@@ -80,6 +83,7 @@ def logout_view(request): logout(request); return Response({'detail':'logged out
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([PasswordResetIPThrottle, PasswordResetEmailThrottle])
 def password_reset_request(request):
     email=(request.data.get('email') or '').strip().lower()
     User=get_user_model(); user=User.objects.filter(email__iexact=email).first()
@@ -258,6 +262,7 @@ def bulk_create_jobs(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([PublicSubmitIPThrottle])
 def public_submit(request):
     if not request.user.is_authenticated:
         code=(request.data.get('invite_code') or '').strip()
@@ -333,6 +338,7 @@ def generate_enrichment_prompt(request):
     return Response({'generated_prompt': build_enrichment_prompt(jobs, request.data.get('custom_instructions',''), build_candidate_profile_text(request.user), profile.enrichment_prompt_template)})
 
 @api_view(['POST'])
+@throttle_classes([ImportUserThrottle])
 def import_eval(request):
     result=import_any_json(request.data.get('json') or request.data.get('pasted_json') or request.data, user=request.user)
     return Response(result, status=201 if result.get('ok') else 400)
@@ -395,6 +401,7 @@ def export_user_data(request):
     return response
 
 @api_view(['POST'])
+@throttle_classes([ImportUserThrottle])
 def import_user_data(request):
     try:
         payload = parse_import_payload(request)

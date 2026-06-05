@@ -1,10 +1,26 @@
 import json
 import pytest
+from django.conf import settings
 from django.contrib.auth.models import User
+from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 from jobradar.models import InviteCode, JobLead, JobEvaluation, ApplicationNote, FollowUp, UserProfile
+
+
+def throttled_rest_framework(**rates):
+    rest_framework = dict(settings.REST_FRAMEWORK)
+    rest_framework['DEFAULT_THROTTLE_RATES'] = {**rest_framework.get('DEFAULT_THROTTLE_RATES', {}), **rates}
+    return override_settings(REST_FRAMEWORK=rest_framework)
+
+
+def assert_rate_limited(response):
+    assert response.status_code == 429
+    assert response.data['detail'] == 'Rate limit exceeded. Try again later.'
+    assert 'available_in_seconds' in response.data
+
 
 @pytest.fixture
 def owner(db):
@@ -588,3 +604,59 @@ def test_prompt_template_from_profile_page_is_used(client, job):
     assert 'PROFILE=Candidate profile:\nPROFILE_FROM_SETTINGS' in prompt
     assert f'Job ID: {job.id}' in prompt
     assert '"jobs"' in prompt
+
+
+def test_login_rate_limit_returns_429(db):
+    User.objects.create_user('limit-login@example.test', email='limit-login@example.test', password='correct-password')
+    c = APIClient()
+    with throttled_rest_framework(login_ip='2/minute', login_account='2/minute'):
+        cache.clear()
+        for _ in range(2):
+            r = c.post('/api/auth/login/', {'username': 'limit-login@example.test', 'password': 'wrong'}, format='json')
+            assert r.status_code == 400
+        assert_rate_limited(c.post('/api/auth/login/', {'username': 'limit-login@example.test', 'password': 'wrong'}, format='json'))
+
+
+def test_register_rate_limit_returns_429(db):
+    c = APIClient()
+    with throttled_rest_framework(register_ip='1/minute'):
+        cache.clear()
+        r = c.post('/api/auth/register/', {'email': 'register-limit-1@example.test', 'password': 'secret1'}, format='json')
+        assert r.status_code == 201
+        assert_rate_limited(c.post('/api/auth/register/', {'email': 'register-limit-2@example.test', 'password': 'secret2'}, format='json'))
+
+
+def test_password_reset_request_rate_limit_returns_429(db):
+    User.objects.create_user('reset-limit@example.test', email='reset-limit@example.test', password='pw')
+    c = APIClient()
+    with throttled_rest_framework(password_reset_ip='1/minute', password_reset_email='10/minute'):
+        cache.clear()
+        r = c.post('/api/auth/password-reset/', {'email': 'reset-limit@example.test'}, format='json')
+        assert r.status_code == 200
+        assert_rate_limited(c.post('/api/auth/password-reset/', {'email': 'other-reset-limit@example.test'}, format='json'))
+
+
+def test_public_submit_rate_limit_returns_429(db):
+    InviteCode.objects.create(code='RATE-LIMIT')
+    c = APIClient()
+    with throttled_rest_framework(public_submit_ip='1/minute'):
+        cache.clear()
+        r = c.post('/api/public/submit/', {'invite_code': 'RATE-LIMIT', 'company': 'C', 'title': 'T', 'url': 'https://rate-limit.test/1'}, format='json')
+        assert r.status_code == 201
+        assert_rate_limited(c.post('/api/public/submit/', {'invite_code': 'RATE-LIMIT', 'company': 'C2', 'title': 'T2', 'url': 'https://rate-limit.test/2'}, format='json'))
+
+
+def test_import_endpoint_rate_limit_returns_429(client):
+    with throttled_rest_framework(import_user='1/minute'):
+        cache.clear()
+        r = client.post('/api/evaluations/import/', {'json': '{"evaluations":[{}]}'}, format='json')
+        assert r.status_code == 400
+        assert_rate_limited(client.post('/api/evaluations/import/', {'json': '{"evaluations":[{}]}'}, format='json'))
+
+
+def test_user_data_import_rate_limit_returns_429(client):
+    with throttled_rest_framework(import_user='1/minute'):
+        cache.clear()
+        r = client.post('/api/import/', data='not-json', content_type='application/json')
+        assert r.status_code == 400
+        assert_rate_limited(client.post('/api/import/', data='not-json', content_type='application/json'))
