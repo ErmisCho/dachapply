@@ -510,3 +510,68 @@ def test_user_a_cannot_create_or_update_job_into_user_b_dashboard(db):
 
     b_client = APIClient(); b_client.force_authenticate(user_b)
     assert job.id not in [row['id'] for row in b_client.get('/api/jobs/').data]
+
+
+def test_candidate_profile_settings_can_be_saved_and_loaded(client):
+    payload = {
+        'candidate_profile': 'Senior data engineer in Berlin with Go and Rust.',
+        'target_roles': 'Data Engineer\nBackend Engineer',
+        'preferred_locations': 'Berlin, remote Germany',
+        'salary_expectations': '90k EUR+',
+        'language_levels': 'English C2, German B1',
+        'preferred_stack': 'Go, Rust, Kafka, Postgres',
+        'red_flags': 'No unpaid overtime',
+        'selling_points': 'Distributed systems and mentoring',
+    }
+    r = client.patch('/api/profile/', payload, format='json')
+    assert r.status_code == 200
+    assert r.data['preferred_stack'] == 'Go, Rust, Kafka, Postgres'
+
+    r = client.get('/api/profile/')
+    assert r.status_code == 200
+    for key, value in payload.items():
+        assert r.data[key] == value
+
+
+def test_prompt_generation_uses_current_users_candidate_profile(db):
+    user_a = User.objects.create_user('profile-a', password='pw')
+    user_b = User.objects.create_user('profile-b', password='pw')
+    job_a = JobLead.objects.create(company='A Co', title='Data Engineer', raw_description='Kafka pipelines', created_by=user_a)
+    job_b = JobLead.objects.create(company='B Co', title='Frontend Engineer', raw_description='React UI', created_by=user_b)
+    UserProfile.objects.create(user=user_a, candidate_profile='A_PROFILE_UNIQUE Kafka Go Berlin', preferred_stack='Go Kafka')
+    UserProfile.objects.create(user=user_b, candidate_profile='B_PROFILE_UNIQUE React Lisbon', preferred_stack='React TypeScript')
+
+    c = APIClient(); c.force_authenticate(user_a)
+    r = c.post('/api/prompts/generate/', {'job_ids': [job_a.id]}, format='json')
+    assert r.status_code == 200
+    assert 'A_PROFILE_UNIQUE Kafka Go Berlin' in r.data['generated_prompt']
+    assert 'Go Kafka' in r.data['generated_prompt']
+    assert 'B_PROFILE_UNIQUE' not in r.data['generated_prompt']
+    assert 'React TypeScript' not in r.data['generated_prompt']
+    assert f'Job ID: {job_b.id}' not in r.data['generated_prompt']
+
+
+def test_bulk_links_prompt_uses_current_users_candidate_profile(db):
+    user = User.objects.create_user('profile-links', password='pw')
+    UserProfile.objects.create(user=user, candidate_profile='LINKS_PROFILE_UNIQUE AI search', target_roles='AI Search Engineer')
+    c = APIClient(); c.force_authenticate(user)
+
+    r = c.post('/api/prompts/bulk-links/', {'links': 'https://example.test/job'}, format='json')
+    assert r.status_code == 200
+    assert 'LINKS_PROFILE_UNIQUE AI search' in r.data['generated_prompt']
+    assert 'AI Search Engineer' in r.data['generated_prompt']
+
+
+def test_prompt_template_from_profile_page_is_used(client, job):
+    template = 'CUSTOM COMBINED TEMPLATE\nPROFILE={candidate_profile}\nSCHEMA={schema}\nJOBS={jobs}'
+    r = client.patch('/api/profile/', {'candidate_profile': 'PROFILE_FROM_SETTINGS', 'combined_prompt_template': template}, format='json')
+    assert r.status_code == 200
+    assert r.data['combined_prompt_template'] == template
+
+    r = client.post('/api/prompts/combined/', {'job_ids': [job.id]}, format='json')
+    assert r.status_code == 200
+    prompt = r.data['generated_prompt']
+    assert prompt.startswith('CUSTOM COMBINED TEMPLATE')
+    assert 'PROFILE=Candidate profile:\nPROFILE_FROM_SETTINGS' in prompt
+    assert f'Job ID: {job.id}' in prompt
+    assert '"jobs"' in prompt

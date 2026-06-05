@@ -20,7 +20,7 @@ JOB_FIELDS = ['company','title','location','url','source','raw_description','sub
 EVALUATION_FIELDS = ['fit_score','priority','recommendation','summary','main_match_reasons','main_gaps','required_skills','nice_to_have_skills','matched_skills','missing_skills','cv_adjustment_notes','interview_prep_notes','risk_notes','next_action','structured_json_raw']
 NOTE_FIELDS = ['note','note_type']
 FOLLOWUP_FIELDS = ['follow_up_date','reason','completed']
-PROFILE_FIELDS = []
+PROFILE_FIELDS = ['candidate_profile','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template']
 
 # InviteCode is intentionally excluded: ownership is ambiguous and codes can act as
 # access credentials/secrets. Django auth/session/admin/permission/token models are
@@ -319,7 +319,12 @@ def import_user_export(user, payload):
     with transaction.atomic():
         for item in data.get('profile', []):
             profile, created = UserProfile.objects.get_or_create(user=user)
-            summary['created' if created else 'skipped']['profile'] += 1
+            changed = _assign_fields(profile, PROFILE_FIELDS, item) if isinstance(item, dict) else False
+            if changed:
+                profile.save()
+                summary['updated']['profile'] += 1
+            else:
+                summary['created' if created else 'skipped']['profile'] += 1
 
         for i, item in enumerate(data.get('jobs', [])):
             if not isinstance(item, dict):
