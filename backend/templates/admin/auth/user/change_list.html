@@ -1,0 +1,20 @@
+{% extends "admin/change_list.html" %}
+
+{% block content_title %}
+{{ block.super }}
+{% if usage_overview %}
+<div class="module" style="padding: 12px 16px; margin: 0 0 16px 0; overflow-x: auto;">
+  <h2 style="margin-top: 0;">DACHApply usage overview</h2>
+  <div style="display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px;">
+    <div><strong>Today:</strong> {{ usage_overview.today }} requests / {{ usage_overview.today_users }} users</div>
+    <div><strong>7 days:</strong> {{ usage_overview.week }} requests / {{ usage_overview.week_users }} users</div>
+    <div><strong>30 days:</strong> {{ usage_overview.month }} requests / {{ usage_overview.month_users }} users</div>
+    <div><strong>Total:</strong> {{ usage_overview.total }} requests / {{ usage_overview.total_users }} users</div>
+  </div>
+  <div style="height: 100px; border-left: 1px solid var(--hairline-color, #ddd); border-bottom: 1px solid var(--hairline-color, #ddd); padding: 4px 0 0 4px; white-space: nowrap;">
+    {{ usage_overview.graph_html|safe }}
+  </div>
+  <div style="color: var(--quiet-color, #666); margin-top: 4px;">Last 30 days; bar height = authenticated requests per day. Hover bars for date/user count.</div>
+</div>
+{% endif %}
+{% endblock %}
