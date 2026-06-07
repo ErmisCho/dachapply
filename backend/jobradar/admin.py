@@ -77,21 +77,43 @@ class CustomUserAdmin(UserAdmin):
 
     def _chart_html(self, title, subtitle, values, color):
         max_count=max([count for _, count, _ in values], default=0) or 1
+        total=sum(count for _, count, _ in values)
+        average=round(total / len(values), 1) if values else 0
+        latest=values[-1][1] if values else 0
+        peak_label, peak_count, _=max(values, key=lambda item: item[1], default=('', 0, ''))
         first_label=values[0][0] if values else ''
+        middle_label=values[len(values)//2][0] if values else ''
         last_label=values[-1][0] if values else ''
-        bars=''.join(
-            f'<div title="{label}: {count} requests{detail_text}" style="display:inline-block;width:10px;height:{max(2, int((count / max_count) * 90))}px;margin-right:3px;background:{color};vertical-align:bottom;border-radius:2px"></div>'
-            for label, count, detail_text in values
-        )
+        width=360
+        height=92
+        gap=2
+        bar_width=max(2, (width - gap * max(len(values) - 1, 0)) / max(len(values), 1))
+        bars=[]
+        for index, (label, count, detail_text) in enumerate(values):
+            bar_height=max(1, (count / max_count) * (height - 6)) if count else 1
+            x=index * (bar_width + gap)
+            y=height - bar_height
+            bars.append(
+                f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" rx="1.5" fill="{color}">'
+                f'<title>{label}: {count} requests{detail_text}</title>'
+                '</rect>'
+            )
         return (
-            '<div style="border:1px solid var(--hairline-color,#ddd);border-radius:6px;padding:10px;background:var(--body-bg,#fff);min-width:280px;flex:1">'
-            f'<h3 style="margin:0 0 4px 0">{title}</h3>'
-            f'<div style="color:var(--quiet-color,#666);margin-bottom:8px">{subtitle}</div>'
-            '<div style="height:100px;border-left:1px solid var(--hairline-color,#ddd);border-bottom:1px solid var(--hairline-color,#ddd);padding:4px 0 0 4px;white-space:nowrap;overflow:hidden">'
-            f'{bars}'
+            '<div style="border:1px solid var(--hairline-color,#ddd);border-radius:8px;padding:10px;background:var(--body-bg,#fff);min-width:260px">'
+            '<div style="display:flex;justify-content:space-between;gap:8px;align-items:start;margin-bottom:8px">'
+            f'<div><h3 style="margin:0;font-size:14px">{title}</h3><div style="color:var(--quiet-color,#666);font-size:11px">{subtitle}</div></div>'
+            f'<div style="font-size:18px;font-weight:600;line-height:1">{total}</div>'
             '</div>'
-            f'<div style="display:flex;justify-content:space-between;color:var(--quiet-color,#666);font-size:11px;margin-top:4px"><span>{first_label}</span><span>{last_label}</span></div>'
-            '<div style="color:var(--quiet-color,#666);font-size:11px;margin-top:2px">Hover a bar for the exact day/week/month.</div>'
+            f'<svg viewBox="0 0 {width} {height}" width="100%" height="92" role="img" aria-label="{title}: {total} requests">'
+            f'<line x1="0" y1="{height - 1}" x2="{width}" y2="{height - 1}" stroke="var(--hairline-color,#ddd)" />'
+            f'{"".join(bars)}'
+            '</svg>'
+            f'<div style="display:flex;justify-content:space-between;color:var(--quiet-color,#666);font-size:10px;margin-top:2px"><span>{first_label}</span><span>{middle_label}</span><span>{last_label}</span></div>'
+            '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px;font-size:11px;color:var(--quiet-color,#666)">'
+            f'<div><strong style="color:var(--body-fg,#333)">{latest}</strong><br>latest</div>'
+            f'<div><strong style="color:var(--body-fg,#333)">{average}</strong><br>avg/bar</div>'
+            f'<div><strong style="color:var(--body-fg,#333)">{peak_count}</strong><br>peak {peak_label}</div>'
+            '</div>'
             '</div>'
         )
 
@@ -148,7 +170,7 @@ class CustomUserAdmin(UserAdmin):
             total.append((start.strftime('%Y-%m'), running_total, f', authenticated total: {auth_total}, anonymous total: {anon_total}'))
 
         html=(
-            '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;min-width:640px">'
+            '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;min-width:600px">'
             + self._chart_html('Daily usage', 'All requests per day, last 30 days', daily, '#417690')
             + self._chart_html('Weekly usage', 'All requests per 7-day week, last 12 weeks', weekly, '#79aec8')
             + self._chart_html('Monthly usage', 'All requests per calendar month, last 12 months', monthly, '#609ab6')
@@ -209,7 +231,7 @@ class CustomUserAdmin(UserAdmin):
             total.append((start.strftime('%Y-%m'), running_total, user_text({row['user_id'] for row in rows if row['date'] < end})))
 
         html=(
-            '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;min-width:640px">'
+            '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;min-width:600px">'
             + self._chart_html('Daily usage', 'Authenticated requests per day, last 30 days', daily, '#417690')
             + self._chart_html('Weekly usage', 'Authenticated requests per 7-day period, last 12 weeks', weekly, '#79aec8')
             + self._chart_html('Monthly usage', 'Authenticated requests per month, last 12 months', monthly, '#609ab6')
