@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth import get_user_model
+from django.db.models import Count, Max, Q
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, UserProfile
 
 User=get_user_model()
@@ -18,8 +19,49 @@ class UserProfileInline(admin.StackedInline):
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
     inlines=(UserProfileInline,)
-    list_display=('username','email','is_staff','is_active','date_joined')
+    list_display=('username','email','is_staff','is_active','last_login','date_joined','job_count','note_count','last_job_update','last_used_at')
+    list_filter=UserAdmin.list_filter + ('last_login','date_joined')
     search_fields=('username','email')
+    readonly_fields=UserAdmin.readonly_fields + ('job_count','note_count','last_job_update','last_note_at','last_used_at')
+    fieldsets=UserAdmin.fieldsets + (
+        ('DACHApply usage', {'fields': ('job_count','note_count','last_job_update','last_note_at','last_used_at')}),
+    )
+
+    def _usage_stats(self, obj):
+        if hasattr(obj, '_jobradar_admin_usage_stats'):
+            return obj._jobradar_admin_usage_stats
+        jobs=JobLead.objects.filter(Q(created_by=obj)|Q(submitted_for=obj)).distinct()
+        job_stats=jobs.aggregate(count=Count('id'), last=Max('updated_at'))
+        note_stats=ApplicationNote.objects.filter(created_by=obj).aggregate(count=Count('id'), last=Max('created_at'))
+        candidates=[obj.last_login, job_stats['last'], note_stats['last']]
+        obj._jobradar_admin_usage_stats={
+            'job_count': job_stats['count'] or 0,
+            'note_count': note_stats['count'] or 0,
+            'last_job_update': job_stats['last'],
+            'last_note_at': note_stats['last'],
+            'last_used_at': max([value for value in candidates if value], default=None),
+        }
+        return obj._jobradar_admin_usage_stats
+
+    @admin.display(description='Jobs')
+    def job_count(self, obj):
+        return self._usage_stats(obj)['job_count']
+
+    @admin.display(description='Notes')
+    def note_count(self, obj):
+        return self._usage_stats(obj)['note_count']
+
+    @admin.display(description='Last job update')
+    def last_job_update(self, obj):
+        return self._usage_stats(obj)['last_job_update']
+
+    @admin.display(description='Last note')
+    def last_note_at(self, obj):
+        return self._usage_stats(obj)['last_note_at']
+
+    @admin.display(description='Last used')
+    def last_used_at(self, obj):
+        return self._usage_stats(obj)['last_used_at']
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
