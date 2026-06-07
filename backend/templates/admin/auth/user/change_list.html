@@ -11,10 +11,8 @@
     <div><strong>30 days:</strong> {{ usage_overview.month }} requests / {{ usage_overview.month_users }} users</div>
     <div><strong>Total:</strong> {{ usage_overview.total }} requests / {{ usage_overview.total_users }} users</div>
   </div>
-  <div style="height: 100px; border-left: 1px solid var(--hairline-color, #ddd); border-bottom: 1px solid var(--hairline-color, #ddd); padding: 4px 0 0 4px; white-space: nowrap;">
-    {{ usage_overview.graph_html|safe }}
-  </div>
-  <div style="color: var(--quiet-color, #666); margin-top: 4px;">Last 30 days; bar height = authenticated requests per day. Hover bars for date/user count.</div>
+  {{ usage_overview.graphs_html|safe }}
+  <div style="color: var(--quiet-color, #666); margin-top: 8px;">Separate daily, weekly, monthly, and cumulative total graphs. Hover bars for date/request/user counts.</div>
 </div>
 {% endif %}
 {% endblock %}

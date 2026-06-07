@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import Count, Max, Q, Sum
 from django.utils import timezone
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, UserDailyUsage, UserProfile
 
 User=get_user_model()
@@ -42,17 +43,6 @@ class CustomUserAdmin(UserAdmin):
         week_start=today - timedelta(days=6)
         month_start=today - timedelta(days=29)
         qs=UserDailyUsage.objects.all()
-        rows={row['date']: row for row in qs.filter(date__gte=month_start).values('date').annotate(requests=Sum('request_count'), users=Count('user', distinct=True)).order_by('date')}
-        values=[]
-        for offset in range(30):
-            day=month_start + timedelta(days=offset)
-            row=rows.get(day) or {'requests': 0, 'users': 0}
-            values.append((day, row['requests'] or 0, row['users'] or 0))
-        max_count=max([requests for _, requests, _ in values], default=0) or 1
-        bars=''.join(
-            f'<div title="{day}: {requests} requests, {users} users" style="display:inline-block;width:10px;height:{max(2, int((requests / max_count) * 90))}px;margin-right:3px;background:#79aec8;vertical-align:bottom;border-radius:2px"></div>'
-            for day, requests, users in values
-        )
         return {
             'today': qs.filter(date=today).aggregate(total=Sum('request_count'))['total'] or 0,
             'today_users': qs.filter(date=today).aggregate(total=Count('user', distinct=True))['total'] or 0,
@@ -62,8 +52,92 @@ class CustomUserAdmin(UserAdmin):
             'month_users': qs.filter(date__gte=month_start).aggregate(total=Count('user', distinct=True))['total'] or 0,
             'total': qs.aggregate(total=Sum('request_count'))['total'] or 0,
             'total_users': qs.aggregate(total=Count('user', distinct=True))['total'] or 0,
-            'graph_html': format_html(bars),
+            'graphs_html': self._usage_graphs_html(qs, include_users=True),
         }
+
+    def _month_start(self, value):
+        return value.replace(day=1)
+
+    def _add_months(self, value, months):
+        month_index=value.year * 12 + value.month - 1 + months
+        return value.replace(year=month_index // 12, month=month_index % 12 + 1, day=1)
+
+    def _chart_html(self, title, subtitle, values, color):
+        max_count=max([count for _, count, _ in values], default=0) or 1
+        bars=''.join(
+            f'<div title="{label}: {count} requests{user_text}" style="display:inline-block;width:10px;height:{max(2, int((count / max_count) * 90))}px;margin-right:3px;background:{color};vertical-align:bottom;border-radius:2px"></div>'
+            for label, count, user_text in values
+        )
+        return (
+            '<div style="border:1px solid var(--hairline-color,#ddd);border-radius:6px;padding:10px;background:var(--body-bg,#fff);min-width:280px;flex:1">'
+            f'<h3 style="margin:0 0 4px 0">{title}</h3>'
+            f'<div style="color:var(--quiet-color,#666);margin-bottom:8px">{subtitle}</div>'
+            '<div style="height:100px;border-left:1px solid var(--hairline-color,#ddd);border-bottom:1px solid var(--hairline-color,#ddd);padding:4px 0 0 4px;white-space:nowrap;overflow:hidden">'
+            f'{bars}'
+            '</div>'
+            '</div>'
+        )
+
+    def _usage_graphs_html(self, qs, include_users=False):
+        today=timezone.localdate()
+        rows=list(qs.values('date','request_count','user_id'))
+
+        def user_text(user_ids):
+            if not include_users:
+                return ''
+            count=len(user_ids)
+            return f', {count} user' + ('' if count == 1 else 's')
+
+        daily_start=today - timedelta(days=29)
+        daily=[]
+        for offset in range(30):
+            day=daily_start + timedelta(days=offset)
+            matching=[row for row in rows if row['date'] == day]
+            daily.append((day.isoformat(), sum(row['request_count'] for row in matching), user_text({row['user_id'] for row in matching})))
+
+        weekly_start=today - timedelta(days=83)
+        weekly=[]
+        for offset in range(12):
+            start=weekly_start + timedelta(days=offset * 7)
+            end=start + timedelta(days=6)
+            matching=[row for row in rows if start <= row['date'] <= end]
+            weekly.append((f'{start.isoformat()} to {end.isoformat()}', sum(row['request_count'] for row in matching), user_text({row['user_id'] for row in matching})))
+
+        month_start=self._add_months(self._month_start(today), -11)
+        monthly=[]
+        for offset in range(12):
+            start=self._add_months(month_start, offset)
+            end=self._add_months(start, 1)
+            matching=[row for row in rows if start <= row['date'] < end]
+            monthly.append((start.strftime('%Y-%m'), sum(row['request_count'] for row in matching), user_text({row['user_id'] for row in matching})))
+
+        first_date=min([row['date'] for row in rows], default=month_start)
+        total_start=self._month_start(first_date)
+        month_count=(today.year - total_start.year) * 12 + today.month - total_start.month + 1
+        if month_count > 24:
+            visible_start=self._add_months(self._month_start(today), -23)
+            running_total=sum(row['request_count'] for row in rows if row['date'] < visible_start)
+            month_count=24
+        else:
+            visible_start=total_start
+            running_total=0
+        total=[]
+        for offset in range(month_count):
+            start=self._add_months(visible_start, offset)
+            end=self._add_months(start, 1)
+            matching=[row for row in rows if start <= row['date'] < end]
+            running_total += sum(row['request_count'] for row in matching)
+            total.append((start.strftime('%Y-%m'), running_total, user_text({row['user_id'] for row in rows if row['date'] < end})))
+
+        html=(
+            '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;min-width:640px">'
+            + self._chart_html('Daily usage', 'Authenticated requests per day, last 30 days', daily, '#417690')
+            + self._chart_html('Weekly usage', 'Authenticated requests per 7-day period, last 12 weeks', weekly, '#79aec8')
+            + self._chart_html('Monthly usage', 'Authenticated requests per month, last 12 months', monthly, '#609ab6')
+            + self._chart_html('Total usage', 'Cumulative authenticated requests by month, all time shown up to 24 months', total, '#2f5d75')
+            + '</div>'
+        )
+        return mark_safe(html)
 
     def _usage_stats(self, obj):
         if hasattr(obj, '_jobradar_admin_usage_stats'):
@@ -119,28 +193,15 @@ class CustomUserAdmin(UserAdmin):
     def usage_total(self, obj):
         return self._daily_usage_stats(obj)['total']
 
-    @admin.display(description='Usage graph')
+    @admin.display(description='Usage graphs')
     def usage_graph(self, obj):
         stats=self._daily_usage_stats(obj)
-        start=stats['month_start']
-        values=[]
-        for offset in range(30):
-            day=start + timedelta(days=offset)
-            values.append((day, stats['rows'].get(day, 0)))
-        max_count=max([count for _, count in values], default=0) or 1
-        bars=''.join(
-            f'<div title="{day}: {count} requests" style="display:inline-block;width:10px;height:{max(2, int((count / max_count) * 80))}px;margin-right:3px;background:#417690;vertical-align:bottom;border-radius:2px"></div>'
-            for day, count in values
-        )
         return format_html(
-            '<div style="min-width:360px">'
+            '<div style="min-width:700px">'
             '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px">'
             '<strong>Today: {}</strong><strong>7 days: {}</strong><strong>30 days: {}</strong><strong>Total: {}</strong>'
-            '</div>'
-            '<div style="height:90px;border-left:1px solid #ddd;border-bottom:1px solid #ddd;padding:4px 0 0 4px;white-space:nowrap">{}</div>'
-            '<div style="color:#666;margin-top:4px">Last 30 days; bar height = authenticated requests per day.</div>'
-            '</div>',
-            stats['today'], stats['week'], stats['month'], stats['total'], format_html(bars)
+            '</div>{}</div>',
+            stats['today'], stats['week'], stats['month'], stats['total'], self._usage_graphs_html(UserDailyUsage.objects.filter(user=obj))
         )
 
     @admin.display(description='Jobs')
