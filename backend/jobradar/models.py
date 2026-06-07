@@ -92,6 +92,18 @@ class FollowUp(models.Model):
     updated_at=models.DateTimeField(auto_now=True)
     class Meta: ordering=['completed','follow_up_date']
 
+class UserDailyUsage(models.Model):
+    user=models.ForeignKey(settings.AUTH_USER_MODEL, related_name='daily_usage', on_delete=models.CASCADE)
+    date=models.DateField(db_index=True)
+    request_count=models.PositiveIntegerField(default=0)
+    last_seen_at=models.DateTimeField(null=True, blank=True)
+    created_at=models.DateTimeField(auto_now_add=True)
+    updated_at=models.DateTimeField(auto_now=True)
+    class Meta:
+        unique_together=(('user','date'),)
+        ordering=['-date']
+    def __str__(self): return f'{self.user} - {self.date}: {self.request_count}'
+
 class InviteCode(models.Model):
     code=models.CharField(max_length=80, unique=True)
     label=models.CharField(max_length=120, blank=True)
