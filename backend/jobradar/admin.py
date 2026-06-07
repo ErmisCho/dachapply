@@ -22,6 +22,7 @@ class UserProfileInline(admin.StackedInline):
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
+    change_list_template='admin/auth/user/change_list.html'
     inlines=(UserProfileInline,)
     list_display=('username','email','is_staff','is_active','last_login','date_joined','usage_today','usage_week','usage_month','usage_total','job_count','note_count','last_used_at')
     list_filter=UserAdmin.list_filter + ('last_login','date_joined')
@@ -30,6 +31,39 @@ class CustomUserAdmin(UserAdmin):
     fieldsets=UserAdmin.fieldsets + (
         ('DACHApply usage', {'fields': ('usage_today','usage_week','usage_month','usage_total','usage_graph','job_count','note_count','last_job_update','last_note_at','last_used_at')}),
     )
+
+    def changelist_view(self, request, extra_context=None):
+        extra_context=extra_context or {}
+        extra_context['usage_overview']=self._site_usage_overview()
+        return super().changelist_view(request, extra_context=extra_context)
+
+    def _site_usage_overview(self):
+        today=timezone.localdate()
+        week_start=today - timedelta(days=6)
+        month_start=today - timedelta(days=29)
+        qs=UserDailyUsage.objects.all()
+        rows={row['date']: row for row in qs.filter(date__gte=month_start).values('date').annotate(requests=Sum('request_count'), users=Count('user', distinct=True)).order_by('date')}
+        values=[]
+        for offset in range(30):
+            day=month_start + timedelta(days=offset)
+            row=rows.get(day) or {'requests': 0, 'users': 0}
+            values.append((day, row['requests'] or 0, row['users'] or 0))
+        max_count=max([requests for _, requests, _ in values], default=0) or 1
+        bars=''.join(
+            f'<div title="{day}: {requests} requests, {users} users" style="display:inline-block;width:10px;height:{max(2, int((requests / max_count) * 90))}px;margin-right:3px;background:#79aec8;vertical-align:bottom;border-radius:2px"></div>'
+            for day, requests, users in values
+        )
+        return {
+            'today': qs.filter(date=today).aggregate(total=Sum('request_count'))['total'] or 0,
+            'today_users': qs.filter(date=today).aggregate(total=Count('user', distinct=True))['total'] or 0,
+            'week': qs.filter(date__gte=week_start).aggregate(total=Sum('request_count'))['total'] or 0,
+            'week_users': qs.filter(date__gte=week_start).aggregate(total=Count('user', distinct=True))['total'] or 0,
+            'month': qs.filter(date__gte=month_start).aggregate(total=Sum('request_count'))['total'] or 0,
+            'month_users': qs.filter(date__gte=month_start).aggregate(total=Count('user', distinct=True))['total'] or 0,
+            'total': qs.aggregate(total=Sum('request_count'))['total'] or 0,
+            'total_users': qs.aggregate(total=Count('user', distinct=True))['total'] or 0,
+            'graph_html': format_html(bars),
+        }
 
     def _usage_stats(self, obj):
         if hasattr(obj, '_jobradar_admin_usage_stats'):
