@@ -104,6 +104,17 @@ class UserDailyUsage(models.Model):
         ordering=['-date']
     def __str__(self): return f'{self.user} - {self.date}: {self.request_count}'
 
+class SiteDailyUsage(models.Model):
+    date=models.DateField(unique=True, db_index=True)
+    request_count=models.PositiveIntegerField(default=0)
+    authenticated_count=models.PositiveIntegerField(default=0)
+    anonymous_count=models.PositiveIntegerField(default=0)
+    last_seen_at=models.DateTimeField(null=True, blank=True)
+    created_at=models.DateTimeField(auto_now_add=True)
+    updated_at=models.DateTimeField(auto_now=True)
+    class Meta: ordering=['-date']
+    def __str__(self): return f'{self.date}: {self.request_count} requests'
+
 class InviteCode(models.Model):
     code=models.CharField(max_length=80, unique=True)
     label=models.CharField(max_length=120, blank=True)
