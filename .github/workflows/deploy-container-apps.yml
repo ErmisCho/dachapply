@@ -70,12 +70,11 @@ jobs:
           fi
 
           az config set extension.use_dynamic_install=yes_without_prompt
-          az provider register --namespace Microsoft.App --wait
-          az provider register --namespace Microsoft.OperationalInsights --wait
 
-          az group create \
-            --name "$RESOURCE_GROUP" \
-            --location "$AZURE_LOCATION"
+          if ! az group show --name "$RESOURCE_GROUP" >/dev/null 2>&1; then
+            echo "Resource group '$RESOURCE_GROUP' does not exist. Create it before running this workflow."
+            exit 1
+          fi
 
           if ! az containerapp env show \
             --name "$CONTAINER_APP_ENV" \
