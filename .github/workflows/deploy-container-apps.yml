@@ -1,0 +1,183 @@
+name: Deploy to Azure Container Apps
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'rg-dachapply' }}
+  CONTAINER_APP_ENV: ${{ vars.AZURE_CONTAINER_APP_ENV || 'dachapply-env' }}
+  CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME || 'dachapply' }}
+  AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'westeurope' }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare image name
+        id: image
+        shell: bash
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.image.outputs.image }}
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy to Container Apps Consumption
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ADDITIONAL_ALLOWED_HOSTS: ${{ vars.ADDITIONAL_ALLOWED_HOSTS }}
+          ADDITIONAL_CSRF_TRUSTED_ORIGINS: ${{ vars.ADDITIONAL_CSRF_TRUSTED_ORIGINS }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME || github.actor }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          : "${SECRET_KEY:?Set GitHub secret SECRET_KEY}"
+          : "${DATABASE_URL:?Set GitHub secret DATABASE_URL}"
+
+          REGISTRY_ARGS=()
+          if [ -n "${GHCR_READ_TOKEN:-}" ]; then
+            REGISTRY_ARGS=(--registry-server ghcr.io --registry-username "$GHCR_USERNAME" --registry-password "$GHCR_READ_TOKEN")
+          fi
+
+          az config set extension.use_dynamic_install=yes_without_prompt
+          az provider register --namespace Microsoft.App --wait
+          az provider register --namespace Microsoft.OperationalInsights --wait
+
+          az group create \
+            --name "$RESOURCE_GROUP" \
+            --location "$AZURE_LOCATION"
+
+          if ! az containerapp env show \
+            --name "$CONTAINER_APP_ENV" \
+            --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+            az containerapp env create \
+              --name "$CONTAINER_APP_ENV" \
+              --resource-group "$RESOURCE_GROUP" \
+              --location "$AZURE_LOCATION" \
+              --logs-destination none
+          fi
+
+          if ! az containerapp show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+            az containerapp create \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --environment "$CONTAINER_APP_ENV" \
+              --image "$IMAGE" \
+              --target-port 8000 \
+              --ingress external \
+              --min-replicas 0 \
+              --max-replicas 1 \
+              --cpu 0.25 \
+              --memory 0.5Gi \
+              "${REGISTRY_ARGS[@]}" \
+              --secrets "secret-key=$SECRET_KEY" "database-url=$DATABASE_URL" \
+              --env-vars \
+                "SECRET_KEY=secretref:secret-key" \
+                "DATABASE_URL=secretref:database-url" \
+                "DEBUG=False" \
+                "ALLOWED_HOSTS=localhost" \
+                "CSRF_TRUSTED_ORIGINS=https://localhost" \
+                "FRONTEND_URL=https://localhost" \
+                "CORS_ALLOWED_ORIGINS=https://localhost" \
+                "DB_SSL_REQUIRE=True" \
+                "SECURE_SSL_REDIRECT=True" \
+                "USE_X_FORWARDED_PROTO=True" \
+                "SESSION_COOKIE_SECURE=True" \
+                "CSRF_COOKIE_SECURE=True" \
+                "EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend" \
+                "DEFAULT_FROM_EMAIL=noreply@localhost" \
+                "PORT=8000"
+          else
+            az containerapp secret set \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --secrets "secret-key=$SECRET_KEY" "database-url=$DATABASE_URL"
+
+            if [ -n "${GHCR_READ_TOKEN:-}" ]; then
+              az containerapp registry set \
+                --name "$CONTAINER_APP_NAME" \
+                --resource-group "$RESOURCE_GROUP" \
+                --server ghcr.io \
+                --username "$GHCR_USERNAME" \
+                --password "$GHCR_READ_TOKEN"
+            fi
+
+            az containerapp update \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --image "$IMAGE" \
+              --min-replicas 0 \
+              --max-replicas 1 \
+              --cpu 0.25 \
+              --memory 0.5Gi
+          fi
+
+          FQDN="$(az containerapp show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)"
+
+          ALLOWED_HOSTS="$FQDN"
+          if [ -n "${ADDITIONAL_ALLOWED_HOSTS:-}" ]; then
+            ALLOWED_HOSTS="$ALLOWED_HOSTS,$ADDITIONAL_ALLOWED_HOSTS"
+          fi
+
+          CSRF_TRUSTED_ORIGINS="https://$FQDN"
+          if [ -n "${ADDITIONAL_CSRF_TRUSTED_ORIGINS:-}" ]; then
+            CSRF_TRUSTED_ORIGINS="$CSRF_TRUSTED_ORIGINS,$ADDITIONAL_CSRF_TRUSTED_ORIGINS"
+          fi
+
+          az containerapp update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --set-env-vars \
+              "SECRET_KEY=secretref:secret-key" \
+              "DATABASE_URL=secretref:database-url" \
+              "DEBUG=False" \
+              "ALLOWED_HOSTS=$ALLOWED_HOSTS" \
+              "CSRF_TRUSTED_ORIGINS=$CSRF_TRUSTED_ORIGINS" \
+              "FRONTEND_URL=https://$FQDN" \
+              "CORS_ALLOWED_ORIGINS=https://$FQDN" \
+              "DB_SSL_REQUIRE=True" \
+              "SECURE_SSL_REDIRECT=True" \
+              "USE_X_FORWARDED_PROTO=True" \
+              "SESSION_COOKIE_SECURE=True" \
+              "CSRF_COOKIE_SECURE=True" \
+              "EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend" \
+              "DEFAULT_FROM_EMAIL=noreply@localhost" \
+              "PORT=8000"
+
+          echo "Deployed: https://$FQDN"
