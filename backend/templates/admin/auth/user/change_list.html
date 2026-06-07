@@ -6,13 +6,13 @@
 <div class="module" style="padding: 12px 16px; margin: 0 0 16px 0; overflow-x: auto;">
   <h2 style="margin-top: 0;">DACHApply usage overview</h2>
   <div style="display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px;">
-    <div><strong>Today:</strong> {{ usage_overview.today }} requests / {{ usage_overview.today_users }} users</div>
-    <div><strong>7 days:</strong> {{ usage_overview.week }} requests / {{ usage_overview.week_users }} users</div>
-    <div><strong>30 days:</strong> {{ usage_overview.month }} requests / {{ usage_overview.month_users }} users</div>
-    <div><strong>Total:</strong> {{ usage_overview.total }} requests / {{ usage_overview.total_users }} users</div>
+    <div><strong>Today:</strong> {{ usage_overview.today }} requests ({{ usage_overview.today_auth }} auth / {{ usage_overview.today_anon }} anonymous) / {{ usage_overview.today_users }} users</div>
+    <div><strong>7 days:</strong> {{ usage_overview.week }} requests ({{ usage_overview.week_auth }} auth / {{ usage_overview.week_anon }} anonymous) / {{ usage_overview.week_users }} users</div>
+    <div><strong>30 days:</strong> {{ usage_overview.month }} requests ({{ usage_overview.month_auth }} auth / {{ usage_overview.month_anon }} anonymous) / {{ usage_overview.month_users }} users</div>
+    <div><strong>Total:</strong> {{ usage_overview.total }} requests ({{ usage_overview.total_auth }} auth / {{ usage_overview.total_anon }} anonymous) / {{ usage_overview.total_users }} users</div>
   </div>
   {{ usage_overview.graphs_html|safe }}
-  <div style="color: var(--quiet-color, #666); margin-top: 8px;">Separate daily, weekly, monthly, and cumulative total graphs. Hover bars for date/request/user counts.</div>
+  <div style="color: var(--quiet-color, #666); margin-top: 8px;">Separate daily, weekly, monthly, and cumulative total graphs. These include authenticated and anonymous non-static requests. Hover bars for exact day/week/month details.</div>
 </div>
 {% endif %}
 {% endblock %}

@@ -7,7 +7,7 @@ from django.db.models import Count, Max, Q, Sum
 from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
-from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, UserDailyUsage, UserProfile
+from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, SiteDailyUsage, UserDailyUsage, UserProfile
 
 User=get_user_model()
 try:
@@ -42,17 +42,30 @@ class CustomUserAdmin(UserAdmin):
         today=timezone.localdate()
         week_start=today - timedelta(days=6)
         month_start=today - timedelta(days=29)
-        qs=UserDailyUsage.objects.all()
+        site_qs=SiteDailyUsage.objects.all()
+        user_qs=UserDailyUsage.objects.all()
+        today_stats=site_qs.filter(date=today).aggregate(total=Sum('request_count'), auth=Sum('authenticated_count'), anon=Sum('anonymous_count'))
+        week_stats=site_qs.filter(date__gte=week_start).aggregate(total=Sum('request_count'), auth=Sum('authenticated_count'), anon=Sum('anonymous_count'))
+        month_stats=site_qs.filter(date__gte=month_start).aggregate(total=Sum('request_count'), auth=Sum('authenticated_count'), anon=Sum('anonymous_count'))
+        total_stats=site_qs.aggregate(total=Sum('request_count'), auth=Sum('authenticated_count'), anon=Sum('anonymous_count'))
         return {
-            'today': qs.filter(date=today).aggregate(total=Sum('request_count'))['total'] or 0,
-            'today_users': qs.filter(date=today).aggregate(total=Count('user', distinct=True))['total'] or 0,
-            'week': qs.filter(date__gte=week_start).aggregate(total=Sum('request_count'))['total'] or 0,
-            'week_users': qs.filter(date__gte=week_start).aggregate(total=Count('user', distinct=True))['total'] or 0,
-            'month': qs.filter(date__gte=month_start).aggregate(total=Sum('request_count'))['total'] or 0,
-            'month_users': qs.filter(date__gte=month_start).aggregate(total=Count('user', distinct=True))['total'] or 0,
-            'total': qs.aggregate(total=Sum('request_count'))['total'] or 0,
-            'total_users': qs.aggregate(total=Count('user', distinct=True))['total'] or 0,
-            'graphs_html': self._usage_graphs_html(qs, include_users=True),
+            'today': today_stats['total'] or 0,
+            'today_auth': today_stats['auth'] or 0,
+            'today_anon': today_stats['anon'] or 0,
+            'today_users': user_qs.filter(date=today).aggregate(total=Count('user', distinct=True))['total'] or 0,
+            'week': week_stats['total'] or 0,
+            'week_auth': week_stats['auth'] or 0,
+            'week_anon': week_stats['anon'] or 0,
+            'week_users': user_qs.filter(date__gte=week_start).aggregate(total=Count('user', distinct=True))['total'] or 0,
+            'month': month_stats['total'] or 0,
+            'month_auth': month_stats['auth'] or 0,
+            'month_anon': month_stats['anon'] or 0,
+            'month_users': user_qs.filter(date__gte=month_start).aggregate(total=Count('user', distinct=True))['total'] or 0,
+            'total': total_stats['total'] or 0,
+            'total_auth': total_stats['auth'] or 0,
+            'total_anon': total_stats['anon'] or 0,
+            'total_users': user_qs.aggregate(total=Count('user', distinct=True))['total'] or 0,
+            'graphs_html': self._site_usage_graphs_html(site_qs),
         }
 
     def _month_start(self, value):
@@ -64,9 +77,11 @@ class CustomUserAdmin(UserAdmin):
 
     def _chart_html(self, title, subtitle, values, color):
         max_count=max([count for _, count, _ in values], default=0) or 1
+        first_label=values[0][0] if values else ''
+        last_label=values[-1][0] if values else ''
         bars=''.join(
-            f'<div title="{label}: {count} requests{user_text}" style="display:inline-block;width:10px;height:{max(2, int((count / max_count) * 90))}px;margin-right:3px;background:{color};vertical-align:bottom;border-radius:2px"></div>'
-            for label, count, user_text in values
+            f'<div title="{label}: {count} requests{detail_text}" style="display:inline-block;width:10px;height:{max(2, int((count / max_count) * 90))}px;margin-right:3px;background:{color};vertical-align:bottom;border-radius:2px"></div>'
+            for label, count, detail_text in values
         )
         return (
             '<div style="border:1px solid var(--hairline-color,#ddd);border-radius:6px;padding:10px;background:var(--body-bg,#fff);min-width:280px;flex:1">'
@@ -75,8 +90,72 @@ class CustomUserAdmin(UserAdmin):
             '<div style="height:100px;border-left:1px solid var(--hairline-color,#ddd);border-bottom:1px solid var(--hairline-color,#ddd);padding:4px 0 0 4px;white-space:nowrap;overflow:hidden">'
             f'{bars}'
             '</div>'
+            f'<div style="display:flex;justify-content:space-between;color:var(--quiet-color,#666);font-size:11px;margin-top:4px"><span>{first_label}</span><span>{last_label}</span></div>'
+            '<div style="color:var(--quiet-color,#666);font-size:11px;margin-top:2px">Hover a bar for the exact day/week/month.</div>'
             '</div>'
         )
+
+    def _site_usage_graphs_html(self, qs):
+        today=timezone.localdate()
+        rows=list(qs.values('date','request_count','authenticated_count','anonymous_count'))
+
+        def detail(matching):
+            auth=sum(row['authenticated_count'] for row in matching)
+            anon=sum(row['anonymous_count'] for row in matching)
+            return f', authenticated: {auth}, anonymous: {anon}'
+
+        daily_start=today - timedelta(days=29)
+        daily=[]
+        for offset in range(30):
+            day=daily_start + timedelta(days=offset)
+            matching=[row for row in rows if row['date'] == day]
+            daily.append((day.isoformat(), sum(row['request_count'] for row in matching), detail(matching)))
+
+        weekly_start=today - timedelta(days=83)
+        weekly=[]
+        for offset in range(12):
+            start=weekly_start + timedelta(days=offset * 7)
+            end=start + timedelta(days=6)
+            matching=[row for row in rows if start <= row['date'] <= end]
+            weekly.append((f'week {start.isoformat()} to {end.isoformat()}', sum(row['request_count'] for row in matching), detail(matching)))
+
+        month_start=self._add_months(self._month_start(today), -11)
+        monthly=[]
+        for offset in range(12):
+            start=self._add_months(month_start, offset)
+            end=self._add_months(start, 1)
+            matching=[row for row in rows if start <= row['date'] < end]
+            monthly.append((start.strftime('%Y-%m'), sum(row['request_count'] for row in matching), detail(matching)))
+
+        first_date=min([row['date'] for row in rows], default=month_start)
+        total_start=self._month_start(first_date)
+        month_count=(today.year - total_start.year) * 12 + today.month - total_start.month + 1
+        if month_count > 24:
+            visible_start=self._add_months(self._month_start(today), -23)
+            running_total=sum(row['request_count'] for row in rows if row['date'] < visible_start)
+            month_count=24
+        else:
+            visible_start=total_start
+            running_total=0
+        total=[]
+        for offset in range(month_count):
+            start=self._add_months(visible_start, offset)
+            end=self._add_months(start, 1)
+            matching=[row for row in rows if start <= row['date'] < end]
+            running_total += sum(row['request_count'] for row in matching)
+            auth_total=sum(row['authenticated_count'] for row in rows if row['date'] < end)
+            anon_total=sum(row['anonymous_count'] for row in rows if row['date'] < end)
+            total.append((start.strftime('%Y-%m'), running_total, f', authenticated total: {auth_total}, anonymous total: {anon_total}'))
+
+        html=(
+            '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;min-width:640px">'
+            + self._chart_html('Daily usage', 'All requests per day, last 30 days', daily, '#417690')
+            + self._chart_html('Weekly usage', 'All requests per 7-day week, last 12 weeks', weekly, '#79aec8')
+            + self._chart_html('Monthly usage', 'All requests per calendar month, last 12 months', monthly, '#609ab6')
+            + self._chart_html('Total usage', 'Cumulative all requests by month, all time shown up to 24 months', total, '#2f5d75')
+            + '</div>'
+        )
+        return mark_safe(html)
 
     def _usage_graphs_html(self, qs, include_users=False):
         today=timezone.localdate()
@@ -253,6 +332,13 @@ class FollowUpAdmin(admin.ModelAdmin):
     list_display=('job','follow_up_date','reason','completed')
     list_filter=('completed','follow_up_date')
     search_fields=('job__company','job__title','reason')
+
+@admin.register(SiteDailyUsage)
+class SiteDailyUsageAdmin(admin.ModelAdmin):
+    list_display=('date','request_count','authenticated_count','anonymous_count','last_seen_at')
+    list_filter=('date',)
+    date_hierarchy='date'
+    readonly_fields=('created_at','updated_at')
 
 @admin.register(UserDailyUsage)
 class UserDailyUsageAdmin(admin.ModelAdmin):
