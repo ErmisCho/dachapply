@@ -1,9 +1,6 @@
-name: Deploy to Azure App Service
+name: Deploy to Azure App Service (manual legacy)
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:

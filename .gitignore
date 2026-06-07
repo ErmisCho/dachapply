@@ -2,13 +2,18 @@
 *.PublishSettings
 __pycache__/
 .venv/
+.vscode/
 .env
+*.sqlite
+*.sqlite3
+*.db
 backend/db.sqlite3
 backend/staticfiles/
 frontend/node_modules/
 frontend/dist/
 .pytest_cache/
 
+azure-sqlite-data.json
 dachapply-*.json
 dachapply-*.csv
 dachapply-*.xlsx
