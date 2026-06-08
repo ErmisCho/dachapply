@@ -204,9 +204,12 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
 
 /* Responsive job table: keep content contained on narrow screens. */
 .job-table{min-width:980px;table-layout:fixed}
+.job-table thead th{position:sticky;top:2.05rem;z-index:12;background:rgba(248,250,252,.96);backdrop-filter:blur(12px);box-shadow:0 1px 0 rgba(203,213,225,.9)}
+.dark .job-table thead th{background:rgba(5,7,13,.96)!important;box-shadow:0 1px 0 rgba(255,255,255,.08)}
 .job-table th,.job-table td{max-width:12rem;overflow-wrap:anywhere;word-break:break-word;white-space:normal;vertical-align:top}
 .job-table a,.job-table pre,.job-table div,.job-table span{overflow-wrap:anywhere;word-break:break-word;max-width:100%}
 @media (min-width: 1024px){
+  .premium-card.relative.z-0.overflow-x-auto.overflow-y-visible{overflow:visible!important}
   .job-table{min-width:1280px;table-layout:auto!important}
   .job-table th,.job-table td{max-width:none}
   .job-table th:nth-child(1),.job-table td:nth-child(1){width:4.2rem}
