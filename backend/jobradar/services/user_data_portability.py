@@ -12,6 +12,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from jobradar.models import ApplicationNote, FollowUp, JobEvaluation, JobLead, UserProfile
+from jobradar.services.cleaning import clean_job_location
 
 SCHEMA_VERSION = 1
 APP_NAME = 'dachapply'
@@ -33,7 +34,8 @@ def _iso(value):
 def _clean_record(obj, fields, extra=None):
     data = {'id': obj.id}
     for field in fields:
-        data[field] = _iso(getattr(obj, field))
+        value = getattr(obj, field)
+        data[field] = clean_job_location(value) if field == 'location' else _iso(value)
     if extra:
         data.update(extra)
     return data
@@ -239,6 +241,8 @@ def _parse_value(field, value):
         return None if field.endswith('_date') else value
     if field.endswith('_date'):
         return parse_date(value) if isinstance(value, str) else value
+    if field == 'location':
+        return clean_job_location(value)
     return value
 
 def _assign_fields(obj, fields, data):

@@ -21,6 +21,7 @@ from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
 from .services.access import accessible_jobs, job_create_defaults
+from .services.cleaning import clean_job_location
 from .throttles import ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
 
@@ -272,7 +273,7 @@ def bulk_create_jobs(request):
             skipped.append({'index':i,'url':link}); continue
         if existing and action=='override':
             for f in ['company','title','location','url','source','raw_description','salary_info','language_requirements','work_mode']:
-                if data.get(f): setattr(existing,f,data.get(f))
+                if data.get(f): setattr(existing,f,clean_job_location(data.get(f)) if f=='location' else data.get(f))
             for k,v in job_create_defaults(request.user).items(): setattr(existing,k,v)
             existing.save(); updated.append(JobLeadSerializer(existing).data); continue
         if existing and action=='duplicate': data['title']=duplicate_title(data.get('title') or 'Untitled role', owned_qs)

@@ -6,6 +6,7 @@ from .models import DEFAULT_CANDIDATE_PROFILE, JobLead, JobEvaluation, Applicati
 from .services.skill_matcher import smart_skill_status, display_skill_name
 from .services.access import accessible_jobs
 from .services.prompt_builder import decode_profile_value, encode_profile_value
+from .services.cleaning import clean_job_location
 
 
 def normalize_job_url(value):
@@ -149,6 +150,7 @@ class JobLeadSerializer(serializers.ModelSerializer):
             attrs['company']=''
         if 'company' in attrs: attrs['company']=clean_label_text(attrs.get('company'))
         if 'title' in attrs: attrs['title']=clean_job_title(attrs.get('title'))
+        if 'location' in attrs: attrs['location']=clean_job_location(attrs.get('location'))
         current=self.instance
         has_content = any([
             attrs.get('url') or (current and current.url),
@@ -159,6 +161,10 @@ class JobLeadSerializer(serializers.ModelSerializer):
         if not has_content:
             raise serializers.ValidationError('Provide at least a URL, description, company, or title')
         return attrs
+    def to_representation(self, instance):
+        data=super().to_representation(instance)
+        data['location']=clean_job_location(data.get('location'))
+        return data
     def create(self, attrs):
         attrs['company']=attrs.get('company') or 'Unknown company'
         attrs['title']=attrs.get('title') or 'Untitled role'
@@ -214,6 +220,7 @@ class PublicSubmissionSerializer(serializers.Serializer):
             attrs['company']=''
         if 'company' in attrs: attrs['company']=clean_label_text(attrs.get('company'))
         if 'title' in attrs: attrs['title']=clean_job_title(attrs.get('title'))
+        if 'location' in attrs: attrs['location']=clean_job_location(attrs.get('location'))
         if not (attrs.get('url') or attrs.get('raw_description') or attrs.get('company') or attrs.get('title')):
             raise serializers.ValidationError('Provide at least a job URL, description, company, or title')
         return attrs
