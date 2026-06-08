@@ -2,6 +2,11 @@
 
 This is a full-stack Django and React application for collaborative job lead collection, structured job evaluation, manual ChatGPT-based analysis, and application prioritization.
 
+## Live app
+Hosted on Azure Container Apps: https://dachapply.livelysea-3461ad21.westeurope.azurecontainerapps.io
+
+Access may require an account.
+
 ## Purpose
 DACHApply is a private job intelligence dashboard for a Software Engineer job search in Austria/Germany. Friends can submit relevant job links using invite codes. The owner reviews leads, generates reusable ChatGPT prompts without paid LLM APIs, imports strict JSON evaluations, and tracks applications, notes, and follow-ups.
 
