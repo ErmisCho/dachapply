@@ -3,6 +3,7 @@ import json
 from django.db import connection
 
 from jobradar.models import DEFAULT_CANDIDATE_PROFILE, UserProfile
+from jobradar.services.cleaning import clean_job_location
 
 RECOMMENDATION_RULES = '''Recommendation rules:
 apply = realistic fit with acceptable gaps.
@@ -40,7 +41,7 @@ JOBS:
 {jobs}'''
 
 DEFAULT_COMBINED_PROMPT_TEMPLATE = '''For each existing job below, first fill missing/incorrect job details, then evaluate the job against the candidate profile.
-Preserve job_id exactly. Put links only in url. Never put URLs in company or title. Do not invent experience or facts; use unknown/empty values when needed.
+Preserve job_id exactly. Put links only in url. Never put URLs in company or title. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna). Do not invent experience or facts; use unknown/empty values when needed.
 Return valid JSON only. No markdown.
 
 CANDIDATE PROFILE:
@@ -56,7 +57,7 @@ EXPECTED JSON SCHEMA:
 JOBS:
 {jobs}'''
 
-DEFAULT_ENRICHMENT_PROMPT_TEMPLATE = '''Extract missing structured job details from the provided job URLs/descriptions. Use only information visible in the text or URL context. If a detail is unknown, use an empty string or unknown. Do not invent facts.
+DEFAULT_ENRICHMENT_PROMPT_TEMPLATE = '''Extract missing structured job details from the provided job URLs/descriptions. Use only information visible in the text or URL context. If a detail is unknown, use an empty string or unknown. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna). Do not invent facts.
 Use the candidate profile only as context for which job details are most relevant; do not evaluate unless the schema asks for it.
 Return valid JSON only. No markdown.
 For each job, preserve job_id exactly so the app can update the right record.
@@ -71,7 +72,7 @@ JOBS NEEDING DETAILS:
 {jobs}'''
 
 DEFAULT_BULK_LINKS_PROMPT_TEMPLATE = '''You will receive a list of job links. For each link, extract job details and evaluate the job against the candidate profile below.
-Important: put the link only in the url field. Never put a URL in company or title. Company must be the employer name, or Unknown company if unknown. Title must be the position name, or Untitled role if unknown.
+Important: put the link only in the url field. Never put a URL in company or title. Company must be the employer name, or Unknown company if unknown. Title must be the position name, or Untitled role if unknown. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna).
 Use only information you can infer from the provided link text and any job description text supplied by the user. If you cannot access a page or a detail is unknown, use an empty string or unknown. Do not invent experience or facts.
 Return valid JSON only. No markdown.
 
@@ -193,21 +194,21 @@ def _evaluation_jobs_block(jobs):
     lines=[]
     for j in jobs:
         desc=(j.raw_description or '')[:3500]
-        lines += [f'Job ID: {j.id}', f'Company: {j.company}', f'Title: {j.title}', f'Location: {j.location}', f'Work mode: {j.work_mode}', f'URL: {j.url}', f'Salary: {j.salary_info}', f'Language requirements: {j.language_requirements}', f'Description: {desc}', '---']
+        lines += [f'Job ID: {j.id}', f'Company: {j.company}', f'Title: {j.title}', f'Location: {clean_job_location(j.location)}', f'Work mode: {j.work_mode}', f'URL: {j.url}', f'Salary: {j.salary_info}', f'Language requirements: {j.language_requirements}', f'Description: {desc}', '---']
     return '\n'.join(lines)
 
 
 def _combined_jobs_block(jobs):
     lines=[]
     for j in jobs:
-        lines += [f'Job ID: {j.id}', f'Current company: {j.company}', f'Current title: {j.title}', f'URL: {j.url}', f'Location: {j.location}', f'Work mode: {j.work_mode}', f'Salary: {j.salary_info}', f'Languages: {j.language_requirements}', f'Description: {(j.raw_description or "")[:3500]}', '---']
+        lines += [f'Job ID: {j.id}', f'Current company: {j.company}', f'Current title: {j.title}', f'URL: {j.url}', f'Location: {clean_job_location(j.location)}', f'Work mode: {j.work_mode}', f'Salary: {j.salary_info}', f'Languages: {j.language_requirements}', f'Description: {(j.raw_description or "")[:3500]}', '---']
     return '\n'.join(lines)
 
 
 def _enrichment_jobs_block(jobs):
     lines=[]
     for j in jobs:
-        lines += [f'Job ID: {j.id}', f'Current company: {j.company}', f'Current title: {j.title}', f'URL: {j.url}', f'Current location: {j.location}', f'Current description: {(j.raw_description or "")[:2500]}', '---']
+        lines += [f'Job ID: {j.id}', f'Current company: {j.company}', f'Current title: {j.title}', f'URL: {j.url}', f'Current location: {clean_job_location(j.location)}', f'Current description: {(j.raw_description or "")[:2500]}', '---']
     return '\n'.join(lines)
 
 

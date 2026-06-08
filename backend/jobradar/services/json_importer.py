@@ -4,6 +4,7 @@ from urllib.parse import urlsplit, urlunsplit
 from django.db import transaction
 from jobradar.models import JobLead, JobEvaluation, ApplicationNote
 from jobradar.services.access import accessible_jobs, job_create_defaults
+from jobradar.services.cleaning import clean_job_location
 from rest_framework import serializers
 
 REQ={'job_id', 'company', 'title', 'fit_score', 'priority', 'recommendation', 'summary', 'main_match_reasons', 'main_gaps', 'required_skills', 'nice_to_have_skills', 'matched_skills', 'missing_skills', 'cv_adjustment_notes', 'interview_prep_notes', 'risk_notes', 'next_action'}
@@ -87,6 +88,7 @@ def clean_job_record(rec):
         rec['title']=''
     if 'company' in rec: rec['company']=clean_label_text(rec.get('company'))
     if 'title' in rec: rec['title']=clean_job_title(rec.get('title'))
+    if 'location' in rec: rec['location']=clean_job_location(rec.get('location'))
     return rec
 
 
@@ -154,7 +156,7 @@ def import_jobs_data(data, user=None):
             if rec.get('job_id'):
                 job=owned_qs.get(id=rec['job_id']); action='updated'; changed=[]
                 for f in JOB_UPDATE_FIELDS:
-                    val=normalize_job_url(rec.get(f)) if f=='url' else rec.get(f)
+                    val=normalize_job_url(rec.get(f)) if f=='url' else clean_job_location(rec.get(f)) if f=='location' else rec.get(f)
                     if val is not None and val != '': setattr(job, f, val); changed.append(f)
                 job.save()
             elif dup_action and dup_action.get('action') == 'skip':
@@ -165,7 +167,7 @@ def import_jobs_data(data, user=None):
                 if job:
                     action='overridden'; changed=[]
                     for f in JOB_UPDATE_FIELDS:
-                        val=normalize_job_url(rec.get(f)) if f=='url' else rec.get(f)
+                        val=normalize_job_url(rec.get(f)) if f=='url' else clean_job_location(rec.get(f)) if f=='location' else rec.get(f)
                         if val is not None and val != '': setattr(job, f, val); changed.append(f)
                     job.save()
                 else:
