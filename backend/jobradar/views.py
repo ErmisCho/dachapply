@@ -22,6 +22,7 @@ from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
 from .services.access import accessible_jobs, job_create_defaults
 from .services.cleaning import clean_job_location
+from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
 from .throttles import ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
 
@@ -55,7 +56,12 @@ def csrf(request): return Response({'detail':'ok'})
 @permission_classes([AllowAny])
 @throttle_classes([LoginIPThrottle, LoginAccountThrottle])
 def login_view(request):
-    user=authenticate(request, username=request.data.get('username'), password=request.data.get('password'))
+    username=(request.data.get('username') or '').strip()
+    password=request.data.get('password') or ''
+    if username.lower()==DEMO_USERNAME and password==DEMO_PASSWORD:
+        user,_jobs=ensure_demo_user()
+    else:
+        user=authenticate(request, username=username, password=password)
     if not user: return Response({'detail':'Invalid credentials'}, status=400)
     login(request, user); return Response({'username':user.username})
 

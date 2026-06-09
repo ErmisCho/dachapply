@@ -1,13 +1,17 @@
 from datetime import timedelta
 
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth import get_user_model
+from django.shortcuts import redirect
+from django.urls import path
 from django.db.models import Count, Max, Q, Sum
 from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
-from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, SiteDailyUsage, UserDailyUsage, UserProfile
+from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, ScheduledTaskRun, SiteDailyUsage, UserDailyUsage, UserProfile
+from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME
+from .services.demo_scheduler import seed_demo_if_due
 
 User=get_user_model()
 try:
@@ -32,6 +36,18 @@ class CustomUserAdmin(UserAdmin):
     fieldsets=UserAdmin.fieldsets + (
         ('DACHApply usage', {'fields': ('usage_today','usage_week','usage_month','usage_total','usage_graph','job_count','note_count','last_job_update','last_note_at','last_used_at')}),
     )
+
+    def get_urls(self):
+        urls=super().get_urls()
+        custom=[path('seed-demo/', self.admin_site.admin_view(self.seed_demo_view), name='auth_user_seed_demo')]
+        return custom + urls
+
+    def seed_demo_view(self, request):
+        if request.method != 'POST':
+            return redirect('..')
+        _ran, _user, jobs = seed_demo_if_due(force=True)
+        messages.success(request, f'Reseeded demo user {DEMO_USERNAME} / {DEMO_PASSWORD} with {len(jobs)} default jobs.')
+        return redirect('../')
 
     def changelist_view(self, request, extra_context=None):
         extra_context=extra_context or {}
@@ -354,6 +370,12 @@ class FollowUpAdmin(admin.ModelAdmin):
     list_display=('job','follow_up_date','reason','completed')
     list_filter=('completed','follow_up_date')
     search_fields=('job__company','job__title','reason')
+
+@admin.register(ScheduledTaskRun)
+class ScheduledTaskRunAdmin(admin.ModelAdmin):
+    list_display=('name','last_run_at','updated_at')
+    search_fields=('name',)
+    readonly_fields=('updated_at',)
 
 @admin.register(SiteDailyUsage)
 class SiteDailyUsageAdmin(admin.ModelAdmin):

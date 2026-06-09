@@ -56,7 +56,7 @@ else:
 
 INSTALLED_APPS = [
  'django.contrib.admin','django.contrib.auth','django.contrib.contenttypes','django.contrib.sessions','django.contrib.messages','django.contrib.staticfiles',
- 'rest_framework','corsheaders','jobradar'
+ 'rest_framework','corsheaders','jobradar.apps.JobradarConfig'
 ]
 MIDDLEWARE = [
  'django.middleware.security.SecurityMiddleware','whitenoise.middleware.WhiteNoiseMiddleware','corsheaders.middleware.CorsMiddleware',

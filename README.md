@@ -79,14 +79,11 @@ Seed invite code:
 FRIEND-DEMO
 ```
 
-For a quick non-interactive local demo user instead of `createsuperuser`, run:
+For a quick non-interactive local demo user, run the seed command below and log in with:
 
-```bash
-cd backend
-python manage.py shell -c "from django.contrib.auth.models import User; User.objects.filter(username='owner').exists() or User.objects.create_superuser('owner','owner@example.com','ownerpass')"
+```text
+demo@dachapply.com / DemoApply2026!
 ```
-
-Then log in with `owner` / `ownerpass`.
 
 For same-origin production-style local serving through Django:
 
@@ -116,7 +113,7 @@ API endpoints are also available for authenticated users:
 cd backend
 python manage.py seed_demo
 ```
-Creates one active invite code (`FRIEND-DEMO`), five example jobs, two evaluations, and two follow-ups. Admin setup instruction: `python manage.py createsuperuser`.
+Creates one active invite code (`FRIEND-DEMO`) plus the public demo user (`demo@dachapply.com` / `DemoApply2026!`) with rich sample data: multiple active interviews, friend referrals, evaluations, notes, follow-ups, archived/skipped jobs, and a pending friend request. Admin setup instruction: `python manage.py createsuperuser`.
 
 ## Tests and verification
 

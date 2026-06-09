@@ -4,7 +4,12 @@
 {{ block.super }}
 {% if usage_overview %}
 <div class="module" style="padding: 12px 16px; margin: 0 0 16px 0; overflow-x: auto;">
-  <h2 style="margin: 0 0 10px 0;">DACHApply usage</h2>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 10px 0;">
+    <h2 style="margin:0;">DACHApply usage</h2>
+    <form method="post" action="{% url 'admin:auth_user_seed_demo' %}" style="margin:0;">{% csrf_token %}
+      <button type="submit" class="button" style="padding:8px 12px;">Reset demo data now</button>
+    </form>
+  </div>
   <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px;">
     <div style="border: 1px solid var(--hairline-color,#ddd); border-radius: 6px; padding: 8px;"><div style="color: var(--quiet-color,#666); font-size: 11px;">Today</div><strong style="font-size: 18px;">{{ usage_overview.today }}</strong><div style="font-size: 11px; color: var(--quiet-color,#666);">{{ usage_overview.today_auth }} auth / {{ usage_overview.today_anon }} anon · {{ usage_overview.today_users }} users</div></div>
     <div style="border: 1px solid var(--hairline-color,#ddd); border-radius: 6px; padding: 8px;"><div style="color: var(--quiet-color,#666); font-size: 11px;">7 days</div><strong style="font-size: 18px;">{{ usage_overview.week }}</strong><div style="font-size: 11px; color: var(--quiet-color,#666);">{{ usage_overview.week_auth }} auth / {{ usage_overview.week_anon }} anon · {{ usage_overview.week_users }} users</div></div>

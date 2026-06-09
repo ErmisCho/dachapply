@@ -123,3 +123,9 @@ class InviteCode(models.Model):
     created_at=models.DateTimeField(auto_now_add=True)
     def is_valid(self): return self.active and (self.expires_at is None or self.expires_at > timezone.now())
     def __str__(self): return self.label or self.code
+
+class ScheduledTaskRun(models.Model):
+    name=models.CharField(max_length=120, unique=True)
+    last_run_at=models.DateTimeField(null=True, blank=True)
+    updated_at=models.DateTimeField(auto_now=True)
+    def __str__(self): return f'{self.name}: {self.last_run_at or "never"}'
