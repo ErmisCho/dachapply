@@ -177,6 +177,21 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
 .dark .app-badge-purple{background:rgba(91,33,182,.30);color:#ddd6fe;border-color:rgba(167,139,250,.30)}
 .dark .app-badge-slate{background:rgba(51,65,85,.42);color:#e2e8f0;border-color:rgba(148,163,184,.24)}
 
+/* Form-style status messages */
+.status-message{display:flex;align-items:flex-start;gap:.65rem;width:100%;border:2px solid;border-radius:1.35rem;background:#fff;padding:.8rem 1rem;font-size:.95rem;font-weight:500;line-height:1.45;box-shadow:0 0 0 3px var(--status-ring),inset 0 0 0 1px var(--status-inset);overflow-wrap:anywhere}
+.status-message-compact{display:inline-flex;width:auto;max-width:100%;border-radius:999px;padding:.45rem .75rem;font-size:.875rem}
+.status-message-icon{display:inline-grid;height:1.35rem;width:1.35rem;flex:0 0 auto;place-items:center;border:1.8px solid currentColor;border-radius:999px;font-size:.9rem;font-weight:800;line-height:1}
+.status-message-title{margin-bottom:.1rem;font-weight:750}
+.status-message-body{min-width:0}
+.status-message-pre{margin:0;white-space:pre-wrap;font:inherit;color:inherit}
+.status-message-error{--status-ring:rgba(255,59,97,.18);--status-inset:rgba(255,59,97,.22);border-color:#ff3b61;color:#e60023}
+.status-message-success{--status-ring:rgba(34,197,94,.18);--status-inset:rgba(34,197,94,.22);border-color:#22c55e;color:#047857}
+.status-message-info{--status-ring:rgba(59,130,246,.16);--status-inset:rgba(59,130,246,.20);border-color:#3b82f6;color:#1d4ed8}
+.dark .status-message{background:rgba(2,6,23,.92)}
+.dark .status-message-error{--status-ring:rgba(248,113,113,.18);--status-inset:rgba(248,113,113,.18);border-color:#fb7185;color:#fecdd3}
+.dark .status-message-success{--status-ring:rgba(74,222,128,.16);--status-inset:rgba(74,222,128,.18);border-color:#4ade80;color:#bbf7d0}
+.dark .status-message-info{--status-ring:rgba(96,165,250,.16);--status-inset:rgba(96,165,250,.18);border-color:#60a5fa;color:#bfdbfe}
+
 /* Dashboard column visibility */
 .hide-col-prio th:nth-child(1),.hide-col-prio td:nth-child(1),
 .hide-col-fit th:nth-child(2),.hide-col-fit td:nth-child(2),
