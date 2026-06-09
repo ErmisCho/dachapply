@@ -84,6 +84,19 @@ def register_view(request):
 def logout_view(request): logout(request); return Response({'detail':'logged out'})
 
 @api_view(['POST'])
+def change_password(request):
+    user=request.user
+    current=request.data.get('current_password') or ''
+    new=request.data.get('new_password') or request.data.get('password') or ''
+    if user.has_usable_password() and not user.check_password(current):
+        return Response({'detail':'Current password is incorrect.'}, status=400)
+    if len(new)<6:
+        return Response({'detail':'New password must be at least 6 characters'}, status=400)
+    user.set_password(new); user.save(update_fields=['password'])
+    login(request, user)
+    return Response({'detail':'Password updated.'})
+
+@api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([PasswordResetIPThrottle, PasswordResetEmailThrottle])
 def password_reset_request(request):
