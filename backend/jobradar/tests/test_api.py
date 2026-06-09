@@ -3,6 +3,7 @@ import pytest
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.db.models import Q
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.utils import timezone
@@ -604,6 +605,20 @@ def test_prompt_template_from_profile_page_is_used(client, job):
     assert 'PROFILE=Candidate profile:\nPROFILE_FROM_SETTINGS' in prompt
     assert f'Job ID: {job.id}' in prompt
     assert '"jobs"' in prompt
+
+
+def test_demo_login_creates_rich_demo_dashboard(db):
+    c = APIClient()
+    r = c.post('/api/auth/login/', {'username': 'demo@dachapply.com', 'password': 'DemoApply2026!'}, format='json')
+    assert r.status_code == 200
+    demo = User.objects.get(username='demo@dachapply.com')
+    jobs = JobLead.objects.filter(Q(created_by=demo) | Q(submitted_for=demo)).distinct()
+    assert jobs.count() >= 9
+    assert jobs.filter(status='interview').count() >= 4
+    assert jobs.filter(submitted_for=demo, source='friend').count() >= 3
+    assert UserProfile.objects.filter(requested_submit_for=demo, submit_for__isnull=True).exists()
+    assert JobEvaluation.objects.filter(job__in=jobs).count() >= jobs.count()
+    assert FollowUp.objects.filter(job__in=jobs).exists()
 
 
 def test_login_rate_limit_returns_429(db):
