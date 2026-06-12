@@ -9,7 +9,7 @@ from django.db.models import Count, Max, Q, Sum
 from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
-from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, ScheduledTaskRun, SiteDailyUsage, UserDailyUsage, UserProfile
+from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, ScheduledTaskRun, SiteDailyUsage, SiteVisitor, UserDailyUsage, UserProfile, VisitorDailyUsage
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME
 from .services.demo_scheduler import seed_demo_if_due
 
@@ -60,27 +60,39 @@ class CustomUserAdmin(UserAdmin):
         month_start=today - timedelta(days=29)
         site_qs=SiteDailyUsage.objects.all()
         user_qs=UserDailyUsage.objects.all()
-        today_stats=site_qs.filter(date=today).aggregate(total=Sum('request_count'), auth=Sum('authenticated_count'), anon=Sum('anonymous_count'))
-        week_stats=site_qs.filter(date__gte=week_start).aggregate(total=Sum('request_count'), auth=Sum('authenticated_count'), anon=Sum('anonymous_count'))
-        month_stats=site_qs.filter(date__gte=month_start).aggregate(total=Sum('request_count'), auth=Sum('authenticated_count'), anon=Sum('anonymous_count'))
-        total_stats=site_qs.aggregate(total=Sum('request_count'), auth=Sum('authenticated_count'), anon=Sum('anonymous_count'))
+        today_stats=site_qs.filter(date=today).aggregate(total=Sum('request_count'), auth=Sum('authenticated_count'), anon=Sum('anonymous_count'), visitors=Sum('unique_visitor_count'), demo=Sum('demo_click_count'), demo_visitors=Sum('demo_unique_visitor_count'))
+        week_stats=site_qs.filter(date__gte=week_start).aggregate(total=Sum('request_count'), auth=Sum('authenticated_count'), anon=Sum('anonymous_count'), demo=Sum('demo_click_count'))
+        month_stats=site_qs.filter(date__gte=month_start).aggregate(total=Sum('request_count'), auth=Sum('authenticated_count'), anon=Sum('anonymous_count'), demo=Sum('demo_click_count'))
+        total_stats=site_qs.aggregate(total=Sum('request_count'), auth=Sum('authenticated_count'), anon=Sum('anonymous_count'), demo=Sum('demo_click_count'))
         return {
             'today': today_stats['total'] or 0,
             'today_auth': today_stats['auth'] or 0,
             'today_anon': today_stats['anon'] or 0,
             'today_users': user_qs.filter(date=today).aggregate(total=Count('user', distinct=True))['total'] or 0,
+            'today_visitors': today_stats['visitors'] or 0,
+            'today_demo_clicks': today_stats['demo'] or 0,
+            'today_demo_visitors': today_stats['demo_visitors'] or 0,
             'week': week_stats['total'] or 0,
             'week_auth': week_stats['auth'] or 0,
             'week_anon': week_stats['anon'] or 0,
             'week_users': user_qs.filter(date__gte=week_start).aggregate(total=Count('user', distinct=True))['total'] or 0,
+            'week_visitors': VisitorDailyUsage.objects.filter(date__gte=week_start).aggregate(total=Count('visitor', distinct=True))['total'] or 0,
+            'week_demo_clicks': week_stats['demo'] or 0,
+            'week_demo_visitors': VisitorDailyUsage.objects.filter(date__gte=week_start, demo_click_count__gt=0).aggregate(total=Count('visitor', distinct=True))['total'] or 0,
             'month': month_stats['total'] or 0,
             'month_auth': month_stats['auth'] or 0,
             'month_anon': month_stats['anon'] or 0,
             'month_users': user_qs.filter(date__gte=month_start).aggregate(total=Count('user', distinct=True))['total'] or 0,
+            'month_visitors': VisitorDailyUsage.objects.filter(date__gte=month_start).aggregate(total=Count('visitor', distinct=True))['total'] or 0,
+            'month_demo_clicks': month_stats['demo'] or 0,
+            'month_demo_visitors': VisitorDailyUsage.objects.filter(date__gte=month_start, demo_click_count__gt=0).aggregate(total=Count('visitor', distinct=True))['total'] or 0,
             'total': total_stats['total'] or 0,
             'total_auth': total_stats['auth'] or 0,
             'total_anon': total_stats['anon'] or 0,
             'total_users': user_qs.aggregate(total=Count('user', distinct=True))['total'] or 0,
+            'total_visitors': SiteVisitor.objects.count(),
+            'total_demo_clicks': total_stats['demo'] or 0,
+            'total_demo_visitors': SiteVisitor.objects.filter(demo_click_count__gt=0).count(),
             'graphs_html': self._site_usage_graphs_html(site_qs),
         }
 
@@ -133,64 +145,192 @@ class CustomUserAdmin(UserAdmin):
             '</div>'
         )
 
+    def _multi_series_chart_html(self, title, subtitle, values, series):
+        max_count=max([metrics.get(key, 0) for _, metrics in values for key, _, _ in series], default=0) or 1
+        total=sum(metrics.get('total', 0) for _, metrics in values)
+        latest=values[-1][1].get('total', 0) if values else 0
+        peak_label, peak_metrics=max(values, key=lambda item: item[1].get('total', 0), default=('', {}))
+        peak_count=peak_metrics.get('total', 0)
+        first_label=values[0][0] if values else ''
+        middle_label=values[len(values)//2][0] if values else ''
+        last_label=values[-1][0] if values else ''
+        width=440
+        height=128
+        left_pad=8
+        right_pad=8
+        top_pad=8
+        bottom_pad=14
+        plot_width=width - left_pad - right_pad
+        plot_height=height - top_pad - bottom_pad
+
+        visual_offsets={
+            'authenticated': -4,
+            'demo': 0,
+            'anonymous': 4,
+            'total': 8,
+        }
+
+        def point(index, count, key=None):
+            if len(values) <= 1:
+                x=left_pad + plot_width
+            else:
+                x=left_pad + (index / (len(values) - 1)) * plot_width
+            y=top_pad + plot_height - ((count / max_count) * plot_height if max_count else 0)
+            if key:
+                y += visual_offsets.get(key, 0)
+                y = max(top_pad, min(top_pad + plot_height, y))
+            return x, y
+
+        lines=[]
+        # Draw total first, then overlapping state flags in the requested visible
+        # order: authentication -> demo account -> no authentication. Later SVG
+        # lines sit visually above earlier ones.
+        draw_order={key: index for index, key in enumerate(('total','authenticated','demo','anonymous'))}
+        for key, label, color in sorted(series, key=lambda item: draw_order.get(item[0], 99)):
+            points=[point(index, metrics.get(key, 0), key) for index, (_, metrics) in enumerate(values)]
+            point_text=' '.join(f'{x:.2f},{y:.2f}' for x, y in points)
+            stroke_width='3.2' if key in ('demo','anonymous') else '2.4'
+            dash=' stroke-dasharray="5 3"' if key == 'demo' else ''
+            opacity='0.82' if key == 'anonymous' else '0.92'
+            circles=''.join(
+                f'<circle cx="{x:.2f}" cy="{y:.2f}" r="2.8" fill="{color}" stroke="var(--body-bg,#fff)" stroke-width="0.8" opacity="0.98" />'
+                for x, y in points
+            )
+            lines.append(
+                f'<polyline points="{point_text}" fill="none" stroke="{color}" stroke-width="{stroke_width}" stroke-linecap="round" stroke-linejoin="round" opacity="{opacity}"{dash} />'
+                f'{circles}'
+            )
+
+        tooltip_width=plot_width / max(len(values), 1)
+        tooltips=[]
+        for index, (label, metrics) in enumerate(values):
+            x, _=point(index, 0)
+            title_text=', '.join(f'{series_label}: {metrics.get(key, 0)}' for key, series_label, _ in series)
+            tooltips.append(
+                f'<rect x="{max(left_pad, x - tooltip_width / 2):.2f}" y="0" width="{tooltip_width:.2f}" height="{height}" fill="transparent">'
+                f'<title>{label}: {title_text}</title>'
+                '</rect>'
+            )
+
+        y_mid=top_pad + plot_height / 2
+        legend=''.join(
+            f'<span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;white-space:nowrap"><span style="width:14px;height:3px;border-radius:2px;background:{color};display:inline-block"></span>{label}</span>'
+            for _, label, color in series
+        )
+        return (
+            '<div style="border:1px solid var(--hairline-color,#ddd);border-radius:8px;padding:10px;background:var(--body-bg,#fff);min-width:280px">'
+            '<div style="display:flex;justify-content:space-between;gap:8px;align-items:start;margin-bottom:8px">'
+            f'<div><h3 style="margin:0;font-size:14px">{title}</h3><div style="color:var(--quiet-color,#666);font-size:11px">{subtitle}</div></div>'
+            f'<div style="font-size:18px;font-weight:600;line-height:1" title="Sum of total users across shown points">{total}</div>'
+            '</div>'
+            f'<div style="font-size:10px;color:var(--quiet-color,#666);margin-bottom:5px">{legend}</div>'
+            f'<svg viewBox="0 0 {width} {height}" width="100%" height="128" role="img" aria-label="{title}: overlapping users by category">'
+            f'<line x1="{left_pad}" y1="{top_pad}" x2="{left_pad}" y2="{top_pad + plot_height}" stroke="var(--hairline-color,#ddd)" />'
+            f'<line x1="{left_pad}" y1="{top_pad + plot_height}" x2="{width - right_pad}" y2="{top_pad + plot_height}" stroke="var(--hairline-color,#ddd)" />'
+            f'<line x1="{left_pad}" y1="{y_mid:.2f}" x2="{width - right_pad}" y2="{y_mid:.2f}" stroke="var(--hairline-color,#ddd)" opacity="0.45" />'
+            f'{"".join(lines)}'
+            f'{"".join(tooltips)}'
+            '</svg>'
+            f'<div style="display:flex;justify-content:space-between;color:var(--quiet-color,#666);font-size:10px;margin-top:2px"><span>{first_label}</span><span>{middle_label}</span><span>{last_label}</span></div>'
+            '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px;font-size:11px;color:var(--quiet-color,#666)">'
+            f'<div><strong style="color:var(--body-fg,#333)">{latest}</strong><br>latest total</div>'
+            f'<div><strong style="color:var(--body-fg,#333)">{round(total / len(values), 1) if values else 0}</strong><br>avg total/point</div>'
+            f'<div><strong style="color:var(--body-fg,#333)">{peak_count}</strong><br>peak {peak_label}</div>'
+            '</div>'
+            '</div>'
+        )
+
     def _site_usage_graphs_html(self, qs):
         today=timezone.localdate()
-        rows=list(qs.values('date','request_count','authenticated_count','anonymous_count'))
+        visitor_rows=list(VisitorDailyUsage.objects.values('date','visitor_id','had_anonymous','had_authenticated','demo_click_count'))
+        visitor_totals=list(SiteVisitor.objects.values('id','first_seen_at','had_anonymous','had_authenticated','demo_click_count','demo_last_clicked_at'))
+        series=(
+            ('authenticated', 'Authentication', '#52b788'),
+            ('demo', 'Demo account', '#f5a623'),
+            ('anonymous', 'No authentication', '#d9534f'),
+            ('total', 'Total users', '#417690'),
+        )
 
-        def detail(matching):
-            auth=sum(row['authenticated_count'] for row in matching)
-            anon=sum(row['anonymous_count'] for row in matching)
-            return f', authenticated: {auth}, anonymous: {anon}'
+        def metrics_for_range(start, end):
+            matching=[row for row in visitor_rows if start <= row['date'] < end]
+            total_visitors={row['visitor_id'] for row in matching}
+            anonymous_visitors={row['visitor_id'] for row in matching if row['had_anonymous']}
+            authenticated_visitors={row['visitor_id'] for row in matching if row['had_authenticated']}
+            demo_visitors={row['visitor_id'] for row in matching if row['demo_click_count'] > 0}
+            return {
+                'anonymous': len(anonymous_visitors),
+                'demo': len(demo_visitors),
+                'authenticated': len(authenticated_visitors),
+                'total': len(total_visitors),
+            }
+
+        def date_from_datetime(value):
+            return timezone.localdate(value) if value else None
+
+        def cumulative_metrics(end):
+            total_visitors=set()
+            anonymous_visitors=set()
+            authenticated_visitors=set()
+            demo_visitors=set()
+            for row in visitor_totals:
+                first_seen=date_from_datetime(row['first_seen_at'])
+                if first_seen and first_seen < end:
+                    total_visitors.add(row['id'])
+                    if row['had_anonymous']:
+                        anonymous_visitors.add(row['id'])
+                    if row['had_authenticated']:
+                        authenticated_visitors.add(row['id'])
+                demo_seen=date_from_datetime(row['demo_last_clicked_at'])
+                if row['demo_click_count'] > 0 and ((demo_seen and demo_seen < end) or (not demo_seen and first_seen and first_seen < end)):
+                    demo_visitors.add(row['id'])
+            return {
+                'anonymous': len(anonymous_visitors),
+                'demo': len(demo_visitors),
+                'authenticated': len(authenticated_visitors),
+                'total': len(total_visitors),
+            }
 
         daily_start=today - timedelta(days=29)
         daily=[]
         for offset in range(30):
             day=daily_start + timedelta(days=offset)
-            matching=[row for row in rows if row['date'] == day]
-            daily.append((day.isoformat(), sum(row['request_count'] for row in matching), detail(matching)))
+            daily.append((day.isoformat(), metrics_for_range(day, day + timedelta(days=1))))
 
         weekly_start=today - timedelta(days=83)
         weekly=[]
         for offset in range(12):
             start=weekly_start + timedelta(days=offset * 7)
-            end=start + timedelta(days=6)
-            matching=[row for row in rows if start <= row['date'] <= end]
-            weekly.append((f'week {start.isoformat()} to {end.isoformat()}', sum(row['request_count'] for row in matching), detail(matching)))
+            end=start + timedelta(days=7)
+            weekly.append((f'{start.strftime("%m-%d")}–{(end - timedelta(days=1)).strftime("%m-%d")}', metrics_for_range(start, end)))
 
         month_start=self._add_months(self._month_start(today), -11)
         monthly=[]
         for offset in range(12):
             start=self._add_months(month_start, offset)
             end=self._add_months(start, 1)
-            matching=[row for row in rows if start <= row['date'] < end]
-            monthly.append((start.strftime('%Y-%m'), sum(row['request_count'] for row in matching), detail(matching)))
+            monthly.append((start.strftime('%Y-%m'), metrics_for_range(start, end)))
 
-        first_date=min([row['date'] for row in rows], default=month_start)
+        first_seen_dates=[date_from_datetime(row['first_seen_at']) for row in visitor_totals if row['first_seen_at']]
+        first_date=min(first_seen_dates, default=month_start)
         total_start=self._month_start(first_date)
         month_count=(today.year - total_start.year) * 12 + today.month - total_start.month + 1
         if month_count > 24:
             visible_start=self._add_months(self._month_start(today), -23)
-            running_total=sum(row['request_count'] for row in rows if row['date'] < visible_start)
             month_count=24
         else:
             visible_start=total_start
-            running_total=0
         total=[]
         for offset in range(month_count):
             start=self._add_months(visible_start, offset)
             end=self._add_months(start, 1)
-            matching=[row for row in rows if start <= row['date'] < end]
-            running_total += sum(row['request_count'] for row in matching)
-            auth_total=sum(row['authenticated_count'] for row in rows if row['date'] < end)
-            anon_total=sum(row['anonymous_count'] for row in rows if row['date'] < end)
-            total.append((start.strftime('%Y-%m'), running_total, f', authenticated total: {auth_total}, anonymous total: {anon_total}'))
+            total.append((start.strftime('%Y-%m'), cumulative_metrics(end)))
 
         html=(
             '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;min-width:600px">'
-            + self._chart_html('Daily usage', 'All requests per day, last 30 days', daily, '#417690')
-            + self._chart_html('Weekly usage', 'All requests per 7-day week, last 12 weeks', weekly, '#79aec8')
-            + self._chart_html('Monthly usage', 'All requests per calendar month, last 12 months', monthly, '#609ab6')
-            + self._chart_html('Total usage', 'Cumulative all requests by month, all time shown up to 24 months', total, '#2f5d75')
+            + self._multi_series_chart_html('Daily usage', 'Unique users per day, last 30 days', daily, series)
+            + self._multi_series_chart_html('Weekly usage', 'Unique users per 7-day week, last 12 weeks', weekly, series)
+            + self._multi_series_chart_html('Monthly usage', 'Unique users per calendar month, last 12 months', monthly, series)
+            + self._multi_series_chart_html('Total usage', 'Cumulative unique users by month, all time shown up to 24 months', total, series)
             + '</div>'
         )
         return mark_safe(html)
@@ -379,15 +519,31 @@ class ScheduledTaskRunAdmin(admin.ModelAdmin):
 
 @admin.register(SiteDailyUsage)
 class SiteDailyUsageAdmin(admin.ModelAdmin):
-    list_display=('date','request_count','authenticated_count','anonymous_count','last_seen_at')
+    list_display=('date','request_count','authenticated_count','anonymous_count','unique_visitor_count','demo_click_count','demo_unique_visitor_count','last_seen_at')
     list_filter=('date',)
     date_hierarchy='date'
+    readonly_fields=('created_at','updated_at')
+
+@admin.register(SiteVisitor)
+class SiteVisitorAdmin(admin.ModelAdmin):
+    list_display=('visitor_id','user','had_anonymous','had_authenticated','first_seen_at','last_seen_at','request_count','demo_click_count','demo_last_clicked_at')
+    search_fields=('visitor_id','user__username','user__email')
+    list_filter=('first_seen_at','last_seen_at','demo_last_clicked_at')
+    date_hierarchy='last_seen_at'
     readonly_fields=('created_at','updated_at')
 
 @admin.register(UserDailyUsage)
 class UserDailyUsageAdmin(admin.ModelAdmin):
     list_display=('user','date','request_count','last_seen_at')
     search_fields=('user__username','user__email')
+    list_filter=('date',)
+    date_hierarchy='date'
+    readonly_fields=('created_at','updated_at')
+
+@admin.register(VisitorDailyUsage)
+class VisitorDailyUsageAdmin(admin.ModelAdmin):
+    list_display=('visitor','date','request_count','had_anonymous','had_authenticated','demo_click_count','last_seen_at','demo_last_clicked_at')
+    search_fields=('visitor__visitor_id','visitor__user__username','visitor__user__email')
     list_filter=('date',)
     date_hierarchy='date'
     readonly_fields=('created_at','updated_at')

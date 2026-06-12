@@ -23,6 +23,7 @@ from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user
 from .services.access import accessible_jobs, job_create_defaults
 from .services.cleaning import clean_job_location
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
+from .services.analytics import record_demo_click
 from .throttles import ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
 
@@ -59,6 +60,7 @@ def login_view(request):
     username=(request.data.get('username') or '').strip()
     password=request.data.get('password') or ''
     if username.lower()==DEMO_USERNAME and password==DEMO_PASSWORD:
+        record_demo_click(request)
         user,_jobs=ensure_demo_user()
     else:
         user=authenticate(request, username=username, password=password)

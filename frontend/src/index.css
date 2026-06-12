@@ -192,7 +192,7 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
 .dark .app-badge-slate{background:rgba(51,65,85,.42);color:#e2e8f0;border-color:rgba(148,163,184,.24)}
 
 /* Form-style status messages */
-.status-message{display:flex;align-items:flex-start;gap:.65rem;width:100%;border:2px solid;border-radius:1.35rem;background:#fff;padding:.8rem 1rem;font-size:.95rem;font-weight:500;line-height:1.45;box-shadow:0 0 0 3px var(--status-ring),inset 0 0 0 1px var(--status-inset);overflow-wrap:anywhere}
+.status-message{display:flex;align-items:flex-start;gap:.65rem;width:fit-content;max-width:100%;border:2px solid;border-radius:1.35rem;background:#fff;padding:.8rem 1rem;font-size:.95rem;font-weight:500;line-height:1.45;box-shadow:0 0 0 3px var(--status-ring),inset 0 0 0 1px var(--status-inset);overflow-wrap:anywhere}
 .status-message-compact{display:inline-flex;width:auto;max-width:100%;border-radius:999px;padding:.45rem .75rem;font-size:.875rem}
 .status-message-icon{display:inline-grid;height:1.35rem;width:1.35rem;flex:0 0 auto;place-items:center;border:1.8px solid currentColor;border-radius:999px;font-size:.9rem;font-weight:800;line-height:1}
 .status-message-title{margin-bottom:.1rem;font-weight:750}

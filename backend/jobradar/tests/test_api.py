@@ -8,7 +8,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
-from jobradar.models import InviteCode, JobLead, JobEvaluation, ApplicationNote, FollowUp, UserProfile
+from jobradar.models import InviteCode, JobLead, JobEvaluation, ApplicationNote, FollowUp, SiteDailyUsage, SiteVisitor, UserDailyUsage, UserProfile, VisitorDailyUsage
 
 
 def throttled_rest_framework(**rates):
@@ -619,6 +619,47 @@ def test_demo_login_creates_rich_demo_dashboard(db):
     assert UserProfile.objects.filter(requested_submit_for=demo, submit_for__isnull=True).exists()
     assert JobEvaluation.objects.filter(job__in=jobs).count() >= jobs.count()
     assert FollowUp.objects.filter(job__in=jobs).exists()
+
+
+def test_demo_login_tracks_unique_visitor_and_demo_click(db):
+    c = APIClient()
+    r = c.post('/api/auth/login/', {'username': 'demo@dachapply.com', 'password': 'DemoApply2026!'}, format='json')
+    assert r.status_code == 200
+    assert SiteVisitor.objects.count() == 1
+    visitor = SiteVisitor.objects.get()
+    assert visitor.request_count == 1
+    assert visitor.had_anonymous is True
+    assert visitor.had_authenticated is False
+    assert visitor.demo_click_count == 1
+    assert VisitorDailyUsage.objects.filter(visitor=visitor, request_count=1, demo_click_count=1, had_anonymous=True, had_authenticated=False).exists()
+    assert not UserDailyUsage.objects.filter(user__username='demo@dachapply.com').exists()
+    daily = SiteDailyUsage.objects.get(date=timezone.localdate())
+    assert daily.unique_visitor_count == 1
+    assert daily.authenticated_count == 0
+    assert daily.anonymous_count == 1
+    assert daily.demo_click_count == 1
+    assert daily.demo_unique_visitor_count == 1
+
+
+def test_same_visitor_collects_authenticated_anonymous_and_demo_flags(db):
+    user = User.objects.create_user('flag-user@example.test', email='flag-user@example.test', password='secret123')
+    c = APIClient()
+    r = c.post('/api/auth/login/', {'username': user.username, 'password': 'secret123'}, format='json')
+    assert r.status_code == 200
+    r = c.post('/api/auth/logout/', {}, format='json')
+    assert r.status_code == 200
+    r = c.post('/api/auth/login/', {'username': 'demo@dachapply.com', 'password': 'DemoApply2026!'}, format='json')
+    assert r.status_code == 200
+
+    assert SiteVisitor.objects.count() == 1
+    visitor = SiteVisitor.objects.get()
+    assert visitor.had_authenticated is True
+    assert visitor.had_anonymous is True
+    assert visitor.demo_click_count == 1
+    daily = VisitorDailyUsage.objects.get(visitor=visitor, date=timezone.localdate())
+    assert daily.had_authenticated is True
+    assert daily.had_anonymous is True
+    assert daily.demo_click_count == 1
 
 
 def test_login_rate_limit_returns_429(db):
