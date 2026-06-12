@@ -2,6 +2,22 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+
+class SiteVisitor(models.Model):
+    visitor_id=models.CharField(max_length=64, unique=True, db_index=True)
+    user=models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, related_name='site_visitors', on_delete=models.SET_NULL)
+    first_seen_at=models.DateTimeField(auto_now_add=True)
+    last_seen_at=models.DateTimeField(null=True, blank=True)
+    request_count=models.PositiveIntegerField(default=0)
+    had_anonymous=models.BooleanField(default=False)
+    had_authenticated=models.BooleanField(default=False)
+    demo_click_count=models.PositiveIntegerField(default=0)
+    demo_last_clicked_at=models.DateTimeField(null=True, blank=True)
+    created_at=models.DateTimeField(auto_now_add=True)
+    updated_at=models.DateTimeField(auto_now=True)
+    class Meta: ordering=['-last_seen_at','-created_at']
+    def __str__(self): return self.user.get_username() if self.user_id else self.visitor_id
+
 DEFAULT_CANDIDATE_PROFILE = '''Software Engineer based in Vienna. Strong Python backend experience. Django, FastAPI, REST APIs, Java. RAG, semantic search, LangChain, LangGraph. Elasticsearch/OpenSearch. SQL, PostgreSQL, MySQL. Docker, Linux, Kubernetes basics, AWS basics, Azure learning in progress. RabbitMQ, Redis, async/background processing from personal projects. Enterprise background in finance, telecom, and AI/search systems. German: professional working proficiency, B2 completed, C1 in progress. English: C2 certified. Stronger fit for Python Backend, AI Engineer, RAG, Search, Data Engineering, Platform, and reliability-focused roles. Weaker fit for frontend-heavy React/TypeScript roles, pure DevOps/SRE roles, pure ML research roles, and roles requiring deep professional cloud/Spark/Terraform experience. Do not invent experience. Be honest about gaps and hiring risk.'''
 
 class UserProfile(models.Model):
@@ -109,11 +125,30 @@ class SiteDailyUsage(models.Model):
     request_count=models.PositiveIntegerField(default=0)
     authenticated_count=models.PositiveIntegerField(default=0)
     anonymous_count=models.PositiveIntegerField(default=0)
+    unique_visitor_count=models.PositiveIntegerField(default=0)
+    demo_click_count=models.PositiveIntegerField(default=0)
+    demo_unique_visitor_count=models.PositiveIntegerField(default=0)
     last_seen_at=models.DateTimeField(null=True, blank=True)
     created_at=models.DateTimeField(auto_now_add=True)
     updated_at=models.DateTimeField(auto_now=True)
     class Meta: ordering=['-date']
     def __str__(self): return f'{self.date}: {self.request_count} requests'
+
+class VisitorDailyUsage(models.Model):
+    visitor=models.ForeignKey(SiteVisitor, related_name='daily_usage', on_delete=models.CASCADE)
+    date=models.DateField(db_index=True)
+    request_count=models.PositiveIntegerField(default=0)
+    had_anonymous=models.BooleanField(default=False)
+    had_authenticated=models.BooleanField(default=False)
+    demo_click_count=models.PositiveIntegerField(default=0)
+    last_seen_at=models.DateTimeField(null=True, blank=True)
+    demo_last_clicked_at=models.DateTimeField(null=True, blank=True)
+    created_at=models.DateTimeField(auto_now_add=True)
+    updated_at=models.DateTimeField(auto_now=True)
+    class Meta:
+        unique_together=(('visitor','date'),)
+        ordering=['-date']
+    def __str__(self): return f'{self.visitor} - {self.date}: {self.request_count}'
 
 class InviteCode(models.Model):
     code=models.CharField(max_length=80, unique=True)
