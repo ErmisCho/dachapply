@@ -2,6 +2,7 @@ import json
 import re
 from urllib.parse import urlsplit, urlunsplit
 from django.db import transaction
+from django.db.models import Q
 from jobradar.models import JobLead, JobEvaluation, ApplicationNote
 from jobradar.services.access import accessible_jobs, job_create_defaults
 from jobradar.services.cleaning import clean_job_location
@@ -122,6 +123,51 @@ def duplicate_title(title, queryset=None):
     return candidate
 
 
+def duplicate_url_variants(url):
+    url=normalize_job_url(url)
+    if not url: return set()
+    variants={url, url.rstrip('/')}
+    if not url.endswith('/'): variants.add(url + '/')
+    return {v for v in variants if v}
+
+
+def duplicate_text(value):
+    return re.sub(r'\s+', ' ', clean_label_text(value).casefold()).strip()
+
+
+def position_duplicate_key(rec):
+    company=duplicate_text(rec.get('company'))
+    title=duplicate_text(rec.get('title'))
+    if not company or not title: return None
+    if company == 'unknown company' or title == 'untitled role': return None
+    return ('position', company, title)
+
+
+def duplicate_keys(rec):
+    keys=[]
+    url=normalize_job_url(rec.get('url'))
+    if url: keys.append(('url', url.rstrip('/')))
+    pos=position_duplicate_key(rec)
+    if pos: keys.append(pos)
+    return keys
+
+
+def duplicate_jobs_qs(rec, queryset):
+    query=None
+    variants=duplicate_url_variants(rec.get('url'))
+    if variants:
+        query=Q(url__in=variants)
+    pos=position_duplicate_key(rec)
+    if pos:
+        company=(rec.get('company') or '').strip()
+        title=(rec.get('title') or '').strip()
+        pos_query=Q(company__iexact=company, title__iexact=title)
+        query=pos_query if query is None else query | pos_query
+    if query is None:
+        return queryset.none()
+    return queryset.filter(query).distinct()
+
+
 def action_for_duplicate(data, index):
     for a in data.get('duplicate_actions') or []:
         if a.get('index') == index: return a
@@ -135,13 +181,24 @@ def import_jobs_data(data, user=None):
     if not isinstance(records, list): return {'ok':False,'errors':['Root must contain jobs, new_jobs, or job_updates list']}
     records=[clean_job_record(rec) for rec in records]
     conflicts=[]; eval_conflicts=[]
+    seen_keys={}
+    auto_skips={}
     for i, rec in enumerate(records):
+        dup_action=action_for_duplicate(data, i)
+        if not rec.get('job_id') and not dup_action:
+            matched_key=next((key for key in duplicate_keys(rec) if key in seen_keys), None)
+            if matched_key:
+                auto_skips[i]={'job_id':None,'action':'skipped_duplicate','duplicate_of_index':seen_keys[matched_key],'updated_fields':[]}
+            else:
+                for key in duplicate_keys(rec): seen_keys[key]=i
         if rec.get('job_id') and isinstance(rec.get('evaluation'), dict) and JobEvaluation.objects.filter(job_id=rec['job_id'], job__in=owned_qs).exists() and not action_for_duplicate(data, i) and not data.get('evaluation_strategy'):
             eval_conflicts.append({'index':i,'job_id':rec['job_id'],'incoming':{'company':rec.get('company'),'title':rec.get('title')},'existing_evaluations':list(JobEvaluation.objects.filter(job_id=rec['job_id'], job__in=owned_qs).values('id','fit_score','priority','recommendation','created_at')[:10])})
-        if not rec.get('job_id') and rec.get('url'):
-            existing=list(owned_qs.filter(url=rec['url']).values('id','company','title','url','status')[:10])
-            if existing and not action_for_duplicate(data, i):
-                conflicts.append({'index':i,'url':rec['url'],'incoming':{'company':rec.get('company') or 'Unknown company','title':rec.get('title') or 'Untitled role'},'existing_jobs':existing})
+        if not rec.get('job_id') and i not in auto_skips:
+            existing=list(duplicate_jobs_qs(rec, owned_qs).values('id','company','title','url','status')[:10])
+            if existing and not dup_action:
+                conflict={'index':i,'incoming':{'company':rec.get('company') or 'Unknown company','title':rec.get('title') or 'Untitled role'},'existing_jobs':existing}
+                if rec.get('url'): conflict['url']=rec['url']
+                conflicts.append(conflict)
         if rec.get('job_id') and not owned_qs.filter(id=rec['job_id']).exists(): errors.append(f'jobs[{i}].job_id does not exist: {rec["job_id"]}')
         if rec.get('work_mode') and rec.get('work_mode') not in ['onsite','hybrid','remote','unknown']: errors.append(f'jobs[{i}].work_mode invalid')
         if not rec.get('job_id') and not (rec.get('url') or rec.get('raw_description') or rec.get('company') or rec.get('title')): errors.append(f'jobs[{i}] needs at least url, description, company, or title')
@@ -153,6 +210,8 @@ def import_jobs_data(data, user=None):
     with transaction.atomic():
         for i, rec in enumerate(records):
             dup_action=action_for_duplicate(data, i)
+            if i in auto_skips:
+                results.append(auto_skips[i]); continue
             if rec.get('job_id'):
                 job=owned_qs.get(id=rec['job_id']); action='updated'; changed=[]
                 for f in JOB_UPDATE_FIELDS:
@@ -162,7 +221,7 @@ def import_jobs_data(data, user=None):
             elif dup_action and dup_action.get('action') == 'skip':
                 results.append({'job_id':None,'action':'skipped_duplicate','updated_fields':[]}); continue
             elif dup_action and dup_action.get('action') == 'override':
-                existing_qs=owned_qs.filter(url=rec.get('url'))
+                existing_qs=duplicate_jobs_qs(rec, owned_qs)
                 job=owned_qs.filter(id=dup_action.get('existing_job_id')).first() if dup_action.get('existing_job_id') else existing_qs.first()
                 if job:
                     action='overridden'; changed=[]

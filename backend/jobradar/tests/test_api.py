@@ -219,6 +219,20 @@ def test_bulk_import_duplicate_requires_choice(client):
     r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
     assert r.status_code==400 and r.data['type']=='duplicate_conflicts'
 
+def test_bulk_import_repeated_position_in_same_payload_is_skipped(client):
+    payload={'jobs':[{'company':'A','title':'T'},{'company':'A','title':'T'}]}
+    r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
+    assert r.status_code==201
+    assert JobLead.objects.filter(company='A', title='T').count()==1
+    assert r.data['jobs_found']==1
+    assert r.data['jobs'][1]['action']=='skipped_duplicate'
+
+def test_bulk_import_existing_position_without_url_requires_choice(client):
+    make_job(client, company='A', title='T')
+    payload={'jobs':[{'company':'A','title':'T'}]}
+    r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
+    assert r.status_code==400 and r.data['type']=='duplicate_conflicts'
+
 def test_bulk_import_duplicate_can_duplicate(client):
     make_job(client, company='A', title='T', url='https://dup.test/job')
     payload={'duplicate_strategy':'duplicate','jobs':[{'company':'B','title':'T','url':'https://dup.test/job'}]}
