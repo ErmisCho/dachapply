@@ -57,8 +57,14 @@ def test_password_reset_email_and_confirm_flow(db):
     assert len(mail.outbox) == 1
     email = mail.outbox[0]
     assert email.subject == 'DACHApply password reset request'
+    assert email.alternatives
+    html_body, html_mimetype = email.alternatives[0]
+    assert html_mimetype == 'text/html'
+    assert 'Reset password</a>' in html_body
+    assert 'If the button does not work, copy and paste this link into your browser:' in html_body
     body = email.body
     assert 'We received a request to reset the password for your DACHApply account.' in body
+    assert 'If the button or link does not work, copy and paste the URL into your browser.' in body
     assert 'If you did not request this change, you can safely ignore this email.' in body
     assert 'https://dachapply.example.test/reset-password/' in body
     match = re.search(r'/reset-password/([^/]+)/([^\s]+)', body)

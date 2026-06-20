@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@agent'
 created_date: '2026-06-20 09:50'
-updated_date: '2026-06-20 12:40'
+updated_date: '2026-06-20 13:41'
 labels:
   - P0
   - auth
@@ -15,17 +15,9 @@ labels:
 milestone: m-1
 dependencies: []
 modified_files:
-  - backend/config/settings.py
   - backend/jobradar/views.py
   - backend/jobradar/tests/test_api.py
-  - backend/jobradar/tests/test_settings.py
-  - .env.example
-  - .env.azure.example
-  - .env.local.example
-  - .env.local-neon.example
-  - .env.local-one-server.example
-  - .env.local-smtp.example
-  - docs/email-setup.md
+  - frontend/src/App.tsx
 priority: high
 ordinal: 2000
 ---
@@ -47,17 +39,25 @@ Users need a safe recovery path if they forget their password.
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-1. Confirm active email settings and SMTP provider selection in development.
-2. Normalize pasted Gmail App Passwords by removing Google grouping spaces before SMTP authentication.
-3. Add an explicit local console-email provider so development password resets can work without valid external SMTP credentials.
-4. Update email docs/templates and run focused settings/password-reset tests.
-5. Report that real Gmail delivery still requires a fresh valid Gmail App Password, while local reset links now print to the Django terminal.
+1. Add branded HTML password reset email with a clear reset button and plain-text fallback.
+2. Improve frontend password reset request feedback with inbox/spam guidance while preserving account-enumeration-safe wording.
+3. Improve reset confirmation UX for success and invalid/expired links, including a clear login/request-new-link path.
+4. Add/update tests for email content and frontend reset UI behavior.
+5. Run focused backend/frontend checks.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented provider-aware password reset email configuration: Brevo for Azure/production, local SMTP for real local delivery, and explicit console mode for local testing. Normalized Gmail app-password spacing before SMTP auth. Polished the password reset subject/body and verified generic error logging still avoids credentials/tokens. User confirmed local password reset email delivery works. Full backend validation before push passed: cd backend && DATABASE_URL= python -m pytest (88 passed). Deployed-domain reset-link verification remains pending for Azure.
+
+User reports password reset through Azure URL still does not deliver after adding Brevo app-setting names. Next diagnosis should use Azure Log Stream/Kudu shell and Brevo transactional logs to determine whether Azure is running latest code, Brevo settings are loaded, the user exists in the deployed DATABASE_URL, or Brevo is rejecting SMTP due to sender/SMTP-key/IP authorization.
+
+Azure Container App log stream shows the reset email is printed to stdout, which means the deployed revision is using Django console EmailBackend rather than Brevo SMTP. Next config fix: set EMAIL_PROVIDER=brevo in the active revision and remove/override any EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend setting, then restart/create a new revision.
+
+Azure revision dachapply--0000022 now uses SMTP/Brevo instead of console backend, but Brevo rejects authentication with SMTPAuthenticationError 525: Unauthorized IP address. This confirms the remaining blocker is Brevo IP authorization/static outbound egress for Azure Container Apps, not Django email configuration.
+
+Implemented user-friendly password reset improvements: branded HTML email with button and fallback link, safer/more helpful reset-request inbox/spam guidance, forgot-mode deep link support, and improved reset-confirm UI with confirm-password, success state, login CTA, and invalid/expired-link recovery actions. Validation passed: cd backend && DATABASE_URL= python -m pytest (88 passed); cd frontend && npm run build (passed).
 <!-- SECTION:NOTES:END -->
 
 ## Comments
