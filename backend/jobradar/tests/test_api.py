@@ -1,7 +1,10 @@
 import json
+import re
+
 import pytest
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.core import mail
 from django.core.cache import cache
 from django.db.models import Q
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -37,6 +40,45 @@ def make_job(client, **kwargs):
 
 @pytest.fixture
 def job(db, owner): return JobLead.objects.create(company='ACME', title='Python Engineer', raw_description='Python Django SQL', created_by=owner)
+
+
+def test_health_check_is_public_and_checks_database(db):
+    r = APIClient().get('/api/health/')
+    assert r.status_code == 200
+    assert r.data == {'status': 'ok', 'database': 'ok'}
+
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend', FRONTEND_URL='https://dachapply.example.test', DEFAULT_FROM_EMAIL='DACHApply <noreply@example.test>')
+def test_password_reset_email_and_confirm_flow(db):
+    user = User.objects.create_user('reset@example.test', email='reset@example.test', password='old-password')
+    c = APIClient()
+    r = c.post('/api/auth/password-reset/', {'email': 'reset@example.test'}, format='json')
+    assert r.status_code == 200
+    assert len(mail.outbox) == 1
+    email = mail.outbox[0]
+    assert email.subject == 'DACHApply password reset request'
+    body = email.body
+    assert 'We received a request to reset the password for your DACHApply account.' in body
+    assert 'If you did not request this change, you can safely ignore this email.' in body
+    assert 'https://dachapply.example.test/reset-password/' in body
+    match = re.search(r'/reset-password/([^/]+)/([^\s]+)', body)
+    assert match
+    uid, token = match.groups()
+    r = c.post('/api/auth/password-reset/confirm/', {'uid': uid, 'token': token, 'password': 'new-password'}, format='json')
+    assert r.status_code == 200
+    user.refresh_from_db()
+    assert user.check_password('new-password')
+
+
+def test_password_reset_email_failure_keeps_generic_response(db, monkeypatch):
+    User.objects.create_user('reset-fail@example.test', email='reset-fail@example.test', password='pw')
+    def fail_send_mail(*args, **kwargs):
+        raise RuntimeError('SMTP unavailable')
+    monkeypatch.setattr('jobradar.views.send_mail', fail_send_mail)
+    r = APIClient().post('/api/auth/password-reset/', {'email': 'reset-fail@example.test'}, format='json')
+    assert r.status_code == 200
+    assert r.data['detail'] == 'If an account exists for this email, a reset link was sent.'
+
 
 def test_create_job(client):
     r=client.post('/api/jobs/', {'company':'X','title':'Backend','url':'https://x.test'}, format='json')

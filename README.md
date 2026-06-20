@@ -228,7 +228,7 @@ SECURE_HSTS_INCLUDE_SUBDOMAINS=True
 SECURE_HSTS_PRELOAD=True
 ```
 
-See `.env.example` for a full template.
+See `.env.example` for a full template. For email environment separation, see `.env.local.example`, `.env.azure.example`, and `docs/email-setup.md`. Additional beta launch checklists are in `docs/production-readiness.md` and `docs/backup-restore.md`.
 
 ### Deployment checklist
 
