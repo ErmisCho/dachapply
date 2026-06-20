@@ -33,7 +33,26 @@ def env_list(name, default=''):
     return [item.strip() for item in os.getenv(name, default).split(',') if item.strip()]
 
 
+def normalize_smtp_password(host, password):
+    """Normalize provider-specific SMTP password formats.
+
+    Google displays Gmail App Passwords in four groups separated by spaces,
+    but SMTP AUTH expects the compact 16-character token.
+    """
+    password = password or ''
+    compact_password = ''.join(password.split())
+    if (
+        (host or '').strip().lower() == 'smtp.gmail.com'
+        and compact_password != password
+        and len(compact_password) == 16
+        and compact_password.isalnum()
+    ):
+        return compact_password
+    return password
+
+
 DEBUG = env_bool('DEBUG', True)
+DACHAPPLY_ENV = os.getenv('DACHAPPLY_ENV', 'local' if DEBUG else 'production')
 
 SECRET_KEY = os.getenv('SECRET_KEY')
 if DEBUG:
@@ -113,14 +132,61 @@ FRONTEND_URL=os.getenv('FRONTEND_URL', 'http://localhost:5173' if DEBUG else '')
 if not DEBUG and not FRONTEND_URL:
     raise ImproperlyConfigured('FRONTEND_URL must be set when DEBUG=False.')
 
-DEFAULT_FROM_EMAIL=os.getenv('DEFAULT_FROM_EMAIL', 'noreply@localhost' if DEBUG else '')
-EMAIL_BACKEND=os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend' if DEBUG else 'django.core.mail.backends.smtp.EmailBackend')
-EMAIL_HOST=os.getenv('EMAIL_HOST', 'localhost' if DEBUG else '')
-EMAIL_USE_TLS=env_bool('EMAIL_USE_TLS', not DEBUG)
-EMAIL_USE_SSL=env_bool('EMAIL_USE_SSL', False)
-EMAIL_PORT=int(os.getenv('EMAIL_PORT', '587' if EMAIL_USE_TLS else '25'))
-EMAIL_HOST_USER=os.getenv('EMAIL_HOST_USER','')
-EMAIL_HOST_PASSWORD=os.getenv('EMAIL_HOST_PASSWORD','')
+# Email provider selection.
+# EMAIL_PROVIDER=auto prefers Brevo if Brevo credentials are present, then a
+# local SMTP provider, then the legacy EMAIL_* settings/defaults.
+EMAIL_PROVIDER=os.getenv('EMAIL_PROVIDER', 'auto').strip().lower()
+
+_brevo_login=os.getenv('BREVO_EMAIL_HOST_USER') or os.getenv('BREVO_SMTP_LOGIN') or (os.getenv('EMAIL_HOST_USER') if os.getenv('EMAIL_HOST') == 'smtp-relay.brevo.com' else '')
+_brevo_key=os.getenv('BREVO_EMAIL_HOST_PASSWORD') or os.getenv('BREVO_SMTP_KEY') or (os.getenv('EMAIL_HOST_PASSWORD') if os.getenv('EMAIL_HOST') == 'smtp-relay.brevo.com' else '')
+_brevo_from=os.getenv('BREVO_DEFAULT_FROM_EMAIL') or os.getenv('BREVO_FROM_EMAIL') or (os.getenv('DEFAULT_FROM_EMAIL') if os.getenv('EMAIL_HOST') == 'smtp-relay.brevo.com' else '')
+_brevo_configured=bool(_brevo_login and _brevo_key and _brevo_from)
+
+_local_host=os.getenv('LOCAL_EMAIL_HOST') or os.getenv('LOCAL_SMTP_HOST')
+_local_user=os.getenv('LOCAL_EMAIL_HOST_USER') or os.getenv('LOCAL_SMTP_USER')
+_local_password=os.getenv('LOCAL_EMAIL_HOST_PASSWORD') or os.getenv('LOCAL_SMTP_PASSWORD')
+_local_from=os.getenv('LOCAL_DEFAULT_FROM_EMAIL') or os.getenv('LOCAL_FROM_EMAIL')
+_local_configured=bool(_local_host and _local_user and _local_password and _local_from)
+
+if EMAIL_PROVIDER in ('console', 'local-console'):
+    if not DEBUG:
+        raise ImproperlyConfigured('EMAIL_PROVIDER=console is only allowed when DEBUG=True.')
+    DEFAULT_FROM_EMAIL=os.getenv('DEFAULT_FROM_EMAIL', 'DACHApply <local@dachapply.test>')
+    EMAIL_BACKEND='django.core.mail.backends.console.EmailBackend'
+    EMAIL_HOST=''
+    EMAIL_USE_TLS=False
+    EMAIL_USE_SSL=False
+    EMAIL_PORT=25
+    EMAIL_HOST_USER=''
+    EMAIL_HOST_PASSWORD=''
+elif EMAIL_PROVIDER == 'brevo' or (EMAIL_PROVIDER == 'auto' and _brevo_configured):
+    DEFAULT_FROM_EMAIL=_brevo_from
+    EMAIL_BACKEND='django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_HOST=os.getenv('BREVO_EMAIL_HOST', 'smtp-relay.brevo.com')
+    EMAIL_USE_TLS=env_bool('BREVO_EMAIL_USE_TLS', True)
+    EMAIL_USE_SSL=env_bool('BREVO_EMAIL_USE_SSL', False)
+    EMAIL_PORT=int(os.getenv('BREVO_EMAIL_PORT', '587'))
+    EMAIL_HOST_USER=_brevo_login
+    EMAIL_HOST_PASSWORD=normalize_smtp_password(EMAIL_HOST, _brevo_key)
+elif EMAIL_PROVIDER in ('local', 'local-smtp') or (EMAIL_PROVIDER == 'auto' and _local_configured):
+    DEFAULT_FROM_EMAIL=_local_from
+    EMAIL_BACKEND='django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_HOST=_local_host
+    EMAIL_USE_TLS=env_bool('LOCAL_EMAIL_USE_TLS', env_bool('LOCAL_SMTP_USE_TLS', True))
+    EMAIL_USE_SSL=env_bool('LOCAL_EMAIL_USE_SSL', env_bool('LOCAL_SMTP_USE_SSL', False))
+    EMAIL_PORT=int(os.getenv('LOCAL_EMAIL_PORT') or os.getenv('LOCAL_SMTP_PORT') or '587')
+    EMAIL_HOST_USER=_local_user
+    EMAIL_HOST_PASSWORD=normalize_smtp_password(EMAIL_HOST, _local_password)
+else:
+    DEFAULT_FROM_EMAIL=os.getenv('DEFAULT_FROM_EMAIL', 'noreply@localhost' if DEBUG else '')
+    EMAIL_BACKEND=os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend' if DEBUG else 'django.core.mail.backends.smtp.EmailBackend')
+    EMAIL_HOST=os.getenv('EMAIL_HOST', 'localhost' if DEBUG else '')
+    EMAIL_USE_TLS=env_bool('EMAIL_USE_TLS', not DEBUG)
+    EMAIL_USE_SSL=env_bool('EMAIL_USE_SSL', False)
+    EMAIL_PORT=int(os.getenv('EMAIL_PORT', '587' if EMAIL_USE_TLS else '25'))
+    EMAIL_HOST_USER=os.getenv('EMAIL_HOST_USER','')
+    EMAIL_HOST_PASSWORD=normalize_smtp_password(EMAIL_HOST, os.getenv('EMAIL_HOST_PASSWORD',''))
+EMAIL_TIMEOUT=int(os.getenv('EMAIL_TIMEOUT', '10'))
 if not DEBUG and EMAIL_BACKEND.endswith('smtp.EmailBackend'):
     missing = [name for name, value in [('DEFAULT_FROM_EMAIL', DEFAULT_FROM_EMAIL), ('EMAIL_HOST', EMAIL_HOST)] if not value]
     if missing:

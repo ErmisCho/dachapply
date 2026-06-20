@@ -1,8 +1,10 @@
+import logging
+
 from django.contrib.auth import authenticate, login, logout, get_user_model
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Avg, Case, Count, IntegerField, Q, Value, When
 from django.http import HttpResponse
 from django.utils import timezone
@@ -27,6 +29,9 @@ from .services.analytics import record_demo_click
 from .throttles import ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
 
+logger = logging.getLogger(__name__)
+
+
 def find_existing_by_url(url, owner=None, queryset=None):
     if not url: return None
     url=normalize_job_url(url)
@@ -47,6 +52,23 @@ def extract_links(text):
         link=normalize_job_url(f.strip('()[]<>"\''))
         if link and link not in links: links.append(link)
     return links
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def health(request):
+    database = 'ok'
+    status_code = 200
+    try:
+        connection.ensure_connection()
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT 1')
+            cursor.fetchone()
+    except Exception:
+        logger.exception('Health check database probe failed')
+        database = 'unavailable'
+        status_code = 503
+    return Response({'status': 'ok' if status_code == 200 else 'degraded', 'database': database}, status=status_code)
+
 
 @ensure_csrf_cookie
 @api_view(['GET'])
@@ -113,7 +135,24 @@ def password_reset_request(request):
     if user:
         uid=urlsafe_base64_encode(force_bytes(user.pk)); token=default_token_generator.make_token(user)
         link=f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}"
-        send_mail('Reset your DACHApply password', f'Use this link to reset your password:\n\n{link}', settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False)
+        try:
+            subject='DACHApply password reset request'
+            message=(
+                'Hello,\n\n'
+                'We received a request to reset the password for your DACHApply account.\n\n'
+                'To choose a new password, open the secure link below:\n\n'
+                f'{link}\n\n'
+                'If you did not request this change, you can safely ignore this email. '
+                'Your password will remain unchanged.\n\n'
+                'For your security, this link can only be used once and may expire.\n\n'
+                'Regards,\n'
+                'The DACHApply Team'
+            )
+            send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False)
+        except Exception:
+            # Keep the public response generic to avoid account enumeration and
+            # never log SMTP credentials or reset tokens.
+            logger.exception('Password reset email delivery failed for user_id=%s', user.pk)
     return Response({'detail':'If an account exists for this email, a reset link was sent.'})
 
 @api_view(['POST'])

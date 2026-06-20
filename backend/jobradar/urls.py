@@ -9,6 +9,7 @@ router.register('notes', NoteViewSet, basename='notes')
 router.register('followups', FollowUpViewSet, basename='followups')
 
 urlpatterns=[
+ path('health/', health),
  path('auth/csrf/', csrf), path('auth/login/', login_view), path('auth/register/', register_view), path('auth/password-reset/', password_reset_request), path('auth/password-reset/confirm/', password_reset_confirm), path('auth/change-password/', change_password), path('auth/logout/', logout_view), path('auth/account/', delete_account), path('auth/me/', me), path('auth/friend-requests/', friend_requests), path('profile/', profile_settings),
  path('jobs/bulk-create/', bulk_create_jobs), path('public/submit/', public_submit), path('prompts/generate/', generate_prompt), path('prompts/enrich/', generate_enrichment_prompt), path('prompts/combined/', generate_combined_prompt), path('prompts/bulk-links/', generate_bulk_links_prompt), path('evaluations/import/', import_eval), path('stats/', stats),
  path('export/', export_user_data), path('import/', import_user_data),

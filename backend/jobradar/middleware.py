@@ -9,7 +9,7 @@ from .services.demo_data import DEMO_USERNAME
 class UserUsageMiddleware:
     """Aggregate lightweight site and per-user usage counts for the admin dashboard."""
 
-    IGNORED_PREFIXES = ('/static/', '/favicon', '/robots.txt')
+    IGNORED_PREFIXES = ('/static/', '/favicon', '/robots.txt', '/api/health/')
 
     def __init__(self, get_response):
         self.get_response = get_response
