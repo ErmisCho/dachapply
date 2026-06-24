@@ -136,6 +136,32 @@ def test_bulk_create_per_conflict_skip_removes_from_conflicts(client):
     assert r.data['skipped'][0]['index']==0
     assert not JobLead.objects.filter(url='https://c.test/job3').exists()
 
+def test_bulk_create_resolved_single_conflict_also_creates_new_links(client):
+    a=make_job(client, company='A', title='T', url='https://a.test/job1')
+    body={'company':'New','title':'New title','url':'https://a.test/job1\nhttps://c.test/job3','duplicate_actions':[{'index':0,'action':'override'}]}
+    r=client.post('/api/jobs/bulk-create/', body, format='json')
+    a.refresh_from_db()
+    assert r.status_code==201
+    assert a.company=='New'
+    assert JobLead.objects.filter(url='https://c.test/job3').exists()
+
+def test_bulk_create_override_with_link_only_clears_old_analysis_and_details(client):
+    a=make_job(client, company='OldCo', title='Old title', url='https://a.test/job1', location='Vienna', raw_description='Old description', status='applied', status_date=timezone.localdate())
+    JobEvaluation.objects.create(job=a, fit_score=90, priority='high', recommendation='apply')
+    ApplicationNote.objects.create(job=a, note='old note')
+    FollowUp.objects.create(job=a, follow_up_date=timezone.localdate(), reason='old follow-up')
+    body={'url':'https://a.test/job1','duplicate_actions':[{'index':0,'action':'override'}]}
+    r=client.post('/api/jobs/bulk-create/', body, format='json')
+    a.refresh_from_db()
+    assert r.status_code==201
+    assert a.company=='Unknown company'
+    assert a.title=='Untitled role'
+    assert a.location=='' and a.raw_description==''
+    assert a.status=='new' and a.status_date is None
+    assert not a.evaluations.exists()
+    assert not a.notes.exists()
+    assert not a.followups.exists()
+
 def test_bulk_create_per_conflict_duplicate_and_override(client):
     a=make_job(client, company='A', title='T', url='https://a.test/job1')
     make_job(client, company='B', title='T', url='https://b.test/job2')

@@ -6,6 +6,7 @@ from django.db.models import Q
 from jobradar.models import JobLead, JobEvaluation, ApplicationNote
 from jobradar.services.access import accessible_jobs, job_create_defaults
 from jobradar.services.cleaning import clean_job_location
+from jobradar.services.job_replace import replace_job_with_supplied_data
 from rest_framework import serializers
 
 REQ={'job_id', 'company', 'title', 'fit_score', 'priority', 'recommendation', 'summary', 'main_match_reasons', 'main_gaps', 'required_skills', 'nice_to_have_skills', 'matched_skills', 'missing_skills', 'cv_adjustment_notes', 'interview_prep_notes', 'risk_notes', 'next_action'}
@@ -224,11 +225,7 @@ def import_jobs_data(data, user=None):
                 existing_qs=duplicate_jobs_qs(rec, owned_qs)
                 job=owned_qs.filter(id=dup_action.get('existing_job_id')).first() if dup_action.get('existing_job_id') else existing_qs.first()
                 if job:
-                    action='overridden'; changed=[]
-                    for f in JOB_UPDATE_FIELDS:
-                        val=normalize_job_url(rec.get(f)) if f=='url' else clean_job_location(rec.get(f)) if f=='location' else rec.get(f)
-                        if val is not None and val != '': setattr(job, f, val); changed.append(f)
-                    job.save()
+                    action='overridden'; changed=replace_job_with_supplied_data(job, rec, user)
                 else:
                     title=rec.get('title') or 'Untitled role'
                     create_defaults=job_create_defaults(user) if user is not None else {}
