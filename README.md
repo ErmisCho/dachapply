@@ -249,6 +249,14 @@ Before public deployment:
 13. Configure database/backups outside the app.
 14. Review logs for `DisallowedHost`, CSRF, email, and database connection errors.
 
+## Container image deployment with private GHCR
+
+The Docker image is built by GitHub Actions and pushed to the private GitHub Container Registry package `ghcr.io/ermischo/dachapply` with both `latest` and commit-SHA tags. Keep this GHCR package private; do not make the image public.
+
+Azure Container Apps should pull `ghcr.io/ermischo/dachapply:latest` from GHCR using registry credentials backed by a GitHub PAT that has `read:packages` permission. Application secrets such as `DATABASE_URL` and `SECRET_KEY` must remain Azure Container Apps secrets/environment references and must not be committed to the repository.
+
+Delete the old Azure Container Registry only after Azure Container Apps has successfully pulled and is running the GHCR image.
+
 ## Azure App Service deployment
 
 Use PostgreSQL for public deployment. SQLite can still be used for local testing or throwaway demos only.
