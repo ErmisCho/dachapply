@@ -41,6 +41,17 @@ jobs:
             -x "release.zip" \
             -x ".git/*" \
             -x ".venv/*" \
+            -x ".env" \
+            -x ".env.*" \
+            -x "*.env" \
+            -x "*.PublishSettings" \
+            -x "*secret*" \
+            -x "*secrets*" \
+            -x "*credential*" \
+            -x "*credentials*" \
+            -x "*.pem" \
+            -x "*.key" \
+            -x "*.pfx" \
             -x "frontend/node_modules/*" \
             -x "__pycache__/*" \
             -x "*/__pycache__/*" \
