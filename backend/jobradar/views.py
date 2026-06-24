@@ -25,6 +25,7 @@ from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
 from .services.access import accessible_jobs, job_create_defaults
 from .services.cleaning import clean_job_location
+from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
 from .services.analytics import record_demo_click
 from .throttles import ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
@@ -288,9 +289,8 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         if existing and not action:
             return Response({'ok':False,'type':'duplicate_conflicts','message':'This job link already exists.','conflicts':[{'index':0,'url':url,'incoming':{'company':ser.validated_data.get('company') or 'Unknown company','title':ser.validated_data.get('title') or 'Untitled role'},'existing_jobs':[JobLeadSerializer(existing).data]}]}, status=400)
         if existing and action=='override':
-            for k,v in ser.validated_data.items(): setattr(existing,k,v)
-            for k,v in job_create_defaults(request.user).items(): setattr(existing,k,v)
-            existing.save(); return Response(JobLeadSerializer(existing).data)
+            replace_job_with_supplied_data(existing, ser.validated_data, request.user)
+            return Response(JobLeadSerializer(existing).data)
         if existing and action=='duplicate':
             ser.validated_data['title']=duplicate_title(ser.validated_data.get('title') or 'Untitled role', accessible_jobs(request.user))
         if existing and action=='skip': return Response(JobLeadSerializer(existing).data)
@@ -329,6 +329,11 @@ class EvaluationViewSet(viewsets.ReadOnlyModelViewSet):
 class NoteViewSet(viewsets.GenericViewSet):
     serializer_class=ApplicationNoteSerializer; queryset=ApplicationNote.objects.all()
     def get_queryset(self): return ApplicationNote.objects.select_related('job').filter(job__in=accessible_jobs(self.request.user))
+    def partial_update(self, request, pk=None):
+        note=self.get_object()
+        ser=ApplicationNoteSerializer(note, data=request.data, partial=True, context={'request': request})
+        ser.is_valid(raise_exception=True); ser.save()
+        return Response(ser.data)
     def destroy(self, request, pk=None): self.get_object().delete(); return Response(status=204)
 
 class FollowUpViewSet(viewsets.ModelViewSet):
@@ -355,8 +360,9 @@ def bulk_create_jobs(request):
             conflicts.append({'index':i,'url':link,'incoming':{'company':request.data.get('company') or 'Unknown company','title':request.data.get('title') or 'Untitled role'},'existing_jobs':[JobLeadSerializer(existing).data]})
     if conflicts and not action_map:
         return Response({'ok':False,'type':'duplicate_conflicts','message':'One or more job links already exist. Nothing was added yet.','conflicts':conflicts}, status=400)
+    remaining=[c for c in conflicts if c['index'] not in action_map]
     for i, link in enumerate(links):
-        if action_map and i not in action_map:
+        if remaining and action_map and i not in action_map:
             continue
         data=request.data.copy(); data['url']=link; data['company']=data.get('company') or 'Unknown company'; data['title']=data.get('title') or 'Untitled role'
         if len(links)>1 and (not request.data.get('title')): data['title']=f'Untitled role {i+1}'
@@ -365,13 +371,10 @@ def bulk_create_jobs(request):
         if existing and action=='skip':
             skipped.append({'index':i,'url':link}); continue
         if existing and action=='override':
-            for f in ['company','title','location','url','source','raw_description','salary_info','language_requirements','work_mode']:
-                if data.get(f): setattr(existing,f,clean_job_location(data.get(f)) if f=='location' else data.get(f))
-            for k,v in job_create_defaults(request.user).items(): setattr(existing,k,v)
-            existing.save(); updated.append(JobLeadSerializer(existing).data); continue
+            replace_job_with_supplied_data(existing, data, request.user)
+            updated.append(JobLeadSerializer(existing).data); continue
         if existing and action=='duplicate': data['title']=duplicate_title(data.get('title') or 'Untitled role', owned_qs)
         ser=JobLeadSerializer(data=data); ser.is_valid(raise_exception=True); obj=ser.save(**job_create_defaults(request.user)); created.append(JobLeadSerializer(obj).data)
-    remaining=[c for c in conflicts if c['index'] not in action_map]
     if remaining:
         return Response({'ok':False,'type':'duplicate_conflicts','message':'One or more job links still need a duplicate choice.','conflicts':remaining,'created':created,'updated':updated,'skipped':skipped}, status=400)
     return Response({'ok':True,'count':len(created)+len(updated),'created':created,'updated':updated,'skipped':skipped}, status=201)
@@ -399,10 +402,11 @@ def public_submit(request):
             conflicts.append({'index':i,'url':link,'incoming':{'company':request.data.get('company') or 'Unknown company','title':request.data.get('title') or 'Untitled role'},'existing_jobs':[JobLeadSerializer(existing).data]})
     if conflicts and not action_map:
         return Response({'ok':False,'type':'duplicate_conflicts','message':'Some links already exist in this dashboard. Choose which ones to duplicate or skip.','conflicts':conflicts}, status=400)
+    remaining=[c for c in conflicts if c['index'] not in action_map]
     for i, link in enumerate(links):
         existing=find_existing_by_url(link, owner) if link else None
         action=action_map.get(i) or strategy
-        if action_map and i not in action_map: continue
+        if remaining and action_map and i not in action_map: continue
         if existing and action!='duplicate': skipped.append({'index':i,'url':link}); continue
         data=request.data.copy(); data['url']=link; data['company']=data.get('company') or 'Unknown company'; data['title']=data.get('title') or ('Untitled role' if len(links)==1 else f'Untitled role {i+1}')
         if existing and action=='duplicate': data['title']=duplicate_title(data.get('title') or 'Untitled role', JobLead.objects.filter(Q(created_by=owner)|Q(submitted_for=owner)) if owner else None)
@@ -411,7 +415,6 @@ def public_submit(request):
         if request.user.is_authenticated:
             job.created_by=request.user; job.submitted_for=profile.submit_for if profile else None; job.save(update_fields=['created_by','submitted_for'])
         created.append(JobLeadSerializer(job).data)
-    remaining=[c for c in conflicts if c['index'] not in action_map]
     if remaining:
         return Response({'ok':False,'type':'duplicate_conflicts','message':'Some links already exist in this dashboard. Choose which ones to duplicate or skip.','conflicts':remaining,'created':created,'skipped':skipped}, status=400)
     return Response({'ok':True,'count':len(created),'created':created,'skipped':skipped}, status=201)
