@@ -8,7 +8,7 @@ from django.core import mail
 from django.core.cache import cache
 from django.db.models import Q
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import override_settings
+from django.test import Client, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 from jobradar.models import InviteCode, JobLead, JobEvaluation, ApplicationNote, FollowUp, SiteDailyUsage, SiteVisitor, UserDailyUsage, UserProfile, VisitorDailyUsage
@@ -207,6 +207,21 @@ def test_public_submission_invalid(db):
     assert r.status_code==400
 
 def test_listing_jobs(client, job): assert client.get('/api/jobs/').status_code==200
+
+
+def test_jobs_analyzed_filter_hides_jobs_without_evaluation(client):
+    analyzed = make_job(client, company='Analyzed', title='Ready')
+    draft = make_job(client, company='Draft', title='Needs analysis')
+    JobEvaluation.objects.create(job=analyzed, fit_score=80, priority='high', recommendation='apply')
+
+    r = client.get('/api/jobs/?status=new&analyzed=1')
+    assert r.status_code == 200
+    assert analyzed.id in [row['id'] for row in r.data]
+    assert draft.id not in [row['id'] for row in r.data]
+
+    r = client.get('/api/jobs/?status=new')
+    assert {analyzed.id, draft.id}.issubset({row['id'] for row in r.data})
+
 
 def test_update_job_status(client, job):
     r=client.patch(f'/api/jobs/{job.id}/', {'status':'to_apply'}, format='json')
@@ -703,10 +718,77 @@ def test_demo_login_creates_rich_demo_dashboard(db):
     jobs = JobLead.objects.filter(Q(created_by=demo) | Q(submitted_for=demo)).distinct()
     assert jobs.count() >= 9
     assert jobs.filter(status='interview').count() >= 4
-    assert jobs.filter(submitted_for=demo, source='friend').count() >= 3
+    assert jobs.filter(created_by=demo, submitted_for__isnull=True, source='friend').count() >= 3
+    assert not JobLead.objects.filter(url__startswith='https://demo.dachapply.local/', created_by__isnull=False).exclude(created_by=demo).exists()
     assert UserProfile.objects.filter(requested_submit_for=demo, submit_for__isnull=True).exists()
     assert JobEvaluation.objects.filter(job__in=jobs).count() >= jobs.count()
     assert FollowUp.objects.filter(job__in=jobs).exists()
+
+
+def test_demo_seed_removes_demo_jobs_from_other_accounts(db):
+    from jobradar.services.demo_data import ensure_demo_user
+
+    other = User.objects.create_user('ermis.chorinopoulos@gmail.com')
+    JobLead.objects.create(company='Leaked Demo', title='Leak', url='https://demo.dachapply.local/jobs/leak', source='demo', created_by=other)
+    JobLead.objects.create(company='Dynatrace', title='Python Backend Engineer', url='https://example.com/jobs/dynatrace', source='seed', created_by=other)
+
+    demo, _jobs = ensure_demo_user()
+
+    assert not JobLead.objects.filter(created_by=other, url__startswith='https://demo.dachapply.local/').exists()
+    assert not JobLead.objects.filter(created_by=other, url='https://example.com/jobs/dynatrace', source='seed').exists()
+    assert JobLead.objects.filter(created_by=demo, url__startswith='https://demo.dachapply.local/').count() >= 9
+    assert not JobLead.objects.filter(url__startswith='https://demo.dachapply.local/', created_by__isnull=False).exclude(created_by=demo).exists()
+
+
+def test_regular_user_can_archive_owned_leaked_demo_job(client):
+    job = make_job(client, company='Leaked Demo', title='Leak', url='https://demo.dachapply.local/jobs/leak', source='demo')
+
+    r = client.patch(f'/api/jobs/{job.id}/', {'status': 'archived'}, format='json')
+
+    assert r.status_code == 200
+    job.refresh_from_db()
+    assert job.status == 'archived'
+
+
+def test_regular_user_cannot_create_demo_jobs(client):
+    payload = {'company': 'Demo', 'title': 'Demo role', 'url': 'https://demo.dachapply.local/jobs/python-backend', 'source': 'demo'}
+
+    r = client.post('/api/jobs/', payload, format='json')
+
+    assert r.status_code == 400
+    assert not JobLead.objects.filter(created_by=client.user, source='demo').exists()
+
+    job = make_job(client, company='Normal', title='Role')
+    r = client.patch(f'/api/jobs/{job.id}/', payload, format='json')
+    assert r.status_code == 400
+
+    r = client.post('/api/evaluations/import/', {'json': json.dumps({'jobs': [payload]})}, format='json')
+
+    assert r.status_code == 400
+    assert 'demo jobs are only available in the demo account' in str(r.data).lower()
+    assert not JobLead.objects.filter(created_by=client.user, url__startswith='https://demo.dachapply.local/').exists()
+
+
+def test_admin_user_changelist_shows_demo_users_separately(db):
+    from jobradar.services.demo_data import ensure_demo_user
+
+    ensure_demo_user()
+    User.objects.create_user('real-admin-visible@example.test', email='real-admin-visible@example.test')
+    User.objects.create_superuser('admin@example.test', email='admin@example.test', password='secret123')
+    c = Client()
+    c.post('/admin/login/', {'username': 'admin@example.test', 'password': 'secret123', 'next': '/admin/auth/user/'})
+
+    r = c.get('/admin/auth/user/')
+
+    assert r.status_code == 200
+    html = r.content.decode()
+    main_users_html = html.split('id="demo-users-table"', 1)[0]
+    assert 'Demo users' in html
+    assert 'real-admin-visible@example.test' in main_users_html
+    assert 'demo@dachapply.com' not in main_users_html
+    assert 'demo@dachapply.com' in html
+    assert 'anna.referrer@example.com' in html
+    assert '/admin/auth/user/' in html
 
 
 def test_demo_login_tracks_unique_visitor_and_demo_click(db):

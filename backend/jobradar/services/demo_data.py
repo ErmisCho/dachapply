@@ -10,6 +10,24 @@ DEMO_USERNAME = 'demo@dachapply.com'
 DEMO_PASSWORD = 'DemoApply2026!'
 
 DEMO_PROFILE = '''Senior backend/search engineer targeting DACH roles. Strongest fits: Python backend, Django/FastAPI, APIs, SQL/PostgreSQL, search/RAG, AI product engineering, data/platform-adjacent backend work, and pragmatic reliability. Comfortable with Docker, Linux, Redis/RabbitMQ, Elasticsearch/OpenSearch, LangChain/LangGraph, and cloud basics. German B2 in progress, English C2. Prefer Vienna, Berlin, Munich, Zurich, or remote/hybrid roles. Penalize frontend-heavy React roles, pure DevOps/SRE, deep Spark/Kafka ownership without support, and roles requiring fluent German C1+ as a hard gate. Be honest about cloud/Terraform/Spark depth and do not invent experience.'''
+DEMO_JOB_URL_PREFIX = 'https://demo.dachapply.local/'
+LEGACY_DEMO_JOB_URLS = {'https://example.com/jobs/dynatrace'}
+
+
+def is_demo_user(user):
+    return bool(getattr(user, 'is_authenticated', True) and getattr(user, 'username', '').lower() == DEMO_USERNAME.lower())
+
+
+def is_demo_job_payload(url='', source=''):
+    return str(source or '').lower() == 'demo' or str(url or '').lower().startswith(DEMO_JOB_URL_PREFIX)
+
+
+def delete_non_demo_jobs():
+    demo = get_user_model().objects.filter(username=DEMO_USERNAME).first()
+    qs = JobLead.objects.filter(Q(url__startswith=DEMO_JOB_URL_PREFIX) | Q(source='demo') | Q(source='seed', url__in=LEGACY_DEMO_JOB_URLS))
+    if demo:
+        qs = qs.exclude(Q(created_by=demo) | Q(submitted_for=demo))
+    return qs.delete()
 
 
 def _user(username, email=None, password=None, first_name=''):
@@ -54,7 +72,7 @@ def _upsert_job(owner, data, referral_user=None):
     notes = defaults.pop('notes', [])
     followups = defaults.pop('followups', [])
     if referral_user:
-        defaults.update({'created_by': referral_user, 'submitted_for': owner, 'source': 'friend'})
+        defaults.update({'created_by': owner, 'submitted_for': None, 'source': 'friend'})
     else:
         defaults.update({'created_by': owner, 'submitted_for': None, 'source': defaults.get('source') or 'demo'})
     if existing:
@@ -100,6 +118,8 @@ def ensure_demo_user():
     _profile(pending, submit_for=None, requested_submit_for=demo)
 
     InviteCode.objects.update_or_create(code='FRIEND-DEMO', defaults={'label': 'Demo friends invite', 'active': True})
+
+    delete_non_demo_jobs()
 
     # Reset the demo dashboard on every seed/login so imported, edited, or stale
     # demo jobs never accumulate. This removes jobs owned by the demo user plus

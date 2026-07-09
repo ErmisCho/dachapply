@@ -21,3 +21,27 @@
 </div>
 {% endif %}
 {% endblock %}
+
+{% block pagination %}
+{{ block.super }}
+{% if demo_users %}
+<div class="module" style="margin-top:16px;overflow-x:auto;">
+  <h2 style="padding:8px 12px;margin:0;">Demo users</h2>
+  <table id="demo-users-table" style="width:100%;">
+    <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Jobs</th><th>Last login</th><th>Joined</th></tr></thead>
+    <tbody>
+      {% for row in demo_users %}
+      <tr>
+        <th><a href="{{ row.admin_url }}">{{ row.user.username }}</a></th>
+        <td>{{ row.user.email|default:"—" }}</td>
+        <td>{{ row.role }}</td>
+        <td>{{ row.job_count }}</td>
+        <td>{{ row.user.last_login|date:"Y-m-d H:i"|default:"—" }}</td>
+        <td>{{ row.user.date_joined|date:"Y-m-d H:i" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}
