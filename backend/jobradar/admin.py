@@ -4,7 +4,7 @@ from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth import get_user_model
 from django.shortcuts import redirect
-from django.urls import path
+from django.urls import path, reverse
 from django.db.models import Count, Max, Q, Sum
 from django.utils import timezone
 from django.utils.html import format_html
@@ -49,10 +49,42 @@ class CustomUserAdmin(UserAdmin):
         messages.success(request, f'Reseeded demo user {DEMO_USERNAME} / {DEMO_PASSWORD} with {len(jobs)} default jobs.')
         return redirect('../')
 
+    def get_queryset(self, request):
+        qs=super().get_queryset(request)
+        if getattr(getattr(request, 'resolver_match', None), 'url_name', '') == 'auth_user_changelist':
+            ids=self._demo_user_ids()
+            if ids:
+                qs=qs.exclude(pk__in=ids)
+        return qs
+
     def changelist_view(self, request, extra_context=None):
         extra_context=extra_context or {}
         extra_context['usage_overview']=self._site_usage_overview()
+        extra_context['demo_users']=self._demo_user_rows()
         return super().changelist_view(request, extra_context=extra_context)
+
+    def _demo_user_ids(self):
+        demo=User.objects.filter(username=DEMO_USERNAME).first()
+        if not demo:
+            return []
+        return list({demo.pk, *UserProfile.objects.filter(Q(submit_for=demo) | Q(requested_submit_for=demo)).values_list('user_id', flat=True)})
+
+    def _demo_user_rows(self):
+        ids=self._demo_user_ids()
+        if not ids:
+            return []
+        demo=User.objects.filter(username=DEMO_USERNAME).first()
+        users=User.objects.filter(pk__in=ids).select_related('jobradar_profile').order_by('username')
+        rows=[]
+        for user in users:
+            profile=getattr(user, 'jobradar_profile', None)
+            rows.append({
+                'user': user,
+                'admin_url': reverse('admin:auth_user_change', args=[user.pk]),
+                'role': 'Demo account' if demo and user.pk == demo.pk else 'Friend submitter' if profile and profile.submit_for_id == getattr(demo, 'pk', None) else 'Pending friend',
+                'job_count': JobLead.objects.filter(Q(created_by=user) | Q(submitted_for=user)).distinct().count(),
+            })
+        return rows
 
     def _site_usage_overview(self):
         today=timezone.localdate()

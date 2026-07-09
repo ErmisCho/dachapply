@@ -10,7 +10,7 @@ class Command(BaseCommand):
     def handle(self, *args, **opts):
         _ran, user, jobs = seed_demo_if_due(force=True)
         interview_count = sum(1 for job in jobs if job.status == 'interview')
-        referral_count = sum(1 for job in jobs if job.submitted_for_id == user.id)
+        referral_count = sum(1 for job in jobs if job.source == 'friend')
         self.stdout.write(self.style.SUCCESS(
             f'Seeded demo user {DEMO_USERNAME} / {DEMO_PASSWORD}: '
             f'{len(jobs)} jobs, {interview_count} interviews, {referral_count} friend referrals.'

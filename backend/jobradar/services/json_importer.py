@@ -7,6 +7,7 @@ from jobradar.models import JobLead, JobEvaluation, ApplicationNote
 from jobradar.services.access import accessible_jobs, job_create_defaults
 from jobradar.services.cleaning import clean_job_location
 from jobradar.services.job_replace import replace_job_with_supplied_data
+from jobradar.services.demo_data import is_demo_job_payload, is_demo_user
 from rest_framework import serializers
 
 REQ={'job_id', 'company', 'title', 'fit_score', 'priority', 'recommendation', 'summary', 'main_match_reasons', 'main_gaps', 'required_skills', 'nice_to_have_skills', 'matched_skills', 'missing_skills', 'cv_adjustment_notes', 'interview_prep_notes', 'risk_notes', 'next_action'}
@@ -202,6 +203,7 @@ def import_jobs_data(data, user=None):
                 conflicts.append(conflict)
         if rec.get('job_id') and not owned_qs.filter(id=rec['job_id']).exists(): errors.append(f'jobs[{i}].job_id does not exist: {rec["job_id"]}')
         if rec.get('work_mode') and rec.get('work_mode') not in ['onsite','hybrid','remote','unknown']: errors.append(f'jobs[{i}].work_mode invalid')
+        if user is not None and not is_demo_user(user) and is_demo_job_payload(rec.get('url'), rec.get('source')): errors.append(f'jobs[{i}] demo jobs are only available in the demo account')
         if not rec.get('job_id') and not (rec.get('url') or rec.get('raw_description') or rec.get('company') or rec.get('title')): errors.append(f'jobs[{i}] needs at least url, description, company, or title')
         if isinstance(rec.get('evaluation'), dict): errors += validate_eval(rec['evaluation'], i, require_job_id=False)
     if conflicts: return {'ok':False,'type':'duplicate_conflicts','message':'Some jobs already exist. Choose override, duplicate, skip, or abort.','conflicts':conflicts}

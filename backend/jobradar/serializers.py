@@ -5,6 +5,7 @@ from rest_framework import serializers
 from .models import DEFAULT_CANDIDATE_PROFILE, JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, UserProfile
 from .services.skill_matcher import smart_skill_status, display_skill_name
 from .services.access import accessible_jobs
+from .services.demo_data import is_demo_job_payload, is_demo_user
 from .services.prompt_builder import decode_profile_value, encode_profile_value
 from .services.cleaning import clean_job_location
 
@@ -152,6 +153,9 @@ class JobLeadSerializer(serializers.ModelSerializer):
         if 'title' in attrs: attrs['title']=clean_job_title(attrs.get('title'))
         if 'location' in attrs: attrs['location']=clean_job_location(attrs.get('location'))
         current=self.instance
+        request=self.context.get('request') if hasattr(self, 'context') else None
+        if request and not is_demo_user(request.user) and is_demo_job_payload(attrs.get('url'), attrs.get('source')):
+            raise serializers.ValidationError('Demo jobs are only available in the demo account.')
         has_content = any([
             attrs.get('url') or (current and current.url),
             attrs.get('raw_description') or (current and current.raw_description),
@@ -221,6 +225,8 @@ class PublicSubmissionSerializer(serializers.Serializer):
         if 'company' in attrs: attrs['company']=clean_label_text(attrs.get('company'))
         if 'title' in attrs: attrs['title']=clean_job_title(attrs.get('title'))
         if 'location' in attrs: attrs['location']=clean_job_location(attrs.get('location'))
+        if is_demo_job_payload(attrs.get('url')):
+            raise serializers.ValidationError('Demo jobs are only available in the demo account.')
         if not (attrs.get('url') or attrs.get('raw_description') or attrs.get('company') or attrs.get('title')):
             raise serializers.ValidationError('Provide at least a job URL, description, company, or title')
         return attrs
