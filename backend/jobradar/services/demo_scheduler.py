@@ -6,7 +6,7 @@ import time
 from datetime import datetime, time as dtime, timedelta
 
 from django.conf import settings
-from django.db import IntegrityError, transaction
+from django.db import DatabaseError, IntegrityError, close_old_connections, transaction
 from django.utils import timezone
 
 from jobradar.models import ScheduledTaskRun
@@ -42,6 +42,7 @@ def seed_demo_if_due(force=False):
         return False, None, []
 
     try:
+        close_old_connections()
         with transaction.atomic():
             try:
                 task, _ = ScheduledTaskRun.objects.select_for_update().get_or_create(name=TASK_NAME)
@@ -54,8 +55,13 @@ def seed_demo_if_due(force=False):
             # workers do not seed concurrently.
             task.last_run_at = timezone.now()
             task.save(update_fields=['last_run_at', 'updated_at'])
+    except DatabaseError as exc:
+        logger.warning('Could not claim demo seed task: %s', exc)
+        close_old_connections()
+        return False, None, []
     except Exception:
         logger.exception('Could not claim demo seed task')
+        close_old_connections()
         return False, None, []
 
     user, jobs = ensure_demo_user()
@@ -64,16 +70,21 @@ def seed_demo_if_due(force=False):
 
 def _scheduler_loop():
     while True:
+        seconds = 300
         try:
+            close_old_connections()
             now = _now_local()
             if now.time() >= RUN_AT:
                 seed_demo_if_due()
             next_run = _next_run_after(_now_local())
             seconds = max(60, min((next_run - _now_local()).total_seconds(), 3600))
-            time.sleep(seconds)
+        except DatabaseError as exc:
+            logger.warning('Demo seed scheduler database unavailable: %s', exc)
         except Exception:
             logger.exception('Demo seed scheduler loop failed')
-            time.sleep(300)
+        finally:
+            close_old_connections()
+        time.sleep(seconds)
 
 
 def _should_start_scheduler():

@@ -269,7 +269,9 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
   .job-table td:nth-child(1) .app-badge,
   .job-table td:nth-child(2) .app-badge,
   .job-table td:nth-child(4) .app-badge,
-  .job-table td:nth-child(8) .app-badge{white-space:nowrap;word-break:normal;overflow-wrap:normal}
+  .job-table td:nth-child(8) .app-badge,
+  .job-table td:nth-child(11) .app-badge{white-space:nowrap;word-break:normal;overflow-wrap:normal}
+  .job-table td:nth-child(11) .app-badge{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:top}
   .job-table td:nth-child(4)>div{display:flex;flex-wrap:wrap;gap:.15rem .25rem;align-items:flex-start}
 }
 @media (max-width: 1023px){
