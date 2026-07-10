@@ -48,6 +48,26 @@ def test_health_check_is_public_and_checks_database(db):
     assert r.data == {'status': 'ok', 'database': 'ok'}
 
 
+def test_demo_scheduler_database_claim_failure_logs_warning(db, monkeypatch, caplog):
+    from django.db import DatabaseError
+    from jobradar.services import demo_scheduler
+
+    class BrokenQuery:
+        def get_or_create(self, **_kwargs):
+            raise DatabaseError('db down')
+
+    class BrokenRuns:
+        class objects:
+            @staticmethod
+            def select_for_update():
+                return BrokenQuery()
+
+    monkeypatch.setattr(demo_scheduler, 'ScheduledTaskRun', BrokenRuns)
+    with caplog.at_level('WARNING', logger='jobradar.services.demo_scheduler'):
+        assert demo_scheduler.seed_demo_if_due(force=True) == (False, None, [])
+    assert 'Could not claim demo seed task: db down' in caplog.text
+
+
 @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend', FRONTEND_URL='https://dachapply.example.test', DEFAULT_FROM_EMAIL='DACHApply <noreply@example.test>')
 def test_password_reset_email_and_confirm_flow(db):
     user = User.objects.create_user('reset@example.test', email='reset@example.test', password='old-password')
@@ -209,6 +229,15 @@ def test_public_submission_invalid(db):
 def test_listing_jobs(client, job): assert client.get('/api/jobs/').status_code==200
 
 
+def test_job_added_by_email_fields(client, owner):
+    submitter=User.objects.create_user('anna', email='anna@example.test', password='pw')
+    job=JobLead.objects.create(company='ACME', title='Python Engineer', created_by=submitter, submitted_for=owner)
+    r=client.get(f'/api/jobs/{job.id}/')
+    assert r.status_code==200
+    assert r.data['created_by_username']=='anna'
+    assert r.data['created_by_email']=='anna@example.test'
+
+
 def test_jobs_analyzed_filter_hides_jobs_without_evaluation(client):
     analyzed = make_job(client, company='Analyzed', title='Ready')
     draft = make_job(client, company='Draft', title='Needs analysis')
@@ -229,7 +258,14 @@ def test_update_job_status(client, job):
 
 def test_applied_status_sets_status_date(client, job):
     r=client.patch(f'/api/jobs/{job.id}/', {'status':'applied'}, format='json')
-    assert r.status_code==200 and r.data['status_date'] is not None
+    assert r.status_code==200 and r.data['status_date'] is not None and r.data['last_update_date'] is not None
+
+
+def test_rejected_status_clears_last_update_date(client, job):
+    job.status='interview'; job.status_date=timezone.localdate(); job.last_update_date=timezone.localdate(); job.save()
+    r=client.patch(f'/api/jobs/{job.id}/', {'status':'rejected','status_date':'2026-01-02'}, format='json')
+    assert r.status_code==200 and r.data['status_date']=='2026-01-02' and r.data['last_update_date'] is None
+
 
 def test_can_override_status_date(client, job):
     r=client.patch(f'/api/jobs/{job.id}/', {'status':'interview','status_date':'2026-01-02'}, format='json')
@@ -718,8 +754,12 @@ def test_demo_login_creates_rich_demo_dashboard(db):
     jobs = JobLead.objects.filter(Q(created_by=demo) | Q(submitted_for=demo)).distinct()
     assert jobs.count() >= 9
     assert jobs.filter(status='interview').count() >= 4
-    assert jobs.filter(created_by=demo, submitted_for__isnull=True, source='friend').count() >= 3
-    assert not JobLead.objects.filter(url__startswith='https://demo.dachapply.local/', created_by__isnull=False).exclude(created_by=demo).exists()
+    assert jobs.filter(submitted_for=demo, source='friend').count() >= 3
+    anna_job=jobs.get(url='https://demo.dachapply.local/referrals/green-energy-analytics')
+    assert anna_job.created_by.username=='anna.referrer@example.com' and anna_job.submitted_for==demo
+    from jobradar.serializers import JobLeadSerializer
+    assert JobLeadSerializer(anna_job).data['created_by_email']=='anna.referrer@example.com'
+    assert not JobLead.objects.filter(url__startswith='https://demo.dachapply.local/', created_by__isnull=False).exclude(Q(created_by=demo)|Q(submitted_for=demo)).exists()
     assert UserProfile.objects.filter(requested_submit_for=demo, submit_for__isnull=True).exists()
     assert JobEvaluation.objects.filter(job__in=jobs).count() >= jobs.count()
     assert FollowUp.objects.filter(job__in=jobs).exists()
@@ -736,8 +776,9 @@ def test_demo_seed_removes_demo_jobs_from_other_accounts(db):
 
     assert not JobLead.objects.filter(created_by=other, url__startswith='https://demo.dachapply.local/').exists()
     assert not JobLead.objects.filter(created_by=other, url='https://example.com/jobs/dynatrace', source='seed').exists()
-    assert JobLead.objects.filter(created_by=demo, url__startswith='https://demo.dachapply.local/').count() >= 9
-    assert not JobLead.objects.filter(url__startswith='https://demo.dachapply.local/', created_by__isnull=False).exclude(created_by=demo).exists()
+    demo_jobs=JobLead.objects.filter(Q(created_by=demo)|Q(submitted_for=demo), url__startswith='https://demo.dachapply.local/').distinct()
+    assert demo_jobs.count() >= 9
+    assert not JobLead.objects.filter(url__startswith='https://demo.dachapply.local/', created_by__isnull=False).exclude(Q(created_by=demo)|Q(submitted_for=demo)).exists()
 
 
 def test_regular_user_can_archive_owned_leaked_demo_job(client):

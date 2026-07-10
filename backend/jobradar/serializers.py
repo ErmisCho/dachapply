@@ -130,7 +130,9 @@ class FollowUpSerializer(serializers.ModelSerializer):
 class JobLeadSerializer(serializers.ModelSerializer):
     latest_evaluation=serializers.SerializerMethodField()
     created_by_username=serializers.SerializerMethodField()
+    created_by_email=serializers.SerializerMethodField()
     submitted_for_username=serializers.SerializerMethodField()
+    submitted_for_email=serializers.SerializerMethodField()
     url=serializers.CharField(max_length=1000, required=False, allow_blank=True)
     class Meta:
         model=JobLead; fields='__all__'; read_only_fields=('created_by','submitted_for','created_at','updated_at')
@@ -174,12 +176,17 @@ class JobLeadSerializer(serializers.ModelSerializer):
         attrs['title']=attrs.get('title') or 'Untitled role'
         if attrs.get('status') in ['applied','interview'] and not attrs.get('status_date'):
             attrs['status_date']=timezone.localdate()
+        if attrs.get('status') not in ['applied','interview']:
+            attrs['last_update_date']=None
         return super().create(attrs)
     def update(self, instance, attrs):
         new_status=attrs.get('status')
         if new_status in ['applied','interview'] and instance.status != new_status and not attrs.get('status_date'):
             attrs['status_date']=timezone.localdate()
-        if new_status and instance.status != new_status and not attrs.get('last_update_date'):
+        status_for_last_update=new_status or instance.status
+        if status_for_last_update not in ['applied','interview']:
+            attrs['last_update_date']=None
+        elif new_status and instance.status != new_status and not attrs.get('last_update_date'):
             attrs['last_update_date']=timezone.localdate()
         if new_status and new_status not in ['applied','interview'] and instance.status != new_status and 'status_date' not in attrs:
             attrs['status_date']=None
@@ -192,7 +199,9 @@ class JobLeadSerializer(serializers.ModelSerializer):
         ev=obj.evaluations.first()
         return JobEvaluationSerializer(ev).data if ev else None
     def get_created_by_username(self, obj): return obj.created_by.username if obj.created_by else ''
+    def get_created_by_email(self, obj): return (obj.created_by.email or obj.created_by.username) if obj.created_by else ''
     def get_submitted_for_username(self, obj): return obj.submitted_for.username if obj.submitted_for else ''
+    def get_submitted_for_email(self, obj): return (obj.submitted_for.email or obj.submitted_for.username) if obj.submitted_for else ''
 
 class PublicSubmissionSerializer(serializers.Serializer):
     invite_code=serializers.CharField(max_length=80, required=False, allow_blank=True)

@@ -72,7 +72,7 @@ def _upsert_job(owner, data, referral_user=None):
     notes = defaults.pop('notes', [])
     followups = defaults.pop('followups', [])
     if referral_user:
-        defaults.update({'created_by': owner, 'submitted_for': None, 'source': 'friend'})
+        defaults.update({'created_by': referral_user, 'submitted_for': owner, 'source': 'friend'})
     else:
         defaults.update({'created_by': owner, 'submitted_for': None, 'source': defaults.get('source') or 'demo'})
     if existing:
