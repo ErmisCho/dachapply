@@ -28,7 +28,9 @@ from .services.cleaning import clean_job_location
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
 from .services.analytics import record_demo_click
-from .throttles import ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
+from .services.cv_generator import generation_preview, is_cv_owner
+from .services.cv_tasks import get_cv_task, get_cv_task_download, start_cv_task
+from .throttles import CVGenerationUserThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
 
 logger = logging.getLogger(__name__)
@@ -89,7 +91,7 @@ def login_view(request):
     else:
         user=authenticate(request, username=username, password=password)
     if not user: return Response({'detail':'Invalid credentials'}, status=400)
-    login(request, user); return Response({'username':user.username})
+    login(request, user); return Response({'username':user.username, 'can_generate_cv':is_cv_owner(user)})
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -229,7 +231,7 @@ def me(request):
     profile=getattr(request.user, 'jobradar_profile', None)
     submit_for=profile.submit_for if profile else None
     requested=profile.requested_submit_for if profile else None
-    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for)})
+    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user)})
 
 @api_view(['GET','POST'])
 def friend_requests(request):
@@ -457,6 +459,49 @@ def generate_enrichment_prompt(request):
     if not jobs: return Response({'detail':'No jobs need detail enrichment'}, status=400)
     profile=user_profile_settings(request.user)
     return Response({'generated_prompt': build_enrichment_prompt(jobs, request.data.get('custom_instructions',''), build_candidate_profile_text(request.user), profile.enrichment_prompt_template)})
+
+@api_view(['GET'])
+def cv_generation_preview(request, job_id):
+    if not is_cv_owner(request.user):
+        return Response({'detail':'Not found.'}, status=404)
+    job=accessible_jobs(request.user).filter(id=job_id).first()
+    if not job:
+        return Response({'detail':'Job not found.'}, status=404)
+    return Response(generation_preview(job))
+
+
+@api_view(['POST'])
+@throttle_classes([CVGenerationUserThrottle])
+def generate_cv_documents(request, job_id):
+    if not is_cv_owner(request.user):
+        return Response({'detail':'Not found.'}, status=404)
+    job=accessible_jobs(request.user).filter(id=job_id).first()
+    if not job:
+        return Response({'detail':'Job not found.'}, status=404)
+    task_id=start_cv_task(job.id, request.user.id, build_candidate_profile_text(request.user), request.data.get('cv_template') or '', request.data.get('letter_template') or '', request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal')
+    return Response({'task_id':task_id,'status':'queued','progress':0,'stage':'Queued'}, status=status.HTTP_202_ACCEPTED)
+
+
+@api_view(['GET'])
+def cv_generation_status(request, task_id):
+    if not is_cv_owner(request.user):
+        return Response({'detail':'Not found.'}, status=404)
+    task=get_cv_task(task_id, request.user.id)
+    return Response(task) if task else Response({'detail':'Task not found.'}, status=404)
+
+
+@api_view(['GET'])
+def cv_generation_download(request, task_id):
+    if not is_cv_owner(request.user):
+        return Response({'detail':'Not found.'}, status=404)
+    result=get_cv_task_download(task_id, request.user.id)
+    if not result:
+        return Response({'detail':'File is not ready.'}, status=404)
+    archive, filename=result
+    response=HttpResponse(archive, content_type='application/zip')
+    response['Content-Disposition']=f'attachment; filename="{filename}"'
+    return response
+
 
 @api_view(['POST'])
 @throttle_classes([ImportUserThrottle])

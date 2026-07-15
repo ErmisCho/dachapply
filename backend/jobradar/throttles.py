@@ -77,6 +77,10 @@ class ImportUserThrottle(ConfiguredRateThrottle):
         return self.cache_format % {'scope': self.scope, 'ident': ident}
 
 
+class CVGenerationUserThrottle(ImportUserThrottle):
+    scope = 'cv_generation_user'
+
+
 def api_exception_handler(exc, context):
     response = exception_handler(exc, context)
     if isinstance(exc, Throttled) and response is not None:
