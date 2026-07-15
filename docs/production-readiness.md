@@ -47,7 +47,17 @@ python manage.py collectstatic --noinput
 gunicorn config.wsgi:application --bind 0.0.0.0:${PORT:-8000}
 ```
 
-## 3. Smoke tests after deployment
+## 3. Optional owner-only Codex CV generation
+
+Keep this local-only feature disabled on deployed instances:
+
+```text
+CODEX_CV_ENABLED=False
+```
+
+Local development defaults it on when `DEBUG=True`; `.env.local.example` also records the explicit owner and `C:\latex` workspace settings. Do not commit CV templates or Codex authentication.
+
+## 4. Smoke tests after deployment
 
 Run these checks on the deployed HTTPS origin:
 
@@ -58,7 +68,7 @@ Run these checks on the deployed HTTPS origin:
 - Static assets load from the built frontend.
 - Export and import work for a non-critical test user.
 
-## 4. Security checks
+## 5. Security checks
 
 - Confirm `DEBUG=False` in production.
 - Confirm only exact production hostnames are in `ALLOWED_HOSTS` and CSRF/CORS origins.

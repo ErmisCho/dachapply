@@ -53,6 +53,10 @@ def normalize_smtp_password(host, password):
 
 DEBUG = env_bool('DEBUG', True)
 DACHAPPLY_ENV = os.getenv('DACHAPPLY_ENV', 'local' if DEBUG else 'production')
+CODEX_CV_ENABLED = env_bool('CODEX_CV_ENABLED', DEBUG)
+CODEX_CV_OWNER_EMAIL = os.getenv('CODEX_CV_OWNER_EMAIL', 'ermis.chorinopoulos@gmail.com')
+CODEX_CV_WORKSPACE = os.getenv('CODEX_CV_WORKSPACE', r'C:\latex' if DEBUG else '')
+CODEX_CV_TIMEOUT = int(os.getenv('CODEX_CV_TIMEOUT', '600'))
 
 SECRET_KEY = os.getenv('SECRET_KEY')
 if DEBUG:
@@ -122,6 +126,7 @@ REST_FRAMEWORK={
         'password_reset_email': os.getenv('RATE_LIMIT_PASSWORD_RESET_EMAIL', '5/hour'),
         'public_submit_ip': os.getenv('RATE_LIMIT_PUBLIC_SUBMIT_IP', '60/hour' if DEBUG else '20/hour'),
         'import_user': os.getenv('RATE_LIMIT_IMPORT_USER', '120/hour' if DEBUG else '60/hour'),
+        'cv_generation_user': os.getenv('RATE_LIMIT_CV_GENERATION_USER', '3/hour'),
     },
     'EXCEPTION_HANDLER':'jobradar.throttles.api_exception_handler',
 }
