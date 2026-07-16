@@ -288,6 +288,24 @@ def test_generate_bulk_links_prompt(client):
     assert r.status_code==200 and 'EXPECTED JSON SCHEMA' in r.data['generated_prompt'] and 'evaluation' in r.data['generated_prompt']
 
 
+def test_candidate_evidence_is_required_and_loaded(tmp_path, settings):
+    from jobradar.services.cv_generator import load_candidate_evidence
+    settings.CODEX_CANDIDATE_EVIDENCE_PATH=str(tmp_path/'missing.md')
+    with pytest.raises(RuntimeError, match='cannot be read'):
+        load_candidate_evidence('profile')
+    evidence=tmp_path/'evidence.md'; evidence.write_text('verified evidence', encoding='utf-8')
+    settings.CODEX_CANDIDATE_EVIDENCE_PATH=str(evidence)
+    context=load_candidate_evidence('profile notes')
+    assert 'AUTHORITATIVE CANDIDATE EVIDENCE:\nverified evidence' in context and 'profile notes' in context
+
+
+def test_generated_application_names_have_no_language_suffix(job):
+    from jobradar.services.cv_generator import _target_names
+    expected=('Chorinopoulos-Ermis-CV-acme-python-engineer.tex','Chorinopoulos-Ermis-Letter-acme-python-engineer.tex')
+    assert _target_names(job, 'en', 'en')==expected
+    assert _target_names(job, 'de', 'de')==expected
+
+
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
 def test_cv_generation_preview_is_owner_only(client, owner, job):
     assert client.get(f'/api/jobs/{job.id}/cv-generation/').status_code==404
@@ -311,13 +329,13 @@ def test_cv_generation_can_be_disabled(client, owner, job):
 def test_cv_generation_starts_asynchronously(client, owner, job, monkeypatch):
     owner.email='owner@example.test'; owner.save(update_fields=['email'])
     selected={}
-    def start(job_id, user_id, profile, cv, letter, provider, model, effort, speed):
-        selected.update(job_id=job_id,user_id=user_id,cv=cv,letter=letter,provider=provider,model=model,effort=effort,speed=speed)
+    def start(job_id, user_id, profile, cv, letter, create_letter, provider, model, effort, speed):
+        selected.update(job_id=job_id,user_id=user_id,cv=cv,letter=letter,create_letter=create_letter,provider=provider,model=model,effort=effort,speed=speed)
         return 'task123'
     monkeypatch.setattr('jobradar.views.start_cv_task', start)
     r=client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'cv_template':'de','letter_template':'anschreiben','provider':'openai','model':'gpt-5.5','effort':'high','speed':'fast'}, format='json')
     assert r.status_code==202 and r.data['task_id']=='task123' and r.data['status']=='queued'
-    assert selected=={'job_id':job.id,'user_id':owner.id,'cv':'de','letter':'anschreiben','provider':'openai','model':'gpt-5.5','effort':'high','speed':'fast'}
+    assert selected=={'job_id':job.id,'user_id':owner.id,'cv':'de','letter':'anschreiben','create_letter':True,'provider':'openai','model':'gpt-5.5','effort':'high','speed':'fast'}
 
 
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
@@ -325,12 +343,16 @@ def test_cv_task_status_and_download_are_owner_only(client, owner, monkeypatch):
     owner.email='owner@example.test'; owner.save(update_fields=['email'])
     monkeypatch.setattr('jobradar.views.get_cv_task', lambda task_id,user_id: {'id':task_id,'status':'ready','progress':100,'stage':'Ready'} if user_id==owner.id else None)
     monkeypatch.setattr('jobradar.views.get_cv_task_download', lambda task_id,user_id: (b'zip','application.zip') if user_id==owner.id else None)
+    monkeypatch.setattr('jobradar.views.start_cv_revision', lambda task_id,user_id,instructions: 'revision123' if user_id==owner.id and instructions else None)
     assert client.get('/api/cv-generation/tasks/task123/').data['stage']=='Ready'
     download=client.get('/api/cv-generation/tasks/task123/download/')
     assert download.status_code==200 and download.content==b'zip'
     other=User.objects.create_user('other@example.test', email='other@example.test', password='pw')
     other_client=APIClient(); other_client.force_authenticate(other)
+    revision=client.post('/api/cv-generation/tasks/task123/revise/', {'instructions':'Shorten profile'}, format='json')
+    assert revision.status_code==202 and revision.data['task_id']=='revision123'
     assert other_client.get('/api/cv-generation/tasks/task123/').status_code==404
+    assert other_client.post('/api/cv-generation/tasks/task123/revise/', {'instructions':'hack'}, format='json').status_code==404
 
 
 def test_cv_model_discovery_includes_anthropic_and_installed_local_models(monkeypatch):
@@ -353,12 +375,14 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     import zipfile
     from io import BytesIO
     from types import SimpleNamespace
+    from jobradar.services import cv_generator
     from jobradar.services.cv_generator import generate_cv_package
 
     cv=tmp_path/'CVs'/'German - AI Engineer (base)_v_1.2.tex'; cv.parent.mkdir()
     letter=tmp_path/'Motivationsschreiben.tex'; picture=tmp_path/'CVs'/'Picture.jpg'
     cv.write_text('original cv'); letter.write_text('original letter'); picture.write_bytes(b'jpg')
-    settings.CODEX_CV_WORKSPACE=str(tmp_path); settings.CODEX_CV_TIMEOUT=10
+    settings.CODEX_CV_WORKSPACE=str(tmp_path); settings.CODEX_CV_TIMEOUT=10; settings.CODEX_CV_OPEN_OUTPUT_FOLDER=True
+    opened=[]; monkeypatch.setattr(cv_generator.os, 'startfile', lambda path: opened.append(__import__('pathlib').Path(path)), raising=False)
     monkeypatch.setattr('jobradar.services.cv_generator.shutil.which', lambda command: command)
     monkeypatch.setattr('jobradar.services.cv_generator.available_model_options', lambda: [
         {'provider':'openai','key':'gpt-5.5','label':'GPT-5.5','efforts':['low','medium','high','xhigh'],'default_effort':'medium','fast_tier':'priority'},
@@ -374,7 +398,7 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
             assert command[-1]=='-' and 'UNTRUSTED JOB DATA' in kwargs['input']
             if '--oss' not in command:
                 assert command[command.index('--model')+1]=='gpt-5.5'
-                assert 'model_reasoning_effort="high"' in command and 'service_tier="priority"' in command
+                assert 'model_reasoning_effort="high"' in command
             result_path=__import__('pathlib').Path(command[command.index('--output-last-message')+1])
             result_path.write_text(json.dumps(generated))
             return SimpleNamespace(returncode=0, stdout='ok', stderr='')
@@ -388,16 +412,26 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     user=User.objects.create_user('cv-owner')
     job=JobLead.objects.create(company='Firma', title='Entwickler', raw_description='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben.', created_by=user)
     with pytest.raises(ValueError, match='matching the CV language'):
-        generate_cv_package(job, 'Factual profile', 'en', 'anschreiben', 'openai', 'gpt-5.5', 'high', 'fast')
+        generate_cv_package(job, 'Factual profile', 'en', 'anschreiben', True, 'openai', 'gpt-5.5', 'high', 'fast')
     with pytest.raises(ValueError, match='speed supported'):
-        generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', 'openai', 'gpt-5.5', 'high', 'turbo')
+        generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'turbo')
     progress=[]
-    archive,_=generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', 'openai', 'gpt-5.5', 'high', 'fast', lambda percent,stage: progress.append((percent,stage)))
+    archive,_,saved=generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'fast', lambda percent,stage: progress.append((percent,stage)))
     names=zipfile.ZipFile(BytesIO(archive)).namelist()
     assert len([name for name in names if name.endswith('.pdf')])==2
-    assert [stage for _,stage in progress]==['Preparing templates','Generating CV and motivation letter','CV and letter generated','Compiling CV','CV compiled','Compiling motivation letter','Motivation letter compiled','Packaging files']
-    generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', 'anthropic', 'sonnet', 'default', 'normal')
-    generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', 'ollama', 'qwen', 'default', 'normal')
+    assert [stage for _,stage in progress]==['Preparing templates','Generating CV and motivation letter','CV and letter generated','Compiling CV','CV compiled','Compiling motivation letter','Motivation letter compiled','Saving files']
+    generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'anthropic', 'sonnet', 'default', 'normal')
+    generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'ollama', 'qwen', 'default', 'normal')
+    cv_only_progress=[]
+    cv_only,_,cv_only_saved=generate_cv_package(job, 'Factual profile', 'de', '', False, 'openai', 'gpt-5.5', 'high', 'normal', lambda percent,stage: cv_only_progress.append((percent,stage)))
+    assert len([name for name in zipfile.ZipFile(BytesIO(cv_only)).namelist() if name.endswith('.pdf')])==1
+    assert __import__('pathlib').Path(saved['cv_tex']).parent==tmp_path/'CVs'/'sent'
+    assert __import__('pathlib').Path(saved['cv_pdf']).parent==tmp_path/'ready-to-send'
+    assert __import__('pathlib').Path(saved['letter_tex']).parent==tmp_path/'output'
+    assert __import__('pathlib').Path(saved['letter_pdf']).parent==tmp_path/'ready-to-send'
+    assert __import__('pathlib').Path(cv_only_saved['cv_pdf']).name != __import__('pathlib').Path(saved['cv_pdf']).name
+    assert opened and all(path==tmp_path/'ready-to-send' for path in opened)
+    assert not any('letter' in stage.lower() for _,stage in cv_only_progress)
     assert any(command[0]=='claude' and '--json-schema' in command for command in commands)
     assert any(command[0]=='codex' and '--oss' in command and command[command.index('--local-provider')+1]=='ollama' for command in commands)
     assert cv.read_text()=='original cv' and letter.read_text()=='original letter'
@@ -409,12 +443,14 @@ def test_cv_task_completes_and_is_user_scoped(job, monkeypatch):
 
     cv_tasks._tasks.clear()
     monkeypatch.setattr(cv_tasks.JobLead.objects, 'get', lambda id: job)
-    def generate(job, profile, cv, letter, provider, model, effort, speed, progress):
+    calls=[]
+    def generate(job, profile, cv, letter, create_letter, provider, model, effort, speed, progress, source_cv=None, source_letter=None, revision_instructions=''):
         assert (provider,model,effort,speed)==('openai','gpt-5.5','medium','normal')
+        calls.append((source_cv,source_letter,revision_instructions))
         progress(10,'Generating CV and motivation letter'); progress(95,'Motivation letter compiled')
-        return b'zip','application.zip'
+        return b'zip','application.zip',{'cv_pdf':'ready.pdf','cv_tex':'latest.tex','letter_tex':'latest-letter.tex'}
     monkeypatch.setattr(cv_tasks, 'generate_cv_package', generate)
-    task_id=cv_tasks.start_cv_task(job.id, job.created_by_id, 'profile', 'en', 'motivation_letter', 'openai', 'gpt-5.5', 'medium', 'normal')
+    task_id=cv_tasks.start_cv_task(job.id, job.created_by_id, 'profile', 'en', 'motivation_letter', True, 'openai', 'gpt-5.5', 'medium', 'normal')
     for _ in range(100):
         task=cv_tasks.get_cv_task(task_id, job.created_by_id)
         if task['status']=='ready': break
@@ -422,6 +458,15 @@ def test_cv_task_completes_and_is_user_scoped(job, monkeypatch):
     assert task['progress']==100 and task['stage']=='Ready'
     assert cv_tasks.get_cv_task(task_id, -1) is None
     assert cv_tasks.get_cv_task_download(task_id, job.created_by_id)==(b'zip','application.zip')
+    assert task['artifacts']['cv_pdf']=='ready.pdf'
+    revision_id=cv_tasks.start_cv_revision(task_id, job.created_by_id, 'Shorten the profile')
+    for _ in range(100):
+        revision_task=cv_tasks.get_cv_task(revision_id, job.created_by_id)
+        if revision_task['status']=='ready': break
+        time.sleep(.01)
+    assert revision_task['status']=='ready'
+    assert calls[-1]==('latest.tex','latest-letter.tex','Shorten the profile')
+    with pytest.raises(ValueError): cv_tasks.start_cv_revision(task_id, -1, 'hack')
 
 
 def valid_payload(job):
@@ -462,6 +507,23 @@ def test_import_bulk_jobs_with_evaluations(client):
     assert r.data['jobs_found']==1
     assert r.data['imported_jobs'][0]['company']=='Karriere Co'
     assert r.data['imported_jobs'][0]['title']=='Python Engineer'
+
+
+def test_original_job_text_is_full_immutable_and_portable(client):
+    from jobradar.services.user_data_portability import build_user_export, import_user_export
+    original='Full source text. ' * 1000
+    payload={'jobs':[{'company':'Snapshot Co','title':'Role','raw_description':'Clean description','original_source_text':original}]}
+    assert client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json').status_code==201
+    saved=JobLead.objects.get(company='Snapshot Co')
+    assert saved.original_source_text==original and len(saved.original_source_text)>12000
+    update={'job_updates':[{'job_id':saved.id,'raw_description':'Edited description','original_source_text':'replacement'}]}
+    assert client.post('/api/evaluations/import/', {'json':json.dumps(update)}, format='json').status_code==201
+    saved.refresh_from_db(); assert saved.raw_description=='Edited description' and saved.original_source_text==original
+    exported=build_user_export(client.user)
+    assert next(row for row in exported['data']['jobs'] if row['id']==saved.id)['original_source_text']==original
+    other=User.objects.create_user('snapshot-importer')
+    assert not import_user_export(other, exported)['errors']
+    assert JobLead.objects.get(created_by=other).original_source_text==original
 
 def test_combined_import_existing_evaluation_requires_choice(client, job):
     JobEvaluation.objects.create(job=job, fit_score=70, priority='medium', recommendation='maybe', summary='', main_match_reasons=[], main_gaps=[], required_skills=[], nice_to_have_skills=[], matched_skills=[], missing_skills=[])

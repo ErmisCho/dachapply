@@ -48,6 +48,7 @@ class JobLead(models.Model):
     url=models.URLField(max_length=1000, blank=True)
     source=models.CharField(max_length=120, blank=True)
     raw_description=models.TextField(blank=True)
+    original_source_text=models.TextField(blank=True)
     submitted_by=models.CharField(max_length=120, blank=True)
     submitter_reason=models.TextField(blank=True)
     salary_info=models.CharField(max_length=250, blank=True)
@@ -64,6 +65,14 @@ class JobLead(models.Model):
     created_at=models.DateTimeField(auto_now_add=True)
     updated_at=models.DateTimeField(auto_now=True)
     class Meta: ordering=['-created_at']
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original=type(self).objects.filter(pk=self.pk).values_list('original_source_text', flat=True).first()
+            if original:
+                self.original_source_text=original
+        if not self.original_source_text:
+            self.original_source_text=self.raw_description
+        super().save(*args, **kwargs)
     def __str__(self): return f'{self.company} - {self.title}'
 
 class JobEvaluation(models.Model):

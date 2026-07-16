@@ -17,7 +17,7 @@ from jobradar.services.cleaning import clean_job_location
 SCHEMA_VERSION = 1
 APP_NAME = 'dachapply'
 
-JOB_FIELDS = ['company','title','location','url','source','raw_description','submitted_by','submitter_reason','salary_info','language_requirements','work_mode','status','status_date','interview_stage','interview_total','last_update_date','feedback_due_date']
+JOB_FIELDS = ['company','title','location','url','source','raw_description','original_source_text','submitted_by','submitter_reason','salary_info','language_requirements','work_mode','status','status_date','interview_stage','interview_total','last_update_date','feedback_due_date']
 EVALUATION_FIELDS = ['fit_score','priority','recommendation','summary','main_match_reasons','main_gaps','required_skills','nice_to_have_skills','matched_skills','missing_skills','cv_adjustment_notes','interview_prep_notes','risk_notes','next_action','structured_json_raw']
 NOTE_FIELDS = ['note','note_type']
 FOLLOWUP_FIELDS = ['follow_up_date','reason','completed']

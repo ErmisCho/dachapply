@@ -232,14 +232,14 @@ def import_jobs_data(data, user=None):
                     title=rec.get('title') or 'Untitled role'
                     create_defaults=job_create_defaults(user) if user is not None else {}
                     source=create_defaults.pop('source', rec.get('source','bulk_links'))
-                    job=JobLead.objects.create(company=rec.get('company') or 'Unknown company', title=title, location=rec.get('location',''), url=normalize_job_url(rec.get('url','')), source=source, raw_description=rec.get('raw_description',''), salary_info=rec.get('salary_info',''), language_requirements=rec.get('language_requirements',''), work_mode=rec.get('work_mode') or 'unknown', **create_defaults)
+                    job=JobLead.objects.create(company=rec.get('company') or 'Unknown company', title=title, location=rec.get('location',''), url=normalize_job_url(rec.get('url','')), source=source, raw_description=rec.get('raw_description',''), original_source_text=rec.get('original_source_text',''), salary_info=rec.get('salary_info',''), language_requirements=rec.get('language_requirements',''), work_mode=rec.get('work_mode') or 'unknown', **create_defaults)
                     action='created'; changed=sorted(JOB_UPDATE_FIELDS)
             else:
                 title=rec.get('title') or 'Untitled role'
                 if dup_action and dup_action.get('action') == 'duplicate': title=duplicate_title(title, owned_qs)
                 create_defaults=job_create_defaults(user) if user is not None else {}
                 source=create_defaults.pop('source', rec.get('source','bulk_links'))
-                job=JobLead.objects.create(company=rec.get('company') or 'Unknown company', title=title, location=rec.get('location',''), url=normalize_job_url(rec.get('url','')), source=source, raw_description=rec.get('raw_description',''), salary_info=rec.get('salary_info',''), language_requirements=rec.get('language_requirements',''), work_mode=rec.get('work_mode') or 'unknown', **create_defaults)
+                job=JobLead.objects.create(company=rec.get('company') or 'Unknown company', title=title, location=rec.get('location',''), url=normalize_job_url(rec.get('url','')), source=source, raw_description=rec.get('raw_description',''), original_source_text=rec.get('original_source_text',''), salary_info=rec.get('salary_info',''), language_requirements=rec.get('language_requirements',''), work_mode=rec.get('work_mode') or 'unknown', **create_defaults)
                 action='created_duplicate' if dup_action and dup_action.get('action') == 'duplicate' else 'created'; changed=sorted(JOB_UPDATE_FIELDS)
             note=rec.get('notes') or rec.get('note') or rec.get('uncertainty')
             if note: ApplicationNote.objects.create(job=job, note=str(note), note_type='general', created_by=user if user is not None else None)
