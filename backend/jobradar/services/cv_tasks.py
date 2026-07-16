@@ -27,24 +27,24 @@ def _cleanup():
             del _tasks[task_id]
 
 
-def _run(task_id, job_id, profile, cv_key, letter_key, provider, model, effort, speed):
+def _run(task_id, job_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions=''):
     close_old_connections()
     try:
         job=JobLead.objects.get(id=job_id)
-        archive, filename=generate_cv_package(job, profile, cv_key, letter_key, provider, model, effort, speed, lambda progress, stage: _update(task_id, status='running', progress=progress, stage=stage))
-        _update(task_id, status='ready', progress=100, stage='Ready', archive=archive, filename=filename)
+        archive, filename, artifacts=generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, lambda progress, stage: _update(task_id, status='running', progress=progress, stage=stage), source_cv, source_letter, revision_instructions)
+        _update(task_id, status='ready', progress=100, stage='Ready', archive=archive, filename=filename, artifacts=artifacts)
     except Exception as exc:
         _update(task_id, status='failed', stage=str(exc), error=str(exc))
     finally:
         close_old_connections()
 
 
-def start_cv_task(job_id, user_id, profile, cv_key, letter_key, provider, model, effort, speed):
+def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions=''):
     _cleanup()
     task_id=uuid.uuid4().hex
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','updated_at':time.time()}
-    _executor.submit(_run, task_id, job_id, profile, cv_key, letter_key, provider, model, effort, speed)
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'_config':{'profile':profile,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'provider':provider,'model':model,'effort':effort,'speed':speed},'updated_at':time.time()}
+    _executor.submit(_run, task_id, job_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv, source_letter, revision_instructions)
     return task_id
 
 
@@ -54,7 +54,21 @@ def get_cv_task(task_id, user_id):
         task=_tasks.get(task_id)
         if not task or task['user_id'] != user_id:
             return None
-        return {key:value for key,value in task.items() if key not in ('archive','user_id','updated_at')}
+        return {key:value for key,value in task.items() if key not in ('archive','user_id','updated_at','_config')}
+
+
+def start_cv_revision(task_id, user_id, instructions):
+    instructions=(instructions or '').strip()
+    if not instructions:
+        raise ValueError('Provide revision instructions.')
+    with _lock:
+        parent=_tasks.get(task_id)
+        if not parent or parent['user_id'] != user_id or parent['status'] != 'ready':
+            raise ValueError('Completed generation task not found.')
+        config=dict(parent['_config'])
+        artifacts=dict(parent['artifacts'])
+        job_id=parent['job_id']
+    return start_cv_task(job_id, user_id, **config, source_cv=artifacts.get('cv_tex'), source_letter=artifacts.get('letter_tex'), revision_instructions=instructions[:5000])
 
 
 def get_cv_task_download(task_id, user_id):

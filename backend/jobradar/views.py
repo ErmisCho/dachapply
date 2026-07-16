@@ -28,8 +28,8 @@ from .services.cleaning import clean_job_location
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
 from .services.analytics import record_demo_click
-from .services.cv_generator import generation_preview, is_cv_owner
-from .services.cv_tasks import get_cv_task, get_cv_task_download, start_cv_task
+from .services.cv_generator import generation_preview, is_cv_owner, load_candidate_evidence
+from .services.cv_tasks import get_cv_task, get_cv_task_download, start_cv_revision, start_cv_task
 from .throttles import CVGenerationUserThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
 
@@ -478,7 +478,11 @@ def generate_cv_documents(request, job_id):
     job=accessible_jobs(request.user).filter(id=job_id).first()
     if not job:
         return Response({'detail':'Job not found.'}, status=404)
-    task_id=start_cv_task(job.id, request.user.id, build_candidate_profile_text(request.user), request.data.get('cv_template') or '', request.data.get('letter_template') or '', request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal')
+    try:
+        candidate_context=load_candidate_evidence(build_candidate_profile_text(request.user))
+    except RuntimeError as exc:
+        return Response({'detail':str(exc)}, status=503)
+    task_id=start_cv_task(job.id, request.user.id, candidate_context, request.data.get('cv_template') or '', request.data.get('letter_template') or '', request.data.get('create_letter', True) is not False, request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal')
     return Response({'task_id':task_id,'status':'queued','progress':0,'stage':'Queued'}, status=status.HTTP_202_ACCEPTED)
 
 
@@ -488,6 +492,18 @@ def cv_generation_status(request, task_id):
         return Response({'detail':'Not found.'}, status=404)
     task=get_cv_task(task_id, request.user.id)
     return Response(task) if task else Response({'detail':'Task not found.'}, status=404)
+
+
+@api_view(['POST'])
+@throttle_classes([CVGenerationUserThrottle])
+def revise_cv_documents(request, task_id):
+    if not is_cv_owner(request.user):
+        return Response({'detail':'Not found.'}, status=404)
+    try:
+        new_task_id=start_cv_revision(task_id, request.user.id, request.data.get('instructions') or '')
+    except ValueError as exc:
+        return Response({'detail':str(exc)}, status=400)
+    return Response({'task_id':new_task_id,'status':'queued','progress':0,'stage':'Queued'}, status=status.HTTP_202_ACCEPTED)
 
 
 @api_view(['GET'])
