@@ -21,3 +21,18 @@ Do not edit Backlog task, draft, document, decision, or milestone markdown files
 
 </CRITICAL_INSTRUCTION>
 <!-- BACKLOG.MD GUIDELINES END -->
+
+## Session Config
+
+project-name: dachapply
+vcs: github
+persistence: true
+enforcement: warn
+waves: 5
+agents-per-wave: 6
+test-command: cd backend && python -m pytest -q
+typecheck-command: cd frontend && npm run build
+lint-command: skip
+recent-commits: 20
+stale-branch-days: 7
+issue-limit: 50

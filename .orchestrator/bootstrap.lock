@@ -1,0 +1,8 @@
+# .orchestrator/bootstrap.lock
+version: 1
+tier: deep
+archetype: node-minimal
+timestamp: 2026-07-20T19:02:24Z
+source: plugin-template
+plugin-version: 3.0.0-dev
+bootstrapped-at: 2026-07-20T19:02:24Z

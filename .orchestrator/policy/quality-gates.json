@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "rationale": "Canonical quality-gate commands for the existing Django and React/Vite app.",
+  "commands": {
+    "test": { "command": "cd backend && python -m pytest -q", "required": true },
+    "typecheck": { "command": "cd frontend && npm run build", "required": true },
+    "lint": { "command": "skip", "required": false }
+  }
+}
