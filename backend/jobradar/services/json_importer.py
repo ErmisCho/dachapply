@@ -1,6 +1,5 @@
 import json
 import re
-from urllib.parse import urlsplit, urlunsplit
 from django.db import transaction
 from django.db.models import Q
 from jobradar.models import JobLead, JobEvaluation, ApplicationNote
@@ -9,27 +8,12 @@ from jobradar.services.cleaning import clean_job_location
 from jobradar.services.job_replace import replace_job_with_supplied_data
 from jobradar.services.demo_data import is_demo_job_payload, is_demo_user
 from rest_framework import serializers
+from jobradar.serializers import normalize_job_url
 
 REQ={'job_id', 'company', 'title', 'fit_score', 'priority', 'recommendation', 'summary', 'main_match_reasons', 'main_gaps', 'required_skills', 'nice_to_have_skills', 'matched_skills', 'missing_skills', 'cv_adjustment_notes', 'interview_prep_notes', 'risk_notes', 'next_action'}
 EVAL_REQ_NO_JOB=REQ-{'job_id','company','title'}
 LIST_FIELDS=['main_match_reasons','main_gaps','required_skills','nice_to_have_skills','matched_skills','missing_skills']
 JOB_UPDATE_FIELDS={'company','title','location','url','source','raw_description','salary_info','language_requirements','work_mode'}
-
-
-def normalize_job_url(value):
-    raw=(value or '').strip()
-    value=raw.replace('https://[https://','https://').replace('http://[http://','http://').strip('[]()<>.,;')
-    embedded=re.findall(r'https?://[^\s\[\])>"}]+', value)
-    if embedded: value=embedded[-1].strip('[]()<>.,;')
-    if not value: return ''
-    if value.startswith('http://') or value.startswith('https://'):
-        parts=urlsplit(value)
-        return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip('/'), '', ''))
-    if value.startswith('https-') or value.startswith('http-'):
-        scheme, rest=value.split('-', 1); parts=rest.split('-')
-        if len(parts) >= 2 and '.' in parts[0]: return f'{scheme}://' + parts[0] + '/' + '/'.join(parts[1:])
-    if '.' in value and ' ' not in value: return 'https://' + value
-    return value
 
 
 def value_is_valid_url(value):
@@ -217,6 +201,9 @@ def import_jobs_data(data, user=None):
                 results.append(auto_skips[i]); continue
             if rec.get('job_id'):
                 job=owned_qs.get(id=rec['job_id']); action='updated'; changed=[]
+                candidate=next((text for text in (rec.get('original_source_text'),rec.get('raw_description')) if JobLead.is_meaningful_source(text)), '')
+                if candidate and not JobLead.is_meaningful_source(job.original_source_text):
+                    job.original_source_text=candidate; changed.append('original_source_text')
                 for f in JOB_UPDATE_FIELDS:
                     val=normalize_job_url(rec.get(f)) if f=='url' else clean_job_location(rec.get(f)) if f=='location' else rec.get(f)
                     if val is not None and val != '': setattr(job, f, val); changed.append(f)
@@ -254,8 +241,33 @@ def import_jobs_data(data, user=None):
     return {'ok':True,'type':'jobs','jobs':results,'imported_jobs':imported_jobs,'evaluation_ids':eval_ids,'count':len(results),'jobs_found':len(imported_jobs)}
 
 
+def repair_unescaped_json_quotes(text):
+    out=[]; in_string=False
+    for i, char in enumerate(text):
+        backslashes=0; j=i-1
+        while j >= 0 and text[j] == '\\': backslashes+=1; j-=1
+        if char == '"' and backslashes % 2 == 0:
+            next_char=next((c for c in text[i+1:] if not c.isspace()), '')
+            if in_string and next_char not in ',:}]': out.append('\\')
+            else: in_string=not in_string
+        out.append(char)
+    return ''.join(out)
+
+
+def parse_json_object(value):
+    if not isinstance(value, str): return value
+    text=value.strip()
+    try: return json.loads(text)
+    except json.JSONDecodeError:
+        start=text.find('{')
+        if start < 0: raise
+        candidate=text[start:]
+        try: return json.JSONDecoder().raw_decode(candidate)[0]
+        except json.JSONDecodeError: return json.JSONDecoder().raw_decode(repair_unescaped_json_quotes(candidate))[0]
+
+
 def import_any_json(pasted, user=None):
-    try: data=json.loads(pasted) if isinstance(pasted, str) else pasted
+    try: data=parse_json_object(pasted)
     except json.JSONDecodeError as e: return {'ok':False,'errors':[f'Invalid JSON: {e}']}
     if not isinstance(data, dict): return {'ok':False,'errors':['Root must be a JSON object']}
     if any(k in data for k in ['job_updates','jobs','job_details','new_jobs']): return import_jobs_data(data, user=user)
@@ -264,7 +276,7 @@ def import_any_json(pasted, user=None):
 
 def import_evaluations(pasted, user=None):
     if isinstance(pasted, str):
-        try: data=json.loads(pasted)
+        try: data=parse_json_object(pasted)
         except json.JSONDecodeError as e: return {'ok':False,'errors':[f'Invalid JSON: {e}']}
     else: data=pasted
     errors=[]

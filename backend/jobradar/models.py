@@ -65,14 +65,19 @@ class JobLead(models.Model):
     created_at=models.DateTimeField(auto_now_add=True)
     updated_at=models.DateTimeField(auto_now=True)
     class Meta: ordering=['-created_at']
+    @staticmethod
+    def is_meaningful_source(text):
+        lines=[line.strip() for line in (text or '').splitlines() if line.strip()]
+        return bool(lines) and any(not line.lower().startswith(('http://','https://','http-','https-')) for line in lines)
     def save(self, *args, **kwargs):
-        if self.pk:
-            original=type(self).objects.filter(pk=self.pk).values_list('original_source_text', flat=True).first()
-            if original:
-                self.original_source_text=original
-        if not self.original_source_text:
+        existing=type(self).objects.filter(pk=self.pk).values_list('original_source_text', flat=True).first() if self.pk else ''
+        if self.is_meaningful_source(existing):
+            self.original_source_text=existing
+        elif not self.is_meaningful_source(self.original_source_text) and self.is_meaningful_source(self.raw_description):
             self.original_source_text=self.raw_description
         super().save(*args, **kwargs)
+    @property
+    def source_text(self): return self.original_source_text or self.raw_description
     def __str__(self): return f'{self.company} - {self.title}'
 
 class JobEvaluation(models.Model):

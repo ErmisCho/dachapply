@@ -28,7 +28,7 @@ from .services.cleaning import clean_job_location
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
 from .services.analytics import record_demo_click
-from .services.cv_generator import generation_preview, is_cv_owner, load_candidate_evidence
+from .services.cv_generator import generation_preview, is_cv_owner, latest_generated_sources, load_candidate_evidence
 from .services.cv_tasks import get_cv_task, get_cv_task_download, start_cv_revision, start_cv_task
 from .throttles import CVGenerationUserThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
@@ -53,6 +53,7 @@ def extract_links(text):
     found=re.findall(r'https?://[^\s,;]+|https-[^\s,;]+|http-[^\s,;]+|(?:www\.)?[-\w]+\.[a-zA-Z]{2,}[^\s,;]*', text)
     links=[]
     for f in found:
+        if '@' in f: continue
         link=normalize_job_url(f.strip('()[]<>"\''))
         if link and link not in links: links.append(link)
     return links
@@ -261,7 +262,7 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         if p.get('status'):
             statuses=[s for s in p.get('status','').split(',') if s]
             qs=qs.filter(status__in=statuses)
-        else:
+        elif self.action == 'list':
             qs=qs.exclude(status='archived')
         if p.get('work_mode'): qs=qs.filter(work_mode=p['work_mode'])
         if p.get('company'): qs=qs.filter(company__icontains=p['company'])
@@ -274,11 +275,13 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             qs=qs.filter(evaluations__recommendation__in=recommendations)
         if p.get('min_fit_score'): qs=qs.filter(evaluations__fit_score__gte=p['min_fit_score'])
         if p.get('skill'):
-            s=p['skill']; qs=qs.filter(Q(evaluations__matched_skills__icontains=s)|Q(evaluations__required_skills__icontains=s)|Q(raw_description__icontains=s))
+            s=p['skill']; qs=qs.filter(Q(evaluations__matched_skills__icontains=s)|Q(evaluations__required_skills__icontains=s)|Q(original_source_text__icontains=s)|Q(raw_description__icontains=s))
         if p.get('search'):
-            s=p['search']; qs=qs.filter(Q(company__icontains=s)|Q(title__icontains=s)|Q(raw_description__icontains=s)|Q(url__icontains=s))
+            s=p['search']; qs=qs.filter(Q(company__icontains=s)|Q(title__icontains=s)|Q(original_source_text__icontains=s)|Q(raw_description__icontains=s)|Q(url__icontains=s))
         if p.get('analyzed') in ('1','true','yes'):
             qs=qs.filter(evaluations__isnull=False)
+        if p.get('board') in ('1','true','yes'):
+            qs=qs.exclude(Q(title='')|Q(title__istartswith='Untitled role'))
         qs=qs.annotate(
             stale_rank=Case(When(status__in=['applied','interview'], status_date__lt=timezone.localdate()-timezone.timedelta(days=21), then=Value(1)), default=Value(0), output_field=IntegerField()),
             status_rank=Case(When(status='new', then=Value(0)), When(status='to_apply', then=Value(1)), When(status='reviewed', then=Value(2)), When(status='interview', then=Value(3)), When(status='applied', then=Value(4)), default=Value(5), output_field=IntegerField()),
@@ -300,6 +303,14 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         if existing and action=='skip': return Response(JobLeadSerializer(existing).data)
         obj=ser.save(**job_create_defaults(request.user)); return Response(JobLeadSerializer(obj).data, status=201)
     def perform_create(self, serializer): serializer.save(**job_create_defaults(self.request.user))
+    @action(detail=True, methods=['patch'], url_path='source-text')
+    def source_text(self, request, pk=None):
+        job=self.get_object()
+        text=(request.data.get('original_source_text') or '').strip()
+        if not JobLead.is_meaningful_source(text):
+            return Response({'detail':'Original job text must contain the job description, not only a link.'}, status=400)
+        JobLead.objects.filter(pk=job.pk).update(original_source_text=text)
+        return Response({'original_source_text':text})
     def destroy(self, request, pk=None):
         qs=accessible_jobs(request.user)
         try:
@@ -329,6 +340,11 @@ class JobLeadViewSet(viewsets.ModelViewSet):
 class EvaluationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class=JobEvaluationSerializer; queryset=JobEvaluation.objects.select_related('job').all()
     def get_queryset(self): return JobEvaluation.objects.select_related('job').filter(job__in=accessible_jobs(self.request.user))
+    def partial_update(self, request, pk=None):
+        evaluation=self.get_object()
+        ser=self.get_serializer(evaluation, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True); ser.save()
+        return Response(ser.data)
 
 class NoteViewSet(viewsets.GenericViewSet):
     serializer_class=ApplicationNoteSerializer; queryset=ApplicationNote.objects.all()
@@ -350,7 +366,7 @@ def bulk_create_jobs(request):
     pasted=(request.data.get('url') or '') + '\n' + (request.data.get('raw_description') or '')
     links=extract_links(pasted)
     if not links:
-        if (request.data.get('url') or '').strip() and not any((request.data.get(f) or '').strip() for f in ['company','title','raw_description']):
+        if not any((request.data.get(f) or '').strip() for f in ['company','title','raw_description']):
             return Response({'detail':'Paste at least one valid link, or add company/title/description details.'}, status=400)
         links=['']
     conflicts=[]; created=[]; updated=[]; skipped=[]
@@ -478,11 +494,42 @@ def generate_cv_documents(request, job_id):
     job=accessible_jobs(request.user).filter(id=job_id).first()
     if not job:
         return Response({'detail':'Job not found.'}, status=404)
+    create_cv=request.data.get('create_cv', True) is not False
+    create_letter=request.data.get('create_letter', True) is not False
+    if not create_cv and not create_letter:
+        return Response({'detail':'Select at least a CV or a letter.'}, status=400)
     try:
         candidate_context=load_candidate_evidence(build_candidate_profile_text(request.user))
     except RuntimeError as exc:
         return Response({'detail':str(exc)}, status=503)
-    task_id=start_cv_task(job.id, request.user.id, candidate_context, request.data.get('cv_template') or '', request.data.get('letter_template') or '', request.data.get('create_letter', True) is not False, request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal')
+    task_id=start_cv_task(job.id, request.user.id, candidate_context, request.data.get('cv_template') or '', request.data.get('letter_template') or '', create_letter, request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', create_cv=create_cv)
+    return Response({'task_id':task_id,'status':'queued','progress':0,'stage':'Queued'}, status=status.HTTP_202_ACCEPTED)
+
+
+@api_view(['POST'])
+@throttle_classes([CVGenerationUserThrottle])
+def revise_latest_cv_documents(request, job_id):
+    if not is_cv_owner(request.user):
+        return Response({'detail':'Not found.'}, status=404)
+    job=accessible_jobs(request.user).filter(id=job_id).first()
+    if not job:
+        return Response({'detail':'Job not found.'}, status=404)
+    instructions=(request.data.get('instructions') or '').strip()
+    create_cv=request.data.get('create_cv', True) is not False
+    create_letter=request.data.get('create_letter', True) is not False
+    if not instructions or not (create_cv or create_letter):
+        return Response({'detail':'Provide revision instructions and select at least one document.'}, status=400)
+    cv_key=request.data.get('cv_template') or ''
+    source_cv,source_letter=latest_generated_sources(job, cv_key)
+    create_cv=create_cv and bool(source_cv)
+    create_letter=create_letter and bool(source_letter)
+    if not create_cv and not create_letter:
+        return Response({'detail':'No previous generated files were found for this job.'}, status=400)
+    try:
+        candidate_context=load_candidate_evidence(build_candidate_profile_text(request.user))
+    except RuntimeError as exc:
+        return Response({'detail':str(exc)}, status=503)
+    task_id=start_cv_task(job.id, request.user.id, candidate_context, cv_key, request.data.get('letter_template') or '', create_letter, request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', source_cv=source_cv, source_letter=source_letter, revision_instructions=instructions[:5000], create_cv=create_cv)
     return Response({'task_id':task_id,'status':'queued','progress':0,'stage':'Queued'}, status=status.HTTP_202_ACCEPTED)
 
 

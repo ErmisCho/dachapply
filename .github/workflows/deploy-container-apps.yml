@@ -12,6 +12,7 @@ permissions:
 
 env:
   IMAGE_NAME: ghcr.io/ermischo/dachapply
+  CONTAINER_APP_NAME: dachapply
 
 jobs:
   build-and-push:
@@ -41,3 +42,38 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy image to Azure Container Apps
+        shell: bash
+        run: |
+          az extension add --name containerapp --upgrade --yes
+          RESOURCE_GROUP=$(az containerapp list --query "[?name=='${CONTAINER_APP_NAME}'].resourceGroup | [0]" -o tsv)
+          test -n "$RESOURCE_GROUP"
+          az containerapp update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "$IMAGE_NAME:$GITHUB_SHA" \
+            --output none
+          FQDN=$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)
+          test -n "$FQDN"
+          echo "RESOURCE_GROUP=$RESOURCE_GROUP" >> "$GITHUB_ENV"
+          echo "APP_URL=https://$FQDN" >> "$GITHUB_ENV"
+
+      - name: Verify public app
+        shell: bash
+        run: |
+          for attempt in {1..24}; do
+            if curl --fail --silent --show-error --max-time 15 "$APP_URL/" > /dev/null; then
+              echo "$APP_URL is accessible"
+              exit 0
+            fi
+            sleep 10
+          done
+          az containerapp revision list --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --output table || true
+          az containerapp logs show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --tail 100 || true
+          exit 1

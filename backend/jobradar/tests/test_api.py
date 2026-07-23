@@ -142,6 +142,36 @@ def test_bulk_create_multiple_links_from_notes(client):
     r=client.post('/api/jobs/bulk-create/', {'raw_description':'https://a.test/job1\nhttps://b.test/job2'}, format='json')
     assert r.status_code==201 and r.data['count']==2 and JobLead.objects.filter(url__in=['https://a.test/job1','https://b.test/job2']).count()==2
 
+@pytest.mark.parametrize('details', [
+    {'company':'No URL Co'},
+    {'title':'Unpublished role'},
+    {'raw_description':'Listing shared as plain text'},
+])
+def test_bulk_create_job_without_url(client, details):
+    r=client.post('/api/jobs/bulk-create/', details, format='json')
+    assert r.status_code==201 and r.data['count']==1 and r.data['created'][0]['url']==''
+
+def test_bulk_create_rejects_empty_job(client):
+    r=client.post('/api/jobs/bulk-create/', {}, format='json')
+    assert r.status_code==400 and JobLead.objects.count()==0
+
+def test_bulk_create_does_not_treat_description_emails_as_links(client):
+    description='Contacts:\nchristoph.eder@ebcont.com\nermis.chorinopoulos@gmail.com\nwerner.haingartner@ebcont.com'
+    r=client.post('/api/jobs/bulk-create/', {'company':'EBCONT (BMJ)','title':'ElasticSearch Consultant','raw_description':description}, format='json')
+    assert r.status_code==201 and r.data['count']==1
+    assert r.data['created'][0]['company']=='EBCONT (BMJ)' and r.data['created'][0]['url']==''
+
+def test_bulk_create_keeps_distinct_job_query_ids(client):
+    links='\n'.join([
+        'https://jobboerse.strabag.at/job-detail.php?ReqId=571',
+        'https://jobboerse.strabag.at/job-detail.php?ReqId=495',
+        'https://jobboerse.strabag.at/job-detail.php?ReqId=754',
+    ])
+    response=client.post('/api/jobs/bulk-create/', {'url':links}, format='json')
+    assert response.status_code==201 and response.data['count']==3
+    assert set(JobLead.objects.values_list('url', flat=True))==set(links.splitlines())
+
+
 def test_bulk_create_duplicate_requires_choice(client):
     make_job(client, company='A', title='T', url='https://a.test/job1')
     r=client.post('/api/jobs/bulk-create/', {'url':'https://a.test/job1\nhttps://b.test/job2'}, format='json')
@@ -252,6 +282,16 @@ def test_jobs_analyzed_filter_hides_jobs_without_evaluation(client):
     assert {analyzed.id, draft.id}.issubset({row['id'] for row in r.data})
 
 
+def test_jobs_board_filter_hides_untitled_links_but_keeps_named_drafts(client):
+    link_only = make_job(client, company='Unknown company', title='Untitled role 1', url='https://example.test/job')
+    blank_title = make_job(client, company='Unknown company', title='', url='https://example.test/other')
+    named = make_job(client, company='EBCONT (BMJ)', title='ElasticSearch Consultant')
+
+    board_ids={row['id'] for row in client.get('/api/jobs/?status=new&board=1').data}
+    assert named.id in board_ids and link_only.id not in board_ids and blank_title.id not in board_ids
+    assert {link_only.id, blank_title.id}.issubset({row['id'] for row in client.get('/api/jobs/?status=new').data})
+
+
 def test_update_job_status(client, job):
     r=client.patch(f'/api/jobs/{job.id}/', {'status':'to_apply'}, format='json')
     assert r.status_code==200 and r.data['status']=='to_apply'
@@ -272,8 +312,11 @@ def test_can_override_status_date(client, job):
     assert r.status_code==200 and r.data['status_date']=='2026-01-02'
 
 def test_generate_prompt(client, job):
+    original='Original complete source ' + 'vollständig ' * 400
+    JobLead.objects.filter(pk=job.pk).update(original_source_text=original, raw_description='Edited summary')
     r=client.post('/api/prompts/generate/', {'job_ids':[job.id]}, format='json')
     assert r.status_code==200 and 'CANDIDATE PROFILE' in r.data['generated_prompt']
+    assert original in r.data['generated_prompt'] and 'Edited summary' not in r.data['generated_prompt']
 
 def test_generate_enrichment_prompt(client, job):
     r=client.post('/api/prompts/enrich/', {'job_ids':[job.id]}, format='json')
@@ -282,6 +325,7 @@ def test_generate_enrichment_prompt(client, job):
 def test_generate_combined_prompt(client, job):
     r=client.post('/api/prompts/combined/', {'job_ids':[job.id]}, format='json')
     assert r.status_code==200 and 'evaluation' in r.data['generated_prompt'] and 'job_id' in r.data['generated_prompt']
+    assert 'No markdown, code fences, citations' in r.data['generated_prompt'] and 'parses as JSON' in r.data['generated_prompt']
 
 def test_generate_bulk_links_prompt(client):
     r=client.post('/api/prompts/bulk-links/', {'links':'https-www.karriere.at-jobs-7794074\nhttps://example.com/job'}, format='json')
@@ -295,22 +339,52 @@ def test_candidate_evidence_is_required_and_loaded(tmp_path, settings):
         load_candidate_evidence('profile')
     evidence=tmp_path/'evidence.md'; evidence.write_text('verified evidence', encoding='utf-8')
     settings.CODEX_CANDIDATE_EVIDENCE_PATH=str(evidence)
+    settings.CODEX_APPLICATION_RULES_PATH=str(tmp_path/'missing-rules.md')
+    with pytest.raises(RuntimeError, match='adaptation rules.*cannot be read'):
+        load_candidate_evidence('profile notes')
+    rules=tmp_path/'rules.md'; rules.write_text('maximum two pages', encoding='utf-8')
+    settings.CODEX_APPLICATION_RULES_PATH=str(rules)
     context=load_candidate_evidence('profile notes')
-    assert 'AUTHORITATIVE CANDIDATE EVIDENCE:\nverified evidence' in context and 'profile notes' in context
+    assert 'AUTHORITATIVE CANDIDATE EVIDENCE:\nverified evidence' in context
+    assert 'MANDATORY APPLICATION ADAPTATION RULES:\nmaximum two pages' in context and 'profile notes' in context
 
 
 def test_generated_application_names_have_no_language_suffix(job):
     from jobradar.services.cv_generator import _target_names
-    expected=('Chorinopoulos-Ermis-CV-acme-python-engineer.tex','Chorinopoulos-Ermis-Letter-acme-python-engineer.tex')
+    expected=('Chorinopoulos-Ermis-CV-Acme-Python-Engineer.tex','Chorinopoulos-Ermis-Letter-Acme-Python-Engineer.tex')
     assert _target_names(job, 'en', 'en')==expected
     assert _target_names(job, 'de', 'de')==expected
+    job.title='Machine Learning Engineer (gn*)'
+    assert _target_names(job, 'de', 'de')==('Chorinopoulos-Ermis-CV-Acme-Machine-Learning-Engineer.tex','Chorinopoulos-Ermis-Letter-Acme-Machine-Learning-Engineer.tex')
+    job.company='TÜV AUSTRIA'
+    assert _target_names(job, 'de', 'de')[0]=='Chorinopoulos-Ermis-CV-TUV-Austria-Machine-Learning-Engineer.tex'
+
+
+def test_cv_generation_requires_original_job_text(db):
+    from jobradar.services.cv_generator import generate_cv_package
+    user=User.objects.create_user('no-source-owner')
+    job=JobLead.objects.create(company='Link only', title='Role', raw_description='https://example.test/job', created_by=user)
+    with pytest.raises(RuntimeError, match='Original job text'):
+        generate_cv_package(job, 'profile', 'de', '', False, 'openai', 'gpt-5.5', 'medium')
+
+
+def test_latest_generated_sources_survive_task_state_loss(job, tmp_path, settings):
+    from jobradar.services.cv_generator import latest_generated_sources
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    cv_dir=tmp_path/'CVs'; letter_dir=tmp_path/'output'; cv_dir.mkdir(); letter_dir.mkdir()
+    old=cv_dir/'Chorinopoulos-Ermis-CV-acme-python-engineer.tex'; old.write_text('old'); __import__('os').utime(old,(1,1))
+    latest=cv_dir/'Chorinopoulos-Ermis-CV-acme-python-engineer-2.tex'; latest.write_text('latest')
+    letter=letter_dir/'Chorinopoulos-Ermis-Letter-acme-python-engineer.tex'; letter.write_text('letter')
+    sent=cv_dir/'sent'; sent.mkdir(); legacy=sent/'Chorinopoulos-Ermis-CV-acme-python-engineer-3.tex'; legacy.write_text('legacy latest')
+    future=__import__('time').time()+10; __import__('os').utime(legacy,(future,future))
+    assert latest_generated_sources(job, 'de')==(str(legacy),str(letter))
 
 
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
 def test_cv_generation_preview_is_owner_only(client, owner, job):
     assert client.get(f'/api/jobs/{job.id}/cv-generation/').status_code==404
     owner.email='owner@example.test'; owner.save(update_fields=['email'])
-    job.raw_description='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben und die Bewerbung.'; job.save(update_fields=['raw_description'])
+    JobLead.objects.filter(pk=job.pk).update(original_source_text='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben und die Bewerbung.', raw_description='English role and requirements')
     r=client.get(f'/api/jobs/{job.id}/cv-generation/')
     assert r.status_code==200 and r.data['language']=='de'
     assert r.data['selected_cv']=='de'
@@ -325,25 +399,35 @@ def test_cv_generation_can_be_disabled(client, owner, job):
     assert client.get(f'/api/jobs/{job.id}/cv-generation/').status_code==404
 
 
+@throttled_rest_framework(cv_generation_user='100/hour')
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
 def test_cv_generation_starts_asynchronously(client, owner, job, monkeypatch):
     owner.email='owner@example.test'; owner.save(update_fields=['email'])
     selected={}
-    def start(job_id, user_id, profile, cv, letter, create_letter, provider, model, effort, speed):
-        selected.update(job_id=job_id,user_id=user_id,cv=cv,letter=letter,create_letter=create_letter,provider=provider,model=model,effort=effort,speed=speed)
+    def start(job_id, user_id, profile, cv, letter, create_letter, provider, model, effort, speed, create_cv=True):
+        selected.update(job_id=job_id,user_id=user_id,cv=cv,letter=letter,create_cv=create_cv,create_letter=create_letter,provider=provider,model=model,effort=effort,speed=speed)
         return 'task123'
     monkeypatch.setattr('jobradar.views.start_cv_task', start)
-    r=client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'cv_template':'de','letter_template':'anschreiben','provider':'openai','model':'gpt-5.5','effort':'high','speed':'fast'}, format='json')
+    payload={'cv_template':'de','letter_template':'anschreiben','provider':'openai','model':'gpt-5.5','effort':'high','speed':'fast'}
+    r=client.post(f'/api/jobs/{job.id}/cv-generation/run/', payload, format='json')
     assert r.status_code==202 and r.data['task_id']=='task123' and r.data['status']=='queued'
-    assert selected=={'job_id':job.id,'user_id':owner.id,'cv':'de','letter':'anschreiben','create_letter':True,'provider':'openai','model':'gpt-5.5','effort':'high','speed':'fast'}
+    assert selected=={'job_id':job.id,'user_id':owner.id,'cv':'de','letter':'anschreiben','create_cv':True,'create_letter':True,'provider':'openai','model':'gpt-5.5','effort':'high','speed':'fast'}
+    assert client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'create_cv':False,'create_letter':False}, format='json').status_code==400
+    cache.clear()
+    assert [client.post(f'/api/jobs/{job.id}/cv-generation/run/', payload, format='json').status_code for _ in range(4)]==[202]*4
 
 
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
-def test_cv_task_status_and_download_are_owner_only(client, owner, monkeypatch):
+def test_cv_task_status_and_download_are_owner_only(client, owner, job, monkeypatch):
     owner.email='owner@example.test'; owner.save(update_fields=['email'])
     monkeypatch.setattr('jobradar.views.get_cv_task', lambda task_id,user_id: {'id':task_id,'status':'ready','progress':100,'stage':'Ready'} if user_id==owner.id else None)
     monkeypatch.setattr('jobradar.views.get_cv_task_download', lambda task_id,user_id: (b'zip','application.zip') if user_id==owner.id else None)
     monkeypatch.setattr('jobradar.views.start_cv_revision', lambda task_id,user_id,instructions: 'revision123' if user_id==owner.id and instructions else None)
+    recovered_config={}
+    monkeypatch.setattr('jobradar.views.latest_generated_sources', lambda job,cv: ('latest-cv.tex',None))
+    monkeypatch.setattr('jobradar.views.load_candidate_evidence', lambda profile: profile)
+    def start_recovered(*args,**kwargs): recovered_config.update(args=args,kwargs=kwargs); return 'restart123'
+    monkeypatch.setattr('jobradar.views.start_cv_task', start_recovered)
     assert client.get('/api/cv-generation/tasks/task123/').data['stage']=='Ready'
     download=client.get('/api/cv-generation/tasks/task123/download/')
     assert download.status_code==200 and download.content==b'zip'
@@ -351,6 +435,10 @@ def test_cv_task_status_and_download_are_owner_only(client, owner, monkeypatch):
     other_client=APIClient(); other_client.force_authenticate(other)
     revision=client.post('/api/cv-generation/tasks/task123/revise/', {'instructions':'Shorten profile'}, format='json')
     assert revision.status_code==202 and revision.data['task_id']=='revision123'
+    cache.clear()
+    recovered=client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/', {'instructions':'Use less text','cv_template':'de','letter_template':'anschreiben','provider':'openai','model':'gpt-5.5','effort':'medium'}, format='json')
+    assert recovered.status_code==202 and recovered.data['task_id']=='restart123'
+    assert recovered_config['args'][5] is False and recovered_config['kwargs']['create_cv'] is True
     assert other_client.get('/api/cv-generation/tasks/task123/').status_code==404
     assert other_client.post('/api/cv-generation/tasks/task123/revise/', {'instructions':'hack'}, format='json').status_code==404
 
@@ -389,13 +477,22 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
         {'provider':'anthropic','key':'sonnet','label':'Claude Sonnet','efforts':['default'],'default_effort':'default','fast_tier':''},
         {'provider':'ollama','key':'qwen','label':'qwen','efforts':['default'],'default_effort':'default','fast_tier':''},
     ])
-    commands=[]
-    generated={'cv_tex':'\\documentclass{article}\\begin{document}tailored cv\\end{document}','letter_tex':'\\documentclass{article}\\begin{document}tailored letter\\end{document}','summary':'tailored'}
+    commands=[]; prompts=[]; page_counts={'CV':2,'Letter':1}
+    generated={'cv_tex':'\\documentclass{article}\\begin{document}tailored cv\\end{document}','letter_tex':'\\documentclass{article}\\begin{document}tailored letter\\end{document}','changed_files':['cv.tex','letter.tex'],'main_changes':['Tailored content'],'unsupported_requirements_not_claimed':['Unsupported tool'],'confirmations':{'cv_max_2_pages':True,'letter_max_1_page':True,'no_orphaned_employer_headings':True,'no_text_overlap':True,'nothing_after_end_document':True,'links_work':True,'photo_loads_if_used':True,'no_invented_tools_or_overclaims':True}}
 
     def fake_run(command, **kwargs):
         commands.append(command)
+        if command[0]=='pdfinfo':
+            pages=page_counts['Letter'] if 'Letter' in str(command[-1]) else page_counts['CV']
+            return SimpleNamespace(returncode=0, stdout=f'Pages: {pages}\nPage size: 612 x 792 pts', stderr='')
+        if command[0]=='pdftoppm':
+            __import__('pathlib').Path(str(command[-1])+'-1.png').write_bytes(b'png')
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
+        if command[0] in ('codex','claude'):
+            prompts.append(kwargs['input'])
+            assert kwargs['encoding']=='utf-8' and '📌' in kwargs['input']
         if command[0]=='codex':
-            assert command[-1]=='-' and 'UNTRUSTED JOB DATA' in kwargs['input']
+            assert command[-1]=='-' and 'ORIGINAL JOB TEXT (UNTRUSTED)' in kwargs['input']
             if '--oss' not in command:
                 assert command[command.index('--model')+1]=='gpt-5.5'
                 assert 'model_reasoning_effort="high"' in command
@@ -415,40 +512,59 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
         generate_cv_package(job, 'Factual profile', 'en', 'anschreiben', True, 'openai', 'gpt-5.5', 'high', 'fast')
     with pytest.raises(ValueError, match='speed supported'):
         generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'turbo')
+    with pytest.raises(RuntimeError, match='Current target TeX files'):
+        generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', revision_instructions='change layout')
     progress=[]
-    archive,_,saved=generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'fast', lambda percent,stage: progress.append((percent,stage)))
+    archive,_,saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'fast', lambda percent,stage: progress.append((percent,stage)))
     names=zipfile.ZipFile(BytesIO(archive)).namelist()
     assert len([name for name in names if name.endswith('.pdf')])==2
     assert [stage for _,stage in progress]==['Preparing templates','Generating CV and motivation letter','CV and letter generated','Compiling CV','CV compiled','Compiling motivation letter','Motivation letter compiled','Saving files']
-    generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'anthropic', 'sonnet', 'default', 'normal')
-    generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'ollama', 'qwen', 'default', 'normal')
+    generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'anthropic', 'sonnet', 'default', 'normal')
+    generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'ollama', 'qwen', 'default', 'normal')
     cv_only_progress=[]
-    cv_only,_,cv_only_saved=generate_cv_package(job, 'Factual profile', 'de', '', False, 'openai', 'gpt-5.5', 'high', 'normal', lambda percent,stage: cv_only_progress.append((percent,stage)))
+    cv_only,_,cv_only_saved=generate_cv_package(job, 'Factual profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high', 'normal', lambda percent,stage: cv_only_progress.append((percent,stage)))
     assert len([name for name in zipfile.ZipFile(BytesIO(cv_only)).namelist() if name.endswith('.pdf')])==1
-    assert __import__('pathlib').Path(saved['cv_tex']).parent==tmp_path/'CVs'/'sent'
-    assert __import__('pathlib').Path(saved['cv_pdf']).parent==tmp_path/'ready-to-send'
+    assert __import__('pathlib').Path(saved['cv_tex']).parent==tmp_path/'CVs'
+    assert __import__('pathlib').Path(saved['cv_pdf']).parent==tmp_path/'CVs'
     assert __import__('pathlib').Path(saved['letter_tex']).parent==tmp_path/'output'
-    assert __import__('pathlib').Path(saved['letter_pdf']).parent==tmp_path/'ready-to-send'
+    assert __import__('pathlib').Path(saved['letter_pdf']).parent==tmp_path/'output'
+    _,_,revised_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], revision_instructions='Fix the page break and overlap')
+    assert revised_saved==saved
+    assert any('CURRENT GENERATED PDF LAYOUT CONTEXT' in prompt and 'current-CV-page-1.png' in prompt and 'SOURCE PRIORITY' in prompt for prompt in prompts)
     assert __import__('pathlib').Path(cv_only_saved['cv_pdf']).name != __import__('pathlib').Path(saved['cv_pdf']).name
-    assert opened and all(path==tmp_path/'ready-to-send' for path in opened)
+    assert opened and all(path==tmp_path/'CVs' for path in opened)
     assert not any('letter' in stage.lower() for _,stage in cv_only_progress)
+    letter_only,_,letter_only_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', create_cv=False)
+    assert len([name for name in zipfile.ZipFile(BytesIO(letter_only)).namelist() if name.endswith('.pdf')])==1
+    assert set(letter_only_saved)=={'letter_tex','letter_pdf','report'} and opened[-1]==tmp_path/'output'
+    assert letter_only_saved['report']['unsupported_requirements_not_claimed']==['Unsupported tool']
+    with pytest.raises(ValueError, match='at least'):
+        generate_cv_package(job, 'profile', 'de', '', False, 'openai', 'gpt-5.5', 'high', create_cv=False)
+    page_counts['CV']=3
+    with pytest.raises(RuntimeError, match='CV exceeds 2 pages'):
+        generate_cv_package(job, 'Factual profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high')
+    page_counts['CV']=2; page_counts['Letter']=2
+    with pytest.raises(RuntimeError, match='Motivation letter exceeds 1 page'):
+        generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', create_cv=False)
     assert any(command[0]=='claude' and '--json-schema' in command for command in commands)
     assert any(command[0]=='codex' and '--oss' in command and command[command.index('--local-provider')+1]=='ollama' for command in commands)
     assert cv.read_text()=='original cv' and letter.read_text()=='original letter'
 
 
-def test_cv_task_completes_and_is_user_scoped(job, monkeypatch):
+def test_cv_task_completes_and_is_user_scoped(job, monkeypatch, tmp_path):
     import time
     from jobradar.services import cv_tasks
 
     cv_tasks._tasks.clear()
     monkeypatch.setattr(cv_tasks.JobLead.objects, 'get', lambda id: job)
+    copied=[]; monkeypatch.setattr(cv_tasks, '_copy_to_clipboard', lambda text: copied.append(text) or True)
     calls=[]
-    def generate(job, profile, cv, letter, create_letter, provider, model, effort, speed, progress, source_cv=None, source_letter=None, revision_instructions=''):
+    latest=tmp_path/'latest.tex'; latest.write_text('generated TeX 📌', encoding='utf-8')
+    def generate(job, profile, cv, letter, create_letter, provider, model, effort, speed, progress, source_cv=None, source_letter=None, revision_instructions='', create_cv=True):
         assert (provider,model,effort,speed)==('openai','gpt-5.5','medium','normal')
         calls.append((source_cv,source_letter,revision_instructions))
         progress(10,'Generating CV and motivation letter'); progress(95,'Motivation letter compiled')
-        return b'zip','application.zip',{'cv_pdf':'ready.pdf','cv_tex':'latest.tex','letter_tex':'latest-letter.tex'}
+        return b'zip','application.zip',{'cv_pdf':'ready.pdf','cv_tex':str(latest),'letter_tex':'latest-letter.tex'}
     monkeypatch.setattr(cv_tasks, 'generate_cv_package', generate)
     task_id=cv_tasks.start_cv_task(job.id, job.created_by_id, 'profile', 'en', 'motivation_letter', True, 'openai', 'gpt-5.5', 'medium', 'normal')
     for _ in range(100):
@@ -458,14 +574,15 @@ def test_cv_task_completes_and_is_user_scoped(job, monkeypatch):
     assert task['progress']==100 and task['stage']=='Ready'
     assert cv_tasks.get_cv_task(task_id, -1) is None
     assert cv_tasks.get_cv_task_download(task_id, job.created_by_id)==(b'zip','application.zip')
-    assert task['artifacts']['cv_pdf']=='ready.pdf'
+    assert task['artifacts']['cv_pdf']=='ready.pdf' and task['clipboard_tex']=='generated TeX 📌'
+    assert task['clipboard_copied'] is True and copied==['generated TeX 📌']
     revision_id=cv_tasks.start_cv_revision(task_id, job.created_by_id, 'Shorten the profile')
     for _ in range(100):
         revision_task=cv_tasks.get_cv_task(revision_id, job.created_by_id)
         if revision_task['status']=='ready': break
         time.sleep(.01)
     assert revision_task['status']=='ready'
-    assert calls[-1]==('latest.tex','latest-letter.tex','Shorten the profile')
+    assert calls[-1]==(str(latest),'latest-letter.tex','Shorten the profile')
     with pytest.raises(ValueError): cv_tasks.start_cv_revision(task_id, -1, 'hack')
 
 
@@ -475,6 +592,16 @@ def valid_payload(job):
 def test_import_valid_evaluation(client, job):
     r=client.post('/api/evaluations/import/', {'json':json.dumps(valid_payload(job))}, format='json')
     assert r.status_code==201 and JobEvaluation.objects.count()==1
+
+
+def test_import_extracts_json_before_chatgpt_citations(client, job):
+    payload=valid_payload(job); payload['evaluations'][0]['summary']='Excerpt: "Application Manager Wertpapier".'
+    broken=json.dumps(payload).replace('\\"Application Manager Wertpapier\\"','"Application Manager Wertpapier"')
+    pasted=f'```json\n{broken}\n```\n\n[1]: https://jobs.example/5768 "Job source"'
+    assert client.post('/api/evaluations/import/', {'json':pasted}, format='json').status_code==201
+    assert JobEvaluation.objects.get().summary=='Excerpt: "Application Manager Wertpapier".'
+    assert client.post('/api/evaluations/import/', {'json':'No JSON here. [1]: https://example.test'}, format='json').status_code==400
+
 
 def test_smart_skill_statuses_include_profile_aliases(client, job):
     payload=valid_payload(job); payload['evaluations'][0]['required_skills']=['Python 3','SQL','React']; payload['evaluations'][0]['matched_skills']=[]; payload['evaluations'][0]['missing_skills']=['Python 3','SQL','React']
@@ -500,6 +627,21 @@ def test_import_job_updates_strips_gender_marker_from_title(client, job):
     job.refresh_from_db()
     assert r.status_code==201 and job.title=='Senior Backend Engineer'
 
+
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
+def test_chatgpt_import_replaces_link_placeholder_and_detects_language(client, owner):
+    owner.email='owner@example.test'; owner.save(update_fields=['email'])
+    job=JobLead.objects.create(company='Firma', title='Engineer', raw_description='https://example.test/job', created_by=owner)
+    assert job.original_source_text==''
+    german='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben und Anforderungen.'
+    payload={'job_updates':[{'job_id':job.id,'raw_description':'Clean summary','original_source_text':german}]}
+    assert client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json').status_code==201
+    job.refresh_from_db(); assert job.original_source_text==german
+    assert client.get(f'/api/jobs/{job.id}/cv-generation/').data['language']=='de'
+    replacement={'job_updates':[{'job_id':job.id,'original_source_text':'The full English replacement text and requirements.'}]}
+    client.post('/api/evaluations/import/', {'json':json.dumps(replacement)}, format='json')
+    job.refresh_from_db(); assert job.original_source_text==german
+
 def test_import_bulk_jobs_with_evaluations(client):
     payload={'jobs':[{'url':'https-www.karriere.at-jobs-7794074','company':'Karriere Co','title':'Python Engineer','location':'Vienna','work_mode':'hybrid','raw_description':'Python Django','evaluation':{'fit_score':82,'priority':'high','recommendation':'apply','summary':'Good fit','main_match_reasons':['Python'],'main_gaps':['Unknown cloud depth'],'required_skills':['Python'],'nice_to_have_skills':['Django'],'matched_skills':['Python'],'missing_skills':[],'cv_adjustment_notes':'Emphasize backend','interview_prep_notes':'APIs','risk_notes':'Low','next_action':'Apply'}}]}
     r=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
@@ -507,6 +649,13 @@ def test_import_bulk_jobs_with_evaluations(client):
     assert r.data['jobs_found']==1
     assert r.data['imported_jobs'][0]['company']=='Karriere Co'
     assert r.data['imported_jobs'][0]['title']=='Python Engineer'
+
+
+def test_import_keeps_distinct_job_query_ids(client):
+    jobs=[{'url':f'https://jobboerse.strabag.at/job-detail.php?ReqId={job_id}','company':'STRABAG','title':f'Role {job_id}'} for job_id in (571,495,754)]
+    response=client.post('/api/evaluations/import/', {'json':json.dumps({'jobs':jobs})}, format='json')
+    assert response.status_code==201
+    assert JobLead.objects.filter(url__contains='ReqId=').count()==3
 
 
 def test_original_job_text_is_full_immutable_and_portable(client):
@@ -693,6 +842,33 @@ def test_import_does_not_overwrite_another_users_data(client, db):
     exported = client.get('/api/export/').data
     assert 'Other Co' not in json.dumps(exported)
 
+def test_owner_can_explicitly_replace_original_job_text(client, job):
+    other=User.objects.create_user('source-other', password='pw')
+    other_client=APIClient(); other_client.force_authenticate(other)
+    url=f'/api/jobs/{job.id}/source-text/'
+    assert other_client.patch(url, {'original_source_text':'Other user text'}, format='json').status_code==404
+    assert client.patch(url, {'original_source_text':'https://example.test/job'}, format='json').status_code==400
+    text='Manually corrected vollständige deutsche Stellenbeschreibung mit Aufgaben und Anforderungen.'
+    assert client.patch(url, {'original_source_text':text}, format='json').status_code==200
+    job.refresh_from_db(); assert job.original_source_text==text
+    job.raw_description='Later summary'; job.save(); job.refresh_from_db()
+    assert job.original_source_text==text
+
+
+def test_owner_can_edit_job_and_evaluation_text(client, job):
+    evaluation=JobEvaluation.objects.create(job=job, fit_score=70, priority='medium', recommendation='maybe', summary='Old', main_match_reasons=['Python'], main_gaps=['Cloud'])
+    other=User.objects.create_user('detail-other', password='pw')
+    other_client=APIClient(); other_client.force_authenticate(other)
+    assert other_client.patch(f'/api/jobs/{job.id}/', {'company':'Changed'}, format='json').status_code==404
+    assert other_client.patch(f'/api/evaluations/{evaluation.id}/', {'summary':'Changed'}, format='json').status_code==404
+    assert client.patch(f'/api/jobs/{job.id}/', {'company':'New Co', 'location':'Berlin'}, format='json').status_code==200
+    response=client.patch(f'/api/evaluations/{evaluation.id}/', {'summary':'Updated summary', 'main_gaps':['Kubernetes','AWS']}, format='json')
+    assert response.status_code==200
+    job.refresh_from_db(); evaluation.refresh_from_db()
+    assert (job.company,job.location)==('New Co','Berlin')
+    assert evaluation.summary=='Updated summary' and evaluation.main_gaps==['Kubernetes','AWS']
+
+
 def test_filtering_jobs(client, job):
     make_job(client, company='Other', title='Java')
     r=client.get('/api/jobs/?search=ACME')
@@ -708,6 +884,16 @@ def test_jobs_default_excludes_archived_and_status_filter_allows_multiple(client
     assert {x['status'] for x in r.data} == {'applied','interview'}
     r=client.get('/api/jobs/?status=archived')
     assert [x['company'] for x in r.data] == ['Archived']
+
+def test_owner_can_restore_archived_job(client):
+    archived=make_job(client, company='Archived', title='Restore me', status='archived')
+    other=User.objects.create_user('archive-other', password='pw')
+    other_client=APIClient(); other_client.force_authenticate(other)
+    assert other_client.patch(f'/api/jobs/{archived.id}/', {'status':'new'}, format='json').status_code==404
+    r=client.patch(f'/api/jobs/{archived.id}/', {'status':'new'}, format='json')
+    archived.refresh_from_db()
+    assert r.status_code==200 and archived.status=='new'
+
 
 def test_delete_archived_job_without_status_filter(client):
     archived=make_job(client, company='Archived', title='Delete me', status='archived')
