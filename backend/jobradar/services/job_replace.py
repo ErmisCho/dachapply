@@ -1,4 +1,4 @@
-from jobradar.models import ApplicationNote, FollowUp, JobEvaluation
+from jobradar.models import ApplicationNote, FollowUp, JobEvaluation, JobLead
 from jobradar.services.access import job_create_defaults
 from jobradar.services.cleaning import clean_job_location
 from jobradar.serializers import normalize_job_url
@@ -47,6 +47,10 @@ def replace_job_with_supplied_data(job, data, user=None, clear_related=True):
     """
     ownership = job_create_defaults(user) if user is not None else {}
     changed=[]
+    candidate=next((text for text in (_get(data, 'original_source_text'),_get(data, 'raw_description')) if JobLead.is_meaningful_source(text)), '')
+    if candidate and not JobLead.is_meaningful_source(job.original_source_text):
+        job.original_source_text=candidate
+        changed.append('original_source_text')
     for field, default in REPLACE_FIELDS.items():
         value = _get(data, field, default) if _has(data, field) else default
         if value in (None, '') and field in ('company', 'title', 'work_mode'):

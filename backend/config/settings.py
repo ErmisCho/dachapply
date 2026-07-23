@@ -57,6 +57,7 @@ CODEX_CV_ENABLED = env_bool('CODEX_CV_ENABLED', DEBUG)
 CODEX_CV_OWNER_EMAIL = os.getenv('CODEX_CV_OWNER_EMAIL', 'ermis.chorinopoulos@gmail.com')
 CODEX_CV_WORKSPACE = os.getenv('CODEX_CV_WORKSPACE', r'C:\latex' if DEBUG else '')
 CODEX_CANDIDATE_EVIDENCE_PATH = os.getenv('CODEX_CANDIDATE_EVIDENCE_PATH', str(BASE_DIR.parent/'Ermis-Chorinopoulos-Candidate-Evidence.md') if DEBUG else '')
+CODEX_APPLICATION_RULES_PATH = os.getenv('CODEX_APPLICATION_RULES_PATH', str(BASE_DIR.parent/'job-application-adaptation-rules.md'))
 CODEX_CV_TIMEOUT = int(os.getenv('CODEX_CV_TIMEOUT', '600'))
 CODEX_CV_OPEN_OUTPUT_FOLDER = env_bool('CODEX_CV_OPEN_OUTPUT_FOLDER', DEBUG)
 
@@ -128,7 +129,7 @@ REST_FRAMEWORK={
         'password_reset_email': os.getenv('RATE_LIMIT_PASSWORD_RESET_EMAIL', '5/hour'),
         'public_submit_ip': os.getenv('RATE_LIMIT_PUBLIC_SUBMIT_IP', '60/hour' if DEBUG else '20/hour'),
         'import_user': os.getenv('RATE_LIMIT_IMPORT_USER', '120/hour' if DEBUG else '60/hour'),
-        'cv_generation_user': os.getenv('RATE_LIMIT_CV_GENERATION_USER', '3/hour'),
+        'cv_generation_user': os.getenv('RATE_LIMIT_CV_GENERATION_USER', '100/hour'),
     },
     'EXCEPTION_HANDLER':'jobradar.throttles.api_exception_handler',
 }

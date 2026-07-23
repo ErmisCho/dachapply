@@ -25,7 +25,7 @@ BULK_LINKS_SCHEMA = '{"jobs":[{"temp_id":"link_1","url":"https://...","company":
 
 DEFAULT_EVALUATION_PROMPT_TEMPLATE = '''Evaluate these DACH software engineering jobs against the candidate profile.
 Be honest, direct, and do not invent experience. Consider DACH market fit, language requirements, target roles, preferred stack, selling points, red flags, and gaps described in the candidate profile.
-Return valid JSON only. No markdown.
+Return one valid JSON object only. No markdown, code fences, citations, reference footnotes, or prose outside JSON. Escape double quotes and control characters inside every string value. Before replying, verify the complete response parses as JSON.
 
 CANDIDATE PROFILE:
 {candidate_profile}
@@ -41,8 +41,8 @@ JOBS:
 {jobs}'''
 
 DEFAULT_COMBINED_PROMPT_TEMPLATE = '''For each existing job below, first fill missing/incorrect job details, then evaluate the job against the candidate profile.
-Preserve job_id exactly. Put links only in url. Never put URLs in company or title. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna). Do not invent experience or facts; use unknown/empty values when needed.
-Return valid JSON only. No markdown.
+Preserve job_id exactly. Open the job URL when available and copy the complete job posting verbatim, in its original language, into original_source_text. Never translate, summarize, rewrite, or truncate original_source_text. Put links only in url. Never put URLs in company or title. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna). Do not invent experience or facts; use unknown/empty values when needed.
+Return one valid JSON object only. No markdown, code fences, citations, reference footnotes, or prose outside JSON. Escape double quotes and control characters inside every string value. Before replying, verify the complete response parses as JSON.
 
 CANDIDATE PROFILE:
 {candidate_profile}
@@ -57,9 +57,9 @@ EXPECTED JSON SCHEMA:
 JOBS:
 {jobs}'''
 
-DEFAULT_ENRICHMENT_PROMPT_TEMPLATE = '''Extract missing structured job details from the provided job URLs/descriptions. Use only information visible in the text or URL context. If a detail is unknown, use an empty string or unknown. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna). Do not invent facts.
+DEFAULT_ENRICHMENT_PROMPT_TEMPLATE = '''Extract missing structured job details from the provided job URLs/descriptions. Open the job URL when available and copy the complete job posting verbatim, in its original language, into original_source_text. Never translate, summarize, rewrite, or truncate original_source_text. Use only information visible in the text or URL context. If a detail is unknown, use an empty string or unknown. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna). Do not invent facts.
 Use the candidate profile only as context for which job details are most relevant; do not evaluate unless the schema asks for it.
-Return valid JSON only. No markdown.
+Return one valid JSON object only. No markdown, code fences, citations, reference footnotes, or prose outside JSON. Escape double quotes and control characters inside every string value. Before replying, verify the complete response parses as JSON.
 For each job, preserve job_id exactly so the app can update the right record.
 
 CANDIDATE PROFILE:
@@ -73,8 +73,8 @@ JOBS NEEDING DETAILS:
 
 DEFAULT_BULK_LINKS_PROMPT_TEMPLATE = '''You will receive a list of job links. For each link, extract job details and evaluate the job against the candidate profile below.
 Important: put the link only in the url field. Never put a URL in company or title. Company must be the employer name, or Unknown company if unknown. Title must be the position name, or Untitled role if unknown. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna).
-Use only information you can infer from the provided link text and any job description text supplied by the user. Put the complete collected job text in original_source_text without summarizing or truncating it. If you cannot access a page or a detail is unknown, use an empty string or unknown. Do not invent experience or facts.
-Return valid JSON only. No markdown.
+Open each job URL when available. Copy the complete job posting verbatim, in its original language, into original_source_text. Never translate, summarize, rewrite, or truncate original_source_text. Use only information from the page, provided link text, and job description text supplied by the user. If you cannot access a page or a detail is unknown, use an empty string or unknown. Do not invent experience or facts.
+Return one valid JSON object only. No markdown, code fences, citations, reference footnotes, or prose outside JSON. Escape double quotes and control characters inside every string value. Before replying, verify the complete response parses as JSON.
 
 CANDIDATE PROFILE:
 {candidate_profile}
@@ -193,7 +193,7 @@ def default_prompt_templates():
 def _evaluation_jobs_block(jobs):
     lines=[]
     for j in jobs:
-        desc=(j.raw_description or '')[:3500]
+        desc=j.source_text or ''
         lines += [f'Job ID: {j.id}', f'Company: {j.company}', f'Title: {j.title}', f'Location: {clean_job_location(j.location)}', f'Work mode: {j.work_mode}', f'URL: {j.url}', f'Salary: {j.salary_info}', f'Language requirements: {j.language_requirements}', f'Description: {desc}', '---']
     return '\n'.join(lines)
 
@@ -201,14 +201,14 @@ def _evaluation_jobs_block(jobs):
 def _combined_jobs_block(jobs):
     lines=[]
     for j in jobs:
-        lines += [f'Job ID: {j.id}', f'Current company: {j.company}', f'Current title: {j.title}', f'URL: {j.url}', f'Location: {clean_job_location(j.location)}', f'Work mode: {j.work_mode}', f'Salary: {j.salary_info}', f'Languages: {j.language_requirements}', f'Description: {(j.raw_description or "")[:3500]}', '---']
+        lines += [f'Job ID: {j.id}', f'Current company: {j.company}', f'Current title: {j.title}', f'URL: {j.url}', f'Location: {clean_job_location(j.location)}', f'Work mode: {j.work_mode}', f'Salary: {j.salary_info}', f'Languages: {j.language_requirements}', f'Description: {j.source_text or ""}', '---']
     return '\n'.join(lines)
 
 
 def _enrichment_jobs_block(jobs):
     lines=[]
     for j in jobs:
-        lines += [f'Job ID: {j.id}', f'Current company: {j.company}', f'Current title: {j.title}', f'URL: {j.url}', f'Current location: {clean_job_location(j.location)}', f'Current description: {(j.raw_description or "")[:2500]}', '---']
+        lines += [f'Job ID: {j.id}', f'Current company: {j.company}', f'Current title: {j.title}', f'URL: {j.url}', f'Current location: {clean_job_location(j.location)}', f'Current description: {j.source_text or ""}', '---']
     return '\n'.join(lines)
 
 

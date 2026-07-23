@@ -1,5 +1,5 @@
 import re
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from django.utils import timezone
 from rest_framework import serializers
 from .models import DEFAULT_CANDIDATE_PROFILE, JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, UserProfile
@@ -24,7 +24,8 @@ def normalize_job_url(value):
         return ''
     if value.startswith('http://') or value.startswith('https://'):
         parts=urlsplit(value)
-        return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip('/'), '', ''))
+        query=urlencode([(key,val) for key,val in parse_qsl(parts.query, keep_blank_values=True) if not key.lower().startswith('utm_') and key.lower() not in {'utm','fbclid','gclid','msclkid'}])
+        return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip('/'), query, ''))
     if value.startswith('https-') or value.startswith('http-'):
         scheme, rest=value.split('-', 1)
         parts=rest.split('-')
@@ -64,7 +65,7 @@ def clean_label_text(value):
         suffix=text.split(')',1)[1].strip() if ')' in text else ''
         text=(before + (' ' + suffix if suffix else '')).strip()
     text=re.sub(r'https?://[^\s)\]]+', '', text)
-    text=text.replace('[','').replace(']','').replace('(','').replace(')','').replace('%22','').replace('"','')
+    text=text.replace('[','').replace(']','').replace('%22','').replace('"','')
     return re.sub(r'\s+', ' ', text).strip(' ,;:-')
 
 
