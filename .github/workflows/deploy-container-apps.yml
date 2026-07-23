@@ -50,10 +50,20 @@ jobs:
 
       - name: Deploy image to Azure Container Apps
         shell: bash
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
         run: |
           az extension add --name containerapp --upgrade --yes
           RESOURCE_GROUP=$(az containerapp list --query "[?name=='${CONTAINER_APP_NAME}'].resourceGroup | [0]" -o tsv)
           test -n "$RESOURCE_GROUP"
+          az containerapp registry set \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --server ghcr.io \
+            --username "$GHCR_USERNAME" \
+            --password "$GHCR_PASSWORD" \
+            --output none
           az containerapp update \
             --name "$CONTAINER_APP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
