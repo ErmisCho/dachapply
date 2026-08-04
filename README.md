@@ -7,6 +7,14 @@ Hosted on Azure Container Apps: https://dachapply.livelysea-3461ad21.westeurope.
 
 Access may require an account.
 
+## Workflow preview
+
+[![DACHApply workflow preview: add a job, import structured fit analysis, and prepare application documents](docs/dachapply-demo.gif)](docs/dachapply-demo.mp4)
+
+_Add a job link → copy the ChatGPT prompt → import structured JSON → review fit → generate application documents in local mode._
+
+The hosted analysis workflow requires no paid LLM API. The document-generation step shown at the end is explicitly labeled **Local mode**.
+
 ## Purpose
 DACHApply is a private job intelligence dashboard for a Software Engineer job search in Austria/Germany. Friends can submit relevant job links using invite codes. The owner reviews leads, generates reusable ChatGPT prompts without paid LLM APIs, imports strict JSON evaluations, and tracks applications, notes, and follow-ups.
 
