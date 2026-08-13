@@ -51,6 +51,9 @@
 
 ### Project rules
 
+- For AI-first backend roles, projects from the AI Engineer base may be replaced when another verified project provides materially stronger evidence for the vacancy.
+- For Almetra, Event Analytics Pipeline replaces Agentic RAG System because it better supports data pipelines, SQL, analytical databases, validation and backend reliability.
+
 Prioritize projects depending on job type:
 
 For ML Engineer:

@@ -21,7 +21,7 @@ JOB_FIELDS = ['company','title','location','url','source','raw_description','ori
 EVALUATION_FIELDS = ['fit_score','priority','recommendation','summary','main_match_reasons','main_gaps','required_skills','nice_to_have_skills','matched_skills','missing_skills','cv_adjustment_notes','interview_prep_notes','risk_notes','next_action','structured_json_raw']
 NOTE_FIELDS = ['note','note_type']
 FOLLOWUP_FIELDS = ['follow_up_date','reason','completed']
-PROFILE_FIELDS = ['candidate_profile','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template']
+PROFILE_FIELDS = ['candidate_profile','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template']
 
 # InviteCode is intentionally excluded: ownership is ambiguous and codes can act as
 # access credentials/secrets. Django auth/session/admin/permission/token models are
@@ -128,7 +128,7 @@ def export_user_data_xlsx(user, preferences=None, kind='jobs'):
     default = workbook.active
     workbook.remove(default)
     sheet_fields = {
-        'profile': ['id'],
+        'profile': ['id'] + PROFILE_FIELDS,
         'jobs': ['id'] + JOB_FIELDS + ['created_by_username', 'submitted_for_username'],
         'evaluations': ['id', 'job'] + EVALUATION_FIELDS,
         'notes': ['id', 'job'] + NOTE_FIELDS,

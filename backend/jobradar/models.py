@@ -32,6 +32,7 @@ class UserProfile(models.Model):
     preferred_stack=models.TextField(blank=True, default='')
     red_flags=models.TextField(blank=True, default='')
     selling_points=models.TextField(blank=True, default='')
+    learned_application_preferences=models.TextField(blank=True, default='')
     evaluation_prompt_template=models.TextField(blank=True, default='')
     combined_prompt_template=models.TextField(blank=True, default='')
     enrichment_prompt_template=models.TextField(blank=True, default='')
