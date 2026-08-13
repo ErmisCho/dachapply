@@ -17,6 +17,11 @@ frontend/dist/
 .claude/
 .codex/
 .cursor/
+.orchestrator/session.lock
+.orchestrator/current-session.json
+.orchestrator/host.json
+.orchestrator/metrics/*.marker
+.orchestrator/metrics/*.log
 
 azure-sqlite-data.json
 dachapply-*.json
