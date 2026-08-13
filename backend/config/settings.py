@@ -56,9 +56,9 @@ DACHAPPLY_ENV = os.getenv('DACHAPPLY_ENV', 'local' if DEBUG else 'production')
 CODEX_CV_ENABLED = env_bool('CODEX_CV_ENABLED', DEBUG)
 CODEX_CV_OWNER_EMAIL = os.getenv('CODEX_CV_OWNER_EMAIL', 'ermis.chorinopoulos@gmail.com')
 CODEX_CV_WORKSPACE = os.getenv('CODEX_CV_WORKSPACE', r'C:\latex' if DEBUG else '')
+CODEX_CV_CACHE = env_bool('CODEX_CV_CACHE', True)
 CODEX_CANDIDATE_EVIDENCE_PATH = os.getenv('CODEX_CANDIDATE_EVIDENCE_PATH', str(BASE_DIR.parent/'Ermis-Chorinopoulos-Candidate-Evidence.md') if DEBUG else '')
 CODEX_APPLICATION_RULES_PATH = os.getenv('CODEX_APPLICATION_RULES_PATH', str(BASE_DIR.parent/'job-application-adaptation-rules.md'))
-CODEX_CV_TIMEOUT = int(os.getenv('CODEX_CV_TIMEOUT', '600'))
 CODEX_CV_OPEN_OUTPUT_FOLDER = env_bool('CODEX_CV_OPEN_OUTPUT_FOLDER', DEBUG)
 
 SECRET_KEY = os.getenv('SECRET_KEY')
@@ -118,6 +118,7 @@ STATICFILES_STORAGE='whitenoise.storage.CompressedManifestStaticFilesStorage'
 FRONTEND_DIST=BASE_DIR.parent/'frontend'/'dist'
 if FRONTEND_DIST.exists(): STATICFILES_DIRS.append(FRONTEND_DIST)
 DEFAULT_AUTO_FIELD='django.db.models.BigAutoField'
+DATA_UPLOAD_MAX_MEMORY_SIZE=8 * 1024 * 1024
 REST_FRAMEWORK={
     'DEFAULT_AUTHENTICATION_CLASSES':['rest_framework.authentication.SessionAuthentication'],
     'DEFAULT_PERMISSION_CLASSES':['rest_framework.permissions.IsAuthenticated'],
