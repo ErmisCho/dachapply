@@ -1,3 +1,4 @@
+import json
 import math
 import time
 import uuid
@@ -5,6 +6,7 @@ from pathlib import Path
 from statistics import median
 from threading import Event, Lock, Thread
 
+from django.conf import settings
 from django.db import close_old_connections
 
 from jobradar.models import JobLead, UserProfile
@@ -28,16 +30,62 @@ def _stage_key(stage):
     if value == 'cv compiled': return 'cv_compiled'
     if value == 'compiling motivation letter': return 'compiling_letter'
     if value == 'motivation letter compiled': return 'letter_compiled'
+    if value == 'using saved package': return 'cached'
     if value == 'saving files': return 'saving'
     if value in ('cancelling','cancelled'): return value
     if value == 'ready': return 'ready'
     return 'working'
 
 
+# User-facing step grouping: several raw stage_keys (begin/end markers) collapse into one step.
+_STEP_STAGES={'preparing':['preparing'],'generating':['generating','generated'],'compiling_cv':['compiling_cv','cv_compiled'],'compiling_letter':['compiling_letter','letter_compiled'],'cached':['cached'],'saving':['saving']}
+_STEP_LABELS={'preparing':'Preparing templates','generating':'Generating documents','compiling_cv':'Compiling CV','compiling_letter':'Compiling motivation letter','cached':'Using saved package','saving':'Saving files'}
+# Shown once a step's terminal marker fires, so the UI says the PDF compiled instead of still "Compiling".
+_STEP_DONE_LABELS={'generating':'Documents generated','compiling_cv':'CV compiled','compiling_letter':'Motivation letter compiled'}
+_STAGE_STEP={stage:step for step,stages in _STEP_STAGES.items() for stage in stages}
+_ACTIVE_STAGES={'generating','compiling_cv','compiling_letter'}
+
+
+def _plan_steps(plan):
+    steps=[]
+    for key in plan:
+        step=_STAGE_STEP.get(key)
+        if step and (not steps or steps[-1] != step):
+            steps.append(step)
+    return steps
+
+
+def _step_progress(task):
+    steps=_plan_steps(task.get('_stage_plan') or [])
+    total=len(steps)
+    if task['status'] == 'ready':
+        return total,total,'Ready'
+    stage_key=task.get('_stage_key')
+    step=_STAGE_STEP.get(stage_key)
+    if step not in steps:
+        return 0,total,_STEP_LABELS.get(step, task.get('stage','Preparing'))
+    index=steps.index(step)
+    members=_STEP_STAGES[step]
+    done=len(members) > 1 and stage_key == members[-1]
+    return (index+1 if done else index),total,(_STEP_DONE_LABELS.get(step) if done else None) or _STEP_LABELS[step]
+
+
 def _task_timing(provider, model, effort, speed, create_cv, create_letter, is_revision):
+    # ponytail: calibrated against measured 2-job batch benchmarks (~78s uncached CV+letter,
+    # ~3.55s recompile-only from saved TeX, ~1.25s exact cache hit). Revisions send a drastically
+    # smaller prompt (~1.2k vs ~48k chars) so model turnaround is faster too, but there is no
+    # dedicated revision benchmark yet -- retune revision_factor once one exists.
     effort_factor={'low':.75,'medium':1,'high':1.3,'xhigh':1.6,'max':1.8,'ultra':2}.get(effort,1)
-    generation=(180 if create_cv and create_letter else 150 if create_cv else 120)*effort_factor/(1.5 if speed == 'fast' else 1)
-    defaults={'preparing':3,'generating':generation,'generated':1,'compiling_cv':15,'cv_compiled':1,'compiling_letter':10,'letter_compiled':1,'saving':4}
+    revision_factor=.55 if is_revision else 1
+    # ponytail: coarse name-substring buckets -- local runtimes are slower than cloud, big models slower
+    # than small ones. Only the model call scales; LaTeX compile time is local and provider-independent.
+    # _stage_history overrides these with measured medians per (provider, model) once samples exist.
+    provider_factor={'openai':1,'anthropic':.9,'ollama':2.5,'lmstudio':2.5}.get(provider,1)
+    name=(model or '').lower()
+    model_factor=1.3 if 'opus' in name else .6 if any(tag in name for tag in ('haiku','mini','nano','flash')) else 1
+    generation_base=78 if create_cv and create_letter else 65 if create_cv else 52
+    generation=generation_base*effort_factor*revision_factor*provider_factor*model_factor/(1.5 if speed == 'fast' else 1)
+    defaults={'preparing':3,'generating':generation,'generated':.5,'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3,'cached':1,'saving':3}
     plan=['preparing','generating','generated']
     if create_cv: plan += ['compiling_cv','cv_compiled']
     if create_letter: plan += ['compiling_letter','letter_compiled']
@@ -54,10 +102,47 @@ def _stage_seconds(task, stage):
 def _record_stage(task, now):
     stage=task.get('_stage_key')
     elapsed=now-task.get('_stage_started_at',now)
+    if stage in task.get('_stage_plan',()):
+        task.setdefault('_stage_times',{})[stage]=round(elapsed,2)
     if stage in task.get('_stage_plan',()) and elapsed >= .5:
         samples=_stage_history.setdefault((task['_estimate_key'],stage), [])
         samples.append(elapsed)
         del samples[:-10]
+
+
+def _benchmark_row(task, now):
+    key=task.get('_estimate_key') or ()
+    if key and key[0] == 'compile-only':
+        details={'route':'recompile'}
+    elif len(key) == 7:
+        provider,model,effort,speed,create_cv,create_letter,is_revision=key
+        details={'route':'revision' if is_revision else 'generation','provider':provider,'model':model,'effort':effort,'speed':speed,'create_cv':create_cv,'create_letter':create_letter}
+    else:
+        details={'route':'unknown'}
+    return {**details,
+            'task':task.get('id',''),
+            'status':task.get('status',''),
+            'estimated_seconds':round(task.get('_initial_eta') or 0,2),
+            'actual_seconds':round(max(0,now-task.get('_created_at',now)),2),
+            'cache_hit':'cached' in (task.get('_stage_plan') or ()),
+            'stage_seconds':task.get('_stage_times') or {},
+            'recorded_at':round(time.time(),3)}
+
+
+def _record_benchmark(task, now):
+    # Appends estimated-vs-actual duration and per-phase timings for every finished task, so ETA
+    # calibration can be checked against real runs instead of guessed at.
+    workspace=getattr(settings,'CODEX_CV_WORKSPACE','') or ''
+    # Never create the workspace itself -- only write inside one that already exists.
+    if not workspace or not Path(workspace).is_dir():
+        return
+    try:
+        path=Path(workspace)/'.dachapply-cache'/'cv-benchmarks.jsonl'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a', encoding='utf-8') as handle:
+            handle.write(json.dumps(_benchmark_row(task,now))+'\n')
+    except Exception:
+        pass  # telemetry on the critical path: a benchmark write must never take down a generation
 
 
 def _remaining_runtime(task, now):
@@ -68,7 +153,10 @@ def _remaining_runtime(task, now):
     index=plan.index(stage)
     expected=_stage_seconds(task,stage)
     elapsed=max(0,now-task['_stage_started_at'])
-    floor=max(1,expected*.1)+max(0,elapsed-expected)*.25
+    # Structural floor (not cosmetic): while the model call or LaTeX compile is actually running,
+    # never let the estimate collapse toward "almost done" -- keep at least a few seconds of cushion.
+    min_floor=2 if stage in _ACTIVE_STAGES else .5
+    floor=max(min_floor,expected*.1)+max(0,elapsed-expected)*.25
     return max(expected-elapsed,floor)+sum(_stage_seconds(task,item) for item in plan[index+1:])
 
 
@@ -141,9 +229,16 @@ def _update(task_id, **values):
         if stage != task['_stage_key'] and status != 'failed':
             _record_stage(task,now)
             task.update(_stage_key=stage,_stage_started_at=now)
+            if stage == 'cached':
+                # Exact-cache route diverges from the planned generate/compile/save stages;
+                # shrink the plan so step totals and ETA reflect what is actually happening.
+                task['_stage_plan']=['preparing','cached']
         if status in ('ready','failed','cancelled'):
+            _record_stage(task,now)
             task['_finished_at']=now
         task.update(values, updated_at=time.time())
+        if status in ('ready','failed','cancelled'):
+            _record_benchmark(task,now)
 
 
 def _cleanup():
@@ -199,7 +294,8 @@ def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter
     cancel_event=Event()
     plan=(['compiling_cv','cv_compiled'] if source_cv else [])+(['compiling_letter','letter_compiled'] if source_letter else [])
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'compiling_cv':8,'cv_compiled':1,'compiling_letter':6,'letter_compiled':1},'_estimate_key':('compile-only',bool(source_cv),bool(source_letter)),'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('compile-only',bool(source_cv),bool(source_letter)),'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in _tasks[task_id]['_stage_plan'])
     Thread(target=_run_compile,args=(task_id,job_id,user_id,cv_key,source_cv,source_letter,cancel_event),name=f'cv-compile-{task_id[:8]}',daemon=True).start()
     return task_id
 
@@ -211,7 +307,8 @@ def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, p
     plan,defaults,estimate_key=_task_timing(provider,model,effort,speed,create_cv,create_letter,bool(source_cv or source_letter or revision_instructions or correction_image))
     cancel_event=Event()
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_config':{'profile':profile,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'create_cv':create_cv,'provider':provider,'model':model,'effort':effort,'speed':speed},'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_config':{'profile':profile,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'create_cv':create_cv,'provider':provider,'model':model,'effort':effort,'speed':speed},'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in plan)
     # ponytail: one local CLI agent per task; add a concurrency cap if large batches exhaust the workstation.
     Thread(target=_run, args=(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv, source_letter, revision_instructions, create_cv, correction_image, cancel_event), name=f'cv-agent-{task_id[:8]}', daemon=True).start()
     return task_id
@@ -226,7 +323,8 @@ def get_cv_task(task_id, user_id):
         now=time.monotonic()
         end=task.get('_finished_at') or now
         public={key:value for key,value in task.items() if key not in ('archive','user_id','updated_at') and not key.startswith('_')}
-        public.update(progress=_display_progress(task,now),elapsed_seconds=math.ceil(max(0,end-task['_created_at'])),estimated_seconds_remaining=math.ceil(_task_eta(task,now)))
+        step_completed,step_total,step_label=_step_progress(task)
+        public.update(progress=_display_progress(task,now),elapsed_seconds=math.ceil(max(0,end-task['_created_at'])),estimated_seconds_remaining=math.ceil(_task_eta(task,now)),step_label=step_label,step_completed=step_completed,step_total=step_total)
         return public
 
 

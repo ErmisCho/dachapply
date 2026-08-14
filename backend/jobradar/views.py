@@ -28,7 +28,7 @@ from .services.cleaning import clean_job_location
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
 from .services.analytics import record_demo_click
-from .services.cv_generator import decode_correction_image, generation_preview, is_cv_owner, latest_generated_sources, load_candidate_evidence
+from .services.cv_generator import ARTIFACT_KEYS, decode_correction_image, generation_preview, is_cv_owner, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
 from .services.cv_tasks import cancel_cv_task, get_cv_task, get_cv_task_download, start_cv_compile_task, start_cv_revision, start_cv_task
 from .throttles import CVGenerationUserThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
@@ -487,7 +487,7 @@ def cv_generation_preview(request, job_id):
 
 
 def _started_cv_task(task_id, user_id):
-    return {'task_id':task_id, **(get_cv_task(task_id,user_id) or {'status':'queued','progress':0,'stage':'Queued','elapsed_seconds':0,'estimated_seconds_remaining':180})}
+    return {'task_id':task_id, **(get_cv_task(task_id,user_id) or {'status':'queued','progress':0,'stage':'Queued','elapsed_seconds':0,'estimated_seconds_remaining':180,'step_label':'Queued','step_completed':0,'step_total':0})}
 
 
 @api_view(['POST'])
@@ -502,6 +502,10 @@ def generate_cv_documents(request, job_id):
     create_letter=request.data.get('create_letter', True) is not False
     if not create_cv and not create_letter:
         return Response({'detail':'Select at least a CV or a letter.'}, status=400)
+    try:
+        validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal')
+    except ValueError as exc:
+        return Response({'detail':str(exc)}, status=400)
     try:
         candidate_context=load_candidate_evidence(build_candidate_profile_text(request.user), user_profile_settings(request.user).learned_application_preferences)
     except RuntimeError as exc:
@@ -555,6 +559,10 @@ def revise_latest_cv_documents(request, job_id):
     if not create_cv and not create_letter:
         return Response({'detail':'No previous generated files were found for this job.'}, status=400)
     try:
+        validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal')
+    except ValueError as exc:
+        return Response({'detail':str(exc)}, status=400)
+    try:
         candidate_context=load_candidate_evidence(build_candidate_profile_text(request.user), user_profile_settings(request.user).learned_application_preferences)
     except RuntimeError as exc:
         return Response({'detail':str(exc)}, status=503)
@@ -571,6 +579,25 @@ def cv_generation_status(request, task_id):
         return Response({'detail':'Not found.'}, status=404)
     task=get_cv_task(task_id, request.user.id)
     return Response(task) if task else Response({'detail':'Task not found.'}, status=404)
+
+
+@api_view(['POST'])
+def reveal_cv_artifact(request, task_id):
+    if not is_cv_owner(request.user):
+        return Response({'detail':'Not found.'}, status=404)
+    key=request.data.get('key','')
+    if key not in ARTIFACT_KEYS:
+        return Response({'detail':f'Unknown artifact. Expected one of: {", ".join(ARTIFACT_KEYS)}.'}, status=400)
+    task=get_cv_task(task_id, request.user.id)
+    if not task:
+        return Response({'detail':'Task not found.'}, status=404)
+    # The path comes from the task's own artifacts, keyed by the whitelisted key -- never from the body.
+    path=(task.get('artifacts') or {}).get(key)
+    if not path:
+        return Response({'detail':'That artifact was not generated for this task.'}, status=404)
+    if not reveal_artifact_folder(path):
+        return Response({'detail':'Opening folders is disabled on this server.'}, status=409)
+    return Response({'revealed':path})
 
 
 @api_view(['POST'])

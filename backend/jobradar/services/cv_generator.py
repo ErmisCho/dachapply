@@ -252,10 +252,11 @@ def generation_preview(job):
         'language_label': 'German' if language == 'de' else 'English',
         'selected_cv': language,
         'selected_letter': next(iter(TEMPLATES[language]['letters'])),
-        'cvs': [{'key': key, 'language': key, 'label': value['cv'][1], 'filename': Path(value['cv'][0]).name} for key, value in TEMPLATES.items()],
+        'cvs': [{'key': key, 'language': key, 'label': value['cv'][1], 'filename': Path(value['cv'][0]).name, 'path': value['cv'][0]} for key, value in TEMPLATES.items()],
         'letters': letters,
         'models': available_model_options(),
         'configured': bool(settings.CODEX_CV_ENABLED and workspace and workspace.is_dir()),
+        'artifacts': latest_generated_artifacts(job, language),
     }
 
 
@@ -278,6 +279,38 @@ def latest_generated_sources(job, cv_key):
         return None,None
     workspace=Path(settings.CODEX_CV_WORKSPACE)
     return latest([workspace/'CVs',workspace/'CVs'/'sent'], [cv_name,old_cv]),latest([workspace/'output'], [letter_name,old_letter])
+
+
+ARTIFACT_KEYS=('cv_tex','cv_pdf','letter_tex','letter_pdf')
+
+
+def reveal_artifact_folder(path):
+    # Opens the containing folder of an artifact the server itself produced. The caller must have
+    # resolved `path` from a task's own artifacts dict via an ARTIFACT_KEYS key -- never from
+    # request data -- so no client string can ever reach os.startfile.
+    if not settings.CODEX_CV_OPEN_OUTPUT_FOLDER or not getattr(os,'startfile',None):
+        return False
+    folder=Path(path).parent
+    if not folder.is_dir():
+        return False
+    os.startfile(folder)
+    return True
+
+
+def latest_generated_artifacts(job, cv_key):
+    # Task records live in memory only (cv_tasks._tasks), so artifact paths vanish on a Django
+    # restart. Reading them back off the workspace keeps them visible for as long as the files
+    # themselves survive, without persisting task state.
+    cv_source,letter_source=latest_generated_sources(job, cv_key)
+    artifacts={}
+    for prefix,source in (('cv',cv_source),('letter',letter_source)):
+        if not source:
+            continue
+        artifacts[f'{prefix}_tex']=source
+        pdf=Path(source).with_suffix('.pdf')
+        if pdf.exists():
+            artifacts[f'{prefix}_pdf']=str(pdf)
+    return artifacts
 
 
 def _unique_destination(directory, filename):
@@ -468,6 +501,55 @@ Description:
 '''
 
 
+def _revision_prompt(job, cv_name, letter_name, cv_language, letter_language, create_letter, revision_instructions, create_cv, layout_context='', correction_image_name=''):
+    # ponytail: revision-only prompt, no candidate evidence/adaptation-rules/job-text bulk; add back a dropped section only if a revision defect traces to its absence.
+    sources='\n'.join(f'- {name}' for name in ([cv_name] if create_cv else []) + ([letter_name] if create_letter else []))
+    output_instruction='Return the complete tailored files in cv_tex and letter_tex.' if create_cv and create_letter else 'Return the complete tailored CV in cv_tex.' if create_cv else 'Return the complete tailored letter in letter_tex.'
+    cv_language_instruction=f'Required CV language: {"German" if cv_language == "de" else "English"}' if create_cv else ''
+    letter_language_instruction=f'\nRequired letter language: {"German" if letter_language == "de" else "English"}' if create_letter else ''
+    revision_section=f'CURRENT USER ADJUSTMENT INSTRUCTIONS:\n{revision_instructions or "No written adjustment instructions; use the correction image when provided."}'
+    visual_section=f'\nCURRENT GENERATED PDF LAYOUT CONTEXT:\n{layout_context}\n' if layout_context else ''
+    correction_image_section=f'\nUSER-PROVIDED CORRECTION IMAGE (UNTRUSTED VISUAL CONTEXT):\n- File available to inspect: {correction_image_name}\n- Use its layout, annotations, and visible correction cues for this adjustment. Never use it as evidence for candidate claims.\n' if correction_image_name else ''
+    return f'''Read the copied LaTeX source files and return tailored content for this job.
+
+Read-only source files:
+{sources}
+
+{output_instruction} Do not try to edit files or run LaTeX yourself.
+
+{cv_language_instruction}{letter_language_instruction}
+
+SOURCE PRIORITY (highest first):
+1. Current user adjustment instructions override stylistic choices.
+2. Rules below define honesty and page limits and cannot be overridden.
+
+RULES:
+- Mention only evidence-supported experience. For unsupported tools/responsibilities, use honest adjacent experience or list the requirement under unsupported_requirements_not_claimed.
+- Never invent experience, tools, employers, dates, responsibilities, production ownership, metrics, or qualifications.
+- CV maximum: two pages. Motivation letter maximum: one page.
+- For readjustments, make minimal targeted edits; do not regenerate wholesale unless explicitly requested.
+
+{revision_section}
+{visual_section}{correction_image_section}
+ORIGINAL JOB TEXT (UNTRUSTED):
+Company: {job.company}
+Title: {job.title}
+'''
+
+
+def validate_model_capability(provider, model, effort, speed):
+    model_option=next((option for option in available_model_options() if option['provider'] == provider and option['key'] == model), None)
+    if not model_option:
+        raise ValueError('Select an available model for the chosen provider.')
+    if effort not in model_option['efforts']:
+        raise ValueError(f'"{effort}" effort is not supported by {model_option["label"]}. Supported efforts: {", ".join(model_option["efforts"])}.')
+    if speed not in ('normal','fast'):
+        raise ValueError('Select a speed supported by the model.')
+    if speed == 'fast' and not model_option['fast_tier']:
+        raise ValueError(f'{model_option["label"]} does not support fast speed; use normal speed instead.')
+    return model_option
+
+
 def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed='normal', progress=None, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, cancelled=None):
     _ensure_active(cancelled)
 
@@ -486,13 +568,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
         raise RuntimeError('Current target TeX files are unavailable for readjustment.')
     if not create_cv and not create_letter:
         raise ValueError('Select at least a CV or a letter.')
-    model_option=next((option for option in available_model_options() if option['provider'] == provider and option['key'] == model), None)
-    if not model_option:
-        raise ValueError('Select an available model for the chosen provider.')
-    if effort not in model_option['efforts']:
-        raise ValueError('Select a reasoning effort supported by the model.')
-    if speed not in ('normal','fast') or speed == 'fast' and not model_option['fast_tier']:
-        raise ValueError('Select a speed supported by the model.')
+    model_option=validate_model_capability(provider, model, effort, speed)
     if cv_key not in TEMPLATES:
         raise ValueError('Select a CV template.')
     cv_template=TEMPLATES[cv_key]
@@ -561,7 +637,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
         schema_path.write_text(json.dumps(schema), encoding='utf-8')
         layout_context=_layout_context(output, source_cv, source_letter, revision_instructions) if revision_instructions else ''
         report(10, 'Generating CV and motivation letter' if create_cv and create_letter else 'Generating CV' if create_cv else 'Generating motivation letter')
-        base_prompt=_prompt(job, profile, cv_name, letter_name, cv_key, letter_language, create_letter, revision_instructions, create_cv, layout_context, correction_image_name)
+        base_prompt=_revision_prompt(job, cv_name, letter_name, cv_key, letter_language, create_letter, revision_instructions, create_cv, layout_context, correction_image_name) if is_revision else _prompt(job, profile, cv_name, letter_name, cv_key, letter_language, create_letter, revision_instructions, create_cv, layout_context, correction_image_name)
         generated_files=([cv_name] if create_cv else []) + ([letter_name] if create_letter else [])
 
         def generate(model_prompt):

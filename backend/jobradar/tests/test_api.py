@@ -336,6 +336,7 @@ def test_generate_bulk_links_prompt(client):
 
 def test_candidate_evidence_is_required_and_loaded(tmp_path, settings):
     from jobradar.services.cv_generator import load_candidate_evidence
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
     settings.CODEX_CANDIDATE_EVIDENCE_PATH=str(tmp_path/'missing.md')
     with pytest.raises(RuntimeError, match='cannot be read'):
         load_candidate_evidence('profile')
@@ -539,7 +540,8 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
             return SimpleNamespace(returncode=0, stdout='', stderr='')
         if command[0] in ('codex','claude'):
             prompts.append(kwargs['input'])
-            assert kwargs['encoding']=='utf-8' and 'timeout' not in kwargs and '📌' in kwargs['input']
+            # revision prompts drop CANDIDATE FACTS AND RULES (and the 📌 profile marker within it) to stay minimal
+            assert kwargs['encoding']=='utf-8' and 'timeout' not in kwargs and ('📌' in kwargs['input']) == ('CANDIDATE FACTS AND RULES' in kwargs['input'])
         if command[0]=='codex':
             assert command[-1]=='-' and {'--ignore-user-config','--ignore-rules'} <= set(command) and 'ORIGINAL JOB TEXT (UNTRUSTED)' in kwargs['input']
             if 'USER-PROVIDED CORRECTION IMAGE' in kwargs['input']:
@@ -629,6 +631,64 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     assert any(command[0]=='claude' and '--json-schema' in command for command in commands)
     assert any(command[0]=='codex' and '--oss' in command and command[command.index('--local-provider')+1]=='ollama' for command in commands)
     assert cv.read_text()=='original cv' and letter.read_text()=='original letter'
+
+
+def test_cv_revision_uses_minimal_prompt_and_preserves_unrelated_tex(db, tmp_path, monkeypatch, settings):
+    from types import SimpleNamespace
+    from jobradar.services.cv_generator import generate_cv_package
+
+    cv=tmp_path/'CVs'/'German - AI Engineer (base)_v_1.3.tex'; cv.parent.mkdir()
+    picture=tmp_path/'CVs'/'Picture.jpg'
+    cv.write_text('original cv'); picture.write_bytes(b'jpg')
+    settings.CODEX_CV_WORKSPACE=str(tmp_path); settings.CODEX_CV_OPEN_OUTPUT_FOLDER=False; settings.CODEX_CV_CACHE=False
+    monkeypatch.setattr('jobradar.services.cv_generator.shutil.which', lambda command: command)
+    monkeypatch.setattr('jobradar.services.cv_generator.available_model_options', lambda: [
+        {'provider':'openai','key':'gpt-5.5','label':'GPT-5.5','efforts':['low','medium','high','xhigh'],'default_effort':'medium','fast_tier':'priority'},
+    ])
+    user=User.objects.create_user('revision-owner')
+    job=JobLead.objects.create(company='Firma', title='Entwickler', raw_description='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben.', created_by=user)
+
+    unrelated='\\section{Experience}\nUnrelated bullet that must survive.'
+    confirmations={'cv_max_2_pages':True,'letter_max_1_page':True,'no_orphaned_employer_headings':True,'no_text_overlap':True,'nothing_after_end_document':True,'links_work':True,'photo_loads_if_used':True,'no_invented_tools_or_overclaims':True}
+    initial_cv=f'\\documentclass{{article}}\\begin{{document}}Old headline. {unrelated}\\end{{document}}'
+    revised_cv=f'\\documentclass{{article}}\\begin{{document}}New headline. {unrelated}\\end{{document}}'
+    responses=iter([
+        {'cv_tex':initial_cv,'changed_files':['cv.tex'],'main_changes':['Initial tailoring'],'unsupported_requirements_not_claimed':[],'confirmations':confirmations},
+        {'cv_tex':revised_cv,'changed_files':['cv.tex'],'main_changes':['Shortened headline'],'unsupported_requirements_not_claimed':[],'confirmations':confirmations},
+    ])
+    prompts=[]
+
+    def fake_run(command, **kwargs):
+        if command[0]=='pdfinfo':
+            return SimpleNamespace(returncode=0, stdout='Pages: 1\nPage size: 612 x 792 pts', stderr='')
+        if command[0]=='codex':
+            prompts.append(kwargs['input'])
+            result_path=__import__('pathlib').Path(command[command.index('--output-last-message')+1])
+            result_path.write_text(json.dumps(next(responses)))
+            return SimpleNamespace(returncode=0, stdout='ok', stderr='')
+        output=__import__('pathlib').Path(kwargs['cwd'])
+        (output/__import__('pathlib').Path(command[-1]).with_suffix('.pdf')).write_bytes(b'pdf')
+        return SimpleNamespace(returncode=0, stdout='ok', stderr='')
+
+    monkeypatch.setattr('jobradar.services.cv_generator.subprocess.run', fake_run)
+    profile='CANDIDATE FACTS AND RULES marker profile'
+    _,_,saved=generate_cv_package(job, profile, 'de', '', False, 'openai', 'gpt-5.5', 'medium', create_cv=True)
+    initial_prompt=prompts[-1]
+    assert 'CANDIDATE FACTS AND RULES' in initial_prompt
+
+    _,_,revised=generate_cv_package(job, profile, 'de', '', False, 'openai', 'gpt-5.5', 'medium', create_cv=True, source_cv=saved['cv_tex'], revision_instructions='Shorten the headline')
+    revision_prompt=prompts[-1]
+    # requested text changes while unrelated TeX content survives
+    saved_text=__import__('pathlib').Path(saved['cv_tex']).read_text()
+    assert revised['cv_tex']==saved['cv_tex'] and saved_text==revised_cv
+    assert 'New headline' in saved_text and 'Old headline' not in saved_text and unrelated in saved_text
+    # revision prompt drops candidate evidence/adaptation-rules/existing-evaluation/full job text but keeps instructions, language pin, honesty+page-limit rules, and a job identity anchor
+    assert 'CANDIDATE FACTS AND RULES' not in revision_prompt and 'EXISTING EVALUATION' not in revision_prompt and job.raw_description not in revision_prompt
+    assert 'CURRENT USER ADJUSTMENT INSTRUCTIONS' in revision_prompt and 'Shorten the headline' in revision_prompt
+    assert 'Required CV language: German' in revision_prompt
+    assert 'Never invent experience' in revision_prompt and 'CV maximum: two pages' in revision_prompt
+    assert 'SOURCE PRIORITY' in revision_prompt and f'Company: {job.company}' in revision_prompt and f'Title: {job.title}' in revision_prompt
+    assert len(revision_prompt) < len(initial_prompt)*.5
 
 
 def test_cv_task_completes_and_is_user_scoped(job, monkeypatch, tmp_path):
@@ -737,6 +797,395 @@ def test_cv_tasks_run_as_parallel_agents_with_live_eta(job, monkeypatch):
         time.sleep(.01)
     assert first['progress']==second['progress']==100
     assert first['estimated_seconds_remaining']==second['estimated_seconds_remaining']==0
+
+
+@throttled_rest_framework(cv_generation_user='100/hour')
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_cv_generation_rejects_unsupported_capability_combinations(client, owner, job, monkeypatch):
+    from jobradar.services import cv_generator
+    owner.email='owner@example.test'; owner.save(update_fields=['email'])
+    monkeypatch.setattr(cv_generator, 'available_model_options', lambda: [
+        {'provider':'openai','key':'gpt-5.4-mini','label':'GPT-5.4-Mini','efforts':['low','medium','high','xhigh'],'default_effort':'medium','fast_tier':''},
+        {'provider':'openai','key':'gpt-5.5','label':'GPT-5.5','efforts':['low','medium','high','xhigh'],'default_effort':'medium','fast_tier':'priority'},
+        {'provider':'anthropic','key':'sonnet','label':'Claude Sonnet','efforts':['default'],'default_effort':'default','fast_tier':''},
+    ])
+    started=[]
+    monkeypatch.setattr('jobradar.views.start_cv_task', lambda *args,**kwargs: started.append((args,kwargs)) or 'task123')
+
+    unsupported_effort=client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'provider':'openai','model':'gpt-5.5','effort':'ultra','speed':'normal'}, format='json')
+    assert unsupported_effort.status_code==400 and 'ultra' in unsupported_effort.data['detail'] and 'GPT-5.5' in unsupported_effort.data['detail']
+
+    unsupported_fast=client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'provider':'openai','model':'gpt-5.4-mini','effort':'medium','speed':'fast'}, format='json')
+    assert unsupported_fast.status_code==400 and 'fast' in unsupported_fast.data['detail'].lower()
+
+    unknown_model=client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'provider':'openai','model':'not-a-model','effort':'medium'}, format='json')
+    assert unknown_model.status_code==400
+
+    fast_ok=client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'provider':'openai','model':'gpt-5.5','effort':'medium','speed':'fast'}, format='json')
+    assert fast_ok.status_code==202
+
+    anthropic_ok=client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'provider':'anthropic','model':'sonnet','effort':'default','speed':'normal'}, format='json')
+    assert anthropic_ok.status_code==202
+
+    assert len(started)==2  # only the two accepted combinations reached start_cv_task
+
+
+def test_cv_task_step_progress_reflects_route_completion_and_cache_reduction():
+    from jobradar.services import cv_tasks
+
+    plan,defaults,estimate_key=cv_tasks._task_timing('openai','gpt-5.5','medium','normal',True,True,False)
+    assert plan==['preparing','generating','generated','compiling_cv','cv_compiled','compiling_letter','letter_compiled','saving']
+    task={'status':'running','stage':'Preparing templates','_stage_key':'preparing','_stage_plan':plan}
+    assert cv_tasks._step_progress(task)==(0,5,'Preparing templates')
+    task['_stage_key']='generating'
+    assert cv_tasks._step_progress(task)==(1,5,'Generating documents')
+    task['_stage_key']='generated'
+    assert cv_tasks._step_progress(task)==(2,5,'Documents generated')
+    task['_stage_key']='compiling_cv'
+    assert cv_tasks._step_progress(task)==(2,5,'Compiling CV')
+    # Each finished PDF is reported explicitly, not merely implied by the step counter advancing.
+    task['_stage_key']='cv_compiled'
+    assert cv_tasks._step_progress(task)==(3,5,'CV compiled')
+    task['_stage_key']='compiling_letter'
+    assert cv_tasks._step_progress(task)==(3,5,'Compiling motivation letter')
+    task['_stage_key']='letter_compiled'
+    assert cv_tasks._step_progress(task)==(4,5,'Motivation letter compiled')
+    task['_stage_key']='saving'
+    assert cv_tasks._step_progress(task)==(4,5,'Saving files')
+    task['status']='ready'
+    assert cv_tasks._step_progress(task)==(5,5,'Ready')
+
+    # CV-only skips the letter step entirely -- no phantom step in the total.
+    cv_only_plan,_,_=cv_tasks._task_timing('openai','gpt-5.5','medium','normal',True,False,False)
+    assert cv_tasks._plan_steps(cv_only_plan)==['preparing','generating','compiling_cv','saving']
+
+    # PDF-only recompile of both artifacts: 2 steps, no preparing/generating/saving phantom steps.
+    recompile_plan=['compiling_cv','cv_compiled','compiling_letter','letter_compiled']
+    assert cv_tasks._plan_steps(recompile_plan)==['compiling_cv','compiling_letter']
+
+    # An exact cache hit is only known at runtime -- _update() collapses the plan once it fires,
+    # so the total shrinks from the full generate/compile/save route down to 2 steps.
+    now=__import__('time').monotonic()
+    cv_tasks._tasks.clear(); cv_tasks._stage_history.clear()
+    cv_tasks._tasks['cache-task']={'id':'cache-task','user_id':1,'status':'running','progress':5,'stage':'Preparing templates','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_created_at':now,'_started_at':now,'_finished_at':None,'_stage_key':'preparing','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'updated_at':__import__('time').time()}
+    cv_tasks._update('cache-task', status='running', progress=97, stage='Using saved package')
+    cached=cv_tasks.get_cv_task('cache-task', 1)
+    assert cached['step_total']==2 and cached['step_completed']==1 and cached['step_label']=='Using saved package'
+    cv_tasks._tasks.clear()
+
+
+def _reveal_task(owner, artifacts):
+    from jobradar.services import cv_tasks
+    owner.email='owner@example.test'; owner.save()
+    now=__import__('time').monotonic()
+    cv_tasks._tasks.clear()
+    cv_tasks._tasks['reveal-task']={'id':'reveal-task','user_id':owner.id,'status':'ready','progress':100,'stage':'Ready','error':'','archive':None,'filename':'','artifacts':artifacts,'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_created_at':now,'_started_at':now,'_finished_at':now,'_stage_key':'ready','_stage_started_at':now,'_stage_plan':['preparing','saving'],'_stage_defaults':{'preparing':1,'saving':1},'_estimate_key':(),'_stage_times':{},'_initial_eta':2,'updated_at':__import__('time').time()}
+    return 'reveal-task'
+
+
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_OPEN_OUTPUT_FOLDER=True)
+def test_reveal_artifact_opens_only_a_whitelisted_key_from_the_task_payload(client, owner, tmp_path, monkeypatch):
+    from jobradar.services import cv_generator, cv_tasks
+
+    pdf=tmp_path/'Chorinopoulos-Ermis-CV-Acme.pdf'; pdf.write_bytes(b'%PDF')
+    opened=[]
+    monkeypatch.setattr(cv_generator.os,'startfile',lambda folder:opened.append(str(folder)),raising=False)
+    task_id=_reveal_task(owner, {'cv_pdf':str(pdf)})
+
+    ok=client.post(f'/api/cv-generation/tasks/{task_id}/reveal/', {'key':'cv_pdf'}, format='json')
+    assert ok.status_code==200 and opened==[str(tmp_path)]
+
+    # A path in the body is not a key: it must be rejected outright, never opened.
+    opened.clear()
+    injected=client.post(f'/api/cv-generation/tasks/{task_id}/reveal/', {'key':str(tmp_path/'evil.pdf')}, format='json')
+    assert injected.status_code==400 and opened==[]
+    assert 'cv_tex' in injected.json()['detail']
+
+    # A whitelisted key this task never produced resolves to nothing.
+    assert client.post(f'/api/cv-generation/tasks/{task_id}/reveal/', {'key':'letter_pdf'}, format='json').status_code==404
+    assert opened==[]
+
+    # An unknown task id cannot be probed.
+    assert client.post('/api/cv-generation/tasks/does-not-exist/reveal/', {'key':'cv_pdf'}, format='json').status_code==404
+    cv_tasks._tasks.clear()
+
+
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_OPEN_OUTPUT_FOLDER=True)
+def test_reveal_artifact_is_not_reachable_by_a_non_owner(db, owner, tmp_path, monkeypatch):
+    from jobradar.services import cv_generator, cv_tasks
+
+    pdf=tmp_path/'cv.pdf'; pdf.write_bytes(b'%PDF')
+    opened=[]
+    monkeypatch.setattr(cv_generator.os,'startfile',lambda folder:opened.append(str(folder)),raising=False)
+    task_id=_reveal_task(owner, {'cv_pdf':str(pdf)})
+    intruder=User.objects.create_user('intruder', email='intruder@example.test', password='pw')
+    stranger=APIClient(); stranger.force_authenticate(intruder)
+    assert stranger.post(f'/api/cv-generation/tasks/{task_id}/reveal/', {'key':'cv_pdf'}, format='json').status_code==404
+    assert opened==[]
+    cv_tasks._tasks.clear()
+
+
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_OPEN_OUTPUT_FOLDER=False)
+def test_reveal_artifact_respects_the_open_output_folder_kill_switch(client, owner, tmp_path, monkeypatch):
+    from jobradar.services import cv_generator, cv_tasks
+
+    pdf=tmp_path/'cv.pdf'; pdf.write_bytes(b'%PDF')
+    opened=[]
+    monkeypatch.setattr(cv_generator.os,'startfile',lambda folder:opened.append(str(folder)),raising=False)
+    task_id=_reveal_task(owner, {'cv_pdf':str(pdf)})
+    response=client.post(f'/api/cv-generation/tasks/{task_id}/reveal/', {'key':'cv_pdf'}, format='json')
+    assert response.status_code==409 and opened==[]  # disabled server-side, not merely hidden in the UI
+    cv_tasks._tasks.clear()
+
+
+def test_stage_key_maps_every_reported_event_string_to_a_progress_stage():
+    from jobradar.services import cv_tasks
+
+    # The raw strings are whatever cv_generator's progress callback reports; drift here silently
+    # breaks the step counter and the ETA, so pin the mapping directly.
+    assert cv_tasks._stage_key('Preparing templates')=='preparing'
+    assert cv_tasks._stage_key('Generating CV and motivation letter')=='generating'
+    assert cv_tasks._stage_key('Repairing generated documents (1/2)')=='generating'
+    assert cv_tasks._stage_key('CV and letter generated')=='generated'
+    assert cv_tasks._stage_key('Compiling CV')=='compiling_cv'
+    assert cv_tasks._stage_key('CV compiled')=='cv_compiled'
+    assert cv_tasks._stage_key('Compiling motivation letter')=='compiling_letter'
+    assert cv_tasks._stage_key('Motivation letter compiled')=='letter_compiled'
+    assert cv_tasks._stage_key('Using saved package')=='cached'
+    assert cv_tasks._stage_key('Saving files')=='saving'
+    assert cv_tasks._stage_key('Ready')=='ready'
+    assert cv_tasks._stage_key('Cancelling')=='cancelling'
+    assert cv_tasks._stage_key('something new')=='working'  # unknown strings must not crash
+    assert cv_tasks._stage_key(None)=='working'
+    # every mapped stage that belongs to a step must be reachable from a real event string
+    assert set(cv_tasks._STAGE_STEP) <= {cv_tasks._stage_key(text) for text in
+        ['Preparing templates','Generating CV','CV generated','Compiling CV','CV compiled',
+         'Compiling motivation letter','Motivation letter compiled','Using saved package','Saving files']}
+
+
+def test_finished_task_records_estimated_versus_actual_duration_and_phase_timings(tmp_path, settings):
+    import json
+    import time
+    from jobradar.services import cv_tasks
+
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    now=time.monotonic()
+    plan,defaults,estimate_key=cv_tasks._task_timing('openai','gpt-5.5','medium','normal',True,True,False)
+    cv_tasks._tasks.clear(); cv_tasks._stage_history.clear()
+    cv_tasks._tasks['bench']={'id':'bench','user_id':1,'status':'running','progress':5,'stage':'Preparing templates','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_created_at':now-42,'_started_at':now-42,'_finished_at':None,'_stage_key':'compiling_cv','_stage_started_at':now-3,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'_stage_times':{'preparing':2.5},'_initial_eta':61.0,'updated_at':time.time()}
+    cv_tasks._update('bench', status='ready', progress=100, stage='Ready')
+
+    rows=[json.loads(line) for line in (tmp_path/'.dachapply-cache'/'cv-benchmarks.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert len(rows)==1
+    row=rows[0]
+    assert row['route']=='generation' and row['provider']=='openai' and row['model']=='gpt-5.5'
+    assert row['status']=='ready' and row['estimated_seconds']==61.0
+    assert 40 <= row['actual_seconds'] <= 45  # measured against _created_at, not guessed
+    # phase timings survive for the revision/ETA benchmarks, including the stage active at finish
+    assert row['stage_seconds']['preparing']==2.5 and row['stage_seconds']['compiling_cv'] >= 2.5
+    cv_tasks._tasks.clear()
+
+
+def test_benchmark_is_not_written_when_the_workspace_does_not_exist(tmp_path, settings):
+    import time
+    from jobradar.services import cv_tasks
+
+    missing=tmp_path/'not-a-workspace'
+    settings.CODEX_CV_WORKSPACE=str(missing)
+    cv_tasks._record_benchmark({'id':'x','status':'ready','_created_at':time.monotonic(),'_estimate_key':()}, time.monotonic())
+    assert not missing.exists()  # never create the workspace as a side effect of benchmarking
+
+
+def test_latest_generated_artifacts_survive_a_restart_by_reading_the_workspace(tmp_path, settings):
+    from types import SimpleNamespace
+    from jobradar.services import cv_generator
+
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    job=SimpleNamespace(id=1, company='ACME', title='AI Engineer', raw_description='', language_requirements='', source_text='')
+    cv_name,letter_name=cv_generator._target_names(job,'english','english')
+    (tmp_path/'CVs').mkdir(parents=True)
+    (tmp_path/'output').mkdir(parents=True)
+    cv_tex=tmp_path/'CVs'/cv_name; cv_tex.write_text('cv', encoding='utf-8')
+    cv_pdf=cv_tex.with_suffix('.pdf'); cv_pdf.write_bytes(b'%PDF')
+    letter_tex=tmp_path/'output'/letter_name; letter_tex.write_text('letter', encoding='utf-8')
+
+    # No task record exists here at all -- this is what a page load after a Django restart sees.
+    artifacts=cv_generator.latest_generated_artifacts(job,'english')
+    assert artifacts['cv_tex']==str(cv_tex) and artifacts['cv_pdf']==str(cv_pdf)
+    # The letter PDF was never compiled: report the TeX, never invent a path to a missing file.
+    assert artifacts['letter_tex']==str(letter_tex) and 'letter_pdf' not in artifacts
+    # The preview is the route that carries them to the client once polling is over.
+    assert cv_generator.generation_preview(job)['artifacts']==artifacts
+
+
+def test_latest_generated_artifacts_is_empty_when_nothing_was_generated(tmp_path, settings):
+    from types import SimpleNamespace
+    from jobradar.services import cv_generator
+
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    (tmp_path/'CVs').mkdir(parents=True)
+    (tmp_path/'output').mkdir(parents=True)
+    job=SimpleNamespace(id=2, company='Nothing', title='Generated Yet', raw_description='', language_requirements='', source_text='')
+    assert cv_generator.latest_generated_artifacts(job,'english')=={}
+
+
+def test_task_timing_estimate_varies_with_provider_and_model():
+    from jobradar.services import cv_tasks
+
+    def generation(provider, model):
+        return cv_tasks._task_timing(provider, model, 'medium', 'normal', True, True, False)[1]['generating']
+
+    cloud=generation('openai','gpt-5.5')
+    assert generation('ollama','llama3.1:8b') > cloud
+    assert generation('lmstudio','qwen2.5-coder') > cloud
+    assert generation('anthropic','opus') > generation('anthropic','haiku')
+    assert generation('openai','gpt-5.4-mini') < cloud
+    # provider and model must reach the estimate itself, not only the empirical-history cache key
+    assert generation('ollama','llama3.1:8b') != generation('openai','llama3.1:8b')
+    # LaTeX compile is local work -- it must not scale with the model provider
+    assert cv_tasks._task_timing('ollama','llama3.1:8b','medium','normal',True,True,False)[1]['compiling_cv'] \
+        == cv_tasks._task_timing('openai','gpt-5.5','medium','normal',True,True,False)[1]['compiling_cv']
+
+
+def test_validate_model_capability_accepts_anthropic_normal_speed_and_rejects_its_fast_speed(monkeypatch):
+    from jobradar.services import cv_generator
+
+    monkeypatch.setattr(cv_generator, 'available_model_options', lambda: [
+        {'provider':'anthropic','key':'sonnet','label':'Claude Sonnet','efforts':['default'],'default_effort':'default','fast_tier':''},
+    ])
+    accepted=cv_generator.validate_model_capability('anthropic','sonnet','default','normal')
+    assert accepted=={'provider':'anthropic','key':'sonnet','label':'Claude Sonnet','efforts':['default'],'default_effort':'default','fast_tier':''}
+    with pytest.raises(ValueError, match='Claude Sonnet does not support fast speed'):
+        cv_generator.validate_model_capability('anthropic','sonnet','default','fast')
+
+
+@throttled_rest_framework(cv_generation_user='100/hour')
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_cv_generation_starts_task_for_anthropic_model_but_rejects_its_fast_speed(client, owner, job, monkeypatch):
+    from jobradar.services import cv_generator
+    owner.email='owner@example.test'; owner.save(update_fields=['email'])
+    monkeypatch.setattr(cv_generator, 'available_model_options', lambda: [
+        {'provider':'anthropic','key':'sonnet','label':'Claude Sonnet','efforts':['default'],'default_effort':'default','fast_tier':''},
+    ])
+    started=[]
+    monkeypatch.setattr('jobradar.views.start_cv_task', lambda *args,**kwargs: started.append((args,kwargs)) or 'anthropic-task')
+
+    fast=client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'provider':'anthropic','model':'sonnet','effort':'default','speed':'fast'}, format='json')
+    assert fast.status_code==400 and 'fast speed' in fast.data['detail']
+    assert started==[]  # rejected combos never reach start_cv_task
+
+    normal=client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'provider':'anthropic','model':'sonnet','effort':'default','speed':'normal'}, format='json')
+    assert normal.status_code==202 and normal.data['task_id']=='anthropic-task'
+    assert len(started)==1
+    args,kwargs=started[0]
+    assert args[6:10]==('anthropic','sonnet','default','normal') and kwargs=={'create_cv':True}
+
+
+@pytest.mark.parametrize('stage', ['generating','compiling_cv','compiling_letter'])
+def test_remaining_runtime_never_collapses_near_zero_for_active_stages(stage):
+    import time
+    from jobradar.services import cv_tasks
+
+    cv_tasks._stage_history.clear()
+    plan,defaults,estimate_key=cv_tasks._task_timing('openai','gpt-5.5','medium','normal',True,True,False)
+    now=time.monotonic()
+    expected=defaults[stage]
+    # The stage's own budget has just run out (elapsed == expected) but the model call / compile
+    # is still the live stage -- the ETA must not be allowed to read ~0 here.
+    task={'_stage_plan':[stage],'_stage_key':stage,'_stage_started_at':now-expected,'_estimate_key':estimate_key,'_stage_defaults':defaults}
+    assert cv_tasks._remaining_runtime(task, now) >= 2
+
+
+def test_remaining_runtime_has_a_lower_floor_for_non_active_stages():
+    import time
+    from jobradar.services import cv_tasks
+
+    cv_tasks._stage_history.clear()
+    plan,defaults,estimate_key=cv_tasks._task_timing('openai','gpt-5.5','medium','normal',True,True,False)
+    now=time.monotonic()
+    expected=defaults['saving']
+    task={'_stage_plan':['saving'],'_stage_key':'saving','_stage_started_at':now-expected,'_estimate_key':estimate_key,'_stage_defaults':defaults}
+    # 'saving' is not an active (model/compile) stage, so it is allowed to read a smaller floor --
+    # this proves the >=2 floor above is specific to active stages, not a blanket minimum.
+    assert cv_tasks._remaining_runtime(task, now) < 2
+
+
+def test_cv_task_step_completed_never_exceeds_step_total_across_cache_collapse(job, monkeypatch):
+    import time
+    from threading import Event
+    from jobradar.services import cv_tasks
+
+    cv_tasks._tasks.clear(); cv_tasks._stage_history.clear()
+    monkeypatch.setattr(cv_tasks.JobLead.objects, 'get', lambda id: job)
+    monkeypatch.setattr(cv_tasks, '_copy_to_clipboard', lambda text: True)
+    paused=Event(); resume=Event()
+
+    def generate(job, profile, cv, letter, create_letter, provider, model, effort, speed, progress, *args, **kwargs):
+        progress(5,'Preparing templates'); progress(10,'Generating CV')
+        paused.set()
+        resume.wait(2)
+        progress(97,'Using saved package')
+        return b'zip','application.zip',{}
+    monkeypatch.setattr(cv_tasks, 'generate_cv_package', generate)
+
+    task_id=cv_tasks.start_cv_task(job.id, job.created_by_id, 'profile', 'en', '', False, 'openai', 'gpt-5.5', 'medium', 'normal')
+    assert paused.wait(2)
+    observed=[]
+    for _ in range(5):
+        task=cv_tasks.get_cv_task(task_id, job.created_by_id)
+        observed.append((task['step_completed'], task['step_total']))
+        time.sleep(.01)
+    pre_cache_totals={total for _,total in observed}
+    resume.set()
+    for _ in range(200):
+        task=cv_tasks.get_cv_task(task_id, job.created_by_id)
+        observed.append((task['step_completed'], task['step_total']))
+        if task['status']=='ready': break
+        time.sleep(.01)
+    assert task['status']=='ready'
+    # single-CV, no-letter route: 4 steps until the exact-cache hit collapses the plan to 2.
+    assert pre_cache_totals=={4}
+    assert observed[-1]==(2,2)
+    assert all(completed <= total for completed, total in observed)
+    cv_tasks._tasks.clear()
+
+
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
+def test_cv_generation_preview_exposes_relative_not_absolute_template_paths(client, owner, job):
+    owner.email='owner@example.test'; owner.save(update_fields=['email'])
+    JobLead.objects.filter(pk=job.pk).update(original_source_text='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben und die Bewerbung.', raw_description='English role and requirements')
+    r=client.get(f'/api/jobs/{job.id}/cv-generation/')
+    assert r.status_code==200
+    paths={cv['key']:cv['path'] for cv in r.data['cvs']}
+    assert paths=={'en':'CVs/English - AI Engineer (base)_v_1.3.tex','de':'CVs/German - AI Engineer (base)_v_1.3.tex'}
+    for path in paths.values():
+        assert not path.startswith('C:') and not path.startswith('/') and 'missing' not in path
+
+
+def test_start_cv_revision_inherits_parent_config_without_reverifying_capability(job, monkeypatch):
+    from jobradar.services import cv_generator, cv_tasks
+
+    # The parent's stored provider/model/effort/speed combo is genuinely invalid under
+    # validate_model_capability (Claude Opus reports fast_tier=''), so if the revision path
+    # re-ran that check it would reject this combo outright.
+    monkeypatch.setattr(cv_generator, 'available_model_options', lambda: [
+        {'provider':'anthropic','key':'opus','label':'Claude Opus','efforts':['default'],'default_effort':'default','fast_tier':''},
+    ])
+    with pytest.raises(ValueError, match='fast speed'):
+        cv_generator.validate_model_capability('anthropic','opus','default','fast')
+
+    cv_tasks._tasks.clear()
+    captured=[]
+    monkeypatch.setattr(cv_tasks, 'start_cv_task', lambda *args,**kwargs: captured.append((args,kwargs)) or 'child-task-id')
+    cv_tasks._tasks['parent-task']={'id':'parent-task','user_id':7,'job_id':job.id,'status':'ready','artifacts':{'cv_tex':'saved-cv.tex','letter_tex':'saved-letter.tex'},'_config':{'profile':'profile text','cv_key':'de','letter_key':'anschreiben','create_letter':True,'create_cv':True,'provider':'anthropic','model':'opus','effort':'default','speed':'fast'}}
+
+    child_id=cv_tasks.start_cv_revision('parent-task', 7, 'Shorten the intro')
+
+    assert child_id=='child-task-id' and len(captured)==1
+    args,kwargs=captured[0]
+    assert args==(job.id, 7)
+    assert kwargs=={'profile':'profile text','cv_key':'de','letter_key':'anschreiben','create_letter':True,'create_cv':True,'provider':'anthropic','model':'opus','effort':'default','speed':'fast','source_cv':'saved-cv.tex','source_letter':'saved-letter.tex','revision_instructions':'Shorten the intro','correction_image':None}
+    cv_tasks._tasks.clear()
 
 
 def test_cv_generation_command_can_be_cancelled(monkeypatch):
