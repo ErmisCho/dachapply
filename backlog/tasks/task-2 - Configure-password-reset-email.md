@@ -1,11 +1,11 @@
 ---
 id: TASK-2
 title: Configure password reset email
-status: In Progress
+status: Done
 assignee:
   - '@agent'
 created_date: '2026-06-20 09:50'
-updated_date: '2026-06-20 13:41'
+updated_date: '2026-08-16 00:15'
 labels:
   - P0
   - auth
@@ -69,15 +69,35 @@ Alternative if the restriction must stay: switch delivery to Brevo's HTTP API
 than by source address. That is a code change and a new provider branch, so it is only worth doing
 if the allowlist is a hard requirement.
 
-STILL OPEN until a reset email is actually received on the deployed domain - the AC is end-to-end
-delivery, and the fix above has not yet been confirmed to produce a message.
+FIXED AND VERIFIED END-TO-END 2026-08-16. Brevo SMTP-key IP blocking was deactivated (API-key
+blocking deliberately left ON - only SMTP needed unblocking). No code changed; the repo was never
+the problem.
+
+Verified chain, each step observed rather than inferred:
+1. POST /api/auth/email-diagnostics/ -> 200 {"ok":true,"error":null}, so SMTP now authenticates.
+2. The test message arrived in the owner's inbox - Brevo accepting it only proves it left the app,
+   so actual receipt was confirmed separately.
+3. A real password reset was requested on the live site and its email arrived.
+4. The emailed link opened the reset form on the deployed domain and the new password signed the
+   user in, which is what exercises FRONTEND_URL and the token round trip.
+
+WHY ALLOWLISTING WAS REJECTED, recorded because it will be tempting again: Brevo's unauthorised list
+held two different Azure egress IPs from the same evening, 20.16.47.111 at 21:56 and 108.141.60.213
+at 23:51 - the container's outbound address changed between the owner's failed reset and the
+diagnostic test two hours later. Authorising either would already have been stale. A consumption-plan
+Container App has no stable egress IP, so there is nothing to allowlist; the two previously
+authorised Microsoft IPs dated Jun 20 are the same lesson already learned once.
+
+RESIDUAL RISK: DEFAULT_FROM_EMAIL is a gmail.com address rather than a verified domain sender. It
+works today. If deliverability degrades or mail starts landing in spam, moving the sender to a
+verified domain is the fix, not the SMTP settings.
 <!-- SECTION:NOTES:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 SMTP provider is configured through environment variables
 - [x] #2 Password reset request sends an email successfully
-- [ ] #3 Reset link works end-to-end on the deployed domain
+- [x] #3 Reset link works end-to-end on the deployed domain
 - [x] #4 Email errors are logged without exposing credentials
 <!-- AC:END -->
 
