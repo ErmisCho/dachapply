@@ -214,3 +214,5 @@
 {"timestamp":"2026-08-15T20:01:36.197Z","event":"orchestrator.agent.stopped","agent":""}
 {"timestamp":"2026-08-15T20:02:07.685Z","event":"orchestrator.agent.stopped","agent":""}
 {"timestamp":"2026-08-15T20:02:16.503Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:ui-developer"}
+{"timestamp":"2026-08-15T20:11:15.635Z","event":"orchestrator.session.stopped","session_id":"4a4a4f41-abeb-4e3e-b762-264e21aff9b8","wave":0,"branch":"feature/task-61-cv-generation-ux","commit":"d19d748795105402b1a5f383e859f1865f8ae43d","duration_ms":0}
+{"timestamp":"2026-08-15T20:14:20.251Z","event":"orchestrator.agent.stopped","agent":""}
