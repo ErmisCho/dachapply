@@ -123,3 +123,11 @@
 {"timestamp":"2026-08-14T18:09:48.608Z","event":"orchestrator.agent.stopped","agent":""}
 {"timestamp":"2026-08-14T18:13:08.329Z","event":"orchestrator.session.stopped","session_id":"4a4a4f41-abeb-4e3e-b762-264e21aff9b8","wave":0,"branch":"feature/task-61-cv-generation-ux","commit":"34f8715cfc2490c0c817322f6c28a015910d558e","duration_ms":0}
 {"timestamp":"2026-08-14T18:13:11.232Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-08-14T18:16:51.288Z","event":"orchestrator.session.stopped","session_id":"4a4a4f41-abeb-4e3e-b762-264e21aff9b8","wave":0,"branch":"feature/task-61-cv-generation-ux","commit":"f823ba07a246444dcf908bdfa9993224ea5ed0f9","duration_ms":0}
+{"timestamp":"2026-08-14T18:31:00.463Z","event":"orchestrator.session.stopped","session_id":"4a4a4f41-abeb-4e3e-b762-264e21aff9b8","wave":0,"branch":"feature/task-61-cv-generation-ux","commit":"f823ba07a246444dcf908bdfa9993224ea5ed0f9","duration_ms":0}
+{"event":"discovery_validator_violation","timestamp":"2026-08-14T18:34:04.322Z","agent":"unknown","session_id":"4a4a4f41-abeb-4e3e-b762-264e21aff9b8","claim_text":"**One thing worth flagging:** that cache initially broke an existing test — whichever test ran first warmed it, and a later test patching discovery silently asserted against the stale result. That's a"}
+{"timestamp":"2026-08-14T18:34:04.397Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-08-15T08:20:12.075Z","event":"orchestrator.session.stopped","session_id":"4a4a4f41-abeb-4e3e-b762-264e21aff9b8","wave":0,"branch":"feature/task-61-cv-generation-ux","commit":"5fb8571dcb1d34cbfe766a219eb8f9ab378ea1ba","duration_ms":0}
+{"event":"discovery_validator_violation","timestamp":"2026-08-15T08:23:16.854Z","agent":"unknown","session_id":"4a4a4f41-abeb-4e3e-b762-264e21aff9b8","claim_text":"**One thing worth flagging:** that cache initially broke an existing test — whichever test ran first warmed it, and a later test patching discovery silently asserted against the stale result. That's a"}
+{"timestamp":"2026-08-15T08:23:16.876Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-08-15T12:02:42.496Z","event":"orchestrator.session.stopped","session_id":"4a4a4f41-abeb-4e3e-b762-264e21aff9b8","wave":0,"branch":"feature/task-61-cv-generation-ux","commit":"5fb8571dcb1d34cbfe766a219eb8f9ab378ea1ba","duration_ms":0}

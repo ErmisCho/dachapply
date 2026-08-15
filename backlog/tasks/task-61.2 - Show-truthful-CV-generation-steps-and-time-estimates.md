@@ -1,11 +1,11 @@
 ---
 id: TASK-61.2
 title: Show truthful CV generation steps and time estimates
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-08-13 19:30'
-updated_date: '2026-08-14 15:30'
+updated_date: '2026-08-15 14:30'
 labels:
   - cv-generation
   - ux
@@ -29,7 +29,7 @@ Replace the opaque percentage-only CV/letter generation indicator with specific 
 - [x] #3 Skipped artifacts and cache hits adjust the total step count instead of leaving phantom steps
 - [x] #4 Remaining-time estimates account for operation type, provider, model, effort, speed, cache state, and elapsed phase time
 - [x] #5 The estimate does not reach zero or claim imminent completion while model work or compilation is still active
-- [ ] #6 Automated tests cover the event-to-progress mapping and a live benchmark records estimated versus actual duration
+- [x] #6 Automated tests cover the event-to-progress mapping and a live benchmark records estimated versus actual duration
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -44,5 +44,18 @@ Verified by running the pure-function subset (6 passed, 1.50s) against the sqlit
 
 AC6 PARTIAL (2026-08-14): the event-to-progress mapping half is now fully covered - test_stage_key_maps_every_reported_event_string_to_a_progress_stage pins every raw progress string cv_generator emits to its internal stage key, including the repair path, unknown strings and None, and asserts every step-bearing stage is reachable from a real event string. The recording half is now built but not yet exercised: _record_benchmark() appends one JSONL row per finished task to <CODEX_CV_WORKSPACE>/.dachapply-cache/cv-benchmarks.jsonl with route, provider, model, effort, speed, cache_hit, estimated_seconds (the ETA computed at task creation), actual_seconds, and per-phase stage_seconds. It writes only into a workspace directory that already exists and swallows every exception, so telemetry can never break a generation. Covered by test_finished_task_records_estimated_versus_actual_duration_and_phase_timings and test_benchmark_is_not_written_when_the_workspace_does_not_exist.
 
-REMAINING FOR AC6: one real generation against a live provider, then confirm cv-benchmarks.jsonl holds an estimated-vs-actual row. No code work is expected.
+AC6 DONE (2026-08-15). Eight live runs recorded to cv-benchmarks.jsonl, each carrying estimated_seconds, actual_seconds and per-phase stage_seconds.
+
+The benchmark immediately paid for itself by exposing a calibration error no code reading would have found: revision_factor was 0.55, on the assumption that the 97.6% smaller revision prompt meant a faster model call. Measured at identical settings, a revision's model call took 161.9s against generation's 102.8s - revisions are ~1.6x SLOWER, because the model still reads the source TeX and reasons about the edit. Every estimate was therefore ~2x optimistic, which is precisely the "consistently optimistic remaining-time estimate" this task was opened to fix, so AC4 was only nominally satisfied before this run.
+
+Recalibrated against the recorded data: revision_factor 0.55 -> 1.55, generation bases 78/65/52 -> 105/88/70, fast-speed divisor 1.5 -> 1.9. Replayed against all successful runs, predictions now land within 1.02-1.07x of actual - deliberately a touch conservative, since over-estimating is the safe direction for this task's purpose.
+
+    route       eff/spd         scope       actual    predicted
+    generation  medium/normal   cv+letter   102.8s      105.0s
+    revision    medium/normal   cv+letter   161.9s      162.8s
+    revision    low/fast        cv+letter    62.5s       64.2s
+    revision    low/fast        cv only      50.5s       53.8s
+    revision    low/normal      cv only      57.1s       61.4s
+
+Also confirmed live: step totals dropped 5 -> 4 when the letter was skipped (AC3), and the completed-step labels from the AUDIT CORRECTION above rendered correctly throughout.
 <!-- SECTION:NOTES:END -->
