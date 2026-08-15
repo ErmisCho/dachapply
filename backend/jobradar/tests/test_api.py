@@ -523,7 +523,7 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     monkeypatch.setattr('jobradar.services.cv_generator.shutil.which', lambda command: command)
     monkeypatch.setattr('jobradar.services.cv_generator.available_model_options', lambda: [
         {'provider':'openai','key':'gpt-5.5','label':'GPT-5.5','efforts':['low','medium','high','xhigh'],'default_effort':'medium','fast_tier':'priority'},
-        {'provider':'anthropic','key':'sonnet','label':'Claude Sonnet','efforts':['default'],'default_effort':'default','fast_tier':''},
+        {'provider':'anthropic','key':'sonnet','label':'Claude Sonnet','efforts':cv_generator.CLAUDE_EFFORTS,'default_effort':'medium','fast_tier':''},
         {'provider':'ollama','key':'qwen','label':'qwen','efforts':['default'],'default_effort':'default','fast_tier':''},
     ])
     commands=[]; prompts=[]; correction_dirs=[]; page_counts={'CV':2,'Letter':1}; compile_failures=[]; invalid_outputs=[]
@@ -555,6 +555,8 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
             result_path.write_text('{"cv_tex":"broken"}' if invalid_outputs and invalid_outputs.pop() else json.dumps(generated))
             return SimpleNamespace(returncode=0, stdout='ok', stderr='')
         if command[0]=='claude':
+            # The chosen effort must actually reach the CLI, not merely be offered in the UI.
+            assert command[command.index('--effort')+1] in cv_generator.CLAUDE_EFFORTS, command
             return SimpleNamespace(returncode=0, stdout=json.dumps({'structured_output':generated}), stderr='')
         output=__import__('pathlib').Path(kwargs['cwd'])
         assert command[0]=='pdflatex' and 'timeout' not in kwargs and kwargs['stdin'] is cv_generator.subprocess.DEVNULL
@@ -573,6 +575,9 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
         generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'turbo')
     with pytest.raises(RuntimeError, match='Current target TeX files'):
         generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', revision_instructions='change layout')
+    # Anthropic runs through the same pipeline; fake_run asserts --effort xhigh reaches the CLI.
+    generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'anthropic', 'sonnet', 'xhigh')
+    assert any(command[0]=='claude' and '--effort' in command and command[command.index('--effort')+1]=='xhigh' for command in commands)
     progress=[]
     archive,_,saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'fast', lambda percent,stage: progress.append((percent,stage)))
     names=zipfile.ZipFile(BytesIO(archive)).namelist()
@@ -592,7 +597,7 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     invalid_outputs.append(True)
     generate_cv_package(job, 'Factual profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high')
     assert sum('AUTOMATIC REPAIR ATTEMPT' in prompt for prompt in prompts)==repairs+2
-    generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'anthropic', 'sonnet', 'default', 'normal')
+    generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'anthropic', 'sonnet', 'medium', 'normal')
     generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'ollama', 'qwen', 'default', 'normal')
     cv_only_progress=[]
     cv_only,_,cv_only_saved=generate_cv_package(job, 'Factual profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high', 'normal', lambda percent,stage: cv_only_progress.append((percent,stage)))
@@ -1107,6 +1112,30 @@ def test_task_timing_estimate_varies_with_provider_and_model():
         == cv_tasks._task_timing('openai','gpt-5.5','medium','normal',True,True,False)[1]['compiling_cv']
 
 
+def test_anthropic_models_expose_real_effort_levels_and_pass_them_to_the_cli(monkeypatch, tmp_path, settings):
+    from jobradar.services import cv_generator
+
+    # `claude --help`: "--effort <level>  Effort level for the current session (low, medium, high,
+    # xhigh, max)". These were previously hardcoded to ['default'] and never passed to the CLI, so
+    # the UI showed a disabled control and every Claude run silently used the default effort.
+    monkeypatch.setattr(cv_generator.shutil,'which',lambda command: command if command in ('claude','ollama','lms') else None)
+    monkeypatch.setattr(cv_generator,'codex_model_options',lambda:[])
+    monkeypatch.setattr(cv_generator.subprocess,'run',lambda *a,**k:(_ for _ in ()).throw(OSError))
+    claude_models=[o for o in cv_generator._discover_model_options() if o['provider']=='anthropic']
+    assert claude_models, 'claude is on PATH so Anthropic models must be offered'
+    for option in claude_models:
+        assert option['efforts']==['low','medium','high','xhigh','max']
+        assert option['default_effort']=='medium'
+        # The CLI exposes no speed/tier flag, so offering "fast" here would be a lie.
+        assert option['fast_tier']==''
+
+    # Every level the model advertises must be accepted by the server-side guard.
+    for level in cv_generator.CLAUDE_EFFORTS:
+        assert cv_generator.validate_model_capability('anthropic','opus',level,'normal')
+    with pytest.raises(ValueError):
+        cv_generator.validate_model_capability('anthropic','opus','default','normal')
+
+
 def test_validate_model_capability_accepts_anthropic_normal_speed_and_rejects_its_fast_speed(monkeypatch):
     from jobradar.services import cv_generator
 
@@ -1211,15 +1240,22 @@ def test_cv_task_step_completed_never_exceeds_step_total_across_cache_collapse(j
 
 
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
-def test_cv_generation_preview_exposes_relative_not_absolute_template_paths(client, owner, job):
+def test_cv_generation_preview_exposes_absolute_template_paths(client, owner, job):
+    # The template path sits next to the generated-artifact paths in the UI and is meant to be
+    # copied into an editor or file manager, so it is absolute for the same reason they are.
+    from pathlib import Path
+
     owner.email='owner@example.test'; owner.save(update_fields=['email'])
     JobLead.objects.filter(pk=job.pk).update(original_source_text='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben und die Bewerbung.', raw_description='English role and requirements')
     r=client.get(f'/api/jobs/{job.id}/cv-generation/')
     assert r.status_code==200
     paths={cv['key']:cv['path'] for cv in r.data['cvs']}
-    assert paths=={'en':'CVs/English - AI Engineer (base)_v_1.3.tex','de':'CVs/German - AI Engineer (base)_v_1.3.tex'}
-    for path in paths.values():
-        assert not path.startswith('C:') and not path.startswith('/') and 'missing' not in path
+    names={cv['key']:cv['filename'] for cv in r.data['cvs']}
+    for key, expected in (('en','English - AI Engineer (base)'), ('de','German - AI Engineer (base)')):
+        assert Path(paths[key]).is_absolute(), paths[key]
+        assert paths[key].startswith(str(Path('C:/missing')))  # the workspace this test overrides to
+        assert expected in paths[key] and paths[key].endswith('.tex')
+        assert names[key]==Path(paths[key]).name  # filename stays the basename, not the full path
 
 
 def test_start_cv_revision_inherits_parent_config_without_reverifying_capability(job, monkeypatch):

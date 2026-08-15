@@ -117,6 +117,9 @@ TEMPLATES = {
 }
 
 
+CLAUDE_EFFORTS=['low','medium','high','xhigh','max']
+
+
 def _template_version(path):
     match=re.search(r'_v_(\d+(?:\.\d+)*)$', path.stem)
     return tuple(int(part) for part in match.group(1).split('.')) if match else ()
@@ -178,9 +181,12 @@ def _discover_model_options():
     options=codex_model_options()
     if shutil.which('claude') or shutil.which('claude.exe'):
         options += [
-            {'provider':'anthropic','key':'sonnet','label':'Claude Sonnet','efforts':['default'],'default_effort':'default','fast_tier':''},
-            {'provider':'anthropic','key':'opus','label':'Claude Opus','efforts':['default'],'default_effort':'default','fast_tier':''},
-            {'provider':'anthropic','key':'haiku','label':'Claude Haiku','efforts':['default'],'default_effort':'default','fast_tier':''},
+            # `claude --help` documents --effort as low|medium|high|xhigh|max, verified working under
+            # --print. fast_tier stays empty on purpose: the CLI exposes no speed/tier flag at all
+            # (fast mode is the interactive /fast toggle), so "Normal" is the only honest option here.
+            {'provider':'anthropic','key':'sonnet','label':'Claude Sonnet','efforts':CLAUDE_EFFORTS,'default_effort':'medium','fast_tier':''},
+            {'provider':'anthropic','key':'opus','label':'Claude Opus','efforts':CLAUDE_EFFORTS,'default_effort':'medium','fast_tier':''},
+            {'provider':'anthropic','key':'haiku','label':'Claude Haiku','efforts':CLAUDE_EFFORTS,'default_effort':'medium','fast_tier':''},
         ]
     ollama=shutil.which('ollama') or shutil.which('ollama.exe')
     if ollama:
@@ -284,8 +290,11 @@ def generation_preview(job):
         letters += [{'key': key, 'language': option_language, 'label': value[1], 'filename': Path(value[0]).name} for key, value in template['letters'].items()]
     cvs=[]
     for key, value in TEMPLATES.items():
-        path=latest_cv_template(key)
-        cvs.append({'key': key, 'language': key, 'label': value['cv'][1], 'filename': Path(path).name, 'path': path})
+        relative=latest_cv_template(key)
+        # Absolute, to match the generated-artifact paths: both are shown side by side in the UI and
+        # are meant to be copied and pasted straight into an editor or file manager.
+        path=str(workspace/relative) if workspace else relative
+        cvs.append({'key': key, 'language': key, 'label': value['cv'][1], 'filename': Path(relative).name, 'path': path})
     return {
         'language': language,
         'language_label': 'German' if language == 'de' else 'English',
@@ -683,6 +692,8 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
             result_path.unlink(missing_ok=True)
             if provider == 'anthropic':
                 command=[claude, '--print', '--model', model, '--tools', 'Read', '--permission-mode', 'dontAsk', '--no-session-persistence', '--output-format', 'json', '--json-schema', json.dumps(schema)]
+                if effort in CLAUDE_EFFORTS:
+                    command += ['--effort', effort]
                 result=_run_command(command, cancelled, cwd=output, input=model_prompt, capture_output=True, text=True, encoding='utf-8', check=False)
             else:
                 command=[codex, 'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check', '--sandbox', 'read-only', '--model', model]
