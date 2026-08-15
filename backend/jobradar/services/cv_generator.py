@@ -117,6 +117,27 @@ TEMPLATES = {
 }
 
 
+def _template_version(path):
+    match=re.search(r'_v_(\d+(?:\.\d+)*)$', path.stem)
+    return tuple(int(part) for part in match.group(1).split('.')) if match else ()
+
+
+def latest_cv_template(key):
+    # Base CVs are versioned as "<name>_v_<major>.<minor>.tex". Resolve the newest on disk so a new
+    # version is picked up by dropping the file in, instead of editing TEMPLATES. Compared as an int
+    # tuple, so _v_1.10 correctly beats _v_1.9.
+    default=TEMPLATES[key]['cv'][0]
+    if not settings.CODEX_CV_WORKSPACE:
+        return default
+    base=Path(default)
+    stem=re.sub(r'_v_[\d.]+$', '', base.stem)
+    directory=Path(settings.CODEX_CV_WORKSPACE)/base.parent
+    candidates=[path for path in directory.glob(f'{stem}_v_*.tex') if _template_version(path)]
+    if not candidates:
+        return default
+    return f'{base.parent.as_posix()}/{max(candidates, key=_template_version).name}'
+
+
 def codex_model_options():
     cache=Path(os.getenv('CODEX_HOME', Path.home()/'.codex'))/'models_cache.json'
     try:
@@ -139,7 +160,21 @@ def codex_model_options():
         return [dict(option, provider='openai') for option in FALLBACK_MODELS]
 
 
+_model_options_cache={'at':0.0,'options':None}
+
+
 def available_model_options():
+    # ponytail: 60s TTL. Every call shells out to `ollama list` and `lms ls` (~0.45s measured), and
+    # the preview endpoint runs on each popup open, but installed models rarely change mid-session.
+    now=time.monotonic()
+    if _model_options_cache['options'] is not None and now-_model_options_cache['at'] < 60:
+        return _model_options_cache['options']
+    options=_discover_model_options()
+    _model_options_cache.update(at=now, options=options)
+    return options
+
+
+def _discover_model_options():
     options=codex_model_options()
     if shutil.which('claude') or shutil.which('claude.exe'):
         options += [
@@ -247,12 +282,16 @@ def generation_preview(job):
     letters=[]
     for option_language, template in TEMPLATES.items():
         letters += [{'key': key, 'language': option_language, 'label': value[1], 'filename': Path(value[0]).name} for key, value in template['letters'].items()]
+    cvs=[]
+    for key, value in TEMPLATES.items():
+        path=latest_cv_template(key)
+        cvs.append({'key': key, 'language': key, 'label': value['cv'][1], 'filename': Path(path).name, 'path': path})
     return {
         'language': language,
         'language_label': 'German' if language == 'de' else 'English',
         'selected_cv': language,
         'selected_letter': next(iter(TEMPLATES[language]['letters'])),
-        'cvs': [{'key': key, 'language': key, 'label': value['cv'][1], 'filename': Path(value['cv'][0]).name, 'path': value['cv'][0]} for key, value in TEMPLATES.items()],
+        'cvs': cvs,
         'letters': letters,
         'models': available_model_options(),
         'configured': bool(settings.CODEX_CV_ENABLED and workspace and workspace.is_dir()),
@@ -581,7 +620,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
     if not workspace or not workspace.is_dir():
         raise RuntimeError('CV workspace is not configured on this server.')
 
-    cv_source=(Path(source_cv) if source_cv else workspace / cv_template['cv'][0]) if create_cv else None
+    cv_source=(Path(source_cv) if source_cv else workspace / latest_cv_template(cv_key)) if create_cv else None
     letter_source=Path(source_letter) if source_letter else (workspace / letter_template[0] if create_letter else None)
     picture_source=workspace / 'CVs/Picture.jpg'
     required=([cv_source,picture_source] if create_cv else []) + ([letter_source] if create_letter else [])

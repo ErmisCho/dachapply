@@ -874,6 +874,41 @@ def test_cv_task_step_progress_reflects_route_completion_and_cache_reduction():
     cv_tasks._tasks.clear()
 
 
+def test_latest_cv_template_picks_the_newest_version_on_disk(tmp_path, settings):
+    from jobradar.services import cv_generator
+
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    cvs=tmp_path/'CVs'; cvs.mkdir(parents=True)
+    for name in ('English - AI Engineer (base)_v_1.2.tex','English - AI Engineer (base)_v_1.3.tex','English - AI Engineer (base)_v_1.4.tex'):
+        (cvs/name).write_text('cv', encoding='utf-8')
+    assert cv_generator.latest_cv_template('en')=='CVs/English - AI Engineer (base)_v_1.4.tex'
+
+    # Numeric compare, not lexical: _v_1.10 must beat _v_1.9.
+    (cvs/'English - AI Engineer (base)_v_1.9.tex').write_text('cv', encoding='utf-8')
+    (cvs/'English - AI Engineer (base)_v_1.10.tex').write_text('cv', encoding='utf-8')
+    assert cv_generator.latest_cv_template('en')=='CVs/English - AI Engineer (base)_v_1.10.tex'
+
+    # A different role's template must not be mistaken for a newer base CV.
+    (cvs/'English - Backend Engineer_v_9.9.tex').write_text('cv', encoding='utf-8')
+    assert cv_generator.latest_cv_template('en')=='CVs/English - AI Engineer (base)_v_1.10.tex'
+
+    # Nothing on disk: fall back to the declared template rather than crashing.
+    settings.CODEX_CV_WORKSPACE=str(tmp_path/'empty')
+    assert cv_generator.latest_cv_template('en')==cv_generator.TEMPLATES['en']['cv'][0]
+    assert cv_generator.latest_cv_template('de')==cv_generator.TEMPLATES['de']['cv'][0]
+
+
+def test_available_model_options_are_cached_between_calls(monkeypatch):
+    from jobradar.services import cv_generator
+
+    calls=[]
+    monkeypatch.setattr(cv_generator,'_discover_model_options',lambda:(calls.append(1) or [{'provider':'openai','key':'gpt-5.5','efforts':['medium'],'default_effort':'medium','fast_tier':''}]))
+    first=cv_generator.available_model_options()
+    second=cv_generator.available_model_options()
+    # The popup hits this on every open; shelling out to ollama/lms each time is the cost being avoided.
+    assert first==second and len(calls)==1
+
+
 def _reveal_task(owner, artifacts):
     from jobradar.services import cv_tasks
     owner.email='owner@example.test'; owner.save()
