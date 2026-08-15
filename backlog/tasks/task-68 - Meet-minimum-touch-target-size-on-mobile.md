@@ -1,8 +1,9 @@
 ---
 id: TASK-68
 title: Meet minimum touch target size on mobile
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-08-15 21:05'
 labels:
   - frontend
@@ -29,11 +30,36 @@ Surfaced 2026-08-15 during the TASK-9 verification pass. Not fixed there because
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Interactive controls in the mobile job card and the public submit form present at least a 44px tap target
-- [ ] #2 Desktop density is preserved - the fix is scoped to touch or narrow viewports rather than enlarging every button everywhere
-- [ ] #3 The change is verified at 360px and 430px, the band index.css already special-cases
+- [x] #1 Interactive controls in the mobile job card and the public submit form present at least a 44px tap target
+- [x] #2 Desktop density is preserved - the fix is scoped to touch or narrow viewports rather than enlarging every button everywhere
+- [x] #3 The change is verified at 360px and 430px, the band index.css already special-cases
 <!-- AC:END -->
 
+## Outcome (2026-08-15)
+
+Implemented in index.css inside the existing `@media (max-width: 1023px)` block rather than a new
+`pointer: coarse` query, keeping every mobile override in one place: a `min-height:2.75rem` floor on
+button, .btn, .btn-primary, .btn-danger, .btn-muted, input, select, textarea and summary, plus
+`display:inline-flex` centring for bare buttons so the extra height does not push text off-centre,
+and an explicit override for .mobile-badge-button which carried a pre-existing `min-height:0`.
+A pre-existing 2.4rem rule on .mobile-job-fields buttons was raised to 2.75rem for consistency.
+
+MEASURED in a real browser at true viewport widths, using a same-origin iframe because window
+resizing did not change the page viewport on this display:
+
+    width    media query   buttons      .btn-*       inputs/selects   controls under 44px
+    360px    matches       44.0         44.0         44.0             0
+    430px    matches       44.0         44.0         44.0             0
+    1024px   no match      28.0-36.0    28.0-36.0    36.0             12
+    1280px   no match      28.0-36.0    28.0-36.0    36.0             12
+
+AC1 met: nothing below 44px at either phone width. AC3 met by measurement rather than assertion.
+AC2 met: 1024px and 1280px are byte-identical to each other and unchanged from before the edit,
+because the whole rule set sits behind a max-width boundary - desktop density is untouched.
+
+.nav-link was deliberately NOT enlarged. It is visible from 640px up, so bumping it would have
+broken TASK-67 AC3. The mobile destinations added under TASK-67 use .btn-muted instead, which the
+floor above already covers - measured at 44px on mobile against 21.6px for the desktop nav row.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->

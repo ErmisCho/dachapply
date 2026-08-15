@@ -1112,6 +1112,48 @@ def test_task_timing_estimate_varies_with_provider_and_model():
         == cv_tasks._task_timing('openai','gpt-5.5','medium','normal',True,True,False)[1]['compiling_cv']
 
 
+def test_email_diagnostics_is_staff_only_and_never_returns_credentials(db, owner, settings):
+    from rest_framework.test import APIClient
+
+    settings.EMAIL_HOST='smtp.example.test'; settings.EMAIL_HOST_USER='mailer'; settings.EMAIL_HOST_PASSWORD='super-secret-key'
+    settings.DEFAULT_FROM_EMAIL='DACHApply <no-reply@example.test>'
+
+    # Password reset answers the same generic string either way, so the operator needs another way
+    # to tell a broken SMTP config from a missing account. That view must not leak to non-staff.
+    intruder=User.objects.create_user('nosy', email='nosy@example.test', password='pw')
+    stranger=APIClient(); stranger.force_authenticate(intruder)
+    assert stranger.get('/api/auth/email-diagnostics/').status_code==404
+
+    owner.is_staff=True; owner.email='owner@example.test'; owner.save()
+    staff=APIClient(); staff.force_authenticate(owner)
+    r=staff.get('/api/auth/email-diagnostics/')
+    assert r.status_code==200
+    assert r.data['host']=='smtp.example.test' and r.data['host_user_set'] is True and r.data['host_password_set'] is True
+    # Presence is the diagnostic; the values must never travel.
+    body=json.dumps(r.data)
+    assert 'super-secret-key' not in body and 'mailer' not in body
+
+
+def test_email_diagnostics_surfaces_the_real_send_failure(db, owner, settings, monkeypatch):
+    from rest_framework.test import APIClient
+    from jobradar import views
+
+    owner.is_staff=True; owner.email='owner@example.test'; owner.save()
+    staff=APIClient(); staff.force_authenticate(owner)
+
+    def explode(*a, **k):
+        raise OSError('SMTP AUTH failed: 535 authentication rejected')
+    monkeypatch.setattr(views, 'send_mail', explode)
+    r=staff.post('/api/auth/email-diagnostics/')
+    # 502 with the actual reason, instead of the generic string the public reset endpoint must return.
+    assert r.status_code==502 and r.data['ok'] is False
+    assert '535 authentication rejected' in r.data['error']
+
+    monkeypatch.setattr(views, 'send_mail', lambda *a, **k: 1)
+    ok=staff.post('/api/auth/email-diagnostics/')
+    assert ok.status_code==200 and ok.data['ok'] is True and ok.data['sent_to']=='owner@example.test'
+
+
 def test_me_exposes_a_feedback_destination_without_leaking_job_data(client, owner, settings):
     r=client.get('/api/auth/me/')
     assert r.status_code==200

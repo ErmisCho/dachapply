@@ -4,3 +4,4 @@
 {"timestamp":"2026-08-13T20:02:42.560Z","event":"selected","skill":"session-orchestrator:wave-executor","session_id":"cff971ef-c2cb-4f98-8eae-0356dc03b912","schema_version":1,"phase":null}
 {"timestamp":"2026-08-13T21:44:43.362Z","event":"selected","skill":"asian-dad-eval","session_id":"cff971ef-c2cb-4f98-8eae-0356dc03b912","schema_version":1,"phase":null}
 {"timestamp":"2026-08-14T12:00:03.452Z","event":"selected","skill":"asian-dad-eval","session_id":"4a4a4f41-abeb-4e3e-b762-264e21aff9b8","schema_version":1,"phase":null}
+{"timestamp":"2026-08-15T20:00:06.994Z","event":"selected","skill":"claude-in-chrome","session_id":"4a4a4f41-abeb-4e3e-b762-264e21aff9b8","schema_version":1,"phase":null}

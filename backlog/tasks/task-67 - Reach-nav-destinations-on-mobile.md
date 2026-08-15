@@ -1,8 +1,9 @@
 ---
 id: TASK-67
 title: Reach nav destinations on mobile
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-08-15 21:05'
 labels:
   - frontend
@@ -25,11 +26,36 @@ Surfaced 2026-08-15 while verifying TASK-9 and implementing TASK-8. TASK-8's fee
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every destination in the desktop nav row is reachable below 640px without relying on a page-specific CTA
-- [ ] #2 The mobile affordance is keyboard reachable and closes on route change, matching the existing profile dropdown behaviour
-- [ ] #3 The desktop layout at 640px and above is unchanged
+- [x] #1 Every destination in the desktop nav row is reachable below 640px without relying on a page-specific CTA
+- [x] #2 The mobile affordance is keyboard reachable and closes on route change, matching the existing profile dropdown behaviour
+- [x] #3 The desktop layout at 640px and above is unchanged
 <!-- AC:END -->
 
+## Outcome (2026-08-15)
+
+Extended the existing profile dropdown rather than building a hamburger. The dropdown already
+renders at every width, already closes on route change through its existing useEffect, and already
+uses .btn-muted, so a hamburger would have meant new state, a new component and new close/keyboard
+handling for no additional benefit. The four links (Submit for friend, Data, Bookmarklet, Profile)
+sit in a `sm:hidden` wrapper so the dropdown is unchanged from 640px up.
+
+MEASURED in a real browser via a same-origin iframe at true viewport widths:
+
+    at 360px   destinations reachable BEFORE opening the menu: none - confirms the nav row is hidden
+               destinations reachable AFTER opening:  /public-submit /export /bookmarklet
+                                                      /settings/profile
+               each link 44.0px tall, all keyboard focusable (tabIndex >= 0)
+
+    at 1280px  all four already reachable in the nav row without opening anything, at 21.6px,
+               which is .nav-link height - the dropdown copies are absent, so `sm:hidden` holds
+               and the desktop layout is untouched
+
+AC1 met, AC2 met for keyboard reachability by measurement; the close-on-route-change half rides on
+the pre-existing useEffect that already governs Account settings and Send feedback, plus an explicit
+onClick per link, matching that established pattern. AC3 met.
+
+Choosing .btn-muted over .nav-link for these links is what let TASK-68 leave .nav-link alone: the
+nav row is visible from 640px up, so enlarging .nav-link would have violated AC3 here.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->

@@ -131,6 +131,44 @@ def change_password(request):
     login(request, user)
     return Response({'detail':'Password updated.'})
 
+@api_view(['GET','POST'])
+def email_diagnostics(request):
+    """Staff-only view of the mail configuration, and a self-addressed test send.
+
+    Password reset answers the same generic string whether or not delivery worked, to avoid
+    account enumeration. That is right for the public endpoint but leaves the operator unable to
+    tell a broken SMTP config from a missing account, and the server logs are only reachable with
+    platform access. This reports the configuration without ever returning a secret, and POST
+    surfaces the real exception instead of swallowing it.
+    """
+    if not request.user.is_staff:
+        return Response({'detail':'Not found.'}, status=404)
+    config={
+        'backend':settings.EMAIL_BACKEND,
+        'host':settings.EMAIL_HOST,
+        'port':settings.EMAIL_PORT,
+        'use_tls':settings.EMAIL_USE_TLS,
+        'use_ssl':settings.EMAIL_USE_SSL,
+        'default_from_email':settings.DEFAULT_FROM_EMAIL,
+        'frontend_url':settings.FRONTEND_URL,
+        # Booleans only: the presence of credentials is the diagnostic, the values are never sent.
+        'host_user_set':bool(settings.EMAIL_HOST_USER),
+        'host_password_set':bool(settings.EMAIL_HOST_PASSWORD),
+        'console_backend':settings.EMAIL_BACKEND.endswith('console.EmailBackend'),
+    }
+    if request.method=='GET':
+        return Response(config)
+    if not request.user.email:
+        return Response({'detail':'Your account has no email address to send to.'}, status=400)
+    try:
+        sent=send_mail('DACHApply email test', 'If you received this, password reset email delivery works.',
+                       settings.DEFAULT_FROM_EMAIL, [request.user.email], fail_silently=False)
+    except Exception as exc:
+        # Safe to surface: this route is staff-only, so there is nothing to enumerate.
+        return Response({'ok':False,'error':f'{type(exc).__name__}: {exc}','config':config}, status=502)
+    return Response({'ok':bool(sent),'sent_to':request.user.email,'config':config})
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([PasswordResetIPThrottle, PasswordResetEmailThrottle])

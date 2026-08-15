@@ -283,6 +283,13 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
   input,select,textarea{min-width:0!important}
 }
 
+/* Minimum 44px touch target for interactive controls below 1024px; desktop (>=1024px) density unchanged. */
+@media (max-width: 1023px){
+  button,.btn,.btn-primary,.btn-danger,.btn-muted,input,select,textarea,summary{min-height:2.75rem}
+  button{display:inline-flex;align-items:center;justify-content:center}
+  .mobile-badge-button{min-height:2.75rem!important}
+}
+
 
 /* Compact mobile job cards */
 @media (max-width: 1023px){
@@ -317,7 +324,7 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
   .mobile-job-fields>div,.mobile-job-fields>label{padding:.7rem .8rem!important;border-radius:1rem!important}
   .mobile-job-fields b{font-size:.86rem!important;line-height:1.08!important;margin-bottom:.35rem!important}
   .mobile-job-fields input,.mobile-job-fields select{height:2.55rem!important;font-size:1.08rem!important;padding:.35rem .72rem!important}
-  .mobile-job-fields .btn-muted,.mobile-job-fields .btn,.mobile-job-fields .btn-primary{min-height:2.4rem!important;font-size:.96rem!important;padding:.4rem .8rem!important}
+  .mobile-job-fields .btn-muted,.mobile-job-fields .btn,.mobile-job-fields .btn-primary{min-height:2.75rem!important;font-size:.96rem!important;padding:.4rem .8rem!important}
 }
 
 @media (max-width: 430px){
