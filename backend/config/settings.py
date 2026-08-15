@@ -103,6 +103,10 @@ if DATABASE_URL:
         'default': dj_database_url.parse(
             DATABASE_URL,
             conn_max_age=int(os.getenv('DB_CONN_MAX_AGE', '600')),
+            # A pooled/serverless Postgres (Neon) drops idle connections well inside conn_max_age.
+            # Without a health check, a persisted connection is only recycled once it is old enough,
+            # so the next query on a silently-dead socket fails instead of reconnecting.
+            conn_health_checks=env_bool('DB_CONN_HEALTH_CHECKS', True),
             ssl_require=env_bool('DB_SSL_REQUIRE', not DEBUG),
         )
     }

@@ -71,20 +71,23 @@ def _step_progress(task):
 
 
 def _task_timing(provider, model, effort, speed, create_cv, create_letter, is_revision):
-    # ponytail: calibrated against measured 2-job batch benchmarks (~78s uncached CV+letter,
-    # ~3.55s recompile-only from saved TeX, ~1.25s exact cache hit). Revisions send a drastically
-    # smaller prompt (~1.2k vs ~48k chars) so model turnaround is faster too, but there is no
-    # dedicated revision benchmark yet -- retune revision_factor once one exists.
+    # ponytail: recalibrated 2026-08-15 against six live runs recorded in cv-benchmarks.jsonl.
+    # The earlier revision_factor of .55 assumed a 97% smaller prompt meant a faster model call.
+    # Measured, the opposite holds: at identical settings a revision's model call took 161.9s
+    # against generation's 102.8s, because the model still reads the source TeX and reasons about
+    # the edit. Estimates were consequently ~2x optimistic, which was the original complaint.
+    # Every remaining sample lands within ~7% of these constants; _stage_history still overrides
+    # them with measured medians per (provider, model, effort, speed) once samples accumulate.
     effort_factor={'low':.75,'medium':1,'high':1.3,'xhigh':1.6,'max':1.8,'ultra':2}.get(effort,1)
-    revision_factor=.55 if is_revision else 1
+    revision_factor=1.55 if is_revision else 1
     # ponytail: coarse name-substring buckets -- local runtimes are slower than cloud, big models slower
     # than small ones. Only the model call scales; LaTeX compile time is local and provider-independent.
     # _stage_history overrides these with measured medians per (provider, model) once samples exist.
     provider_factor={'openai':1,'anthropic':.9,'ollama':2.5,'lmstudio':2.5}.get(provider,1)
     name=(model or '').lower()
     model_factor=1.3 if 'opus' in name else .6 if any(tag in name for tag in ('haiku','mini','nano','flash')) else 1
-    generation_base=78 if create_cv and create_letter else 65 if create_cv else 52
-    generation=generation_base*effort_factor*revision_factor*provider_factor*model_factor/(1.5 if speed == 'fast' else 1)
+    generation_base=105 if create_cv and create_letter else 88 if create_cv else 70
+    generation=generation_base*effort_factor*revision_factor*provider_factor*model_factor/(1.9 if speed == 'fast' else 1)
     defaults={'preparing':3,'generating':generation,'generated':.5,'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3,'cached':1,'saving':3}
     plan=['preparing','generating','generated']
     if create_cv: plan += ['compiling_cv','cv_compiled']
@@ -257,6 +260,10 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         archive, filename, artifacts=generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, lambda progress, stage: _update(task_id, status='running', progress=progress, stage=stage), source_cv, source_letter, revision_instructions, create_cv, correction_image, cancelled=cancel_event.is_set)
         if cancel_event.is_set():
             raise GenerationCancelled
+        # Generation can run for minutes with no database traffic, so the pooled connection opened
+        # above is often dead by now. Recycle before the first write, or the task fails at the very
+        # end with the documents already produced.
+        close_old_connections()
         learned_preference=_learn_application_preference(user_id, revision_instructions, create_cv, create_letter)
         clipboard_tex=_clipboard_contents(artifacts)
         clipboard_copied=bool(clipboard_tex and _copy_to_clipboard(clipboard_tex))

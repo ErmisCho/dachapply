@@ -874,6 +874,31 @@ def test_cv_task_step_progress_reflects_route_completion_and_cache_reduction():
     cv_tasks._tasks.clear()
 
 
+def test_long_generation_recycles_the_db_connection_before_learning_a_preference(db, job, owner, monkeypatch):
+    from threading import Event
+    from jobradar.services import cv_tasks
+
+    # Regression: a revision that ran ~280s failed at the very end with "server closed the
+    # connection unexpectedly" -- the pooled connection had gone stale during the model call, and
+    # _learn_application_preference was the first query after it. Generation never hit this because
+    # it passes empty instructions and returns before touching the database.
+    order=[]
+    monkeypatch.setattr(cv_tasks,'close_old_connections',lambda:order.append('recycle'))
+    monkeypatch.setattr(cv_tasks,'generate_cv_package',lambda *a,**k:(order.append('generate'),(b'zip','a.zip',{}))[1])
+    monkeypatch.setattr(cv_tasks,'_learn_application_preference',lambda *a,**k:(order.append('db-write'),'')[1])
+    monkeypatch.setattr(cv_tasks,'_clipboard_contents',lambda artifacts:'')
+    monkeypatch.setattr(cv_tasks,'_copy_to_clipboard',lambda text:False)
+
+    # Called directly rather than via start_cv_task: the worker thread would use its own connection
+    # and could not see this test's uncommitted transaction.
+    cv_tasks._run('t1', job.id, owner.id, 'ctx', 'en', 'motivation_letter', True,
+                  'openai','gpt-5.5','medium','normal',
+                  revision_instructions='tweak the summary', cancel_event=Event())
+
+    assert 'db-write' in order, order
+    assert order.index('recycle', order.index('generate')) < order.index('db-write'), order
+
+
 def test_latest_cv_template_picks_the_newest_version_on_disk(tmp_path, settings):
     from jobradar.services import cv_generator
 
