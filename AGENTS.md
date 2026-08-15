@@ -30,7 +30,7 @@ persistence: true
 enforcement: warn
 waves: 5
 agents-per-wave: 6
-test-command: cd backend && python -m pytest -q
+test-command: cd backend && uv run pytest -q
 typecheck-command: cd frontend && npm run build
 lint-command: skip
 recent-commits: 20

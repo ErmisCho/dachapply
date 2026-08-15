@@ -47,17 +47,16 @@ React, TypeScript, React Router, Tailwind CSS, fetch-based API client with sessi
 
 From the project root:
 
-```bash
-python -m venv .venv
-# Windows PowerShell: .venv\\Scripts\\Activate.ps1
-# Windows cmd: .venv\\Scripts\\activate.bat
-# macOS/Linux/Git Bash: source .venv/bin/activate
+Python dependencies are managed with [uv](https://docs.astral.sh/uv/). `uv run` creates and
+updates `.venv` from `uv.lock` on demand, so there is no venv to create or activate by hand — and
+if `.venv` is ever lost, the next `uv run` rebuilds it in seconds.
 
-pip install -r requirements.txt
+```bash
+uv sync
 cd frontend
 npm install
 cd ../backend
-python manage.py migrate
+uv run manage.py migrate
 python manage.py createsuperuser
 python manage.py seed_demo
 python manage.py runserver 127.0.0.1:8000
@@ -128,10 +127,12 @@ Creates one active invite code (`FRIEND-DEMO`) plus the public demo user (`demo@
 Backend tests:
 
 ```bash
-pip install -r requirements.txt
 cd backend
-python -m pytest -q
+uv run pytest -q
 ```
+
+Tests run against an in-memory SQLite database via `config/settings_test.py`; they never touch the
+production Neon instance or the real CV workspace.
 
 Frontend production build check:
 
@@ -285,6 +286,15 @@ Startup command:
 cd backend && gunicorn config.wsgi --bind=0.0.0.0:$PORT
 ```
 `gunicorn` is included in `requirements.txt` for this startup command.
+
+`requirements.txt` is generated from `uv.lock`, not hand-edited — it exists for this legacy App
+Service path, whose build step installs with pip. The container image (the primary deploy) installs
+from `uv.lock` directly. After changing dependencies in `pyproject.toml`, regenerate it:
+
+```bash
+uv lock
+uv export --no-dev --no-hashes --no-emit-project --format requirements-txt -o requirements.txt
+```
 
 Minimum Azure environment variables:
 - `SECRET_KEY`

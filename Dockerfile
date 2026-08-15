@@ -9,16 +9,24 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM python:3.13-slim AS runtime
+# uv is pinned rather than :latest so an image rebuild cannot pick up a different resolver.
+COPY --from=ghcr.io/astral-sh/uv:0.11.28 /uv /bin/uv
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8000 \
-    WEB_CONCURRENCY=2
+    WEB_CONCURRENCY=2 \
+    # Install into the image's system prefix instead of a .venv, so start-container.sh
+    # can keep calling bare `python` and `gunicorn` with no activation step.
+    UV_PROJECT_ENVIRONMENT=/usr/local \
+    UV_LINK_MODE=copy
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN python -m pip install --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+# --locked fails the build if uv.lock is out of date with respect to pyproject.toml, so the
+# image can never be built from dependencies nobody resolved. --no-dev omits pytest.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev --no-cache
 
 COPY backend/ ./backend/
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
