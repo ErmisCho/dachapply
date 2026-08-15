@@ -1,9 +1,11 @@
 ---
 id: TASK-65
 title: Migrate Docker and Azure CI to uv and retire requirements.txt
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-08-14 17:45'
+updated_date: '2026-08-15 17:40'
 labels:
   - infrastructure
   - build
@@ -29,8 +31,8 @@ Surfaced on 2026-08-14 while restoring a destroyed .venv. The immediate loss was
 - [x] #2 The Azure deploy workflow installs from the same lockfile, so CI and the image resolve identical versions
 - [x] #3 A build fails loudly if uv.lock is out of date with respect to pyproject.toml, rather than silently resolving something newer
 - [x] #4 Dev-only dependencies (pytest, pytest-django) are excluded from the production image
-- [ ] #5 requirements.txt is deleted, and no file in the repo still references it
-- [ ] #6 A container build and a full deploy-workflow run are both verified green before requirements.txt is removed
+- [x] #5 requirements.txt is deleted, and no file in the repo still references it
+- [x] #6 A container build and a full deploy-workflow run are both verified green before requirements.txt is removed
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -56,7 +58,17 @@ Interim measure so the two files cannot drift while both exist: requirements.txt
     uv export --no-dev --no-hashes --no-emit-project --format requirements-txt -o requirements.txt
 and now contains 14 fully pinned runtime packages with dev excluded, matching uv.lock exactly. This removes the actual hazard behind this task - two hand-edited declarations diverging - without touching the deploy path. README and pyproject.toml both record that it is generated and must be regenerated after any dependency change.
 
-TO FINISH: merge to main, let deploy-container-apps.yml build and deploy, confirm the app is green, then delete requirements.txt and re-run the legacy App Service deploy if that path is still wanted. If the legacy path is no longer used, deleting deploy-azure.yml along with requirements.txt is the simpler close.
+AC5 AND AC6 DONE (2026-08-15), in that order, because AC6 gates AC5.
+
+AC6: pushed to main as a fast-forward (f5ea2c5..cc8955b, 12 commits). deploy-container-apps.yml run 31898305546 completed green in 2m45s - build, GHCR push, Azure Container Apps update, and its own "Verify public app" step. The build log shows `uv sync --locked --no-dev --no-cache` installing 13 packages in 1.22s. Independently confirmed afterwards: https://dachapply.livelysea-3461ad21.westeurope.azurecontainerapps.io/api/health/ returns {"status":"ok","database":"ok"} and the root returns 200. Production now runs on uv.
+
+13 packages in the image against 14 in the old export is correct, not a shortfall: tzdata is marked Windows-only in uv.lock and is properly skipped on Linux.
+
+Rollback target recorded before pushing, in case it had been needed: ghcr.io/ermischo/dachapply:f5ea2c55c807e11cf4b86800daa250951cb74ac7, the image deployed by the previous successful run on 2026-08-04.
+
+AC5: requirements.txt deleted, and deploy-azure.yml with it. The Oryx concern that kept requirements.txt alive applies only to the App Service path, and that path is retired - last run 2026-06-05, superseded by Container Apps, and no App Service resource is visible in the subscription. Keeping a workflow whose dependency file no longer exists would leave a deploy path that fails the moment anyone triggers it. Both files remain in git history, and README documents the uv export command needed to revive them.
+
+Remaining references to requirements.txt are only in this task file and the README paragraph explaining the retirement, which is intentional.
 
 Docs updated to uv: README local setup (`uv sync`, `uv run manage.py migrate`), README test section (`uv run pytest -q`), and AGENTS.md test-command. The documented test command was re-run after the change: 154 passed.
 <!-- SECTION:NOTES:END -->

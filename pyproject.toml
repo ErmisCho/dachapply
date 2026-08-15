@@ -4,10 +4,9 @@ version = "0.1.0"
 description = "Private job-application command center: Django REST backend + React/TypeScript frontend."
 requires-python = ">=3.13"
 
-# uv.lock is the single source of truth: local dev, the container image and CI all install from it.
-# requirements.txt is now a generated export (`uv export --no-dev --no-hashes --no-emit-project
-# --format requirements-txt -o requirements.txt`), kept only because the legacy App Service zip
-# deploy may still auto-detect it. Regenerate it after changing anything here -- see TASK-65.
+# uv.lock is the single source of truth: local dev, the container image and the deploy workflow all
+# install from it. There is deliberately no requirements.txt -- two hand-maintained dependency
+# declarations drifting apart is what cost a working environment on 2026-08-14. See TASK-65.
 dependencies = [
     "Django>=5.0,<6.0",
     "djangorestframework>=3.15",

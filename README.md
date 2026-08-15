@@ -266,35 +266,19 @@ Azure Container Apps should pull `ghcr.io/ermischo/dachapply:latest` from GHCR u
 
 Delete the old Azure Container Registry only after Azure Container Apps has successfully pulled and is running the GHCR image.
 
-## Azure App Service deployment
+## Azure App Service deployment (retired)
 
-Use PostgreSQL for public deployment. SQLite can still be used for local testing or throwaway demos only.
-
-Suggested build steps:
-```bash
-cd frontend
-npm install
-npm run build
-cd ../backend
-pip install -r ../requirements.txt
-python manage.py migrate
-python manage.py collectstatic --noinput
-```
-
-Startup command:
-```bash
-cd backend && gunicorn config.wsgi --bind=0.0.0.0:$PORT
-```
-`gunicorn` is included in `requirements.txt` for this startup command.
-
-`requirements.txt` is generated from `uv.lock`, not hand-edited — it exists for this legacy App
-Service path, whose build step installs with pip. The container image (the primary deploy) installs
-from `uv.lock` directly. After changing dependencies in `pyproject.toml`, regenerate it:
+The App Service path and its `deploy-azure.yml` workflow were retired on 2026-08-15, along with
+`requirements.txt`, which existed only to feed them. Its last run was 2026-06-05; Azure Container
+Apps has been the deploy path since. Both files remain in git history if the path is ever revived —
+note that reviving it needs a pip-installable dependency list, since App Service's Oryx builder
+looks for `requirements.txt` and this repo now resolves solely from `uv.lock`:
 
 ```bash
-uv lock
 uv export --no-dev --no-hashes --no-emit-project --format requirements-txt -o requirements.txt
 ```
+
+Use PostgreSQL for public deployment. SQLite can still be used for local testing or throwaway demos only.
 
 Minimum Azure environment variables:
 - `SECRET_KEY`
