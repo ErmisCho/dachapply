@@ -1,9 +1,10 @@
-name: Build and push Docker image to GHCR
+name: Test, build and deploy
 
 on:
   push:
     branches:
       - main
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -15,8 +16,51 @@ env:
   CONTAINER_APP_NAME: dachapply
 
 jobs:
+  # Gate. Nothing reaches production unless this passes -- previously the image was built and
+  # deployed without running a single test, and the only check was a post-deploy curl, which
+  # catches "the container will not start" but not "revisions are broken".
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: '0.11.28'
+
+      # settings_test.py pins sqlite :memory: and a temp CV workspace, so this needs no secrets
+      # and cannot reach the production database.
+      - name: Backend tests
+        working-directory: backend
+        run: uv run pytest -q
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend typecheck
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Frontend tests
+        working-directory: frontend
+        run: npm test
+
   build-and-push:
     runs-on: ubuntu-latest
+    needs: test
+    # Pull requests get the test gate but must never deploy.
+    if: github.event_name != 'pull_request'
 
     steps:
       - name: Checkout repository
