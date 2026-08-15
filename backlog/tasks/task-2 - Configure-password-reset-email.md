@@ -39,11 +39,38 @@ silently swallow reset emails to stdout, and missing SMTP settings fail loudly r
 time (settings.py:206). FRONTEND_URL is required in production (settings.py:145) and is what builds
 the link in the reset message.
 
-REMAINS OPEN, and cannot be closed by an agent: the AC is that the reset link works end-to-end on
-the deployed domain. That needs real SMTP credentials set on the Container App and a real inbox to
-receive the message. Concretely: set BREVO_EMAIL_HOST_USER, BREVO_EMAIL_HOST_PASSWORD and
-BREVO_DEFAULT_FROM_EMAIL (or the LOCAL_* / EMAIL_* equivalents) as Container App secrets, then
-request a reset on the live site and follow the emailed link.
+ROOT CAUSE FOUND 2026-08-15, via the staff-only /api/auth/email-diagnostics/ endpoint added for
+exactly this (platform log access was blocked by an Azure tenant problem).
+
+Production mail configuration is COMPLETE - this was never a missing-credentials problem:
+    backend            django.core.mail.backends.smtp.EmailBackend
+    host               smtp-relay.brevo.com:587, TLS on
+    host_user_set      true
+    host_password_set  true
+    default_from_email DACHApply <ermis.chorinopoulos@gmail.com>
+    frontend_url       https://dachapply.livelysea-3461ad21.westeurope.azurecontainerapps.io
+
+The self-addressed test send returns:
+    SMTPAuthenticationError: (525, b'5.7.1 Unauthorized IP address')
+
+Brevo enforces an authorised-IP allowlist on the account, and the Azure Container App's outbound
+address is not on it. Brevo refuses at authentication, Django raises, password_reset_request logs it
+and still returns its generic string - correct against account enumeration, which is precisely why
+this was invisible from the outside.
+
+FIX, in the Brevo account rather than this repo. Preferred: turn OFF the authorised-IP restriction
+(Brevo: Senders, Domains & Dedicated IPs -> Authorised IPs). Authentication is already by SMTP key,
+and a Container Apps consumption-plan egress address is not stable, so an allowlist entry would
+break again the next time the platform moves the app. Allowlisting the current outbound IP works
+only until then, and pinning it needs a NAT gateway.
+
+Alternative if the restriction must stay: switch delivery to Brevo's HTTP API
+(POST https://api.brevo.com/v3/smtp/email with an api-key header), which authenticates by key rather
+than by source address. That is a code change and a new provider branch, so it is only worth doing
+if the allowlist is a hard requirement.
+
+STILL OPEN until a reset email is actually received on the deployed domain - the AC is end-to-end
+delivery, and the fix above has not yet been confirmed to produce a message.
 <!-- SECTION:NOTES:END -->
 
 ## Acceptance Criteria
