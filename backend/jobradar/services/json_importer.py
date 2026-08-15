@@ -263,12 +263,21 @@ def parse_json_object(value):
         if start < 0: raise
         candidate=text[start:]
         try: return json.JSONDecoder().raw_decode(candidate)[0]
-        except json.JSONDecodeError: return json.JSONDecoder().raw_decode(repair_unescaped_json_quotes(candidate))[0]
+        except json.JSONDecodeError:
+            try: return json.JSONDecoder().raw_decode(repair_unescaped_json_quotes(candidate))[0]
+            except json.JSONDecodeError as e:
+                # ponytail: quote-repair can insert characters before the error position, so on this
+                # last-resort path the remapped column can drift a little; still lands on the right line.
+                raise json.JSONDecodeError(e.msg, text, min(start + e.pos, len(text))) from e
+
+
+def format_json_decode_error(e):
+    return f'Invalid JSON on line {e.lineno}, column {e.colno}: {e.msg}'
 
 
 def import_any_json(pasted, user=None):
     try: data=parse_json_object(pasted)
-    except json.JSONDecodeError as e: return {'ok':False,'errors':[f'Invalid JSON: {e}']}
+    except json.JSONDecodeError as e: return {'ok':False,'errors':[format_json_decode_error(e)]}
     if not isinstance(data, dict): return {'ok':False,'errors':['Root must be a JSON object']}
     if any(k in data for k in ['job_updates','jobs','job_details','new_jobs']): return import_jobs_data(data, user=user)
     return import_evaluations(data, user=user)
@@ -277,7 +286,7 @@ def import_any_json(pasted, user=None):
 def import_evaluations(pasted, user=None):
     if isinstance(pasted, str):
         try: data=parse_json_object(pasted)
-        except json.JSONDecodeError as e: return {'ok':False,'errors':[f'Invalid JSON: {e}']}
+        except json.JSONDecodeError as e: return {'ok':False,'errors':[format_json_decode_error(e)]}
     else: data=pasted
     errors=[]
     if not isinstance(data, dict) or not isinstance(data.get('evaluations'), list): errors.append('Root must contain evaluations list')

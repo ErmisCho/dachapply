@@ -1112,6 +1112,19 @@ def test_task_timing_estimate_varies_with_provider_and_model():
         == cv_tasks._task_timing('openai','gpt-5.5','medium','normal',True,True,False)[1]['compiling_cv']
 
 
+def test_me_exposes_a_feedback_destination_without_leaking_job_data(client, owner, settings):
+    r=client.get('/api/auth/me/')
+    assert r.status_code==200
+    # AC1/AC2: the client needs a destination to render the link, and it is configurable.
+    assert r.data['feedback_url'].startswith('mailto:')
+    settings.FEEDBACK_URL='https://example.test/feedback-form'
+    assert client.get('/api/auth/me/').data['feedback_url']=='https://example.test/feedback-form'
+    # AC3: the endpoint hands over a destination only -- no job, evaluation or profile content.
+    body=json.dumps(r.data)
+    for leaked in ('raw_description','company','evaluations','job_id','notes'):
+        assert leaked not in body, leaked
+
+
 def test_anthropic_models_expose_real_effort_levels_and_pass_them_to_the_cli(monkeypatch, tmp_path, settings):
     from jobradar.services import cv_generator
 
@@ -1254,15 +1267,19 @@ def test_cv_generation_preview_exposes_absolute_template_paths(client, owner, jo
     # copied into an editor or file manager, so it is absolute for the same reason they are.
     from pathlib import Path
 
+    from django.conf import settings as django_settings
+
     owner.email='owner@example.test'; owner.save(update_fields=['email'])
     JobLead.objects.filter(pk=job.pk).update(original_source_text='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben und die Bewerbung.', raw_description='English role and requirements')
     r=client.get(f'/api/jobs/{job.id}/cv-generation/')
     assert r.status_code==200
     paths={cv['key']:cv['path'] for cv in r.data['cvs']}
     names={cv['key']:cv['filename'] for cv in r.data['cvs']}
+    # Asserted against the configured workspace rather than a literal drive letter: 'C:/missing' is
+    # not an absolute path on Linux, so a hardcoded check passes on Windows and fails in CI.
+    workspace=str(Path(django_settings.CODEX_CV_WORKSPACE))
     for key, expected in (('en','English - AI Engineer (base)'), ('de','German - AI Engineer (base)')):
-        assert Path(paths[key]).is_absolute(), paths[key]
-        assert paths[key].startswith(str(Path('C:/missing')))  # the workspace this test overrides to
+        assert paths[key].startswith(workspace), (paths[key], workspace)
         assert expected in paths[key] and paths[key].endswith('.tex')
         assert names[key]==Path(paths[key]).name  # filename stays the basename, not the full path
 
@@ -1381,6 +1398,24 @@ def test_smart_skill_statuses_include_profile_aliases(client, job):
 def test_reject_invalid_evaluation(client, job):
     r=client.post('/api/evaluations/import/', {'json':'{"evaluations":[{}]}'}, format='json')
     assert r.status_code==400 and JobEvaluation.objects.count()==0
+
+def test_reject_invalid_evaluation_lists_every_missing_field(client, job):
+    r=client.post('/api/evaluations/import/', {'json':'{"evaluations":[{}]}'}, format='json')
+    msg=r.data['errors'][0]
+    for field in ['job_id','company','title','fit_score','priority','recommendation','summary','main_match_reasons','main_gaps','required_skills','nice_to_have_skills','matched_skills','missing_skills','cv_adjustment_notes','interview_prep_notes','risk_notes','next_action']:
+        assert field in msg, f'{field} missing from error message: {msg}'
+
+def test_invalid_json_import_reports_line_and_column(client):
+    bad='{\n  "evaluations": [\n    {"a": 1,}\n  ]\n}'
+    r=client.post('/api/evaluations/import/', {'json':bad}, format='json')
+    assert r.status_code==400
+    assert r.data['errors']==['Invalid JSON on line 3, column 12: Illegal trailing comma before end of object']
+
+def test_invalid_json_import_reports_line_relative_to_full_pasted_text(client):
+    bad='Here you go:\n\nSome intro text.\n{\n  "evaluations": [\n    {"a": 1,}\n  ]\n}'
+    r=client.post('/api/evaluations/import/', {'json':bad}, format='json')
+    assert r.status_code==400
+    assert r.data['errors']==['Invalid JSON on line 6, column 12: Illegal trailing comma before end of object']
 
 def test_import_job_updates(client, job):
     payload={'job_updates':[{'job_id':job.id,'company':'NewCo','title':'Senior Backend Engineer','location':'Vienna','work_mode':'hybrid','notes':'Extracted manually via ChatGPT'}]}

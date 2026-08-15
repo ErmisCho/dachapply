@@ -28,6 +28,24 @@ ordinal: 2000
 Users need a safe recovery path if they forget their password.
 <!-- SECTION:DESCRIPTION:END -->
 
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+The code side is already done and needs no changes. settings.py:149-206 implements EMAIL_PROVIDER
+as auto|brevo|local|console: auto prefers Brevo when Brevo credentials are present, then a local
+SMTP provider, then the legacy EMAIL_* settings. Production is guarded - EMAIL_PROVIDER=console
+raises ImproperlyConfigured when DEBUG=False (settings.py:164-166), so a deployed instance cannot
+silently swallow reset emails to stdout, and missing SMTP settings fail loudly rather than at send
+time (settings.py:206). FRONTEND_URL is required in production (settings.py:145) and is what builds
+the link in the reset message.
+
+REMAINS OPEN, and cannot be closed by an agent: the AC is that the reset link works end-to-end on
+the deployed domain. That needs real SMTP credentials set on the Container App and a real inbox to
+receive the message. Concretely: set BREVO_EMAIL_HOST_USER, BREVO_EMAIL_HOST_PASSWORD and
+BREVO_DEFAULT_FROM_EMAIL (or the LOCAL_* / EMAIL_* equivalents) as Container App secrets, then
+request a reset on the live site and follow the emailed link.
+<!-- SECTION:NOTES:END -->
+
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 SMTP provider is configured through environment variables

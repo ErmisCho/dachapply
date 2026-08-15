@@ -55,6 +55,10 @@ DEBUG = env_bool('DEBUG', True)
 DACHAPPLY_ENV = os.getenv('DACHAPPLY_ENV', 'local' if DEBUG else 'production')
 CODEX_CV_ENABLED = env_bool('CODEX_CV_ENABLED', DEBUG)
 CODEX_CV_OWNER_EMAIL = os.getenv('CODEX_CV_OWNER_EMAIL', 'ermis.chorinopoulos@gmail.com')
+# Where the in-app feedback link points. Any URL works (a form, an issue tracker); it defaults to a
+# mailto for the owner so the link is never dead. A mailto opens the user's own mail client with an
+# empty body, so nothing about their jobs is transmitted unless they type it themselves.
+FEEDBACK_URL = os.getenv('FEEDBACK_URL') or (f'mailto:{CODEX_CV_OWNER_EMAIL}?subject=DACHApply%20feedback' if CODEX_CV_OWNER_EMAIL else '')
 CODEX_CV_WORKSPACE = os.getenv('CODEX_CV_WORKSPACE', r'C:\latex' if DEBUG else '')
 CODEX_CV_CACHE = env_bool('CODEX_CV_CACHE', True)
 CODEX_CANDIDATE_EVIDENCE_PATH = os.getenv('CODEX_CANDIDATE_EVIDENCE_PATH', str(BASE_DIR.parent/'Ermis-Chorinopoulos-Candidate-Evidence.md') if DEBUG else '')

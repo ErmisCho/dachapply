@@ -232,7 +232,7 @@ def me(request):
     profile=getattr(request.user, 'jobradar_profile', None)
     submit_for=profile.submit_for if profile else None
     requested=profile.requested_submit_for if profile else None
-    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user)})
+    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user), 'feedback_url':settings.FEEDBACK_URL})
 
 @api_view(['GET','POST'])
 def friend_requests(request):

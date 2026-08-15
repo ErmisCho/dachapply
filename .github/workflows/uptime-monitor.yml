@@ -1,0 +1,54 @@
+name: Uptime monitor
+
+# The deploy workflow already curls the app once, immediately after shipping. That catches a broken
+# release but says nothing about the hours in between -- a database outage or a crashed revision
+# would otherwise be discovered only on the next manual visit. This checks every 30 minutes and
+# fails the run when it cannot, which GitHub reports by email.
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Overridable via repository variable APP_URL if the hostname ever changes.
+  DEFAULT_APP_URL: https://dachapply.livelysea-3461ad21.westeurope.azurecontainerapps.io
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Probe the health endpoint
+        shell: bash
+        run: |
+          set -uo pipefail
+          APP_URL="${{ vars.APP_URL || '' }}"
+          [ -n "$APP_URL" ] || APP_URL="$DEFAULT_APP_URL"
+          echo "probing $APP_URL/api/health/"
+
+          # Three attempts: a single blip during a Container Apps revision swap is not an outage.
+          for attempt in 1 2 3; do
+            body=$(curl --fail --silent --show-error --max-time 20 "$APP_URL/api/health/") && rc=0 || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              echo "response: $body"
+              # jobradar.views.health already returns 503 with {"status":"degraded",
+              # "database":"unavailable"} when Postgres is unreachable, so --fail catches that.
+              # The body check is a second line of defence in case the endpoint is ever changed to
+              # answer 200 while degraded.
+              if echo "$body" | grep -q '"status":"ok"' && echo "$body" | grep -q '"database":"ok"'; then
+                echo "healthy"
+                exit 0
+              fi
+              echo "endpoint answered but reported unhealthy"
+            else
+              echo "attempt $attempt failed (curl exit $rc)"
+            fi
+            [ "$attempt" -lt 3 ] && sleep 20
+          done
+
+          echo "::error::dachapply health check failed after 3 attempts against $APP_URL"
+          exit 1
