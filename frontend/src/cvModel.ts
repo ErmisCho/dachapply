@@ -13,6 +13,18 @@ export function comboValid(model:any, effort:string, speed:string){
   return !(speed === 'fast' && !model.fast_tier)
 }
 
+// Shown in the UI while the full absolute path stays on the clipboard. Handles either slash style
+// so a Windows workspace still matches a path rendered with forward slashes.
+export function shortPath(path?:string, workspace?:string){
+  if(!path) return ''
+  if(!workspace) return path
+  const norm=(value:string)=>value.replace(/\\/g,'/').replace(/\/+$/,'')
+  const prefix=norm(workspace)
+  const full=norm(path)
+  if(full.toLowerCase().startsWith(prefix.toLowerCase()+'/')) return full.slice(prefix.length+1)
+  return path
+}
+
 export function stepText(task:any){
   const total=Number(task?.step_total)||0
   const label=task?.step_label||task?.stage

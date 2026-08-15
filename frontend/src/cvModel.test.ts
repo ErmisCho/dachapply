@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest'
-import {comboValid,modelEffort,modelSpeed,stepText} from './cvModel'
+import {comboValid,modelEffort,modelSpeed,shortPath,stepText} from './cvModel'
 
 // Shapes mirror what available_model_options() returns from the backend.
 const gpt={provider:'openai',key:'gpt-5.5',label:'GPT-5.5',efforts:['low','medium','high'],default_effort:'medium',fast_tier:'priority'}
@@ -38,6 +38,27 @@ describe('comboValid',()=>{
     expect(comboValid(gpt,'ultra','normal')).toBe(false)
     expect(comboValid(gptMini,'high','normal')).toBe(false) // stale value left over from gpt-5.5
     expect(comboValid(undefined,'medium','normal')).toBe(false)
+  })
+})
+
+describe('shortPath',()=>{
+  it('strips the workspace prefix for display',()=>{
+    expect(shortPath('C:\\latex\\CVs\\English - AI Engineer (base)_v_1.4.tex','C:\\latex'))
+      .toBe('CVs/English - AI Engineer (base)_v_1.4.tex')
+    expect(shortPath('/srv/latex/output/Letter.pdf','/srv/latex')).toBe('output/Letter.pdf')
+  })
+
+  it('tolerates mixed separators and a trailing slash on the workspace',()=>{
+    expect(shortPath('C:/latex/CVs/cv.tex','C:\\latex\\')).toBe('CVs/cv.tex')
+    expect(shortPath('C:\\Latex\\CVs\\cv.tex','c:\\latex')).toBe('CVs/cv.tex')
+  })
+
+  it('leaves the path alone when it is outside the workspace or nothing is known',()=>{
+    expect(shortPath('D:\\elsewhere\\cv.tex','C:\\latex')).toBe('D:\\elsewhere\\cv.tex')
+    expect(shortPath('C:\\latex\\cv.tex')).toBe('C:\\latex\\cv.tex')
+    expect(shortPath(undefined,'C:\\latex')).toBe('')
+    // a workspace that is a string prefix but not a path boundary must not be chopped
+    expect(shortPath('C:\\latex-old\\cv.tex','C:\\latex')).toBe('C:\\latex-old\\cv.tex')
   })
 })
 

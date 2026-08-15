@@ -120,6 +120,26 @@ TEMPLATES = {
 CLAUDE_EFFORTS=['low','medium','high','xhigh','max']
 
 
+def claude_fast_models():
+    # The Claude CLI reports no per-model capability data: there is no models subcommand, and it
+    # accepts {"fastMode":true} for every model without complaint, so support cannot be probed.
+    # Fast mode is documented as Opus-only, kept here as an env-overridable list so the rule can be
+    # corrected without a code change when that stops being true.
+    return [name.strip().lower() for name in os.getenv('CODEX_CLAUDE_FAST_MODELS', 'opus').split(',') if name.strip()]
+
+
+def claude_model_options():
+    if not (shutil.which('claude') or shutil.which('claude.exe')):
+        return []
+    fast=claude_fast_models()
+    # `claude --help`: --effort <level> (low, medium, high, xhigh, max), verified under --print.
+    return [
+        {'provider':'anthropic','key':key,'label':label,'efforts':CLAUDE_EFFORTS,'default_effort':'medium',
+         'fast_tier':'fast' if any(name in key.lower() for name in fast) else ''}
+        for key, label in (('sonnet','Claude Sonnet'), ('opus','Claude Opus'), ('haiku','Claude Haiku'))
+    ]
+
+
 def _template_version(path):
     match=re.search(r'_v_(\d+(?:\.\d+)*)$', path.stem)
     return tuple(int(part) for part in match.group(1).split('.')) if match else ()
@@ -179,15 +199,7 @@ def available_model_options():
 
 def _discover_model_options():
     options=codex_model_options()
-    if shutil.which('claude') or shutil.which('claude.exe'):
-        options += [
-            # `claude --help` documents --effort as low|medium|high|xhigh|max, verified working under
-            # --print. fast_tier stays empty on purpose: the CLI exposes no speed/tier flag at all
-            # (fast mode is the interactive /fast toggle), so "Normal" is the only honest option here.
-            {'provider':'anthropic','key':'sonnet','label':'Claude Sonnet','efforts':CLAUDE_EFFORTS,'default_effort':'medium','fast_tier':''},
-            {'provider':'anthropic','key':'opus','label':'Claude Opus','efforts':CLAUDE_EFFORTS,'default_effort':'medium','fast_tier':''},
-            {'provider':'anthropic','key':'haiku','label':'Claude Haiku','efforts':CLAUDE_EFFORTS,'default_effort':'medium','fast_tier':''},
-        ]
+    options += claude_model_options()
     ollama=shutil.which('ollama') or shutil.which('ollama.exe')
     if ollama:
         try:
@@ -305,6 +317,8 @@ def generation_preview(job):
         'models': available_model_options(),
         'configured': bool(settings.CODEX_CV_ENABLED and workspace and workspace.is_dir()),
         'artifacts': latest_generated_artifacts(job, language),
+        # Lets the client show a short workspace-relative path while still copying the absolute one.
+        'workspace': str(workspace) if workspace else '',
     }
 
 
@@ -694,6 +708,10 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
                 command=[claude, '--print', '--model', model, '--tools', 'Read', '--permission-mode', 'dontAsk', '--no-session-persistence', '--output-format', 'json', '--json-schema', json.dumps(schema)]
                 if effort in CLAUDE_EFFORTS:
                     command += ['--effort', effort]
+                if speed == 'fast':
+                    # There is no --fast flag; fastMode is a settings key, which --settings accepts
+                    # inline as JSON. Passed as one argv element, so no shell escaping is involved.
+                    command += ['--settings', json.dumps({'fastMode': True})]
                 result=_run_command(command, cancelled, cwd=output, input=model_prompt, capture_output=True, text=True, encoding='utf-8', check=False)
             else:
                 command=[codex, 'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check', '--sandbox', 'read-only', '--model', model]

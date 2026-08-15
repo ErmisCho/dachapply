@@ -1121,13 +1121,22 @@ def test_anthropic_models_expose_real_effort_levels_and_pass_them_to_the_cli(mon
     monkeypatch.setattr(cv_generator.shutil,'which',lambda command: command if command in ('claude','ollama','lms') else None)
     monkeypatch.setattr(cv_generator,'codex_model_options',lambda:[])
     monkeypatch.setattr(cv_generator.subprocess,'run',lambda *a,**k:(_ for _ in ()).throw(OSError))
-    claude_models=[o for o in cv_generator._discover_model_options() if o['provider']=='anthropic']
+    claude_models={o['key']:o for o in cv_generator._discover_model_options() if o['provider']=='anthropic'}
     assert claude_models, 'claude is on PATH so Anthropic models must be offered'
-    for option in claude_models:
+    for option in claude_models.values():
         assert option['efforts']==['low','medium','high','xhigh','max']
         assert option['default_effort']=='medium'
-        # The CLI exposes no speed/tier flag, so offering "fast" here would be a lie.
-        assert option['fast_tier']==''
+    # Fast mode is Opus-only, so only Opus may advertise a fast tier.
+    assert claude_models['opus']['fast_tier']=='fast'
+    assert claude_models['sonnet']['fast_tier']=='' and claude_models['haiku']['fast_tier']==''
+    assert cv_generator.validate_model_capability('anthropic','opus','high','fast')
+    with pytest.raises(ValueError, match='does not support fast speed'):
+        cv_generator.validate_model_capability('anthropic','sonnet','high','fast')
+
+    # The Opus-only rule is not provider-reported, so it stays overridable without a code change.
+    monkeypatch.setenv('CODEX_CLAUDE_FAST_MODELS','opus,sonnet')
+    overridden={o['key']:o['fast_tier'] for o in cv_generator._discover_model_options() if o['provider']=='anthropic'}
+    assert overridden['sonnet']=='fast' and overridden['haiku']==''
 
     # Every level the model advertises must be accepted by the server-side guard.
     for level in cv_generator.CLAUDE_EFFORTS:
