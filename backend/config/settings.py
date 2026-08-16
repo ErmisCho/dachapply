@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
@@ -57,14 +58,28 @@ _env_file_keys = load_env_file(BASE_DIR.parent / '.env')
 _env_file_keys |= load_env_file(BASE_DIR / '.env')
 
 
-def local_db_guard_blocks(database_url, file_sourced_keys, allow_prod_db):
-    """True if a DATABASE_URL should be refused rather than used. See TASK-100.
+# TASK-111 (owner decision 2026-08-16): commands that SERVE the app locally use the same remote
+# database as the deployed site, so the local app and the website always show the same data.
+# Everything else (migrate, flush, dbshell, shell, loaddata, ...) keeps TASK-100's guard: reaching
+# production from a laptop stays an explicit per-command opt-in. check_mailbox is a server in this
+# sense -- its whole purpose is writing suggestions where the website can show them.
+LOCAL_PROD_DB_SERVING_COMMANDS = frozenset({'runserver', 'check_mailbox'})
+
+
+def local_db_guard_blocks(database_url, file_sourced_keys, allow_prod_db, argv=None):
+    """True if a DATABASE_URL should be refused rather than used. See TASK-100 and TASK-111.
 
     Blocks only a value that came from a persisted .env file (`database_url` truthy and
     'DATABASE_URL' present in `file_sourced_keys`) with no opt-in. A value the operator typed for
     this command -- exported in the shell, or the DATABASE_URL='' + DB_NAME=... workaround, which
-    leaves 'DATABASE_URL' out of file_sourced_keys entirely -- is left alone.
+    leaves 'DATABASE_URL' out of file_sourced_keys entirely -- is left alone. Serving commands
+    (LOCAL_PROD_DB_SERVING_COMMANDS) are never blocked: per TASK-111 the local app deliberately
+    runs against the same remote database as the deployed site.
     """
+    args = sys.argv if argv is None else argv
+    command = args[1] if len(args) > 1 else ''
+    if command in LOCAL_PROD_DB_SERVING_COMMANDS:
+        return False
     return bool(database_url) and 'DATABASE_URL' in file_sourced_keys and not allow_prod_db
 
 
@@ -188,7 +203,9 @@ if local_db_guard_blocks(DATABASE_URL, _env_file_keys, env_bool('DACHAPPLY_ALLOW
         "Refusing to start rather than risk a local manage.py command reaching it silently. "
         "Either clear DATABASE_URL in .env (optionally set DB_NAME=<path> to pick a local sqlite "
         "file -- manage.py falls back to backend/db.sqlite3 otherwise), or set "
-        "DACHAPPLY_ALLOW_PROD_DB=1 for this command if you deliberately mean to reach that database."
+        "DACHAPPLY_ALLOW_PROD_DB=1 for this command if you deliberately mean to reach that "
+        "database. (Serving commands -- runserver, check_mailbox -- are exempt by design: per "
+        "TASK-111 the local app runs against the same remote database as the deployed site.)"
     )
 
 if DATABASE_URL:

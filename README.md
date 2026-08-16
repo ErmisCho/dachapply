@@ -55,8 +55,11 @@ if `.venv` is ever lost, the next `uv run` rebuilds it in seconds.
 `DATABASE_URL` set to a remote database (production or otherwise), `manage.py` refuses to start
 rather than risk a local command reaching it silently — you'll see
 `DATABASE_URL came from a .env file...`. This is deliberate, not a bug:
-- **Normal local dev**: leave `DATABASE_URL` empty in `.env` (see `.env.local.example`).
-  `manage.py` then uses `backend/db.sqlite3`; set `DB_NAME=<path>` for a different sqlite file.
+- **Serving the app locally** (TASK-111, owner decision): `runserver` and `check_mailbox` are
+  exempt from the guard and use the `.env` `DATABASE_URL` directly, so the local app and the
+  deployed site always show the same remote data. No flag needed.
+- **Everything else with an empty `DATABASE_URL`**: `manage.py` uses `backend/db.sqlite3`;
+  set `DB_NAME=<path>` for a different sqlite file (see `.env.local.example`).
 - **Deliberately reaching a remote database** (e.g. the `.env.local-neon.example` workflow): opt in
   for that one command, e.g. `DACHAPPLY_ALLOW_PROD_DB=1 uv run manage.py migrate`. The guard only
   ever looks at values sourced from a `.env` file — a `DATABASE_URL` you export in your own shell

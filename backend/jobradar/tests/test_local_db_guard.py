@@ -108,3 +108,33 @@ def test_guard_opens_on_recognized_truthy_opt_in_values(monkeypatch):
         assert local_db_guard_blocks(
             'postgresql://prod-host/db', {'DATABASE_URL'}, allow_prod_db
         ) is False, f'opt-in value {truthy!r} should have been accepted'
+
+
+# TASK-111: serving commands run against the remote DB by design; everything else stays guarded.
+
+def test_guard_exempts_runserver():
+    assert local_db_guard_blocks(
+        'postgresql://prod-host/db', {'DATABASE_URL'}, allow_prod_db=False,
+        argv=['manage.py', 'runserver', '8000'],
+    ) is False
+
+
+def test_guard_exempts_check_mailbox():
+    assert local_db_guard_blocks(
+        'postgresql://prod-host/db', {'DATABASE_URL'}, allow_prod_db=False,
+        argv=['manage.py', 'check_mailbox'],
+    ) is False
+
+
+def test_guard_still_blocks_migrate():
+    assert local_db_guard_blocks(
+        'postgresql://prod-host/db', {'DATABASE_URL'}, allow_prod_db=False,
+        argv=['manage.py', 'migrate'],
+    ) is True
+
+
+def test_guard_still_blocks_bare_invocation():
+    assert local_db_guard_blocks(
+        'postgresql://prod-host/db', {'DATABASE_URL'}, allow_prod_db=False,
+        argv=['manage.py'],
+    ) is True
