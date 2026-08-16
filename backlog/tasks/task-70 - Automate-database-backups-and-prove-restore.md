@@ -179,4 +179,49 @@ The account key is read at run time into `AZURE_STORAGE_KEY` rather than passed 
 anything in argv is readable via `ps` by any other process on the runner, which is the same reasoning
 the dump step already used for the connection string.
 
+
+### AC1 built, and blocked on exactly one subscription-level command
+
+Everything is in place and merged: `database-backup.yml` authenticates with `AZURE_CREDENTIALS` and
+uploads with `az storage blob upload`; `provision-backup-storage.yml` creates the account, private
+container and 30-day lifecycle rule; `BACKUP_STORAGE_ACCOUNT` and `BACKUP_STORAGE_CONTAINER` are set
+as repository variables. Four provisioning runs were needed to find out why it could not finish, and
+the trail is worth keeping because three of those failures pointed at the wrong thing.
+
+    run 1  SubscriptionNotFound   -- assumed the login's default subscription was wrong
+    run 2  SubscriptionNotFound   -- pinned the subscription from the app's resource id; no change
+    run 3  SubscriptionNotFound   -- removed every subscription-scoped call; no change
+    run 4  diagnostic step, which finally said it plainly
+
+The diagnostic (run 31970739281):
+
+    subscriptions visible:  Azure subscription 1 (Enabled)
+    resource groups:        rg-dachapply
+    Microsoft.Storage:      NotRegistered
+
+**Azure reports a call against an unregistered resource provider as `SubscriptionNotFound`.** That
+single piece of API behaviour cost three fixes that were each locally reasonable and completely
+useless: the subscription was never missing, and the calls were never wrongly scoped. This
+subscription has simply never used Azure Storage.
+
+Attempting the registration then gave the real boundary (run 31970835640):
+
+    AuthorizationFailed: client object id ca616712-3108-4b09-ae49-a37260d1905c does not have
+    authorization to perform action 'Microsoft.Storage/register/action' over scope
+    '/subscriptions/f0d59028-...'
+
+So `AZURE_CREDENTIALS` is scoped to the **resource group**, not the subscription — enough to update
+the Container App, not enough to register a provider. Registration is inherently subscription-level.
+
+**One command from a subscription owner unblocks everything:**
+
+    az provider register --namespace Microsoft.Storage
+
+Then re-run **Actions → Provision backup storage**, then **Database backup**. If the account creation
+then fails with `AuthorizationFailed` too, the service principal also needs Contributor on
+`rg-dachapply` for `Microsoft.Storage/storageAccounts/write` — the workflow now distinguishes that
+case in its error message rather than making you guess.
+
+AC1 stays unchecked until a real dump is sitting in the container.
+
 <!-- SECTION:NOTES:END -->
