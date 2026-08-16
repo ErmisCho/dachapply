@@ -131,9 +131,13 @@ jobs:
           APP_ID=$(az containerapp list --query "[?name=='dachapply'].id | [0]" -o tsv)
           test -n "$APP_ID" || { echo "::error::could not find the dachapply container app in any accessible subscription"; exit 1; }
           az account set --subscription "$(echo "$APP_ID" | cut -d/ -f3)"
+          RG=$(echo "$APP_ID" | cut -d/ -f5)
 
-          RG=$(az storage account list --query "[?name=='$ACCOUNT'].resourceGroup | [0]" -o tsv)
-          test -n "$RG" || { echo "::error::storage account $ACCOUNT not found -- run the Provision backup storage workflow first"; exit 1; }
+          # Resource-group scoped, deliberately: `az storage account list` is subscription scoped and
+          # this credential cannot make subscription-level calls, even for resources it can otherwise
+          # read. The backups live in the app's own resource group, so the id gives us both.
+          az storage account show --name "$ACCOUNT" --resource-group "$RG" --only-show-errors -o none \
+            || { echo "::error::storage account $ACCOUNT not found in $RG -- run the Provision backup storage workflow first"; exit 1; }
 
           # Fetch the key into the environment rather than passing it as an argument: anything in
           # argv is readable from `ps` by any other process on the runner. az reads AZURE_STORAGE_KEY

@@ -74,17 +74,28 @@ jobs:
           echo "subscription: $SUB"
           echo "resource group: $RG ($LOCATION)"
 
+          # Every call here is RESOURCE-GROUP scoped on purpose. `az storage account check-name` is
+          # subscription scoped and returned SubscriptionNotFound for this credential even though
+          # the very same credential can read the resource group -- so the name check is done by
+          # letting `create` fail and reading its error, rather than by asking first.
           if az storage account show --name "$ACCOUNT" --resource-group "$RG" --only-show-errors -o none 2>/dev/null; then
             echo "storage account $ACCOUNT already exists -- leaving it alone"
           else
-            avail=$(az storage account check-name --name "$ACCOUNT" --query nameAvailable -o tsv)
-            [ "$avail" = "true" ] || { echo "::error::storage account name '$ACCOUNT' is already taken globally -- pick another and update the BACKUP_STORAGE_ACCOUNT variable"; exit 1; }
             # allow-blob-public-access false is the whole point: these are user job searches.
-            az storage account create \
-              --name "$ACCOUNT" --resource-group "$RG" --location "$LOCATION" \
-              --sku Standard_LRS --kind StorageV2 \
-              --allow-blob-public-access false --min-tls-version TLS1_2 \
-              --only-show-errors --output none
+            if ! err=$(az storage account create \
+                --name "$ACCOUNT" --resource-group "$RG" --location "$LOCATION" \
+                --sku Standard_LRS --kind StorageV2 \
+                --allow-blob-public-access false --min-tls-version TLS1_2 \
+                --only-show-errors --output none 2>&1); then
+              echo "$err"
+              case "$err" in
+                *AlreadyExists*|*already\ taken*|*AccountNameInvalid*)
+                  echo "::error::storage account name '$ACCOUNT' is unavailable globally -- pick another and update the BACKUP_STORAGE_ACCOUNT repository variable" ;;
+                *Authorization*|*Forbidden*|*SubscriptionNotFound*)
+                  echo "::error::AZURE_CREDENTIALS cannot create a storage account in $RG -- it needs Contributor on that resource group" ;;
+              esac
+              exit 1
+            fi
             echo "created storage account $ACCOUNT"
           fi
 
