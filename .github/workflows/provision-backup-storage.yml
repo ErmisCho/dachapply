@@ -46,6 +46,24 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      # Azure reports a missing/unregistered resource provider as "SubscriptionNotFound", which sends
+      # you looking at the wrong thing. This step never fails the run; it just states what the
+      # credential can actually see, so a failure below is diagnosable from the log alone.
+      - name: What this credential can see
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "--- identity ---"
+          az account show --query '{name:name,id:id,tenant:tenantId,user:user.name}' -o yaml || true
+          echo "--- subscriptions visible ---"
+          az account list --all --query '[].{name:name,id:id,state:state}' -o table || true
+          echo "--- resource groups visible ---"
+          az group list --query '[].name' -o tsv || true
+          echo "--- Microsoft.Storage registration state ---"
+          az provider show --namespace Microsoft.Storage --query registrationState -o tsv || echo "(cannot read provider registration)"
+          echo "--- storage accounts in the app's resource group ---"
+          az storage account list --resource-group rg-dachapply --query '[].name' -o tsv || echo "(cannot list storage in rg-dachapply)"
+
       - name: Create the storage account and private container
         shell: bash
         env:
