@@ -29,46 +29,50 @@ The workflow refuses to upload a dump it cannot vouch for. It fails the run if t
 20 KB, if `pg_restore --list` cannot parse it, or if it contains fewer than 15 `TABLE DATA` entries.
 A backup job that reports success while producing nothing is worse than no backup job at all.
 
-#### Owner setup — the whole thing as one block
+#### Setup (already done — kept for reference)
 
-Steps 1–4 below explain each piece. If you just want it done, paste this instead; it discovers the
-resource group the same way the deploy workflow does, and pipes the SAS straight into `gh secret set`
-so the credential never lands in your clipboard, your shell history, or a browser form.
+Backups authenticate with the `AZURE_CREDENTIALS` service principal that already deploys this app,
+and upload with `az storage blob upload`. There is **no `BACKUP_UPLOAD_URL` secret any more.**
+
+To (re)provision, run the **Provision backup storage** workflow from the Actions tab. It is
+create-if-missing and deletes nothing, so it is safe to re-run. It reads two repository *variables*
+(names, not credentials):
+
+| Variable | Value |
+| --- | --- |
+| `BACKUP_STORAGE_ACCOUNT` | `dachapplybackups` |
+| `BACKUP_STORAGE_CONTAINER` | `dachapply-backups` |
+
+It puts the account in the same resource group as the container app (discovered, not hardcoded),
+disables public blob access, creates a private container, and applies a 30-day lifecycle rule.
+Retention lives on the account rather than in the backup job, so the nightly run never needs delete
+permission — a compromised run cannot destroy the backup history.
+
+**Why not the write-only SAS this doc used to describe.** A container SAS with `--permissions cw` is
+genuinely tighter for this one job: create+write, no read, no delete. It was dropped because minting
+it needs subscription access, which left the workflow unrunnable waiting on a manual step — and a
+backup that is not running is worth less than one with a broader token. `AZURE_CREDENTIALS` was
+already in this repository's CI with rights to update the Container App, so the blast radius if it
+leaks did not widen; what changed is that the backup job now has an Azure login it did not have.
+If this repo ever goes private, or you mint a SAS by hand, tightening it back is the right call and
+the SAS variant is below.
+
+<details>
+<summary>The write-only SAS variant, if you ever want it back</summary>
 
 ```bash
-# Prereqs: az logged in to the subscription holding the container app, gh logged in to this repo.
-set -euo pipefail
-ACCOUNT=dachapplybackups            # 3-24 lowercase alphanumerics, GLOBALLY unique -- add digits if taken
-CONTAINER=dachapply-backups
-RG=$(az containerapp list --query "[?name=='dachapply'].resourceGroup | [0]" -o tsv)
-test -n "$RG" || { echo "could not find the dachapply container app; wrong subscription?"; exit 1; }
-LOCATION=$(az group show --name "$RG" --query location -o tsv)
-
-az storage account create --name "$ACCOUNT" --resource-group "$RG" --location "$LOCATION" \
-  --sku Standard_LRS --kind StorageV2 --allow-blob-public-access false --output none
-az storage container create --name "$CONTAINER" --account-name "$ACCOUNT" --output none
-
-# Write-only (create+write, no read, no delete) so a leaked CI token can neither download the
-# backups nor destroy them. Expiry is deliberate: this must be re-minted, not forgotten.
-SAS=$(az storage container generate-sas --name "$CONTAINER" --account-name "$ACCOUNT" \
-  --permissions cw --expiry "$(date -u -d '+1 year' +%Y-%m-%d)" --https-only --output tsv)
-printf 'https://%s.blob.core.windows.net/%s?%s' "$ACCOUNT" "$CONTAINER" "$SAS" \
-  | gh secret set BACKUP_UPLOAD_URL
-unset SAS
-
-# 30-day retention as a storage lifecycle rule, so CI never needs delete permission.
-az storage account management-policy create --account-name "$ACCOUNT" --resource-group "$RG" \
-  --policy '{"rules":[{"enabled":true,"name":"expire-30d","type":"Lifecycle","definition":{"filters":{"blobTypes":["blockBlob"],"prefixMatch":["'"$CONTAINER"'/dachapply-"]},"actions":{"baseBlob":{"delete":{"daysAfterModificationGreaterThan":30}}}}}]}' \
-  --output none
-
-gh workflow run database-backup.yml --ref main   # then check Actions for a green run and a blob
+SAS=$(az storage container generate-sas --name dachapply-backups   --account-name dachapplybackups --permissions cw   --expiry "$(date -u -d '+1 year' +%Y-%m-%d)" --https-only --output tsv)
+printf 'https://%s.blob.core.windows.net/%s?%s' dachapplybackups dachapply-backups "$SAS"   | gh secret set BACKUP_UPLOAD_URL
 ```
 
-Note the expiry: a SAS with a one-year life is a thing that will silently stop working next year. The
-workflow fails loudly when the upload is rejected, so it shows up as a failed run rather than a silent
-gap — that is the whole reason the guards exist.
+Note the expiry: a one-year SAS stops working silently. The workflow fails loudly when an upload is
+rejected, so it surfaces as a failed run rather than a silent gap.
+</details>
 
-#### Owner setup, step by step (one-time, roughly five minutes)
+#### Manual setup by hand, for reference
+
+Not needed any more — the Provision backup storage workflow does all of this. Kept because it shows
+what the workflow creates, and because it is what you would run if you ever provision outside CI.
 
 1. Create a storage account and a private container (any region; `dachapply-backups` below):
 

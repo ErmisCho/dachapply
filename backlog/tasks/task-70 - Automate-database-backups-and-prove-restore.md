@@ -148,4 +148,35 @@ rights live in the `AZURE_CREDENTIALS` repo secret, which is write-only by desig
 Note the expiry when running it: a one-year SAS is a thing that stops working silently. It will
 surface as a failed workflow run rather than a silent gap, which is what the guards are for.
 
+
+### 2026-08-16 (late) — AC1 built the service-principal way, on the owner's instruction
+
+The SAS design was replaced rather than waited on. `database-backup.yml` now logs in with the
+`AZURE_CREDENTIALS` service principal that already deploys this app and uploads with
+`az storage blob upload`; **`BACKUP_UPLOAD_URL` no longer exists** and no secret has to be minted by
+hand. A new `provision-backup-storage.yml` (workflow_dispatch, create-if-missing, deletes nothing)
+makes the account, the private container and the 30-day lifecycle rule.
+
+The trade-off, stated plainly so it can be reversed knowingly: a write-only SAS (`--permissions cw`)
+is genuinely tighter for this one job. It was dropped because minting it needs subscription access,
+which left the workflow unrunnable — and a backup that is not running is worth less than one holding
+a broader token. `AZURE_CREDENTIALS` was already in this repo's CI with rights to update the
+Container App, so the blast radius if it leaks did not widen; what changed is that this job now has
+an Azure login it previously did not. The SAS variant is preserved in `docs/backup-restore.md` behind
+a `<details>` for the day this repo goes private.
+
+Two properties deliberately kept:
+- **The job still cannot delete.** Retention is an account lifecycle rule, not code in the run, so a
+  compromised nightly run cannot destroy the backup history even with the wider credential.
+- **The three guards are untouched** — size floor, `pg_restore --list`, and the TABLE DATA count.
+  Refusing to upload a dump that authenticated but selected nothing is the whole point of the task.
+
+Storage account and container names are repository **variables** (`BACKUP_STORAGE_ACCOUNT`,
+`BACKUP_STORAGE_CONTAINER`), not secrets — they are identifiers, and a workflow cannot write repo
+secrets without a PAT, whereas variables could be set from here without one.
+
+The account key is read at run time into `AZURE_STORAGE_KEY` rather than passed as an argument:
+anything in argv is readable via `ps` by any other process on the runner, which is the same reasoning
+the dump step already used for the connection string.
+
 <!-- SECTION:NOTES:END -->

@@ -7,8 +7,21 @@ name: Database backup
 # ErmisCho/dachapply is a PUBLIC repository, and workflow artifacts inherit repository read access
 # -- on a public repo that means anyone on the internet can download them. A dump of the production
 # database is every user's job search, so `actions/upload-artifact` is forbidden here. Do not add it
-# back unless the repository is private. The dump is PUT straight into private Azure Blob Storage
-# (the project already runs on Azure) via a write-only container SAS URL.
+# back unless the repository is private. The dump goes straight into private Azure Blob Storage
+# (the project already runs on Azure).
+#
+# WHY THE SERVICE PRINCIPAL AND NOT A WRITE-ONLY SAS
+# The first design used a container SAS with `--permissions cw`, which is genuinely tighter for this
+# one job: create+write, no read, no delete. It was replaced because minting that SAS requires
+# subscription access, so the workflow sat unrunnable waiting on a manual step -- and a backup that
+# is not running is worth less than one with a broader token. `AZURE_CREDENTIALS` is already in this
+# repository's CI and already able to update the Container App, so the blast radius if it leaks was
+# not widened by using it here; what changed is that this job now has an Azure login it previously
+# did not. If you ever move this repo to private, or get a SAS minted, tightening it back is the
+# right call -- see docs/backup-restore.md for the SAS variant.
+#
+# Deleting old blobs is still NOT done from here: retention is an Azure Blob lifecycle rule, so a
+# compromised CI run cannot destroy the backup history even with this credential.
 #
 # FAILING LOUD
 # A backup job that "succeeds" while producing nothing is worse than no backup job, because it
@@ -35,21 +48,14 @@ jobs:
         shell: bash
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          BACKUP_UPLOAD_URL: ${{ secrets.BACKUP_UPLOAD_URL }}
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
         run: |
           set -euo pipefail
           missing=0
           [ -n "${DATABASE_URL:-}" ] || { echo "::error::secret DATABASE_URL is not set"; missing=1; }
-          if [ -z "${BACKUP_UPLOAD_URL:-}" ]; then
-            echo "::error::secret BACKUP_UPLOAD_URL is not set (write-only Azure Blob container SAS URL)"
-            missing=1
-          elif [ "${BACKUP_UPLOAD_URL#*\?sv=}" = "$BACKUP_UPLOAD_URL" ] || [ "${BACKUP_UPLOAD_URL#*sig=}" = "$BACKUP_UPLOAD_URL" ]; then
-            # A URL without the SAS query would be split into nonsense below and PUT anonymously.
-            echo "::error::BACKUP_UPLOAD_URL does not look like a container SAS URL (expected ...?sv=...&sig=...)"
-            missing=1
-          fi
+          [ -n "${AZURE_CREDENTIALS:-}" ] || { echo "::error::secret AZURE_CREDENTIALS is not set"; missing=1; }
           # Fail here rather than three steps later with a confusing libpq or 403 error.
-          [ "$missing" -eq 0 ] || { echo "::error::see docs/backup-restore.md for how to create both"; exit 1; }
+          [ "$missing" -eq 0 ] || { echo "::error::see docs/backup-restore.md"; exit 1; }
 
       - name: Dump the production database
         shell: bash
@@ -102,32 +108,48 @@ jobs:
             exit 1
           fi
 
+      # Uses the JSON-credentials form of AZURE_CREDENTIALS, not OIDC, so `permissions: {}` above
+      # stays correct -- no `id-token: write` is needed.
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
       - name: Upload to private Azure Blob Storage
         shell: bash
         env:
-          BACKUP_UPLOAD_URL: ${{ secrets.BACKUP_UPLOAD_URL }}
+          ACCOUNT: ${{ vars.BACKUP_STORAGE_ACCOUNT }}
+          CONTAINER: ${{ vars.BACKUP_STORAGE_CONTAINER }}
         run: |
           set -euo pipefail
+          : "${ACCOUNT:?repository variable BACKUP_STORAGE_ACCOUNT is not set -- run the Provision backup storage workflow}"
+          : "${CONTAINER:?repository variable BACKUP_STORAGE_CONTAINER is not set -- run the Provision backup storage workflow}"
 
-          # BACKUP_UPLOAD_URL is a container-level SAS URL:
-          #   https://<account>.blob.core.windows.net/<container>?sv=...&sig=...
-          base="${BACKUP_UPLOAD_URL%%\?*}"
-          query="${BACKUP_UPLOAD_URL#*\?}"
+          RG=$(az storage account list --query "[?name=='$ACCOUNT'].resourceGroup | [0]" -o tsv)
+          test -n "$RG" || { echo "::error::storage account $ACCOUNT not found in this subscription"; exit 1; }
 
-          # Azure validates Content-MD5 server-side and rejects a mismatch with 400, which verifies
-          # the upload without granting the SAS any read permission -- the token stays write-only,
-          # so a leaked token cannot download the backups.
-          md5=$(openssl dgst -md5 -binary "$DUMP" | base64)
+          # Fetch the key into the environment rather than passing it as an argument: anything in
+          # argv is readable from `ps` by any other process on the runner. az reads AZURE_STORAGE_KEY
+          # and AZURE_STORAGE_ACCOUNT directly, so the key never becomes a command-line token.
+          AZURE_STORAGE_KEY=$(az storage account keys list --account-name "$ACCOUNT" --resource-group "$RG" --query '[0].value' -o tsv)
+          export AZURE_STORAGE_KEY
+          export AZURE_STORAGE_ACCOUNT="$ACCOUNT"
 
-          curl --fail-with-body --silent --show-error --retry 3 --retry-all-errors \
-            -X PUT \
-            -H 'x-ms-blob-type: BlockBlob' \
-            -H "Content-MD5: $md5" \
-            --upload-file "$DUMP" \
-            "$base/$DUMP?$query"
+          # --validate-content sends an MD5 that Azure checks server-side and rejects on mismatch,
+          # so a silently corrupted transfer fails the run instead of leaving a bad backup in place.
+          # --overwrite false: a name collision means something is wrong (two runs in one second),
+          # and clobbering a good backup is worse than failing.
+          az storage blob upload \
+            --container-name "$CONTAINER" \
+            --name "$DUMP" \
+            --file "$DUMP" \
+            --validate-content \
+            --overwrite false \
+            --only-show-errors \
+            --output none
 
-          echo "uploaded $DUMP to ${base##*/} (container)"
+          echo "uploaded $DUMP to $ACCOUNT/$CONTAINER"
 
-          # Retention is an Azure Blob lifecycle management rule on the container, not code here --
-          # see docs/backup-restore.md. Deleting old blobs from this job would need a SAS with
-          # delete permission, which is exactly what you do not want a CI token to hold.
+          # Retention is an Azure Blob lifecycle management rule on the account, not code here --
+          # see docs/backup-restore.md. This job never deletes, so a compromised run cannot destroy
+          # the backup history even though it now holds a broader credential than a write-only SAS.

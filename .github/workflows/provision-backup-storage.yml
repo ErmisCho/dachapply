@@ -1,0 +1,121 @@
+name: Provision backup storage
+
+# One-shot setup for the nightly database backup. Run it manually once; after that
+# .github/workflows/database-backup.yml just uploads into what this created.
+#
+# Kept separate from the backup job on purpose: creating a storage account is a different privilege
+# from writing one blob a night, and the nightly job should not carry provisioning rights it needs
+# exactly once. Both use AZURE_CREDENTIALS today, so that separation is organisational rather than
+# enforced -- but it means the day this repo gets a narrower credential, only this file changes.
+#
+# Safe to re-run: every step is create-if-missing, and none of them deletes anything.
+
+on:
+  workflow_dispatch:
+    inputs:
+      retention_days:
+        description: 'Delete backups older than this many days'
+        required: false
+        default: '30'
+
+permissions: {}
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check configuration
+        shell: bash
+        env:
+          ACCOUNT: ${{ vars.BACKUP_STORAGE_ACCOUNT }}
+          CONTAINER: ${{ vars.BACKUP_STORAGE_CONTAINER }}
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          : "${ACCOUNT:?repository variable BACKUP_STORAGE_ACCOUNT is not set}"
+          : "${CONTAINER:?repository variable BACKUP_STORAGE_CONTAINER is not set}"
+          [ -n "${AZURE_CREDENTIALS:-}" ] || { echo "::error::secret AZURE_CREDENTIALS is not set"; exit 1; }
+          # Storage account names are global, 3-24 chars, lowercase alphanumeric only. Catching this
+          # here gives a readable message instead of an opaque Azure validation error mid-create.
+          echo "$ACCOUNT" | grep -Eq '^[a-z0-9]{3,24}$' \
+            || { echo "::error::BACKUP_STORAGE_ACCOUNT '$ACCOUNT' must be 3-24 lowercase alphanumerics"; exit 1; }
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Create the storage account and private container
+        shell: bash
+        env:
+          ACCOUNT: ${{ vars.BACKUP_STORAGE_ACCOUNT }}
+          CONTAINER: ${{ vars.BACKUP_STORAGE_CONTAINER }}
+        run: |
+          set -euo pipefail
+
+          # Put the backups in the same resource group as the app, discovered the way the deploy
+          # workflow discovers it rather than hardcoded, so this keeps working if the group is renamed.
+          RG=$(az containerapp list --query "[?name=='dachapply'].resourceGroup | [0]" -o tsv)
+          test -n "$RG" || { echo "::error::could not find the dachapply container app -- wrong subscription?"; exit 1; }
+          LOCATION=$(az group show --name "$RG" --query location -o tsv)
+          echo "resource group: $RG ($LOCATION)"
+
+          if az storage account show --name "$ACCOUNT" --resource-group "$RG" --only-show-errors -o none 2>/dev/null; then
+            echo "storage account $ACCOUNT already exists -- leaving it alone"
+          else
+            avail=$(az storage account check-name --name "$ACCOUNT" --query nameAvailable -o tsv)
+            [ "$avail" = "true" ] || { echo "::error::storage account name '$ACCOUNT' is already taken globally -- pick another and update the BACKUP_STORAGE_ACCOUNT variable"; exit 1; }
+            # allow-blob-public-access false is the whole point: these are user job searches.
+            az storage account create \
+              --name "$ACCOUNT" --resource-group "$RG" --location "$LOCATION" \
+              --sku Standard_LRS --kind StorageV2 \
+              --allow-blob-public-access false --min-tls-version TLS1_2 \
+              --only-show-errors --output none
+            echo "created storage account $ACCOUNT"
+          fi
+
+          AZURE_STORAGE_KEY=$(az storage account keys list --account-name "$ACCOUNT" --resource-group "$RG" --query '[0].value' -o tsv)
+          export AZURE_STORAGE_KEY
+          export AZURE_STORAGE_ACCOUNT="$ACCOUNT"
+
+          az storage container create --name "$CONTAINER" --public-access off --only-show-errors --output none
+          echo "container $CONTAINER ready (private)"
+          echo "RG=$RG" >> "$GITHUB_ENV"
+
+      - name: Apply the retention rule
+        shell: bash
+        env:
+          ACCOUNT: ${{ vars.BACKUP_STORAGE_ACCOUNT }}
+          CONTAINER: ${{ vars.BACKUP_STORAGE_CONTAINER }}
+          DAYS: ${{ inputs.retention_days }}
+        run: |
+          set -euo pipefail
+          # Retention lives here, not in the backup job, so that job never needs delete permission --
+          # a compromised nightly run cannot destroy the backup history.
+          az storage account management-policy create \
+            --account-name "$ACCOUNT" --resource-group "$RG" \
+            --policy "$(cat <<JSON
+          {"rules":[{"enabled":true,"name":"expire-backups","type":"Lifecycle","definition":{
+            "filters":{"blobTypes":["blockBlob"],"prefixMatch":["$CONTAINER/dachapply-"]},
+            "actions":{"baseBlob":{"delete":{"daysAfterModificationGreaterThan":$DAYS}}}}}]}
+          JSON
+          )" --only-show-errors --output none
+          echo "retention: blobs under $CONTAINER/dachapply- are deleted after $DAYS days"
+
+      - name: Report what exists now
+        shell: bash
+        env:
+          ACCOUNT: ${{ vars.BACKUP_STORAGE_ACCOUNT }}
+          CONTAINER: ${{ vars.BACKUP_STORAGE_CONTAINER }}
+        run: |
+          set -euo pipefail
+          AZURE_STORAGE_KEY=$(az storage account keys list --account-name "$ACCOUNT" --resource-group "$RG" --query '[0].value' -o tsv)
+          export AZURE_STORAGE_KEY
+          export AZURE_STORAGE_ACCOUNT="$ACCOUNT"
+          echo "public blob access: $(az storage account show --name "$ACCOUNT" --resource-group "$RG" --query allowBlobPublicAccess -o tsv)"
+          echo "container access:   $(az storage container show --name "$CONTAINER" --query properties.publicAccess -o tsv)"
+          echo "blobs currently in the container:"
+          az storage blob list --container-name "$CONTAINER" --query '[].{name:name,bytes:properties.contentLength}' -o tsv || true
+          echo
+          echo "Next: run the 'Database backup' workflow, then re-run the restore drill in docs/backup-restore.md against the first real blob."
