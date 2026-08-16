@@ -97,6 +97,12 @@ jobs:
         env:
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
+          # Repository variable, not a secret: it is a notification address, not a credential, and
+          # keeping it here rather than in the repo means the address is not a string in a public
+          # file. Unset (a fork, or before anyone configures it) resolves to empty, which is exactly
+          # the inert default settings.py already documents -- alerting stays off rather than
+          # half-configured. Set it with: gh variable set ERROR_ALERT_EMAILS --body "you@example.com"
+          ERROR_ALERT_EMAILS: ${{ vars.ERROR_ALERT_EMAILS }}
         run: |
           az extension add --name containerapp --upgrade --yes
           RESOURCE_GROUP=$(az containerapp list --query "[?name=='${CONTAINER_APP_NAME}'].resourceGroup | [0]" -o tsv)
@@ -108,10 +114,15 @@ jobs:
             --username "$GHCR_USERNAME" \
             --password "$GHCR_PASSWORD" \
             --output none
+          # --set-env-vars is additive: it adds or updates only the names listed and leaves every
+          # other variable on the app alone. Declaring it on each deploy means the alert address
+          # survives a revision being recreated, instead of living as a one-off console edit nobody
+          # remembers making.
           az containerapp update \
             --name "$CONTAINER_APP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
             --image "$IMAGE_NAME:$GITHUB_SHA" \
+            --set-env-vars "ERROR_ALERT_EMAILS=${ERROR_ALERT_EMAILS}" \
             --min-replicas 1 \
             --output none
           FQDN=$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)

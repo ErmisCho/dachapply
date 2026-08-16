@@ -123,4 +123,90 @@ misses:
     git log --all -- "dachapply-full-2026-05-22.json"        # must be empty
     git fetch origin 'refs/pull/*:refs/pull/*' && git log --all -- "dachapply-full-2026-05-22.json"
     # ^ if this is non-empty, AC1 is not met yet -- open the GitHub Support request
+
+### Update 2026-08-16 (evening) — scope grew, and the push is blocked on a live session
+
+**Two blockers, one of them not mine to override.**
+
+1. `git filter-repo` is refused by this session's command policy, and AC2 assigns the push to the
+   owner personally regardless.
+2. **A parallel session is mid-flight.** `worktree-coach-absorption-2026-08-16` committed at
+   19:52 today (`aaeff70`, "reconcile with owner-checklist branch"), and its worktree is still
+   checked out at `.claude/worktrees/coach-absorption-2026-08-16`. Rewriting history now would
+   strand that checkout, or it would re-push the old history on top and reintroduce every blob this
+   task exists to remove. AC2's "after coordinating any open branches" is the whole reason this is
+   not a five-minute job. **Wait for that branch to land in `main`, then rewrite.**
+
+**The rewrite now has to remove two different things, and only one of them is a file.** TASK-107
+scrubbed three real recruiter addresses out of `backend/jobradar/tests/test_api.py`, but only on
+`main` going forward — every commit before that still contains them, and they are inside a file that
+must keep existing, so `--invert-paths --path` cannot touch them. That needs `--replace-text`.
+
+Current state of `origin`, measured:
+
+    main                                    export in history, fixture PII in history, tips clean
+    feature/task-61-cv-generation-ux        fixture PII at tip -- merged via PR #1, safe to delete
+    worktree-backlog-discovery-2026-08-16   fixture PII at tip -- 79 files behind main, safe to delete
+    worktree-coach-absorption-2026-08-16    fixture PII at tip -- LIVE, do not touch
+
+Delete the two stale branches before rewriting; every branch that survives is one more ref that has
+to be rewritten and force-pushed consistently.
+
+**Revised sequence.** The replacements file is *generated from git* rather than typed, so the real
+addresses never get written into a file in this public repo:
+
+    pip install git-filter-repo
+    git clone --mirror https://github.com/ErmisCho/dachapply.git repo.git
+    cd repo.git
+    git update-ref -d refs/pull/1/head          # GitHub-managed, unpushable; drop before mirror push
+
+    # Build the replacement expressions straight out of the pre-fix blob.
+    git log --all --format=%H -- backend/jobradar/tests/test_api.py | while read sha; do
+      git show "$sha:backend/jobradar/tests/test_api.py" 2>/dev/null
+    done | grep -ohE '[A-Za-z0-9._%+-]+@ebcont\.com' | sort -u         | sed 's|$|==>redacted@example.test|' > ../replacements.txt
+    echo 'EBCONT (BMJ)==>Acme Corp (Example)' >> ../replacements.txt
+    wc -l ../replacements.txt        # expect 3 (two addresses + the company name)
+
+    git filter-repo --invert-paths --path 'dachapply-full-2026-05-22.json'                     --replace-text ../replacements.txt --force
+
+    git cat-file -e 59fcfc77187f88491fd3b1c11a6d4d18453ef855 && echo "STILL PRESENT" || echo "purged"
+    git push --force --mirror https://github.com/ErmisCho/dachapply.git
+
+Then verify from a genuinely fresh clone, including the ref AC1's own test does not fetch:
+
+    git clone https://github.com/ErmisCho/dachapply.git verify && cd verify
+    git log --all -- "dachapply-full-2026-05-22.json"        # must be empty
+    git grep -c ebcont $(git rev-list --all) -- backend/jobradar/tests/test_api.py   # must be empty
+    git fetch origin 'refs/pull/*:refs/pull/*' && git log --all -- "dachapply-full-2026-05-22.json"
+
+If that last command is non-empty, AC1 is not met and the support request below is what closes it.
+
+### Draft GitHub Support request (AC1's remaining half)
+
+Send at https://support.github.com/request — the pull-request ref cannot be deleted or force-pushed
+by a repository owner, so this is the only route.
+
+> **Subject:** Purge cached pull-request refs and commit views after a history rewrite (PII)
+>
+> Repository: ErmisCho/dachapply (public).
+>
+> I have rewritten this repository's history with git-filter-repo and force-pushed all branches, to
+> remove a file that contained personal data (a full account export including personal email
+> addresses) and to redact third-party contact details that had been committed into a test fixture.
+>
+> The rewritten history is no longer reachable from any branch, but the old commits are still served
+> from `refs/pull/1/head`, which I cannot delete or force-push as the repository owner. I have
+> confirmed this ref is advertised to anonymous clients via `git ls-remote`.
+>
+> Please could you: (1) purge the pull-request refs for this repository so the pre-rewrite commits are
+> no longer fetchable, and (2) run garbage collection so the old commits are not served from cached
+> commit views.
+>
+> Affected blob for reference: `59fcfc77187f88491fd3b1c11a6d4d18453ef855`
+> (`dachapply-full-2026-05-22.json`, added in commit `912b853`).
+>
+> Thank you.
+
+Say honestly, when closing this, that forks and existing clones cannot be reached by any of the above.
+
 <!-- SECTION:NOTES:END -->

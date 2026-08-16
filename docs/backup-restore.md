@@ -29,7 +29,46 @@ The workflow refuses to upload a dump it cannot vouch for. It fails the run if t
 20 KB, if `pg_restore --list` cannot parse it, or if it contains fewer than 15 `TABLE DATA` entries.
 A backup job that reports success while producing nothing is worse than no backup job at all.
 
-#### Owner setup (one-time, roughly five minutes)
+#### Owner setup — the whole thing as one block
+
+Steps 1–4 below explain each piece. If you just want it done, paste this instead; it discovers the
+resource group the same way the deploy workflow does, and pipes the SAS straight into `gh secret set`
+so the credential never lands in your clipboard, your shell history, or a browser form.
+
+```bash
+# Prereqs: az logged in to the subscription holding the container app, gh logged in to this repo.
+set -euo pipefail
+ACCOUNT=dachapplybackups            # 3-24 lowercase alphanumerics, GLOBALLY unique -- add digits if taken
+CONTAINER=dachapply-backups
+RG=$(az containerapp list --query "[?name=='dachapply'].resourceGroup | [0]" -o tsv)
+test -n "$RG" || { echo "could not find the dachapply container app; wrong subscription?"; exit 1; }
+LOCATION=$(az group show --name "$RG" --query location -o tsv)
+
+az storage account create --name "$ACCOUNT" --resource-group "$RG" --location "$LOCATION" \
+  --sku Standard_LRS --kind StorageV2 --allow-blob-public-access false --output none
+az storage container create --name "$CONTAINER" --account-name "$ACCOUNT" --output none
+
+# Write-only (create+write, no read, no delete) so a leaked CI token can neither download the
+# backups nor destroy them. Expiry is deliberate: this must be re-minted, not forgotten.
+SAS=$(az storage container generate-sas --name "$CONTAINER" --account-name "$ACCOUNT" \
+  --permissions cw --expiry "$(date -u -d '+1 year' +%Y-%m-%d)" --https-only --output tsv)
+printf 'https://%s.blob.core.windows.net/%s?%s' "$ACCOUNT" "$CONTAINER" "$SAS" \
+  | gh secret set BACKUP_UPLOAD_URL
+unset SAS
+
+# 30-day retention as a storage lifecycle rule, so CI never needs delete permission.
+az storage account management-policy create --account-name "$ACCOUNT" --resource-group "$RG" \
+  --policy '{"rules":[{"enabled":true,"name":"expire-30d","type":"Lifecycle","definition":{"filters":{"blobTypes":["blockBlob"],"prefixMatch":["'"$CONTAINER"'/dachapply-"]},"actions":{"baseBlob":{"delete":{"daysAfterModificationGreaterThan":30}}}}}]}' \
+  --output none
+
+gh workflow run database-backup.yml --ref main   # then check Actions for a green run and a blob
+```
+
+Note the expiry: a SAS with a one-year life is a thing that will silently stop working next year. The
+workflow fails loudly when the upload is rejected, so it shows up as a failed run rather than a silent
+gap — that is the whole reason the guards exist.
+
+#### Owner setup, step by step (one-time, roughly five minutes)
 
 1. Create a storage account and a private container (any region; `dachapply-backups` below):
 
@@ -51,12 +90,17 @@ A backup job that reports success while producing nothing is worse than no backu
    The full secret value is the container URL plus that token:
    `https://dachapplybackups.blob.core.windows.net/dachapply-backups?<sas-token>`
 
-3. Add two repository secrets at **Settings → Secrets and variables → Actions**:
+3. Add the repository secret. **Only `BACKUP_UPLOAD_URL` is missing** — `DATABASE_URL` already
+   exists (added 2026-06-07). Verified 2026-08-16 by dispatching the workflow rather than by reading
+   the secret list, since a secret can exist and be empty: run 31959476142 failed at step 1 and its
+   annotations named `BACKUP_UPLOAD_URL` and nothing else. That proves it is populated, not that it
+   is current — no workflow has ever consumed it and it predates this Neon project, so either re-set
+   it or check that the first real dump is a plausible size.
 
-   | Secret | Value |
-   | --- | --- |
-   | `DATABASE_URL` | the production Neon connection string (`?sslmode=require`) |
-   | `BACKUP_UPLOAD_URL` | the container URL + SAS from step 2 |
+   | Secret | Value | State |
+   | --- | --- | --- |
+   | `DATABASE_URL` | the production Neon connection string (`?sslmode=require`) | already set |
+   | `BACKUP_UPLOAD_URL` | the container URL + SAS from step 2 | **missing** |
 
 4. Apply a 30-day retention rule. This is a storage-account lifecycle policy rather than code in the
    workflow, because deleting old blobs from CI would require a SAS with delete permission:
