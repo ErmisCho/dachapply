@@ -64,6 +64,27 @@ jobs:
           echo "--- storage accounts in the app's resource group ---"
           az storage account list --resource-group rg-dachapply --query '[].name' -o tsv || echo "(cannot list storage in rg-dachapply)"
 
+      # This subscription has never used Azure Storage, so the Microsoft.Storage resource provider
+      # sits at NotRegistered -- and Azure reports calls against an unregistered provider as
+      # "SubscriptionNotFound", which is what sent the first three attempts chasing the wrong thing.
+      # Registration is idempotent and subscription-scoped; if the credential is only scoped to the
+      # resource group it will fail here with a clear message instead of a misleading one later.
+      - name: Ensure the Microsoft.Storage provider is registered
+        shell: bash
+        run: |
+          set -euo pipefail
+          state=$(az provider show --namespace Microsoft.Storage --query registrationState -o tsv)
+          echo "Microsoft.Storage: $state"
+          if [ "$state" != "Registered" ]; then
+            if ! err=$(az provider register --namespace Microsoft.Storage --wait 2>&1); then
+              echo "$err"
+              echo "::error::Microsoft.Storage is $state and this credential cannot register it."
+              echo "::error::An owner of the subscription needs to run once: az provider register --namespace Microsoft.Storage"
+              exit 1
+            fi
+            echo "registered: $(az provider show --namespace Microsoft.Storage --query registrationState -o tsv)"
+          fi
+
       - name: Create the storage account and private container
         shell: bash
         env:
