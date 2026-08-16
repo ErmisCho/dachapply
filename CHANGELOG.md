@@ -28,6 +28,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Production error alerting, off until an alert address is configured.
 - A panel options menu on every dashboard panel, so reordering and hiding a panel work by keyboard
   and by tap — previously they appeared only on mouse hover and had no other route.
+- The board can be sorted by status, in pipeline order, and by up to three columns at once: click a
+  column header to cycle it through ascending, descending and off, and a second column is added as a
+  tie-breaker rather than replacing the first. The active columns show their direction and their
+  precedence. Sorting this way needs no modifier key, so it works by keyboard and by tap.
 
 ### Changed
 

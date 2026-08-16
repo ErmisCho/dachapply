@@ -54,17 +54,64 @@ BOARD_THRESHOLDS = {
 # lands here.
 DEFAULT_BOARD_ORDERING = ('stale_rank', 'status_rank', 'priority_rank', '-evaluations__fit_score', '-created_at')
 
-# TASK-97's sort control. The query parameter is a lookup *key*, never an argument to
+# TASK-97/TASK-108's sort control. The query parameter is a lookup *key*, never an argument to
 # order_by(): passing it through would let a client order by any related column
 # (?ordering=-created_by__password) and read values off the resulting row order, which is
 # information disclosure, not just untidy. An unknown key simply misses the dict.
+# 'status' points at status_pipeline_rank (built below from JobLead.STATUSES), not status_rank
+# -- status_rank is an attention order DEFAULT_BOARD_ORDERING depends on, and collapses
+# interview/offer together, which is wrong for a user explicitly sorting by pipeline stage.
 BOARD_ORDERINGS = {
-    '-fit_score': ('-evaluations__fit_score', '-created_at'),
-    '-created_at': ('-created_at',),
-    # nulls_last because most rows have no feedback date, and the point of this sort is to put
-    # the rows that do have one at the top.
-    'feedback_due_date': (F('feedback_due_date').asc(nulls_last=True), '-created_at'),
+    'status': 'status_pipeline_rank',
+    'fit_score': 'evaluations__fit_score',
+    'priority': 'priority_rank',
+    'created_at': 'created_at',
+    'applied_at': 'applied_at',
+    'updated_at': 'updated_at',
+    'feedback_due_date': 'feedback_due_date',
 }
+
+
+def _status_pipeline_rank():
+    """Case/When generated from JobLead.STATUSES so a status added to the model can't
+    silently fail to sort -- the pipeline order is never restated as a second literal list."""
+    whens = [When(status=s, then=Value(i)) for i, (s, _label) in enumerate(JobLead.STATUSES)]
+    return Case(*whens, default=Value(len(JobLead.STATUSES)), output_field=IntegerField())
+
+
+def _ordering_expr(key, descending):
+    field = BOARD_ORDERINGS[key]
+    if key == 'feedback_due_date':
+        # nulls_last both directions: most rows have no feedback date, and the point of this
+        # sort is to surface the ones that do rather than let nulls float to the top on desc.
+        return F(field).desc(nulls_last=True) if descending else F(field).asc(nulls_last=True)
+    return f'-{field}' if descending else field
+
+
+def parse_board_ordering(raw):
+    """TASK-108 wire contract: '?ordering=status,-fit_score' -- comma-separated keys, each an
+    optional leading '-' for descending. Unknown or duplicate keys are dropped rather than
+    erroring, so a stale bookmark degrades instead of breaking; at most 3 keys are honoured;
+    '-created_at' then 'id' are always appended as final tiebreakers so pagination can't
+    interleave. Falls back to DEFAULT_BOARD_ORDERING when nothing valid remains. Only
+    BOARD_ORDERINGS' values ever reach order_by() -- a raw query token that isn't one of its
+    keys never does.
+    """
+    seen = set()
+    exprs = []
+    for token in (raw or '').split(','):
+        token = token.strip()
+        if not token:
+            continue
+        descending = token.startswith('-')
+        key = token[1:] if descending else token
+        if key not in BOARD_ORDERINGS or key in seen:
+            continue
+        seen.add(key)
+        exprs.append(_ordering_expr(key, descending))
+        if len(exprs) == 3:
+            break
+    return (*exprs, '-created_at', 'id') if exprs else DEFAULT_BOARD_ORDERING
 
 
 # "Reached interview" is about the journey, not the current column. A job now in `offer`,
@@ -510,8 +557,11 @@ class JobLeadViewSet(viewsets.ModelViewSet):
                 When(status__in=JobLead.UNAPPLIED_STATUSES, created_at__lt=timezone.now()-timezone.timedelta(days=JobLead.STALE_UNAPPLIED_DAYS), then=Value(1)),
                 default=Value(0), output_field=IntegerField()),
             status_rank=Case(When(status='new', then=Value(0)), When(status='to_apply', then=Value(1)), When(status='reviewed', then=Value(2)), When(status__in=['interview','offer'], then=Value(3)), When(status='applied', then=Value(4)), default=Value(5), output_field=IntegerField()),
-            priority_rank=Case(When(evaluations__priority='high', then=Value(0)), When(evaluations__priority='medium', then=Value(1)), When(evaluations__priority='low', then=Value(2)), default=Value(3), output_field=IntegerField())
-        ).order_by(*BOARD_ORDERINGS.get(p.get('ordering') or '', DEFAULT_BOARD_ORDERING))
+            priority_rank=Case(When(evaluations__priority='high', then=Value(0)), When(evaluations__priority='medium', then=Value(1)), When(evaluations__priority='low', then=Value(2)), default=Value(3), output_field=IntegerField()),
+            # TASK-108: pipeline order for ordering=status, distinct from status_rank's attention
+            # order above -- see BOARD_ORDERINGS' comment.
+            status_pipeline_rank=_status_pipeline_rank(),
+        ).order_by(*parse_board_ordering(p.get('ordering')))
         return qs.distinct()
     def list(self, request, *args, **kwargs):
         response=super().list(request, *args, **kwargs)

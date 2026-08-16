@@ -1,5 +1,6 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {copyToClipboard,deadlineBadge,fromDateTimeLocal,germanSubmitError,pathTitle,ratePercent,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {copyToClipboard,deadlineBadge,fromDateTimeLocal,germanSubmitError,nextSortKeys,pathTitle,ratePercent,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
 // missing clipboard must resolve to false instead of rejecting into the console.
@@ -63,6 +64,46 @@ describe('apply-by deadline badge',()=>{
   it('follows the threshold the backend ships rather than a hardcoded 7',()=>{
     expect(deadlineBadge(10,14)).toEqual({tone:'yellow',label:'Apply in 10d'})
     expect(deadlineBadge(5,3)).toBe(null)
+  })
+})
+
+// TASK-108 AC2/AC3/AC6/AC7: the board's sortable column headers cycle unsorted -> ascending ->
+// descending -> unsorted, and a second header click appends a lower-precedence key instead of
+// replacing the first - that append-not-replace step is the one a shift-click implementation would
+// have skipped, so it is the one worth pinning down here rather than only in a browser.
+describe('board header sort cycle',()=>{
+  it('cycles a single column unsorted -> ascending -> descending -> unsorted',()=>{
+    let keys:SortKey[]=[]
+    keys=nextSortKeys(keys,'status')
+    expect(keys).toEqual([{key:'status',dir:'asc'}])
+    keys=nextSortKeys(keys,'status')
+    expect(keys).toEqual([{key:'status',dir:'desc'}])
+    keys=nextSortKeys(keys,'status')
+    expect(keys).toEqual([])
+  })
+
+  it('appends a second header as a lower-precedence key instead of replacing the first',()=>{
+    const withStatus=nextSortKeys([],'status')
+    const withBoth=nextSortKeys(withStatus,'fit_score')
+    expect(withBoth).toEqual([{key:'status',dir:'asc'},{key:'fit_score',dir:'asc'}])
+    expect(sortOrderingString(withBoth)).toBe('status,fit_score')
+  })
+
+  it('toggles direction on the lower-precedence key in place, leaving precedence order alone',()=>{
+    const twoKeys:SortKey[]=[{key:'status',dir:'asc'},{key:'fit_score',dir:'asc'}]
+    const flipped=nextSortKeys(twoKeys,'fit_score')
+    expect(flipped).toEqual([{key:'status',dir:'asc'},{key:'fit_score',dir:'desc'}])
+    expect(sortOrderingString(flipped)).toBe('status,-fit_score')
+  })
+
+  it('drops the oldest (lowest-precedence) key once a 4th distinct column is activated, matching the server cap of 3',()=>{
+    const three=['status','fit_score','priority'].reduce((acc,k)=>nextSortKeys(acc,k),[] as SortKey[])
+    const four=nextSortKeys(three,'applied_at')
+    expect(four).toEqual([{key:'fit_score',dir:'asc'},{key:'priority',dir:'asc'},{key:'applied_at',dir:'asc'}])
+  })
+
+  it('renders an empty ordering string once every header is cycled back to unsorted',()=>{
+    expect(sortOrderingString([])).toBe('')
   })
 })
 

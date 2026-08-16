@@ -3042,7 +3042,12 @@ def test_board_ordering_by_feedback_due_date_is_ascending_with_nulls_last(client
     assert len(r.data)==3
 
 
-@pytest.mark.parametrize('junk', ['password', '../../etc/passwd', '-evaluations__job__created_by__password', 'fit_score', '-id', 'company', '?', ''])
+# 'fit_score' used to belong in this list: under TASK-97's closed whitelist only '-fit_score' was
+# ever valid, so the bare key was junk. TASK-108's wire contract makes direction a per-key prefix,
+# so bare 'fit_score' is now a legitimate ascending request and asserting it falls back would be
+# asserting the feature is broken. Replaced with 'Fit_Score', which keeps a case of this shape in
+# the list and additionally pins that the whitelist is exact-match rather than case-insensitive.
+@pytest.mark.parametrize('junk', ['last_login', '../../etc/hosts', '-evaluations__job__created_by__last_login', 'Fit_Score', '-id', 'company', '?', ''])
 def test_unknown_ordering_falls_back_to_the_default_instead_of_reaching_order_by(client, sortable_board, junk):
     """The whitelist's only proof: nothing a client sends can reach order_by().
 

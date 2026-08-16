@@ -98,5 +98,22 @@ const submitErrorsDe:[RegExp,string][]=[
 // never inside the text the way DRF's own default phrasing puts it.
 export function germanSubmitError(text:string,waitSeconds?:number|null){const t=String(text||'').trim();for(const[pattern,german] of submitErrorsDe){const m=t.match(pattern);if(m){const s=m[1]||(typeof waitSeconds==='number'&&waitSeconds>0?String(Math.ceil(waitSeconds)):'');return s?german.replace('Bitte versuche es später erneut.','Bitte versuche es in {s} Sekunden erneut.').replace('{s}',s):german.replace('{s}','')}}return 'Das Einreichen hat nicht geklappt. Bitte versuche es erneut.'}
 
+// TASK-108. Pure cycle for the board's sortable column headers: unsorted -> ascending ->
+// descending -> unsorted, appending a newly-activated column as the lowest-precedence key rather
+// than replacing what is already sorted (that append-not-replace behaviour is the one thing worth
+// a test - everything else here is a straight lookup). Capped at 3 client-side too, dropping the
+// oldest (lowest-precedence) key first, matching the server's own cap so the UI never implies a
+// 4th key does anything.
+export type SortKey={key:string;dir:'asc'|'desc'}
+export function nextSortKeys(current:SortKey[],key:string,max=3):SortKey[]{
+  const i=current.findIndex(k=>k.key===key)
+  const next=[...current]
+  if(i<0){next.push({key,dir:'asc'});return next.length>max?next.slice(next.length-max):next}
+  if(next[i].dir==='asc'){next[i]={key,dir:'desc'};return next}
+  next.splice(i,1)
+  return next
+}
+export function sortOrderingString(keys:SortKey[]):string{return keys.map(k=>(k.dir==='desc'?'-':'')+k.key).join(',')}
+
 const routeTitles:Record<string,string>={'/':'Board','/add':'Add job','/public-submit':submitDe.title,'/prompts':'Prompts','/import':'Import','/followups':'Follow-ups','/export':'Export','/bookmarklet':'Bookmarklet','/login':'Sign in','/onboarding':'Setup','/privacy':'Privacy','/terms':'Terms','/settings/profile':'Profile settings','/settings/account':'Account settings'};
 export function pathTitle(pathname:string){return routeTitles[pathname]||(pathname.startsWith('/jobs/')?'Job':pathname.startsWith('/reset-password/')?'Reset password':pathname.startsWith('/verify-email/')?'Confirm email':'')}
