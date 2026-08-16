@@ -122,4 +122,30 @@ end to end — which is stronger than confirming a checkbox at
 https://github.com/settings/notifications, because it tests delivery rather than configuration. If no
 email arrived, the notification setting is off and AC3 is proven *not* met. Either way, check the
 inbox for run 31959476142 and record the result here.
+
+### 2026-08-16 (evening) — AC1 reduced to one paste; still owner-only, and why
+
+`docs/backup-restore.md` now opens with a single runnable block that does the whole of AC1: discovers
+the resource group the same way the deploy workflow does, creates the account and private container,
+mints the write-only SAS, **pipes it straight into `gh secret set`** so the credential never reaches a
+clipboard, a shell history or a browser form, applies the 30-day lifecycle rule, and dispatches the
+workflow.
+
+It still cannot be run from here, and the reason is worth stating precisely rather than as "no
+access": the local `az` identity is a service principal for an unrelated project and returns empty for
+every dachapply resource, so there is no subscription in which to create the storage account. The
+rights live in the `AZURE_CREDENTIALS` repo secret, which is write-only by design.
+
+**Two routes were considered and rejected, so they are not re-proposed later:**
+- Have a workflow mint the SAS and write the secret itself. `GITHUB_TOKEN` cannot write Actions
+  secrets, so this needs a PAT — trading a one-minute paste for a longer-lived credential.
+- Drop the SAS entirely and have `database-backup.yml` authenticate with `AZURE_CREDENTIALS` and
+  `az storage blob upload`. This works and needs no new secret, but it hands the backup job a full
+  service principal in place of a token that can only create and write. The write-only SAS was a
+  deliberate least-privilege choice, documented in the workflow header; swapping it for convenience
+  is a security regression, not a simplification.
+
+Note the expiry when running it: a one-year SAS is a thing that stops working silently. It will
+surface as a failed workflow run rather than a silent gap, which is what the guards are for.
+
 <!-- SECTION:NOTES:END -->

@@ -22,7 +22,7 @@ No LOGGING config and no error tracker exist anywhere in backend/config (grep: n
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Unhandled 500s produce a durable, pushed signal — Django LOGGING to mail_admins/webhook, or a Sentry DSN via env var
+- [x] #1 Unhandled 500s produce a durable, pushed signal — Django LOGGING to mail_admins/webhook, or a Sentry DSN via env var
 - [ ] #2 A deliberately raised test error reaches the channel end to end in production, recorded in the closing notes
 - [x] #3 Noise-guarded: 404s and throttled (429) requests do not alert
 <!-- AC:END -->
@@ -117,4 +117,43 @@ authenticated endpoint with a payload that reaches the ORM but not validation, o
 `DATABASE_URL` at an unreachable host on a throwaway revision. Simplest honest option is to wait for
 the first real 500 and record that one — the AC asks for an end-to-end delivery, not for a synthetic
 one.
+
+### AC1 closed 2026-08-16 — configured through the deploy, not the console
+
+The blocker was never the code; it was that `ERROR_ALERT_EMAILS` had no value in production, so
+`ADMINS` (settings.py:319) was empty and `AdminEmailHandler` had nobody to email.
+
+Set as a **repository variable** rather than a secret or a literal: it is a notification address, not
+a credential, and keeping it out of the workflow file avoids adding another copy of a personal email
+to a public repo. Wired into `az containerapp update --set-env-vars`, which is additive and touches
+only that name. Declared on every deploy rather than edited once in the console, so it survives a
+revision being recreated.
+
+**Proof it took effect, from deploy run 31963625572** — GitHub masks secrets in logs but not
+variables, which is what makes this readable at all:
+
+    env:
+      GHCR_PASSWORD: ***
+      ERROR_ALERT_EMAILS: ermis.chorinopoulos@gmail.com
+
+    az containerapp update ... --set-env-vars "ERROR_ALERT_EMAILS=$ERROR_ALERT_EMAILS"
+    -> build-and-push: success,  Verify public app: success
+
+So the variable resolved to a real value (an unset variable would have shown as empty right there)
+and the update succeeded. Production healthy afterwards: `/api/health/` 200 `{"status":"ok",
+"database":"ok"}`.
+
+`SERVER_EMAIL` deliberately left unset. The earlier note warned it must be a Brevo-verified sender or
+alerts bounce silently — that turned out not to need action: `settings.py:322` is
+`SERVER_EMAIL = os.getenv('SERVER_EMAIL') or DEFAULT_FROM_EMAIL`, and `DEFAULT_FROM_EMAIL` is already
+verified because password reset sends through it. Setting it would have been the only way to *break*
+this.
+
+**AC2 remains open and cannot be closed from here.** It asks for a deliberate error to reach the
+channel end to end, and the channel is the owner's inbox. Deliberately 500-ing production to test it
+is not worth the blast radius when the next real 500 tests it for free — so the honest close is to
+record the first genuine alert when it arrives, subject prefix `[DACHApply] `. If nothing has arrived
+after the next real error, check Brevo's sending log before suspecting the config: everything up to
+handing the message to Brevo is now proven.
+
 <!-- SECTION:NOTES:END -->
