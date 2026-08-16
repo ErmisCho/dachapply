@@ -32,6 +32,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   column header to cycle it through ascending, descending and off, and a second column is added as a
   tie-breaker rather than replacing the first. The active columns show their direction and their
   precedence. Sorting this way needs no modifier key, so it works by keyboard and by tap.
+- On phones and tablets, where the sortable column headers do not exist, the sort menu now offers
+  "status" and "status, then fit score", and shows which sort is active.
 
 ### Changed
 

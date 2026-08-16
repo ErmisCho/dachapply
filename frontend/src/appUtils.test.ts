@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {copyToClipboard,deadlineBadge,fromDateTimeLocal,germanSubmitError,nextSortKeys,pathTitle,ratePercent,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {copyToClipboard,deadlineBadge,describeOrdering,fromDateTimeLocal,germanSubmitError,nextSortKeys,pathTitle,ratePercent,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -104,6 +104,29 @@ describe('board header sort cycle',()=>{
 
   it('renders an empty ordering string once every header is cycled back to unsorted',()=>{
     expect(sortOrderingString([])).toBe('')
+  })
+})
+
+// TASK-111 AC4: below 1024px the sortable headers do not render, so this description string is the
+// only on-screen readout of the sort actually applied - it has to read back the exact wire string
+// TASK-108 sends as `ordering`, including combinations no preset <option> spells out.
+describe('describeOrdering (TASK-111 small-screen sort readout)',()=>{
+  it('names the default when no ordering is applied',()=>{
+    expect(describeOrdering('')).toBe('Sorted by: recommended')
+    expect(describeOrdering(null)).toBe('Sorted by: recommended')
+    expect(describeOrdering(undefined)).toBe('Sorted by: recommended')
+  })
+
+  it('describes a single ascending key by its column label',()=>{
+    expect(describeOrdering('status')).toBe('Sorted by: Status')
+  })
+
+  it('marks a descending key and preserves comma precedence order',()=>{
+    expect(describeOrdering('status,-fit_score')).toBe('Sorted by: Status, then Fit score (desc)')
+  })
+
+  it('falls back to the raw key for anything unmapped rather than dropping it silently',()=>{
+    expect(describeOrdering('made_up_key')).toBe('Sorted by: made_up_key')
   })
 })
 

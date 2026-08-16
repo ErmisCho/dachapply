@@ -117,3 +117,16 @@ export function sortOrderingString(keys:SortKey[]):string{return keys.map(k=>(k.
 
 const routeTitles:Record<string,string>={'/':'Board','/add':'Add job','/public-submit':submitDe.title,'/prompts':'Prompts','/import':'Import','/followups':'Follow-ups','/export':'Export','/bookmarklet':'Bookmarklet','/practice':'Practice','/mailbox':'Mailbox','/login':'Sign in','/onboarding':'Setup','/privacy':'Privacy','/terms':'Terms','/settings/profile':'Profile settings','/settings/account':'Account settings'};
 export function pathTitle(pathname:string){return routeTitles[pathname]||(pathname.startsWith('/jobs/')?'Job':pathname.startsWith('/reset-password/')?'Reset password':pathname.startsWith('/verify-email/')?'Confirm email':'')}
+
+// TASK-111 AC4. Below 1024px the sortable column headers do not render at all (hidden ... lg:table),
+// so the board's only sort control is the preset <select> -- but a select's own displayed label only
+// matches the applied sort when the value happens to equal one of its hardcoded <option>s. Sorting
+// via the (desktop-only) headers and then narrowing the viewport can leave `f.ordering` on a
+// combination no preset spells out. This reads the same comma-separated `-key` wire string TASK-108
+// both writes and sends as `ordering`, so what is on screen cannot drift from what the request says.
+const orderingKeyLabels:Record<string,string>={status:'Status',fit_score:'Fit score',priority:'Priority',created_at:'Newest',applied_at:'Applied date',updated_at:'Last update',feedback_due_date:'Feedback due'}
+export function describeOrdering(ordering?:string|null):string{
+  const keys=String(ordering||'').split(',').map(s=>s.trim()).filter(Boolean)
+  if(!keys.length)return 'Sorted by: recommended'
+  return 'Sorted by: '+keys.map(k=>{const desc=k.startsWith('-');const key=desc?k.slice(1):k;return (orderingKeyLabels[key]||key)+(desc?' (desc)':'')}).join(', then ')
+}
