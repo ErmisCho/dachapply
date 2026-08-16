@@ -26,6 +26,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - German throughout the public job-submission flow, including its validation, success and error states.
 - Nightly database backups to private storage, with guards that refuse to upload an empty dump.
 - Production error alerting, off until an alert address is configured.
+- A panel options menu on every dashboard panel, so reordering and hiding a panel work by keyboard
+  and by tap — previously they appeared only on mouse hover and had no other route.
 
 ### Changed
 
@@ -39,6 +41,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   than hover only.
 - The jobs list response is roughly half its previous size; full job text is fetched on demand.
 - Navigating between pages no longer re-checks the session or flashes a loading screen.
+- The public job-submission page is reachable without an account: a friend with an invite code can
+  submit a job link without signing up, which is what invite codes were for.
 
 ### Fixed
 
@@ -59,6 +63,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   relying on colour.
 - Exporting your data no longer includes another person's notes, and re-importing an unmodified
   export no longer reports false conflicts.
+- Deleting your account no longer deletes jobs you had submitted for someone else, nor that
+  person's evaluations, notes and follow-ups on them.
+
+### Security
+
+- Removed three real recruiter contact addresses that had been pasted from a live job posting into
+  a test fixture that never read them.
+- Local `manage.py` commands now refuse to run against a `DATABASE_URL` loaded from the repo-root
+  `.env` file unless `DACHAPPLY_ALLOW_PROD_DB=1` is set for that command, so a local migration
+  cannot silently reach the production database. Values injected by the container or exported in a
+  shell are unaffected.
 
 ## [0.1.0] — 2026-07-20
 

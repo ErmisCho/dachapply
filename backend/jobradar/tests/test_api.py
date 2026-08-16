@@ -171,10 +171,10 @@ def test_bulk_create_rejects_empty_job(client):
     assert r.status_code==400 and JobLead.objects.count()==0
 
 def test_bulk_create_does_not_treat_description_emails_as_links(client):
-    description='Contacts:\nredacted@example.test\nermis.chorinopoulos@gmail.com\nredacted@example.test'
-    r=client.post('/api/jobs/bulk-create/', {'company':'EBCONT (BMJ)','title':'ElasticSearch Consultant','raw_description':description}, format='json')
+    description='Contacts:\nanna.recruiter@example.test\njonas.hiring@example.test\nlea.people@example.test'
+    r=client.post('/api/jobs/bulk-create/', {'company':'Acme Corp (Example)','title':'ElasticSearch Consultant','raw_description':description}, format='json')
     assert r.status_code==201 and r.data['count']==1
-    assert r.data['created'][0]['company']=='EBCONT (BMJ)' and r.data['created'][0]['url']==''
+    assert r.data['created'][0]['company']=='Acme Corp (Example)' and r.data['created'][0]['url']==''
 
 def test_bulk_create_keeps_distinct_job_query_ids(client):
     links='\n'.join([
@@ -2443,7 +2443,7 @@ def test_demo_login_creates_rich_demo_dashboard(db):
 def test_demo_seed_removes_demo_jobs_from_other_accounts(db):
     from jobradar.services.demo_data import ensure_demo_user
 
-    other = User.objects.create_user('ermis.chorinopoulos@gmail.com')
+    other = User.objects.create_user('leaked-demo@example.test')
     JobLead.objects.create(company='Leaked Demo', title='Leak', url='https://demo.dachapply.local/jobs/leak', source='demo', created_by=other)
     JobLead.objects.create(company='Dynatrace', title='Python Backend Engineer', url='https://example.com/jobs/dynatrace', source='seed', created_by=other)
 

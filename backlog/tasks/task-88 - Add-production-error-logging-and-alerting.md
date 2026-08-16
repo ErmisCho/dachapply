@@ -88,4 +88,33 @@ the other agent this wave).
   Brevo-verified sender or the alert silently bounces.
 - **AC2** — after AC1 takes a revision, trigger a deliberate 500 in production, confirm the mail
   arrives with subject prefix `[DACHApply] `, and record it here.
+
+### 2026-08-16 — attempted from this session, and why it could not be done
+
+Checked rather than assumed: the `az` CLI on this machine **is** logged in, but as a service
+principal for an unrelated project (`rg-route-ai-sync`). It sees exactly one subscription, and in it:
+
+    az resource list --query "[?contains(name,'dachapply')]"   -> empty
+    az webapp list                                             -> empty
+    az containerapp list                                       -> route-ai-sync apps only
+
+So no Container App named `dachapply` is reachable from this credential and AC1 cannot be set from
+here. The rights live in the `AZURE_CREDENTIALS` repo secret, which is write-only. This is a
+credential boundary, not a missing step — AC1 and AC2 stay unchecked.
+
+**Exact command once logged in as the account behind `AZURE_CREDENTIALS`** (the deploy workflow
+discovers the resource group rather than hardcoding it, so mirror that):
+
+    RG=$(az containerapp list --query "[?name=='dachapply'].resourceGroup | [0]" -o tsv)
+    az containerapp update --name dachapply --resource-group "$RG" \
+      --set-env-vars ERROR_ALERT_EMAILS=ermis.chorinopoulos@gmail.com
+
+Leave `SERVER_EMAIL` unset unless a Brevo-verified sender is used — an unverified sender makes the
+alert bounce silently, which is the exact failure this task exists to remove.
+
+For AC2, do not add a crash route to production to test it. A 500 that costs nothing: hit an
+authenticated endpoint with a payload that reaches the ORM but not validation, or briefly point
+`DATABASE_URL` at an unreachable host on a throwaway revision. Simplest honest option is to wait for
+the first real 500 and record that one — the AC asks for an end-to-end delivery, not for a synthetic
+one.
 <!-- SECTION:NOTES:END -->

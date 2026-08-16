@@ -29,6 +29,11 @@ export const submitDe={
   intro:'Füge einfach einen Link ein – weitere Details sind optional.',
   friendNote:(name:string)=>`Was du hier einreichst, landet direkt im Dashboard von ${name}. ${name} hat diese Verbindung einmal bestätigt, sie bleibt in deinem Konto gespeichert – du musst also nicht erneut fragen und keinen Code eingeben. Zugang zum privaten Dashboard erhältst du dadurch nicht.`,
   openNote:'Hier kannst du Job-Links einreichen. Zugang zum privaten Dashboard erhältst du dadurch nicht.',
+  // TASK-101 AC3. Only shown to a visitor with no account at all - an approved friend's own login
+  // already skips the invite-code check server-side (views.public_submit), so this field would be
+  // noise for them.
+  inviteCode:'Einladungscode',
+  inviteCodePlaceholder:'Code von deinem Kontakt',
   linksLabel:'Links einfügen',
   linksPlaceholder:'Füge hier einen Job-Link ein. Du kannst auch mehrere Links einfügen, getrennt durch Leerzeichen oder Zeilenumbrüche.',
   advanced:'Erweitert / optionale Angaben',

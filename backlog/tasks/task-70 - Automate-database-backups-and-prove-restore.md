@@ -86,4 +86,40 @@ blob.
 - **AC4** — read Neon Console → project → Settings → Storage → History retention and record the
   window in `docs/backup-restore.md`. Deliberately not guessed: free and paid tiers differ enough
   that a wrong number decides whether Neon is a usable recovery path at all.
+
+### 2026-08-16 — measured: only ONE secret is missing, not two
+
+The note above told the owner to add two secrets. That was inferred from "no workflow uses a
+`DATABASE_URL` secret" — which is true, and which is not the same question as whether the secret
+exists. It does:
+
+    gh secret list
+    AZURE_CREDENTIALS  AZURE_WEBAPP_PUBLISH_PROFILE  DATABASE_URL  GHCR_PULL_TOKEN  SECRET_KEY
+                                                     ^ set 2026-06-07
+
+Confirmed by running the workflow rather than by reading the list, since a secret can exist and be
+empty. Run **31959476142** (`gh workflow run database-backup.yml --ref main`) failed at step 1 of 6,
+and its annotations name one secret and only one:
+
+    failure: secret BACKUP_UPLOAD_URL is not set (write-only Azure Blob container SAS URL)
+    failure: see docs/backup-restore.md for how to create both
+    failure: Process completed with exit code 1
+
+The guard checks both and reports every one it finds missing, so `DATABASE_URL` being absent from
+that list is positive evidence it is populated. **Limit of the evidence:** this proves non-empty, not
+correct — no workflow has ever consumed it, and it predates the current Neon project by two months.
+Before trusting the first real backup, either re-set it from the current production string or check
+that run 1's dump is non-trivial in size.
+
+So **AC1 needs `BACKUP_UPLOAD_URL` and nothing else.** Blocked here for the same reason as TASK-88:
+the local `az` credential is a service principal for an unrelated project and sees no dachapply
+resources and no storage accounts at all, so the container and SAS cannot be created from this
+session.
+
+**AC3 has been put in flight rather than left as a setting to eyeball.** Run 31959476142 is a genuine
+failed run of this exact workflow on `main`. If a GitHub email about it arrived, AC3 is verified
+end to end — which is stronger than confirming a checkbox at
+https://github.com/settings/notifications, because it tests delivery rather than configuration. If no
+email arrived, the notification setting is off and AC3 is proven *not* met. Either way, check the
+inbox for run 31959476142 and record the result here.
 <!-- SECTION:NOTES:END -->

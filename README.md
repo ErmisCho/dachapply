@@ -51,6 +51,17 @@ Python dependencies are managed with [uv](https://docs.astral.sh/uv/). `uv run` 
 updates `.venv` from `uv.lock` on demand, so there is no venv to create or activate by hand — and
 if `.venv` is ever lost, the next `uv run` rebuilds it in seconds.
 
+**Before running `migrate` or any other `manage.py` command**: if the repo-root `.env` has
+`DATABASE_URL` set to a remote database (production or otherwise), `manage.py` refuses to start
+rather than risk a local command reaching it silently — you'll see
+`DATABASE_URL came from a .env file...`. This is deliberate, not a bug:
+- **Normal local dev**: leave `DATABASE_URL` empty in `.env` (see `.env.local.example`).
+  `manage.py` then uses `backend/db.sqlite3`; set `DB_NAME=<path>` for a different sqlite file.
+- **Deliberately reaching a remote database** (e.g. the `.env.local-neon.example` workflow): opt in
+  for that one command, e.g. `DACHAPPLY_ALLOW_PROD_DB=1 uv run manage.py migrate`. The guard only
+  ever looks at values sourced from a `.env` file — a `DATABASE_URL` you export in your own shell
+  for a single command is never blocked.
+
 ```bash
 uv sync
 cd frontend

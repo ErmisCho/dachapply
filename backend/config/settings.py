@@ -5,10 +5,41 @@ from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# TASK-100: snapshot the environment exactly as the process received it, before this module (or its
+# own load_env_file calls below) ever writes to os.environ.
+#
+# Why a snapshot and not a plain "is this key already in os.environ" check: Django's lazy settings
+# retries importing this module on every failed attribute access (LazySettings._setup() is called
+# again from LazyObject.__getattr__ as long as self._wrapped stays unset), and CPython drops a module
+# that raised an exception from sys.modules, so a raise here means config.settings re-executes from
+# scratch. os.environ is a real process-global, though, and is NOT rolled back between those
+# attempts -- so a key load_env_file() set on a first (failed, e.g. guard-raised) pass would look
+# "already in the environment" on the retry, and the guard below would then wave it through as if a
+# human had typed it. Measured: without this snapshot, `manage.py check` against a production-shaped
+# root .env raises once, gets silently swallowed by Django's own settings.INSTALLED_APPS probe, and
+# the retry it triggers loads DATABASE_URL from the .env file completely unguarded.
+#
+# The marker survives retries for the same reason the bug exists: once written, later passes see it
+# already there and never overwrite it, so _process_env_keys reflects the one true "before this
+# module touched anything" snapshot on every attempt, not just the first.
+_ENV_SNAPSHOT_MARKER = '_DACHAPPLY_PROCESS_ENV_KEYS'
+if _ENV_SNAPSHOT_MARKER not in os.environ:
+    os.environ[_ENV_SNAPSHOT_MARKER] = '\n'.join(os.environ.keys())
+_process_env_keys = frozenset(os.environ[_ENV_SNAPSHOT_MARKER].split('\n'))
+
 
 def load_env_file(path):
+    """Load KEY=VALUE lines from `path` into os.environ, without overriding anything already set.
+
+    Returns the set of keys this call actually populated that were not in the process environment
+    to begin with (per _process_env_keys, not per the live, mutable os.environ -- see above).
+    TASK-100 uses this to tell "this value came from a persisted .env file" apart from "this value
+    came from the real process environment" -- the container and CI never ship a .env file (see
+    _env_file_keys below), so only a local run can trip that distinction.
+    """
     if not path.exists():
-        return
+        return set()
+    set_keys = set()
     for raw_line in path.read_text().splitlines():
         line = raw_line.strip()
         if not line or line.startswith('#') or '=' not in line:
@@ -16,11 +47,25 @@ def load_env_file(path):
         key, value = line.split('=', 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
+        if key not in _process_env_keys:
+            set_keys.add(key)
         os.environ.setdefault(key, value)
+    return set_keys
 
 
-load_env_file(BASE_DIR.parent / '.env')
-load_env_file(BASE_DIR / '.env')
+_env_file_keys = load_env_file(BASE_DIR.parent / '.env')
+_env_file_keys |= load_env_file(BASE_DIR / '.env')
+
+
+def local_db_guard_blocks(database_url, file_sourced_keys, allow_prod_db):
+    """True if a DATABASE_URL should be refused rather than used. See TASK-100.
+
+    Blocks only a value that came from a persisted .env file (`database_url` truthy and
+    'DATABASE_URL' present in `file_sourced_keys`) with no opt-in. A value the operator typed for
+    this command -- exported in the shell, or the DATABASE_URL='' + DB_NAME=... workaround, which
+    leaves 'DATABASE_URL' out of file_sourced_keys entirely -- is left alone.
+    """
+    return bool(database_url) and 'DATABASE_URL' in file_sourced_keys and not allow_prod_db
 
 
 def env_bool(name, default=False):
@@ -99,6 +144,28 @@ TEMPLATES=[{'BACKEND':'django.template.backends.django.DjangoTemplates','DIRS':[
 WSGI_APPLICATION='config.wsgi.application'
 
 DATABASE_URL = os.getenv('DATABASE_URL')
+
+# TASK-100: manage.py run from a laptop must not be able to silently reach production. The
+# incident (2026-08-16) was DATABASE_URL arriving from the repo-root .env file, which holds the
+# production Neon URL -- `unset DATABASE_URL` does nothing (the value comes from the file, not the
+# shell) and `DB_NAME=...` is silently ignored (the sqlite branch below is unreachable while
+# DATABASE_URL is truthy). Guarding on _env_file_keys rather than on "is this DEBUG" or "does the
+# host look local" targets the actual danger: a value that showed up without anyone typing it this
+# session. A DATABASE_URL exported in the shell for one command, or DATABASE_URL='' + DB_NAME=...
+# (the old workaround, still supported), is a deliberate per-command choice and is left alone.
+#
+# The container and CI are unaffected without any extra check: neither ships a .env file (excluded
+# by .gitignore and .dockerignore alike), so their DATABASE_URL always comes from the real process
+# environment -- never recorded in _env_file_keys -- and this block never fires for them.
+if local_db_guard_blocks(DATABASE_URL, _env_file_keys, env_bool('DACHAPPLY_ALLOW_PROD_DB', False)):
+    raise ImproperlyConfigured(
+        "DATABASE_URL came from a .env file, and that file can hold the production database. "
+        "Refusing to start rather than risk a local manage.py command reaching it silently. "
+        "Either clear DATABASE_URL in .env (optionally set DB_NAME=<path> to pick a local sqlite "
+        "file -- manage.py falls back to backend/db.sqlite3 otherwise), or set "
+        "DACHAPPLY_ALLOW_PROD_DB=1 for this command if you deliberately mean to reach that database."
+    )
+
 if DATABASE_URL:
     try:
         import dj_database_url

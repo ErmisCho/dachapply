@@ -31,4 +31,25 @@ The root also collects untracked personal-data files: `db.sqlite3`, `azure-sqlit
 
 <!-- SECTION:NOTES:BEGIN -->
 Owner action (PSA-003 — these files were not created by agents, so agents must not delete them). Five minutes of hygiene; do it in the same sitting as TASK-69, which handles the one export copy that DID reach git history.
+
+### 2026-08-16 — there is a second copy of this credential, in GitHub
+
+The description tracks the on-disk `dachapply.PublishSettings` and correctly notes it was never
+committed. It misses the other copy: **`AZURE_WEBAPP_PUBLISH_PROFILE` is a repository secret**, added
+2026-05-22, and no workflow references it any more —
+
+    gh secret list                          -> AZURE_WEBAPP_PUBLISH_PROFILE  2026-05-22
+    grep -rl AZURE_WEBAPP_PUBLISH_PROFILE .github/   -> no matches
+
+Deployment moved to Container Apps in TASK-49 and the App Service workflow went with it, so this is a
+live deployment credential with no consumer: it can only be used by something that should not be
+using it. Deleting it is the cheapest half of AC1 and needs no Azure access at all:
+
+    gh secret delete AZURE_WEBAPP_PUBLISH_PROFILE
+
+Not run from this session — it is irreversible (the value cannot be read back before deleting), the
+secret was not created by an agent, and AC1's real question is whether the App Service itself should
+be retired. Deleting the secret without retiring the service rotates nothing on the Azure side; the
+publish endpoint stays open and the on-disk `.PublishSettings` still holds working credentials.
+Retire the App Service, and both copies become inert at once.
 <!-- SECTION:NOTES:END -->

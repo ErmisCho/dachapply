@@ -25,7 +25,7 @@ from .services.prompt_builder import build_prompt, build_enrichment_prompt, buil
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
-from .services.access import accessible_jobs, job_create_defaults, submitted_away_jobs
+from .services.access import accessible_jobs, job_create_defaults, owned_by, submitted_away_jobs
 from .services.cleaning import clean_job_location
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
@@ -405,15 +405,26 @@ def delete_account(request):
     if user.has_usable_password() and not user.check_password(password):
         return Response({'detail':'Current password is required to delete your account.'}, status=400)
     with transaction.atomic():
-        owned_jobs=JobLead.objects.filter(Q(created_by=user)|Q(submitted_for=user)).distinct()
+        # TASK-103: this used to be Q(created_by=user)|Q(submitted_for=user), the same "created it
+        # is owned it" rule TASK-84 removed from access.owned_by -- it let a friend who only
+        # submitted a job for someone else delete the recipient's job (and its evaluations/notes/
+        # follow-ups via the cascades below) along with their own account. owned_by(user) is the
+        # one ownership rule every other consumer already routes through.
+        owned_jobs=JobLead.objects.filter(owned_by(user)).distinct()
+        profile_count=1 if hasattr(user, 'jobradar_profile') else 0
+        # Count what .delete() actually removed, not a queryset snapshot taken before the delete --
+        # JobEvaluation/ApplicationNote/FollowUp cascade off JobLead, so the two numbers diverge.
+        _, deleted_by_model=owned_jobs.delete()
         counts={
-            'jobs': owned_jobs.count(),
-            'evaluations': JobEvaluation.objects.filter(job__in=owned_jobs).count(),
-            'notes': ApplicationNote.objects.filter(Q(job__in=owned_jobs)|Q(created_by=user)).distinct().count(),
-            'followups': FollowUp.objects.filter(job__in=owned_jobs).count(),
-            'profile': 1 if hasattr(user, 'jobradar_profile') else 0,
+            'jobs': deleted_by_model.get('jobradar.JobLead', 0),
+            'evaluations': deleted_by_model.get('jobradar.JobEvaluation', 0),
+            'notes': deleted_by_model.get('jobradar.ApplicationNote', 0),
+            'followups': deleted_by_model.get('jobradar.FollowUp', 0),
+            'profile': profile_count,
         }
-        owned_jobs.delete()
+        # Notes this user wrote on a job they do not own (e.g. one submitted for someone else)
+        # are the recipient's board content, not this account's -- strip the byline, do not delete
+        # someone else's note just because this user authored it.
         ApplicationNote.objects.filter(created_by=user).update(created_by=None)
         logout(request)
         user.delete()
