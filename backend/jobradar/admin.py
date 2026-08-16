@@ -9,7 +9,7 @@ from django.db.models import Count, Max, Q, Sum
 from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
-from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, ScheduledTaskRun, SiteDailyUsage, SiteVisitor, UserDailyUsage, UserProfile, VisitorDailyUsage
+from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun, SiteDailyUsage, SiteVisitor, UserDailyUsage, UserProfile, VisitorDailyUsage
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME
 from .services.demo_scheduler import seed_demo_if_due
 
@@ -579,6 +579,33 @@ class VisitorDailyUsageAdmin(admin.ModelAdmin):
     list_filter=('date',)
     date_hierarchy='date'
     readonly_fields=('created_at','updated_at')
+
+@admin.register(MailboxRun)
+class MailboxRunAdmin(admin.ModelAdmin):
+    list_display=('started_at','skipped','skip_reason','fetched_count','job_related_count','uncertain_count','suggestion_count','draft_written_count','draft_blocked_count')
+    list_filter=('skipped','skip_reason','started_at')
+    readonly_fields=('started_at',)
+
+@admin.register(MailboxMessage)
+class MailboxMessageAdmin(admin.ModelAdmin):
+    list_display=('uid','sender','subject','classification','matched_job','received_at')
+    search_fields=('sender','subject')
+    list_filter=('classification','evaluator')
+    readonly_fields=('created_at',)
+
+@admin.register(MailboxDraft)
+class MailboxDraftAdmin(admin.ModelAdmin):
+    list_display=('message','job','status','evaluator','created_at')
+    search_fields=('subject','block_reason')
+    list_filter=('status','evaluator')
+    readonly_fields=('created_at',)
+
+@admin.register(MailboxSuggestion)
+class MailboxSuggestionAdmin(admin.ModelAdmin):
+    list_display=('job','suggestion_type','status','created_at','decided_at')
+    list_filter=('suggestion_type','status')
+    search_fields=('job__company','job__title')
+    readonly_fields=('created_at',)
 
 @admin.register(InviteCode)
 class InviteCodeAdmin(admin.ModelAdmin):

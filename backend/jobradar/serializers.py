@@ -2,7 +2,7 @@ import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from django.utils import timezone
 from rest_framework import serializers
-from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, UserProfile
+from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile
 from .services.skill_matcher import smart_skill_status, display_skill_name
 from .services.access import accessible_jobs
 from .services.demo_data import is_demo_job_payload, is_demo_user
@@ -78,18 +78,26 @@ def clean_job_title(value):
 class CandidateProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model=UserProfile
-        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
+        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_salary_floor_eur','mailbox_do_not_disclose','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
     # The profile codec is a text codec: it JSON-wraps values for drifted SQLite schemas and
     # coerces falsy values to ''. Running a boolean through it would store '' in a
-    # BooleanField and serialise False as ''. Booleans pass through untouched.
+    # BooleanField and serialise False as ''. Booleans (and mailbox_check_cadence_minutes, an int
+    # that is never 0 per the validator below) pass through untouched.
     def to_representation(self, instance):
         data=super().to_representation(instance)
-        return {k: (v if isinstance(v, bool) else decode_profile_value(v)) for k,v in data.items()}
+        return {k: (v if isinstance(v, (bool, int)) else decode_profile_value(v)) for k,v in data.items()}
     # No validate_candidate_profile: clearing the field used to store somebody else's bio instead,
     # so a user could never actually empty it. Empty now stays empty and prompt generation refuses.
+    def validate_mailbox_check_cadence_minutes(self, v):
+        # TASK-109 AC8. Floor of 5: check_mailbox's own cadence gate already makes anything faster
+        # pointless (IMAP round-trips alone cost more than that), and 0 would read back as '' through
+        # the profile codec above (encode_profile_value treats a falsy value as unset).
+        if v < 5 or v > 1440:
+            raise serializers.ValidationError('Mailbox check cadence must be between 5 and 1440 minutes.')
+        return v
     def update(self, instance, validated_data):
         for field, value in validated_data.items():
-            setattr(instance, field, value if isinstance(value, bool) else encode_profile_value(field, value))
+            setattr(instance, field, value if isinstance(value, (bool, int)) else encode_profile_value(field, value))
         instance.save(update_fields=list(validated_data.keys()))
         return instance
 
@@ -234,6 +242,86 @@ class JobLeadListSerializer(JobLeadSerializer):
     def get_latest_evaluation(self, obj):
         ev=obj.evaluations.first()
         return JobEvaluationListSerializer(ev).data if ev else None
+
+class PracticeSessionSerializer(serializers.ModelSerializer):
+    """A practice attempt. Scores/feedback/rewrite are server-computed, never client-writable."""
+    job_company=serializers.CharField(source='job.company', read_only=True, default='')
+    job_title=serializers.CharField(source='job.title', read_only=True, default='')
+    class Meta:
+        model=PracticeSession
+        fields=('id','job','job_company','job_title','question','answer_text','language','clarity_score','structure_score','confidence_score','overall_score','feedback','stronger_answer','evaluator','model','fallback_used','created_at')
+        read_only_fields=('clarity_score','structure_score','confidence_score','overall_score','feedback','stronger_answer','evaluator','model','fallback_used','created_at')
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request=self.context.get('request') if hasattr(self, 'context') else None
+        if request and 'job' in self.fields:
+            # Scoped like every other job-linking serializer: a session may only point at a job
+            # this user can already read (services.access.accessible_jobs), not any job by id.
+            self.fields['job'].queryset=accessible_jobs(request.user)
+
+class PracticeEvaluateSerializer(serializers.Serializer):
+    """Input for POST /api/practice/evaluate/. Matches the coach's AnalyzeRequest bounds."""
+    question=serializers.CharField(max_length=300, required=False, allow_blank=True, default='')
+    answer_text=serializers.CharField(min_length=20, max_length=5000)
+    language=serializers.ChoiceField(choices=PracticeSession.LANGUAGES)
+    job=serializers.PrimaryKeyRelatedField(queryset=JobLead.objects.none(), required=False, allow_null=True)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request=self.context.get('request') if hasattr(self, 'context') else None
+        if request:
+            self.fields['job'].queryset=accessible_jobs(request.user)
+
+class MailboxDraftSerializer(serializers.ModelSerializer):
+    """TASK-110 AC5. Read-only everywhere -- MailboxDraft is append-only, same shape as
+    MailboxMessageSerializer below.
+    """
+    class Meta:
+        model=MailboxDraft
+        fields=('id','status','block_reason','subject','body_text','evaluator','created_at')
+        read_only_fields=fields
+
+class MailboxMessageSerializer(serializers.ModelSerializer):
+    """TASK-109. Read-only everywhere -- the model itself is the append-only log (AC5), so no
+    serializer here ever gets wired to a PATCH/DELETE view.
+    """
+    matched_job_company=serializers.CharField(source='matched_job.company', read_only=True, default='')
+    matched_job_title=serializers.CharField(source='matched_job.title', read_only=True, default='')
+    # TASK-110: null when this message's classification never wanted a reply (or wanted one but had
+    # no matched job) -- see services.mailbox._DRAFT_WORTHY_CLASSIFICATIONS. A SerializerMethodField
+    # rather than a nested serializer because `obj.draft` raises DoesNotExist (caught here, not by
+    # DRF) when the OneToOne reverse relation is absent.
+    draft=serializers.SerializerMethodField()
+    class Meta:
+        model=MailboxMessage
+        fields=('id','sender','subject','received_at','classification','matched_job','matched_job_company','matched_job_title','draft','created_at')
+    def get_draft(self, obj):
+        draft=getattr(obj,'draft',None)
+        return MailboxDraftSerializer(draft).data if draft else None
+
+class MailboxSuggestionSerializer(serializers.ModelSerializer):
+    """TASK-109 AC3. Read-only: the only writes this model allows are the confirm/dismiss actions
+    on MailboxSuggestionViewSet, never a generic PATCH of `status` or `payload`.
+    """
+    message=MailboxMessageSerializer(read_only=True)
+    job_company=serializers.CharField(source='job.company', read_only=True)
+    job_title=serializers.CharField(source='job.title', read_only=True)
+    class Meta:
+        model=MailboxSuggestion
+        fields=('id','message','job','job_company','job_title','suggestion_type','payload','status','created_at','decided_at')
+        read_only_fields=fields
+
+class MailboxRunSerializer(serializers.ModelSerializer):
+    """TASK-109 AC4: the per-run digest. digest_messages is every message this run classified as
+    job-related or uncertain -- exactly 'not_job_related' is left out, never dropped from the log
+    itself (still visible via MailboxMessage, just not surfaced here as something to review).
+    """
+    digest_messages=serializers.SerializerMethodField()
+    class Meta:
+        model=MailboxRun
+        fields=('id','started_at','finished_at','skipped','skip_reason','fetched_count','job_related_count','uncertain_count','suggestion_count','draft_written_count','draft_blocked_count','error','digest_messages')
+    def get_digest_messages(self, obj):
+        rows=obj.messages.exclude(classification='not_job_related').order_by('-uid')
+        return MailboxMessageSerializer(rows, many=True).data
 
 class InviteCodeSerializer(serializers.ModelSerializer):
     """Owner-facing view of an invite code. `code` is generated server-side, never posted."""

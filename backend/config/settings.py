@@ -111,6 +111,31 @@ CODEX_CANDIDATE_EVIDENCE_PATH = os.getenv('CODEX_CANDIDATE_EVIDENCE_PATH', str(B
 CODEX_APPLICATION_RULES_PATH = os.getenv('CODEX_APPLICATION_RULES_PATH', str(BASE_DIR.parent/'job-application-adaptation-rules.md'))
 CODEX_CV_OPEN_OUTPUT_FOLDER = env_bool('CODEX_CV_OPEN_OUTPUT_FOLDER', DEBUG)
 
+# TASK-109: local-only Gmail mailbox check. Same idiom as CODEX_CV_* above -- read only from
+# env/.env (which never ships to Azure or this repo), no credential default, and every consumer
+# treats an unset GMAIL_IMAP_USER/APP_PASSWORD as "not configured" rather than raising, so the
+# feature is simply absent everywhere except the owner's own machine. Gmail app passwords are shown
+# in four space-separated groups; IMAP AUTH wants the compact form, same fix as
+# normalize_smtp_password above but unconditional since this var is Gmail-only by name.
+GMAIL_IMAP_HOST = os.getenv('GMAIL_IMAP_HOST', 'imap.gmail.com')
+GMAIL_IMAP_USER = os.getenv('GMAIL_IMAP_USER', '')
+GMAIL_IMAP_APP_PASSWORD = ''.join((os.getenv('GMAIL_IMAP_APP_PASSWORD') or '').split())
+# Private ICS "secret address" URL for the owner's Google Calendar (Settings -> Integrate calendar).
+# No OAuth, no Calendar API -- a plain HTTPS GET the calendar-quiet-hours check fails open on.
+GMAIL_CALENDAR_ICS_URL = os.getenv('GMAIL_CALENDAR_ICS_URL', '')
+# TASK-110: IMAP name of the Drafts special-use mailbox that reply drafts get APPENDed to. Correct
+# for an English-locale Gmail account; a differently-localized account names it differently, hence
+# the override instead of a hardcoded constant in services/mailbox.py.
+GMAIL_DRAFTS_FOLDER = os.getenv('GMAIL_DRAFTS_FOLDER', '[Gmail]/Drafts')
+# TASK-110 AC2: guardrail config for reply drafting. Both are also editable per account in
+# Settings -> Mailbox check (local mode) (UserProfile.mailbox_salary_floor_eur/mailbox_do_not_disclose);
+# when set here, the env value wins over that profile value -- an operator-set floor/blocklist on the
+# machine actually running check_mailbox can never be relaxed through the website alone. Left unset,
+# neither guardrail restricts anything (falls through to whatever the profile has, itself defaulting
+# to "no floor, no blocklist"), same opt-in shape as GMAIL_CALENDAR_ICS_URL above.
+MAILBOX_SALARY_FLOOR_EUR = os.getenv('MAILBOX_SALARY_FLOOR_EUR', '').strip()
+MAILBOX_DO_NOT_DISCLOSE = env_list('MAILBOX_DO_NOT_DISCLOSE', '')
+
 SECRET_KEY = os.getenv('SECRET_KEY')
 if DEBUG:
     SECRET_KEY = SECRET_KEY or 'dev-only-change-me'

@@ -50,6 +50,20 @@ class UserProfile(models.Model):
     selling_points=models.TextField(blank=True, default='')
     learned_application_preferences=models.TextField(blank=True, default='')
     follow_up_digest_enabled=models.BooleanField(default=True)
+    # TASK-109 AC8: check_mailbox reads these on every tick, so a change made here on the website
+    # takes effect on the machine's next tick without touching its .env. Minimum 5 (see
+    # serializers.CandidateProfileSerializer.validate_mailbox_check_cadence_minutes) because 0 would
+    # collide with prompt_builder's generic profile codec, which treats a falsy value as "unset".
+    mailbox_check_cadence_minutes=models.PositiveIntegerField(default=60)
+    mailbox_check_calendar_aware=models.BooleanField(default=True)
+    # TASK-110 AC2. Guardrails, not prompt text -- neither field is in prompt_builder.PROFILE_FIELDS,
+    # so it never reaches an LLM prompt; services.mailbox.check_guardrails reads it only to check the
+    # *generated* draft text in code. 0 / '' both mean "not configured" (no floor, no blocklist), same
+    # falsy-is-unset idiom as mailbox_check_cadence_minutes. An env var (MAILBOX_SALARY_FLOOR_EUR /
+    # MAILBOX_DO_NOT_DISCLOSE) on the machine running check_mailbox overrides this profile value, so a
+    # web-only compromise can never raise the floor or shrink the blocklist below the machine's own.
+    mailbox_salary_floor_eur=models.PositiveIntegerField(default=0)
+    mailbox_do_not_disclose=models.TextField(blank=True, default='')
     # TASK-83: the capability that gates the nine CV endpoints. Off by default -- generation shells
     # out to a model CLI and LaTeX on the server, so it is granted per account in the admin, never
     # by signing up. services.cv_generator.is_cv_owner still honours CODEX_CV_OWNER_EMAIL as a
@@ -224,8 +238,122 @@ class InviteCode(models.Model):
         invite=cls.objects.filter(code=code).first() if code else None
         return invite.owner if invite and invite.is_valid() else None
 
+class PracticeSession(models.Model):
+    # TASK-104: absorbed from the standalone interview-coach MVP. Belongs to its own user only --
+    # deliberately not the created_by|submitted_for handoff pattern JobLead uses, per TASK-103's
+    # ownership lesson. job is optional and SET_NULL on delete: losing the job link should never
+    # delete the practice history that was scored against it.
+    LANGUAGES=[('de','German'),('en','English')]
+    user=models.ForeignKey(settings.AUTH_USER_MODEL, related_name='practice_sessions', on_delete=models.CASCADE)
+    job=models.ForeignKey(JobLead, null=True, blank=True, related_name='practice_sessions', on_delete=models.SET_NULL)
+    question=models.CharField(max_length=300, blank=True, default='')
+    answer_text=models.TextField()
+    language=models.CharField(max_length=2, choices=LANGUAGES, default='en')
+    clarity_score=models.PositiveSmallIntegerField()
+    structure_score=models.PositiveSmallIntegerField()
+    confidence_score=models.PositiveSmallIntegerField()
+    overall_score=models.PositiveSmallIntegerField()
+    feedback=models.JSONField(default=list)
+    stronger_answer=models.TextField(blank=True, default='')
+    evaluator=models.CharField(max_length=30, default='heuristic')
+    model=models.CharField(max_length=120, blank=True, default='')
+    fallback_used=models.BooleanField(default=False)
+    created_at=models.DateTimeField(auto_now_add=True)
+    class Meta: ordering=['-created_at']
+    def __str__(self): return f'{self.user}: {self.question or "practice"} ({self.overall_score})'
+
 class ScheduledTaskRun(models.Model):
     name=models.CharField(max_length=120, unique=True)
     last_run_at=models.DateTimeField(null=True, blank=True)
     updated_at=models.DateTimeField(auto_now=True)
     def __str__(self): return f'{self.name}: {self.last_run_at or "never"}'
+
+class MailboxRun(models.Model):
+    """TASK-109 AC4: one row per check_mailbox tick that actually ran or was deliberately skipped.
+
+    Never created at all when GMAIL_IMAP_USER/APP_PASSWORD are unset or the cadence isn't due yet --
+    only a real attempt (whether it goes on to skip for calendar-quiet-hours or fetches mail) is
+    worth a row, so this table doubles as the run digest AC4 asks for without extra bookkeeping.
+    """
+    SKIP_REASONS=[('', 'Not skipped'), ('quiet_hours', 'Calendar busy')]
+    started_at=models.DateTimeField(auto_now_add=True)
+    finished_at=models.DateTimeField(null=True, blank=True)
+    skipped=models.BooleanField(default=False)
+    skip_reason=models.CharField(max_length=20, choices=SKIP_REASONS, blank=True, default='')
+    fetched_count=models.PositiveIntegerField(default=0)
+    job_related_count=models.PositiveIntegerField(default=0)
+    uncertain_count=models.PositiveIntegerField(default=0)
+    suggestion_count=models.PositiveIntegerField(default=0)
+    # TASK-110 AC1/AC5: how many reply drafts this run produced, split by guardrail outcome. Mirrors
+    # suggestion_count's shape -- a cheap run-level summary on top of the per-message MailboxDraft log.
+    draft_written_count=models.PositiveIntegerField(default=0)
+    draft_blocked_count=models.PositiveIntegerField(default=0)
+    error=models.TextField(blank=True, default='')
+    class Meta: ordering=['-started_at']
+    def __str__(self): return f'Run {self.started_at}: ' + (f'skipped ({self.skip_reason})' if self.skipped else f'{self.fetched_count} fetched')
+
+class MailboxMessage(models.Model):
+    """TASK-109 AC5: the append-only log of every message check_mailbox read.
+
+    Rows are created once and never updated -- no view in this app exposes PATCH/DELETE for this
+    model. Only sender/subject/date/classification are stored, never the body (task's minimal-
+    metadata requirement); the body is read transiently off the wire to classify and then dropped.
+    `uid` is the mailbox's own IMAP UID and doubles as the last-seen marker: check_mailbox resumes
+    from MAX(uid) instead of keeping a separate state row.
+    """
+    CLASSIFICATIONS=[('rejection','Rejection'),('interview_invitation','Interview invitation'),('offer','Offer'),('recruiter_reply','Recruiter reply'),('uncertain','Uncertain'),('not_job_related','Not job related')]
+    run=models.ForeignKey(MailboxRun, related_name='messages', on_delete=models.CASCADE)
+    uid=models.PositiveIntegerField(unique=True)
+    message_id=models.CharField(max_length=250, blank=True, default='')
+    sender=models.CharField(max_length=254, blank=True, default='')
+    subject=models.CharField(max_length=500, blank=True, default='')
+    received_at=models.DateTimeField(null=True, blank=True)
+    classification=models.CharField(max_length=30, choices=CLASSIFICATIONS, default='uncertain')
+    evaluator=models.CharField(max_length=30, default='heuristic')
+    matched_job=models.ForeignKey(JobLead, null=True, blank=True, related_name='mailbox_messages', on_delete=models.SET_NULL)
+    created_at=models.DateTimeField(auto_now_add=True)
+    class Meta: ordering=['-uid']
+    def __str__(self): return f'{self.sender}: {self.subject[:60]} ({self.classification})'
+
+class MailboxSuggestion(models.Model):
+    """TASK-109 AC3: a reviewable, owner-confirmed change derived from one MailboxMessage.
+
+    `payload` carries what confirming will apply (e.g. {'status':'rejected'} or
+    {'interview_at': iso}) via JobLeadSerializer.update(), so confirm() never has to re-derive it
+    from the message. Created once; only `status`/`decided_at` change afterward, and only through
+    the confirm/dismiss actions below -- never a generic field edit, and never automatically.
+    """
+    TYPES=[('status_change','Status change'),('interview_date','Interview date'),('feedback_clear','Feedback clock clear')]
+    STATUSES=[('pending','Pending'),('confirmed','Confirmed'),('dismissed','Dismissed')]
+    message=models.ForeignKey(MailboxMessage, related_name='suggestions', on_delete=models.CASCADE)
+    job=models.ForeignKey(JobLead, related_name='mailbox_suggestions', on_delete=models.CASCADE)
+    suggestion_type=models.CharField(max_length=20, choices=TYPES)
+    payload=models.JSONField(default=dict)
+    status=models.CharField(max_length=10, choices=STATUSES, default='pending')
+    created_at=models.DateTimeField(auto_now_add=True)
+    decided_at=models.DateTimeField(null=True, blank=True)
+    class Meta: ordering=['-created_at']
+    def __str__(self): return f'{self.get_suggestion_type_display()} for {self.job} ({self.status})'
+
+class MailboxDraft(models.Model):
+    """TASK-110 AC5: append-only decision log for every reply draft check_mailbox generates --
+    whether it was written to Gmail's Drafts folder or blocked by a guardrail. Same shape as
+    MailboxMessage: created once, no PATCH/DELETE view ever touches it. One row per MailboxMessage
+    that classify_email flagged as reply-wanting (see services.mailbox._DRAFT_WORTHY_CLASSIFICATIONS)
+    and that matched a tracked job -- rejection/not_job_related/uncertain, and any message with no
+    matched job, never get a row here at all.
+    """
+    STATUSES=[('written','Written to Gmail Drafts'),('blocked','Blocked')]
+    message=models.OneToOneField(MailboxMessage, related_name='draft', on_delete=models.CASCADE)
+    job=models.ForeignKey(JobLead, null=True, blank=True, related_name='mailbox_drafts', on_delete=models.SET_NULL)
+    status=models.CharField(max_length=10, choices=STATUSES)
+    # Empty for a written draft; the guardrail's short human-readable reason for a blocked one (AC2).
+    block_reason=models.CharField(max_length=250, blank=True, default='')
+    subject=models.CharField(max_length=500, blank=True, default='')
+    body_text=models.TextField(blank=True, default='')
+    # 'template' for the no-LLM floor (AC4), or the LLM_PROVIDER value when the local-LLM upgrade
+    # produced the text -- same vocabulary as MailboxMessage.evaluator/PracticeSession.evaluator.
+    evaluator=models.CharField(max_length=30, default='template')
+    created_at=models.DateTimeField(auto_now_add=True)
+    class Meta: ordering=['-created_at']
+    def __str__(self): return f'Draft for {self.message}: {self.get_status_display()}'

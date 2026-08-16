@@ -19,8 +19,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, permission_classes, action, throttle_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
-from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, UserProfile, InviteCode
-from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, PublicSubmissionSerializer, normalize_job_url
+from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile, InviteCode
+from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, normalize_job_url
 from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, has_candidate_profile, user_profile_settings
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
@@ -29,6 +29,8 @@ from .services.access import accessible_jobs, job_create_defaults, owned_by, sub
 from .services.cleaning import clean_job_location
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
+from .services.interview_coach import analyze_answer, suggest_questions
+from .services.mailbox import apply_suggestion, dismiss_suggestion
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, decode_correction_image, generation_preview, is_cv_owner, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
 from .services.cv_tasks import cancel_cv_task, get_cv_task, get_cv_task_download, start_cv_compile_task, start_cv_revision, start_cv_task
@@ -641,6 +643,85 @@ class FollowUpViewSet(viewsets.ModelViewSet):
     serializer_class=FollowUpSerializer; queryset=FollowUp.objects.select_related('job').all()
     http_method_names=['get','patch','head','options']
     def get_queryset(self): return FollowUp.objects.select_related('job').filter(job__in=accessible_jobs(self.request.user))
+
+class MailboxSuggestionViewSet(viewsets.GenericViewSet):
+    """TASK-109 AC3. List defaults to pending (?status=confirmed,dismissed to see decided ones);
+    confirm/dismiss are the only two mutations, and both refuse an already-decided suggestion
+    rather than silently re-applying or re-dismissing it.
+    """
+    serializer_class=MailboxSuggestionSerializer
+    def get_queryset(self):
+        return MailboxSuggestion.objects.select_related('job','message','message__matched_job').filter(job__in=accessible_jobs(self.request.user))
+    def list(self, request, *args, **kwargs):
+        qs=self.get_queryset()
+        statuses=[s for s in (request.query_params.get('status') or 'pending').split(',') if s]
+        if statuses: qs=qs.filter(status__in=statuses)
+        return Response(self.get_serializer(qs, many=True).data)
+    @action(detail=True, methods=['post'])
+    def confirm(self, request, pk=None):
+        suggestion=self.get_object()
+        if suggestion.status != 'pending': return Response({'detail':'Suggestion already decided.'}, status=400)
+        apply_suggestion(suggestion)
+        return Response(self.get_serializer(suggestion).data)
+    @action(detail=True, methods=['post'])
+    def dismiss(self, request, pk=None):
+        suggestion=self.get_object()
+        if suggestion.status != 'pending': return Response({'detail':'Suggestion already decided.'}, status=400)
+        dismiss_suggestion(suggestion)
+        return Response(self.get_serializer(suggestion).data)
+
+class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
+    """TASK-109 AC4. Runs are not per-job, so accessible_jobs scoping does not apply -- gated on
+    is_cv_owner instead, the same single-owner gate CV generation uses, since this is inherently a
+    personal-mailbox audit trail rather than shared board data.
+    """
+    serializer_class=MailboxRunSerializer
+    def get_queryset(self):
+        if not is_cv_owner(self.request.user): return MailboxRun.objects.none()
+        return MailboxRun.objects.all().prefetch_related('messages__matched_job','messages__draft')
+
+@api_view(['POST'])
+def practice_evaluate(request):
+    """TASK-104: score an interview answer and record the attempt for this user only."""
+    ser=PracticeEvaluateSerializer(data=request.data, context={'request': request})
+    ser.is_valid(raise_exception=True)
+    question=ser.validated_data.get('question') or ''
+    answer_text=ser.validated_data['answer_text']
+    language=ser.validated_data['language']
+    job=ser.validated_data.get('job')
+    result=analyze_answer(question, answer_text, language, job=job)
+    session=PracticeSession.objects.create(
+        user=request.user, job=job, question=question, answer_text=answer_text, language=language,
+        clarity_score=result.clarity, structure_score=result.structure, confidence_score=result.confidence, overall_score=result.overall,
+        feedback=result.feedback, stronger_answer=result.stronger_answer, evaluator=result.evaluator, model=result.model or '', fallback_used=result.fallback_used,
+    )
+    return Response(PracticeSessionSerializer(session, context={'request': request}).data, status=201)
+
+@api_view(['GET'])
+def practice_history(request):
+    """Per-user practice history, newest first (model ordering), optionally scoped to one job."""
+    qs=PracticeSession.objects.filter(user=request.user).select_related('job')
+    if request.query_params.get('job'):
+        qs=qs.filter(job_id=request.query_params['job'])
+    return Response(PracticeSessionSerializer(qs, many=True, context={'request': request}).data)
+
+@api_view(['GET'])
+def practice_questions(request):
+    """TASK-106: suggested practice questions, grounded in a linked job's evaluation when there is one."""
+    language=request.query_params.get('language', 'en')
+    if language not in dict(PracticeSession.LANGUAGES):
+        return Response({'detail': 'Unsupported language.'}, status=400)
+    job=None
+    job_id=request.query_params.get('job')
+    if job_id:
+        job=accessible_jobs(request.user).filter(pk=job_id).first()
+        if job is None:
+            return Response({'detail': 'Job not found.'}, status=404)
+    result=suggest_questions(job, language)
+    return Response({
+        'questions': result.questions, 'grounded': result.grounded, 'notice': result.notice,
+        'evaluator': result.evaluator, 'model': result.model, 'fallback_used': result.fallback_used,
+    })
 
 @api_view(['POST'])
 def bulk_create_jobs(request):
