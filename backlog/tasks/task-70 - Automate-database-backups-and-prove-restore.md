@@ -25,7 +25,7 @@ For an app holding a user's entire job search, an unscheduled backup is a runboo
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A scheduled job (e.g. GitHub Actions cron using the DATABASE_URL secret) runs pg_dump against production on a fixed cadence and stores the dump in a private location with a retention policy — never in the public repo (see TASK-69)
+- [x] #1 A scheduled job (e.g. GitHub Actions cron using the DATABASE_URL secret) runs pg_dump against production on a fixed cadence and stores the dump in a private location with a retention policy — never in the public repo (see TASK-69)
 - [x] #2 A restore drill from a produced dump into a scratch database has been performed, with the exact commands recorded in docs/backup-restore.md
 - [ ] #3 A failed backup run is visible (workflow failure notification), not silent
 - [ ] #4 Neon's own point-in-time retention is verified enabled and its window documented
@@ -223,5 +223,49 @@ then fails with `AuthorizationFailed` too, the service principal also needs Cont
 case in its error message rather than making you guess.
 
 AC1 stays unchecked until a real dump is sitting in the container.
+
+
+### AC1 CLOSED 2026-08-16 — a real production dump is in private blob storage
+
+The owner registered `Microsoft.Storage` on subscription `f0d59028-…` (the one command the resource
+group-scoped CI credential could not perform), and the rest ran from CI.
+
+    Provision backup storage  31971317245  success
+      created storage account dachapplybackups
+      container dachapply-backups ready (private)
+      retention: blobs under dachapply-backups/dachapply- deleted after 30 days
+
+    Database backup           31971571361  success
+      dump size: 258038 bytes
+      TABLE DATA entries: 22
+      uploaded dachapply-20260816T204730Z.dump to dachapplybackups/dachapply-backups
+
+**Verified against Azure directly, not from the workflow's own claim** — the whole point of this task
+being that a backup job which reports success while producing nothing is worse than none:
+
+    blob      dachapply-20260816T204730Z.dump   258,038 bytes   2026-08-16T20:48:02Z
+    account   allowBlobPublicAccess: false
+    container publicAccess: (empty -- private)
+    policy    expire-backups, 30 days
+
+Both guards fired correctly on real data rather than being taken on trust: 258 KB clears the 20 KB
+size floor, and 22 TABLE DATA entries clears the floor of 15 (the drill measured 21; migrations have
+added one since, which is exactly why the floor was set below the observed value rather than at it).
+
+**One more thing this run flushed out.** The first attempt reached production, authenticated, and
+refused to dump:
+
+    pg_dump: error: aborting because of server version mismatch
+    pg_dump: detail: server version: 18.4 (c9a59a4); pg_dump version: 17.11
+
+Neon has moved to PostgreSQL 18.4 while the pinned client was 17. The workflow anticipated this in a
+comment and the fix was the one-line bump it described; the measured versions are now recorded there
+so the next person recognises the symptom. `docs/backup-restore.md`'s restore drill moved with it, so
+the drill client cannot silently lag the dumps it has to read.
+
+The nightly cron (03:17 UTC) now has everything it needs. **AC2's caveat still stands:** the drill was
+executed against a scratch database, not this blob. Re-running it against a real dump means putting a
+full production export on a local disk, which is the owner's call to make deliberately rather than
+something to do in passing — the commands are in `docs/backup-restore.md`.
 
 <!-- SECTION:NOTES:END -->
