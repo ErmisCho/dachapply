@@ -257,7 +257,7 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         if cancel_event.is_set():
             raise GenerationCancelled
         job=JobLead.objects.get(id=job_id)
-        archive, filename, artifacts=generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, lambda progress, stage: _update(task_id, status='running', progress=progress, stage=stage), source_cv, source_letter, revision_instructions, create_cv, correction_image, cancelled=cancel_event.is_set)
+        archive, filename, artifacts=generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, lambda progress, stage: _update(task_id, status='running', progress=progress, stage=stage), source_cv, source_letter, revision_instructions, create_cv, correction_image, cancelled=cancel_event.is_set, user_id=user_id)
         if cancel_event.is_set():
             raise GenerationCancelled
         # Generation can run for minutes with no database traffic, so the pooled connection opened

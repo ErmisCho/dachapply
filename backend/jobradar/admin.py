@@ -582,6 +582,7 @@ class VisitorDailyUsageAdmin(admin.ModelAdmin):
 
 @admin.register(InviteCode)
 class InviteCodeAdmin(admin.ModelAdmin):
-    list_display=('code','label','active','expires_at','created_at')
-    search_fields=('code','label')
+    list_display=('code','owner','label','active','expires_at','created_at')
+    search_fields=('code','label','owner__username','owner__email')
     list_filter=('active','created_at')
+    raw_id_fields=('owner',)

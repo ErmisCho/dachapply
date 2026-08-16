@@ -34,6 +34,20 @@ class PasswordResetIPThrottle(IPThrottle):
     scope = 'password_reset_ip'
 
 
+class PasswordResetConfirmIPThrottle(IPThrottle):
+    # Own scope, not password_reset_ip: requesting resets must not consume the budget for
+    # actually completing one. This bucket is what caps token guessing.
+    scope = 'password_reset_confirm_ip'
+
+
+class EmailVerificationIPThrottle(IPThrottle):
+    # Shared by confirming a link and asking for a new one, for the same reason
+    # password_reset_confirm_ip is separate from password_reset_ip: neither of these must be able to
+    # eat a password-reset budget. One scope for both because the two abuse cases -- guessing tokens
+    # and re-triggering mail to your own address -- are equally uninteresting at this rate.
+    scope = 'email_verification_ip'
+
+
 class PublicSubmitIPThrottle(IPThrottle):
     scope = 'public_submit_ip'
 

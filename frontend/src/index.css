@@ -208,18 +208,19 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
 .dark .status-message-success{--status-accent:#34d399;--status-glow:rgba(52,211,153,.18);border-color:rgba(74,222,128,.28);color:#bbf7d0;background:linear-gradient(180deg,rgba(30,41,59,.95),rgba(6,78,59,.22))}
 .dark .status-message-info{--status-accent:#60a5fa;--status-glow:rgba(96,165,250,.18);border-color:rgba(96,165,250,.28);color:#bfdbfe;background:linear-gradient(180deg,rgba(30,41,59,.95),rgba(30,58,138,.22))}
 
-/* Dashboard column visibility */
-.hide-col-prio th:nth-child(1),.hide-col-prio td:nth-child(1),
-.hide-col-fit th:nth-child(2),.hide-col-fit td:nth-child(2),
-.hide-col-position th:nth-child(3),.hide-col-position td:nth-child(3),
-.hide-col-loc th:nth-child(4),.hide-col-loc td:nth-child(4),
-.hide-col-status th:nth-child(5),.hide-col-status td:nth-child(5),
-.hide-col-application th:nth-child(6),.hide-col-application td:nth-child(6),
-.hide-col-lastupdate th:nth-child(7),.hide-col-lastupdate td:nth-child(7),
-.hide-col-feedback th:nth-child(8),.hide-col-feedback td:nth-child(8),
-.hide-col-matchgap th:nth-child(9),.hide-col-matchgap td:nth-child(9),
-.hide-col-skills th:nth-child(10),.hide-col-skills td:nth-child(10),
-.hide-col-addedby th:nth-child(11),.hide-col-addedby td:nth-child(11){display:none}
+/* Dashboard column visibility. Column 1 is the row-selection checkbox (TASK-80) and is never
+   hideable, so every data column sits one index further right than its name suggests. */
+.hide-col-prio th:nth-child(2),.hide-col-prio td:nth-child(2),
+.hide-col-fit th:nth-child(3),.hide-col-fit td:nth-child(3),
+.hide-col-position th:nth-child(4),.hide-col-position td:nth-child(4),
+.hide-col-loc th:nth-child(5),.hide-col-loc td:nth-child(5),
+.hide-col-status th:nth-child(6),.hide-col-status td:nth-child(6),
+.hide-col-application th:nth-child(7),.hide-col-application td:nth-child(7),
+.hide-col-lastupdate th:nth-child(8),.hide-col-lastupdate td:nth-child(8),
+.hide-col-feedback th:nth-child(9),.hide-col-feedback td:nth-child(9),
+.hide-col-matchgap th:nth-child(10),.hide-col-matchgap td:nth-child(10),
+.hide-col-skills th:nth-child(11),.hide-col-skills td:nth-child(11),
+.hide-col-addedby th:nth-child(12),.hide-col-addedby td:nth-child(12){display:none}
 
 /* Final navbar polish */
 .app-nav{background:rgba(255,255,255,.78)!important;border-color:rgba(226,232,240,.75)!important}
@@ -248,33 +249,34 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
   .premium-card.relative.z-0.overflow-x-auto.overflow-y-visible{overflow:visible!important}
   .job-table{min-width:1280px;table-layout:auto!important}
   .job-table th,.job-table td{max-width:none}
-  .job-table th:nth-child(1),.job-table td:nth-child(1){width:4.2rem}
-  .job-table th:nth-child(2),.job-table td:nth-child(2){width:3.8rem}
-  .job-table th:nth-child(3),.job-table td:nth-child(3){width:16rem;min-width:16rem;max-width:20rem}
-  .job-table th:nth-child(4),.job-table td:nth-child(4){width:5.25rem;min-width:5.25rem;max-width:5.75rem}
-  .job-table th:nth-child(5),.job-table td:nth-child(5){width:5.75rem}
-  .job-table th:nth-child(6),.job-table td:nth-child(6){width:6.25rem}
+  .job-table th:nth-child(1),.job-table td:nth-child(1){width:2.25rem}
+  .job-table th:nth-child(2),.job-table td:nth-child(2){width:4.2rem}
+  .job-table th:nth-child(3),.job-table td:nth-child(3){width:3.8rem}
+  .job-table th:nth-child(4),.job-table td:nth-child(4){width:16rem;min-width:16rem;max-width:20rem}
+  .job-table th:nth-child(5),.job-table td:nth-child(5){width:5.25rem;min-width:5.25rem;max-width:5.75rem}
+  .job-table th:nth-child(6),.job-table td:nth-child(6){width:5.75rem}
   .job-table th:nth-child(7),.job-table td:nth-child(7){width:6.25rem}
-  .job-table th:nth-child(8),.job-table td:nth-child(8){width:4.9rem;min-width:4.9rem}
-  .job-table th:nth-child(9),.job-table td:nth-child(9){width:35%;min-width:22rem}
-  .job-table th:nth-child(10),.job-table td:nth-child(10){width:30%;min-width:20rem}
-  .job-table th:nth-child(11),.job-table td:nth-child(11){width:5rem;max-width:6rem}
+  .job-table th:nth-child(8),.job-table td:nth-child(8){width:6.25rem}
+  .job-table th:nth-child(9),.job-table td:nth-child(9){width:4.9rem;min-width:4.9rem}
+  .job-table th:nth-child(10),.job-table td:nth-child(10){width:35%;min-width:22rem}
+  .job-table th:nth-child(11),.job-table td:nth-child(11){width:30%;min-width:20rem}
+  .job-table th:nth-child(12),.job-table td:nth-child(12){width:5rem;max-width:6rem}
   .job-table input[type="date"]{width:5.7rem!important}
   .job-table select{width:5.25rem!important}
-  .job-table th:nth-child(1),.job-table td:nth-child(1),
   .job-table th:nth-child(2),.job-table td:nth-child(2),
-  .job-table th:nth-child(5),.job-table td:nth-child(5),
+  .job-table th:nth-child(3),.job-table td:nth-child(3),
   .job-table th:nth-child(6),.job-table td:nth-child(6),
   .job-table th:nth-child(7),.job-table td:nth-child(7),
   .job-table th:nth-child(8),.job-table td:nth-child(8),
-  .job-table th:nth-child(11),.job-table td:nth-child(11){overflow-wrap:normal;word-break:normal}
-  .job-table td:nth-child(1) .app-badge,
+  .job-table th:nth-child(9),.job-table td:nth-child(9),
+  .job-table th:nth-child(12),.job-table td:nth-child(12){overflow-wrap:normal;word-break:normal}
   .job-table td:nth-child(2) .app-badge,
-  .job-table td:nth-child(4) .app-badge,
-  .job-table td:nth-child(8) .app-badge,
-  .job-table td:nth-child(11) .app-badge{white-space:nowrap;word-break:normal;overflow-wrap:normal}
-  .job-table td:nth-child(11) .app-badge{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:top}
-  .job-table td:nth-child(4)>div{display:flex;flex-wrap:wrap;gap:.15rem .25rem;align-items:flex-start}
+  .job-table td:nth-child(3) .app-badge,
+  .job-table td:nth-child(5) .app-badge,
+  .job-table td:nth-child(9) .app-badge,
+  .job-table td:nth-child(12) .app-badge{white-space:nowrap;word-break:normal;overflow-wrap:normal}
+  .job-table td:nth-child(12) .app-badge{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:top}
+  .job-table td:nth-child(5)>div{display:flex;flex-wrap:wrap;gap:.15rem .25rem;align-items:flex-start}
 }
 @media (max-width: 1023px){
   .job-table{min-width:760px;font-size:10px}
@@ -331,3 +333,14 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
   .mobile-job-fields{grid-template-columns:1fr!important}
   .mobile-job-fields .col-span-2{grid-column:span 1 / span 1!important}
 }
+
+/* Board row selection checkbox: the keyboard-operable way to select a job (TASK-80).
+   The global input rule stretches every input to w-full and the dark theme forces a background
+   and border on it, so the native checkbox has to be handed back its own painting explicitly.
+   .row-select-target is the mobile card's 44px tap target (TASK-68) around a normal-size box. */
+input.row-select{width:1.05rem;height:1.05rem;min-width:0;min-height:0;flex:0 0 auto;margin:0;padding:0;border:0!important;background:none!important;box-shadow:none!important;-webkit-appearance:auto;appearance:auto;accent-color:#2563eb;cursor:pointer}
+.row-select-target{display:inline-flex;flex:0 0 auto;align-items:center;justify-content:center;min-width:2.75rem;min-height:2.75rem;margin:-.5rem .25rem -.5rem -.5rem;cursor:pointer}
+/* The shared input rule applies outline-none, so keyboard focus would otherwise be invisible here. */
+input.row-select:focus-visible{outline:2px solid #2563eb!important;outline-offset:2px}
+.dark input.row-select:focus-visible{outline-color:#67e8f9!important}
+@media (max-width: 1023px){input.row-select{width:1.35rem;height:1.35rem}}

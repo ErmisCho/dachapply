@@ -3,10 +3,12 @@ from html import escape
 
 from django.contrib.auth import authenticate, login, logout, get_user_model
 from django.conf import settings
+from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.db import connection, transaction
-from django.db.models import Avg, Case, Count, IntegerField, Q, Value, When
+from django.db.models import Avg, Case, Count, F, IntegerField, Q, Value, When
 from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.encoding import force_str
@@ -18,22 +20,139 @@ from rest_framework.decorators import api_view, permission_classes, action, thro
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, UserProfile, InviteCode
-from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, PublicSubmissionSerializer, normalize_job_url
-from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, user_profile_settings
+from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, PublicSubmissionSerializer, normalize_job_url
+from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, has_candidate_profile, user_profile_settings
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
-from .services.access import accessible_jobs, job_create_defaults
+from .services.access import accessible_jobs, job_create_defaults, submitted_away_jobs
 from .services.cleaning import clean_job_location
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, decode_correction_image, generation_preview, is_cv_owner, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
 from .services.cv_tasks import cancel_cv_task, get_cv_task, get_cv_task_download, start_cv_compile_task, start_cv_revision, start_cv_task
-from .throttles import CVGenerationUserThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
+from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
+from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
 
 logger = logging.getLogger(__name__)
+
+# Shipped in /api/auth/me/ so the board badges read the same numbers stale_rank orders by,
+# instead of the frontend keeping its own copy of them.
+BOARD_THRESHOLDS = {
+    'stale_applied_days': JobLead.STALE_APPLIED_DAYS,
+    'stale_unapplied_days': JobLead.STALE_UNAPPLIED_DAYS,
+    'deadline_soon_days': JobLead.DEADLINE_SOON_DAYS,
+    'unapplied_statuses': JobLead.UNAPPLIED_STATUSES,
+    'dated_statuses': JobLead.DATED_STATUSES,
+}
+
+
+# The board's default ordering: urgency first, then the server-side formula. Sorting is an
+# opt-in override of this, never a replacement -- ?ordering= absent, empty or unrecognised
+# lands here.
+DEFAULT_BOARD_ORDERING = ('stale_rank', 'status_rank', 'priority_rank', '-evaluations__fit_score', '-created_at')
+
+# TASK-97's sort control. The query parameter is a lookup *key*, never an argument to
+# order_by(): passing it through would let a client order by any related column
+# (?ordering=-created_by__password) and read values off the resulting row order, which is
+# information disclosure, not just untidy. An unknown key simply misses the dict.
+BOARD_ORDERINGS = {
+    '-fit_score': ('-evaluations__fit_score', '-created_at'),
+    '-created_at': ('-created_at',),
+    # nulls_last because most rows have no feedback date, and the point of this sort is to put
+    # the rows that do have one at the top.
+    'feedback_due_date': (F('feedback_due_date').asc(nulls_last=True), '-created_at'),
+}
+
+
+# "Reached interview" is about the journey, not the current column. A job now in `offer`,
+# `accepted`, or `rejected` obviously interviewed; counting only status='interview' would
+# undercount exactly the jobs that converted best. There is no status history, so past
+# interviews of a job that has since moved to a closed status are recovered from the
+# interview fields the board already records.
+# Known gap: a job rejected *after* an offer leaves no offer trace, so REACHED_OFFER
+# undercounts those. Recording an offer date would be the fix, and needs its own task.
+REACHED_INTERVIEW = Q(status__in=['interview', 'offer', 'accepted']) | Q(interview_stage__isnull=False) | Q(interview_at__isnull=False)
+REACHED_OFFER = Q(status__in=['offer', 'accepted'])
+
+
+def conversion_rate(numerator, denominator):
+    """Percentage to one decimal, or None when the denominator is empty.
+
+    None, not 0: with no applications the rate is undefined, and a rendered 0% would read
+    as "you convert nothing" rather than "there is nothing to measure yet".
+    """
+    return round(100 * numerator / denominator, 1) if denominator else None
+
+
+def funnel_counts(applied_jobs):
+    """applied -> interview -> offer over one cohort of applications.
+
+    The cohort is always jobs with an `applied_at` (TASK-76's write-once stamp), never jobs
+    in the current `applied` status, so a job walked on to `rejected` still counts as an
+    application. Numerators are intersected with the same cohort, so a job that reached
+    interview without ever being marked applied cannot push a rate above 100% -- it is
+    reported separately as `interviews_without_application` instead of being hidden.
+    """
+    applications = applied_jobs.count()
+    interviews = applied_jobs.filter(REACHED_INTERVIEW).count()
+    offers = applied_jobs.filter(REACHED_OFFER).count()
+    return {
+        'applications': applications,
+        'interviews': interviews,
+        'offers': offers,
+        'applied_to_interview_rate': conversion_rate(interviews, applications),
+        'interview_to_offer_rate': conversion_rate(offers, interviews),
+    }
+
+
+def source_effectiveness(applied_jobs):
+    """Applications and interview rate per `source`, busiest source first.
+
+    Grouped over the application cohort, so a source that has never produced an application
+    does not dilute the table. `source` is emitted raw; '' is a real bucket (jobs added
+    without a source) and the frontend labels it.
+    """
+    rows = applied_jobs.values('source').annotate(applications=Count('id'), interviews=Count('id', filter=REACHED_INTERVIEW)).order_by('-applications', 'source')
+    return [{'source': row['source'], 'applications': row['applications'], 'interviews': row['interviews'],
+             'interview_rate': conversion_rate(row['interviews'], row['applications'])} for row in rows]
+
+
+def password_rejection(password, user=None):
+    """Run AUTH_PASSWORD_VALIDATORS; return a 400 Response, or None when the password is fine.
+
+    Every password-setting endpoint routes through here so the validators cannot be enforced on
+    one path and forgotten on another. `user` enables UserAttributeSimilarityValidator and may be
+    an unsaved instance. The {'detail': str} shape is what the frontend already renders.
+    """
+    try:
+        validate_password(password, user)
+    except DjangoValidationError as exc:
+        return Response({'detail': ' '.join(exc.messages)}, status=400)
+    return None
+
+
+# TASK-84: what the submitter of a handed-off job may see of it. Everything the recipient writes
+# afterwards -- evaluations, interview fields, dates, the workflow status itself -- is the
+# recipient's, so the projection is default-deny: every serialized field is emptied unless it is
+# part of the submission the submitter made. A field added to JobLead later therefore cannot leak
+# by being forgotten here, which a blacklist would have allowed.
+SUBMISSION_VISIBLE_FIELDS = ('id','company','title','url','location','source','submitted_by','submitter_reason','salary_info','language_requirements','work_mode','created_at','created_by_username','created_by_email','submitted_for_username','submitted_for_email')
+# The coarse status the submitter gets instead of the real one, expressed in the board's own
+# vocabulary so no client needs to learn a new value: still live, or done with.
+CLOSED_STATUSES = ('rejected','withdrawn','skipped','archived')
+
+
+def submission_row(row):
+    limited={key: ('' if isinstance(value, str) else None) for key, value in row.items()}
+    limited.update({key: row[key] for key in SUBMISSION_VISIBLE_FIELDS if key in row})
+    limited['status']='archived' if row.get('status') in CLOSED_STATUSES else 'new'
+    # Marks the row as a submission receipt rather than a job the caller owns, so a client can tell
+    # the two apart without inferring it from blank fields.
+    limited['submission_only']=True
+    return limited
 
 
 def find_existing_by_url(url, owner=None, queryset=None):
@@ -101,19 +220,52 @@ def register_view(request):
     email=(request.data.get('email') or request.data.get('username') or '').strip().lower()
     username=email
     password=request.data.get('password') or ''
-    if len(password)<6: return Response({'detail':'Password must be at least 6 characters'}, status=400)
-    if not email or '@' not in email: return Response({'detail':'Valid email is required'}, status=400)
     User=get_user_model()
-    submit_for_lookup=(request.data.get('submit_for_username') or request.data.get('submit_for') or '').strip()
-    submit_for=None
-    if submit_for_lookup:
-        submit_for=User.objects.filter(Q(username__iexact=submit_for_lookup)|Q(email__iexact=submit_for_lookup)).first()
-        if not submit_for: return Response({'detail':'Friend username or email not found'}, status=400)
+    rejected=password_rejection(password, User(username=username, email=email))
+    if rejected: return rejected
+    if not email or '@' not in email: return Response({'detail':'Valid email is required'}, status=400)
+    # TASK-93 AC2: the friend is stored exactly as typed and never looked up here. The old code
+    # answered 'Friend username or email not found' on a miss and echoed the friend's username back
+    # on a hit, so an anonymous caller could ask this endpoint whether any address has an account.
+    # Registration now takes the same path, does the same work and returns the same body either way;
+    # the name is resolved when the address is verified, or dropped in silence if it never matches.
+    submit_for_lookup=(request.data.get('submit_for_username') or request.data.get('submit_for') or '').strip()[:254]
     if User.objects.filter(Q(username__iexact=email)|Q(email__iexact=email)).exists(): return Response({'detail':'Email already exists'}, status=400)
     user=User.objects.create_user(username=username, email=email, password=password)
-    UserProfile.objects.create(user=user, requested_submit_for=submit_for)
+    UserProfile.objects.create(user=user, email_verified=False, pending_friend_lookup=submit_for_lookup)
     login(request, user)
-    return Response({'username':user.username, 'submit_for_username':None, 'requested_submit_for_username':submit_for.username if submit_for else None, 'is_friend_submitter':False}, status=201)
+    # After login(), which rewrites last_login -- and best effort, so a dead mail host costs the new
+    # account a resend from Account settings rather than its registration.
+    send_verification_email(user)
+    return Response({'username':user.username, 'submit_for_username':None, 'requested_submit_for_username':None, 'is_friend_submitter':False, 'email_verified':False}, status=201)
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+@throttle_classes([EmailVerificationIPThrottle])
+def verify_email(request):
+    """Consume the link from the confirmation email. Idempotent: the token stays valid until it
+    expires, so a second click (or a mail client prefetching the URL) succeeds instead of scaring
+    the user with an error about a link that already worked."""
+    try:
+        uid=force_str(urlsafe_base64_decode(request.data.get('uid') or ''))
+        user=get_user_model().objects.get(pk=uid)
+    except Exception:
+        return Response({'detail':'Invalid verification link'}, status=400)
+    if not email_verification_token.check_token(user, request.data.get('token') or ''):
+        return Response({'detail':'Invalid or expired verification link'}, status=400)
+    mark_verified(user)
+    return Response({'detail':'Email address confirmed.'})
+
+@api_view(['POST'])
+@throttle_classes([EmailVerificationIPThrottle])
+def resend_verification_email(request):
+    """Authenticated, and only ever sends to request.user.email -- there is no address to supply and
+    therefore nothing to enumerate or mail-bomb with."""
+    if is_email_verified(request.user):
+        return Response({'detail':'Your email address is already confirmed.'})
+    if not send_verification_email(request.user):
+        return Response({'detail':'We could not send the confirmation email just now. Please try again in a few minutes.'}, status=502)
+    return Response({'detail':'Confirmation email sent. Check your inbox, and your spam or promotions folder.'})
 
 @api_view(['POST'])
 def logout_view(request): logout(request); return Response({'detail':'logged out'})
@@ -125,8 +277,8 @@ def change_password(request):
     new=request.data.get('new_password') or request.data.get('password') or ''
     if user.has_usable_password() and not user.check_password(current):
         return Response({'detail':'Current password is incorrect.'}, status=400)
-    if len(new)<6:
-        return Response({'detail':'New password must be at least 6 characters'}, status=400)
+    rejected=password_rejection(new, user)
+    if rejected: return rejected
     user.set_password(new); user.save(update_fields=['password'])
     login(request, user)
     return Response({'detail':'Password updated.'})
@@ -232,6 +384,7 @@ def password_reset_request(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([PasswordResetConfirmIPThrottle])
 def password_reset_confirm(request):
     try:
         uid=force_str(urlsafe_base64_decode(request.data.get('uid') or ''))
@@ -240,7 +393,8 @@ def password_reset_confirm(request):
         return Response({'detail':'Invalid reset link'}, status=400)
     token=request.data.get('token') or ''; password=request.data.get('password') or ''
     if not default_token_generator.check_token(user, token): return Response({'detail':'Invalid or expired reset link'}, status=400)
-    if len(password)<6: return Response({'detail':'Password must be at least 6 characters'}, status=400)
+    rejected=password_rejection(password, user)
+    if rejected: return rejected
     user.set_password(password); user.save(update_fields=['password'])
     return Response({'detail':'Password reset successful'})
 
@@ -270,13 +424,20 @@ def me(request):
     profile=getattr(request.user, 'jobradar_profile', None)
     submit_for=profile.submit_for if profile else None
     requested=profile.requested_submit_for if profile else None
-    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user), 'feedback_url':settings.FEEDBACK_URL})
+    # candidate_profile_missing is the nudge signal: true means every prompt endpoint will refuse
+    # with 400 {'code':'candidate_profile_required'} until the user fills in Settings -> profile.
+    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user), 'candidate_profile_missing':not has_candidate_profile(request.user), 'email_verified':is_email_verified(request.user), 'feedback_url':settings.FEEDBACK_URL, 'board_thresholds':BOARD_THRESHOLDS})
 
 @api_view(['GET','POST'])
 def friend_requests(request):
     if request.method=='GET':
         profiles=UserProfile.objects.filter(requested_submit_for=request.user, submit_for__isnull=True).select_related('user')
         return Response([{'username':p.user.username} for p in profiles])
+    # TASK-93 AC1: approving hands another account write access to this board, so it waits for a
+    # confirmed address. Reading the pending list does not -- it shows the caller who asked for
+    # them, which reveals nothing about anyone the caller did not already hear from.
+    rejected=unverified_email_response(request.user)
+    if rejected: return rejected
     username=(request.data.get('username') or '').strip()
     try: profile=UserProfile.objects.select_related('user').get(user__username=username, requested_submit_for=request.user, submit_for__isnull=True)
     except UserProfile.DoesNotExist: return Response({'detail':'Request not found'}, status=404)
@@ -295,8 +456,17 @@ def profile_settings(request):
 class JobLeadViewSet(viewsets.ModelViewSet):
     serializer_class=JobLeadSerializer
     queryset=JobLead.objects.all().prefetch_related('evaluations')
+    def get_serializer_class(self):
+        # The list is unpaginated, so every extra field is multiplied by lifetime history.
+        return JobLeadListSerializer if self.action == 'list' else JobLeadSerializer
     def get_queryset(self):
-        qs=accessible_jobs(self.request.user).prefetch_related('evaluations'); p=self.request.query_params
+        qs=accessible_jobs(self.request.user)
+        # Only the list adds jobs handed to somebody else, and list() projects those rows down to
+        # the submission itself. Every other action -- detail, mutation, nested notes/evaluations/
+        # follow-ups -- stays on accessible_jobs and 404s for them.
+        if self.action == 'list':
+            qs=qs | submitted_away_jobs(self.request.user)
+        qs=qs.prefetch_related('evaluations'); p=self.request.query_params
         if p.get('status'):
             statuses=[s for s in p.get('status','').split(',') if s]
             qs=qs.filter(status__in=statuses)
@@ -320,12 +490,24 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             qs=qs.filter(evaluations__isnull=False)
         if p.get('board') in ('1','true','yes'):
             qs=qs.exclude(Q(title='')|Q(title__istartswith='Untitled role'))
+        today=timezone.localdate()
         qs=qs.annotate(
-            stale_rank=Case(When(status__in=['applied','interview'], status_date__lt=timezone.localdate()-timezone.timedelta(days=21), then=Value(1)), default=Value(0), output_field=IntegerField()),
-            status_rank=Case(When(status='new', then=Value(0)), When(status='to_apply', then=Value(1)), When(status='reviewed', then=Value(2)), When(status='interview', then=Value(3)), When(status='applied', then=Value(4)), default=Value(5), output_field=IntegerField()),
+            # -1 surfaces, 1 sinks. One expression owns every age/deadline signal on the board.
+            stale_rank=Case(
+                When(status__in=JobLead.UNAPPLIED_STATUSES, apply_by__lte=today+timezone.timedelta(days=JobLead.DEADLINE_SOON_DAYS), then=Value(-1)),
+                When(status__in=JobLead.DATED_STATUSES, status_date__lt=today-timezone.timedelta(days=JobLead.STALE_APPLIED_DAYS), then=Value(1)),
+                When(status__in=JobLead.UNAPPLIED_STATUSES, created_at__lt=timezone.now()-timezone.timedelta(days=JobLead.STALE_UNAPPLIED_DAYS), then=Value(1)),
+                default=Value(0), output_field=IntegerField()),
+            status_rank=Case(When(status='new', then=Value(0)), When(status='to_apply', then=Value(1)), When(status='reviewed', then=Value(2)), When(status__in=['interview','offer'], then=Value(3)), When(status='applied', then=Value(4)), default=Value(5), output_field=IntegerField()),
             priority_rank=Case(When(evaluations__priority='high', then=Value(0)), When(evaluations__priority='medium', then=Value(1)), When(evaluations__priority='low', then=Value(2)), default=Value(3), output_field=IntegerField())
-        ).order_by('stale_rank','status_rank','priority_rank','-evaluations__fit_score','-created_at')
+        ).order_by(*BOARD_ORDERINGS.get(p.get('ordering') or '', DEFAULT_BOARD_ORDERING))
         return qs.distinct()
+    def list(self, request, *args, **kwargs):
+        response=super().list(request, *args, **kwargs)
+        handed_off=set(submitted_away_jobs(request.user).values_list('id', flat=True))
+        if handed_off:
+            response.data=[submission_row(row) if row['id'] in handed_off else row for row in response.data]
+        return response
     def create(self, request, *args, **kwargs):
         ser=self.get_serializer(data=request.data); ser.is_valid(raise_exception=True)
         url=ser.validated_data.get('url')
@@ -446,6 +628,11 @@ def public_submit(request):
         invite=InviteCode.objects.filter(code=code).first()
         if not invite or not invite.is_valid(): return Response({'detail':'Invalid invite code'}, status=400)
     profile=getattr(request.user, 'jobradar_profile', None)
+    # A friend named at registration is only resolved once the address is confirmed (TASK-93), so
+    # both halves of "named a friend, not approved yet" have to block. Without the first check the
+    # submission would quietly land on the submitter's own board instead of the friend's.
+    if profile and not profile.submit_for_id and profile.pending_friend_lookup:
+        return Response({'detail':'Confirm your email address first -- your friend is asked to approve you once you do.'}, status=403)
     if profile and profile.requested_submit_for_id and not profile.submit_for_id:
         return Response({'detail':'Your friend has not approved this submission link yet.'}, status=403)
     owner=profile.submit_for if profile and profile.submit_for_id else (request.user if request.user.is_authenticated else None)
@@ -453,11 +640,18 @@ def public_submit(request):
     strategy=request.data.get('duplicate_strategy') or request.data.get('duplicate_action')
     action_map={a.get('index'):a.get('action') for a in request.data.get('duplicate_actions',[])}
     conflicts=[]; created=[]; skipped=[]
+    # The duplicate check runs against the *recipient's* board, so the matched row is the
+    # recipient's job, not the submitter's. Anyone but the recipient gets the submission-only
+    # projection of it -- otherwise this endpoint hands a friend (or, with invite codes, an
+    # anonymous submitter) the recipient's evaluation for the price of guessing a job URL.
+    def conflict_job(existing):
+        data=JobLeadSerializer(existing).data
+        return data if owner is not None and owner == request.user else submission_row(data)
     for i, link in enumerate(links):
         existing=find_existing_by_url(link, owner)
         action=action_map.get(i) or strategy
         if existing and not action:
-            conflicts.append({'index':i,'url':link,'incoming':{'company':request.data.get('company') or 'Unknown company','title':request.data.get('title') or 'Untitled role'},'existing_jobs':[JobLeadSerializer(existing).data]})
+            conflicts.append({'index':i,'url':link,'incoming':{'company':request.data.get('company') or 'Unknown company','title':request.data.get('title') or 'Untitled role'},'existing_jobs':[conflict_job(existing)]})
     if conflicts and not action_map:
         return Response({'ok':False,'type':'duplicate_conflicts','message':'Some links already exist in this dashboard. Choose which ones to duplicate or skip.','conflicts':conflicts}, status=400)
     remaining=[c for c in conflicts if c['index'] not in action_map]
@@ -521,7 +715,7 @@ def cv_generation_preview(request, job_id):
     job=accessible_jobs(request.user).filter(id=job_id).first()
     if not job:
         return Response({'detail':'Job not found.'}, status=404)
-    return Response(generation_preview(job))
+    return Response(generation_preview(job, request.user))
 
 
 def _started_cv_task(task_id, user_id):
@@ -544,8 +738,9 @@ def generate_cv_documents(request, job_id):
         validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal')
     except ValueError as exc:
         return Response({'detail':str(exc)}, status=400)
+    cv_profile=user_profile_settings(request.user)
     try:
-        candidate_context=load_candidate_evidence(build_candidate_profile_text(request.user), user_profile_settings(request.user).learned_application_preferences)
+        candidate_context=load_candidate_evidence(build_candidate_profile_text(request.user), cv_profile.learned_application_preferences, cv_profile.candidate_evidence)
     except RuntimeError as exc:
         return Response({'detail':str(exc)}, status=503)
     try:
@@ -564,7 +759,7 @@ def recompile_latest_cv_documents(request, job_id):
     if not job:
         return Response({'detail':'Job not found.'},status=404)
     cv_key=request.data.get('cv_template') or ''
-    source_cv,source_letter=latest_generated_sources(job,cv_key)
+    source_cv,source_letter=latest_generated_sources(job,request.user)
     source_cv=source_cv if request.data.get('create_cv',True) is not False else None
     source_letter=source_letter if request.data.get('create_letter',True) is not False else None
     if not source_cv and not source_letter:
@@ -591,7 +786,7 @@ def revise_latest_cv_documents(request, job_id):
     if not (instructions or correction_image) or not (create_cv or create_letter):
         return Response({'detail':'Provide revision instructions or a correction image and select at least one document.'}, status=400)
     cv_key=request.data.get('cv_template') or ''
-    source_cv,source_letter=latest_generated_sources(job, cv_key)
+    source_cv,source_letter=latest_generated_sources(job, request.user)
     create_cv=create_cv and bool(source_cv)
     create_letter=create_letter and bool(source_letter)
     if not create_cv and not create_letter:
@@ -600,8 +795,9 @@ def revise_latest_cv_documents(request, job_id):
         validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal')
     except ValueError as exc:
         return Response({'detail':str(exc)}, status=400)
+    cv_profile=user_profile_settings(request.user)
     try:
-        candidate_context=load_candidate_evidence(build_candidate_profile_text(request.user), user_profile_settings(request.user).learned_application_preferences)
+        candidate_context=load_candidate_evidence(build_candidate_profile_text(request.user), cv_profile.learned_application_preferences, cv_profile.candidate_evidence)
     except RuntimeError as exc:
         return Response({'detail':str(exc)}, status=503)
     try:
@@ -688,7 +884,7 @@ def import_eval(request):
 def stats(request):
     jobs=accessible_jobs(request.user)
     today=timezone.localdate(); evaluations=JobEvaluation.objects.filter(job__in=jobs)
-    application_date_jobs=jobs.filter(status_date__isnull=False)
+    applied_jobs=jobs.filter(applied_at__isnull=False)
     week_start=today-timezone.timedelta(days=today.weekday())
     month_start=today.replace(day=1)
     next_month=(today.replace(year=today.year+1, month=1, day=1) if today.month == 12 else today.replace(month=today.month+1, day=1))
@@ -697,7 +893,7 @@ def stats(request):
     for i in range(3,-1,-1):
         start=week_start-timezone.timedelta(days=i*7)
         end=start+timezone.timedelta(days=6)
-        weekly_applications.append({'label':start.strftime('%d %b'), 'start':start.isoformat(), 'end':end.isoformat(), 'count':application_date_jobs.filter(status_date__gte=start, status_date__lte=end).count()})
+        weekly_applications.append({'label':start.strftime('%d %b'), 'start':start.isoformat(), 'end':end.isoformat(), 'count':applied_jobs.filter(applied_at__gte=start, applied_at__lte=end).count()})
     month_week_applications=[]
     suffixes=['st','nd','rd']
     cursor=month_start
@@ -705,18 +901,28 @@ def stats(request):
     while cursor <= month_end:
         end=min(cursor+timezone.timedelta(days=6), month_end)
         suffix=suffixes[idx-1] if idx <= 3 else 'th'
-        month_week_applications.append({'label':f'{idx}{suffix} week', 'range':f'{cursor.day}-{end.day} {end.strftime("%b")}', 'start':cursor.isoformat(), 'end':end.isoformat(), 'count':application_date_jobs.filter(status_date__gte=cursor, status_date__lte=end).count()})
+        month_week_applications.append({'label':f'{idx}{suffix} week', 'range':f'{cursor.day}-{end.day} {end.strftime("%b")}', 'start':cursor.isoformat(), 'end':end.isoformat(), 'count':applied_jobs.filter(applied_at__gte=cursor, applied_at__lte=end).count()})
         cursor=end+timezone.timedelta(days=1)
         idx+=1
     workday_applications=[]
     cursor=month_start
     while cursor <= month_end:
         if cursor.weekday() < 5:
-            workday_applications.append({'label':cursor.strftime('%d %b'), 'date':cursor.isoformat(), 'count':application_date_jobs.filter(status_date=cursor).count()})
+            workday_applications.append({'label':cursor.strftime('%d %b'), 'date':cursor.isoformat(), 'count':applied_jobs.filter(applied_at=cursor).count()})
         cursor+=timezone.timedelta(days=1)
-    applications_this_week=application_date_jobs.filter(status_date__gte=week_start, status_date__lte=today).count()
+    applications_this_week=applied_jobs.filter(applied_at__gte=week_start, applied_at__lte=today).count()
     elapsed_workdays=sum(1 for i in range(min(today.weekday(), 4)+1))
-    return Response({'total_jobs':jobs.count(), 'jobs_by_status':dict(jobs.values_list('status').annotate(c=Count('id'))), 'average_fit_score':evaluations.aggregate(a=Avg('fit_score'))['a'] or 0, 'high_priority_jobs':evaluations.filter(priority='high', job__status='new').values('job').distinct().count(), 'applications_sent':jobs.filter(status='applied').count(), 'applications_this_week':applications_this_week, 'applications_per_workday':round(applications_this_week/max(elapsed_workdays,1), 1), 'workday_applications':workday_applications, 'month_week_applications':month_week_applications, 'weekly_applications':weekly_applications, 'interviews':jobs.filter(status='interview').count(), 'rejected':jobs.filter(status='rejected').count(), 'jobs_needing_follow_up':FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).count()})
+    # Only interviews still ahead of us, soonest first; a date that has passed drops out on its own.
+    upcoming_interviews=[{'id':j.id, 'company':j.company, 'title':j.title, 'interview_at':j.interview_at, 'interview_note':j.interview_note}
+                         for j in jobs.filter(interview_at__gte=timezone.now()).exclude(status__in=['rejected','withdrawn','skipped','archived']).order_by('interview_at')[:10]]
+    recent_start=today-timezone.timedelta(days=JobLead.FUNNEL_RECENT_DAYS)
+    funnel={'recent_window_days':JobLead.FUNNEL_RECENT_DAYS, 'recent_window_start':recent_start.isoformat(),
+            'all_time':funnel_counts(applied_jobs),
+            'recent':funnel_counts(applied_jobs.filter(applied_at__gte=recent_start)),
+            # Jobs sitting in interview/offer that were never marked applied. Excluded from every
+            # rate above so none can exceed 100%, surfaced here so the gap is visible and fixable.
+            'interviews_without_application':jobs.filter(REACHED_INTERVIEW, applied_at__isnull=True).count()}
+    return Response({'total_jobs':jobs.count(), 'funnel':funnel, 'source_effectiveness':source_effectiveness(applied_jobs), 'jobs_by_status':dict(jobs.values_list('status').annotate(c=Count('id'))), 'average_fit_score':evaluations.aggregate(a=Avg('fit_score'))['a'] or 0, 'high_priority_jobs':evaluations.filter(priority='high', job__status='new').values('job').distinct().count(), 'applications_sent':applied_jobs.count(), 'applications_this_week':applications_this_week, 'applications_per_workday':round(applications_this_week/max(elapsed_workdays,1), 1), 'workday_applications':workday_applications, 'month_week_applications':month_week_applications, 'weekly_applications':weekly_applications, 'interviews':jobs.filter(status='interview').count(), 'upcoming_interviews':upcoming_interviews, 'offers':jobs.filter(status='offer').count(), 'accepted':jobs.filter(status='accepted').count(), 'rejected':jobs.filter(status='rejected').count(), 'withdrawn':jobs.filter(status='withdrawn').count(), 'jobs_needing_follow_up':FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).count()})
 
 @api_view(['GET', 'POST'])
 def export_user_data(request):

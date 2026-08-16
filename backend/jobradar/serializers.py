@@ -2,7 +2,7 @@ import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from django.utils import timezone
 from rest_framework import serializers
-from .models import DEFAULT_CANDIDATE_PROFILE, JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, UserProfile
+from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, UserProfile
 from .services.skill_matcher import smart_skill_status, display_skill_name
 from .services.access import accessible_jobs
 from .services.demo_data import is_demo_job_payload, is_demo_user
@@ -78,15 +78,18 @@ def clean_job_title(value):
 class CandidateProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model=UserProfile
-        fields=('candidate_profile','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
+        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
+    # The profile codec is a text codec: it JSON-wraps values for drifted SQLite schemas and
+    # coerces falsy values to ''. Running a boolean through it would store '' in a
+    # BooleanField and serialise False as ''. Booleans pass through untouched.
     def to_representation(self, instance):
         data=super().to_representation(instance)
-        return {k: decode_profile_value(v) for k,v in data.items()}
-    def validate_candidate_profile(self, value):
-        return value or DEFAULT_CANDIDATE_PROFILE
+        return {k: (v if isinstance(v, bool) else decode_profile_value(v)) for k,v in data.items()}
+    # No validate_candidate_profile: clearing the field used to store somebody else's bio instead,
+    # so a user could never actually empty it. Empty now stays empty and prompt generation refuses.
     def update(self, instance, validated_data):
         for field, value in validated_data.items():
-            setattr(instance, field, encode_profile_value(field, value))
+            setattr(instance, field, value if isinstance(value, bool) else encode_profile_value(field, value))
         instance.save(update_fields=list(validated_data.keys()))
         return instance
 
@@ -175,21 +178,21 @@ class JobLeadSerializer(serializers.ModelSerializer):
     def create(self, attrs):
         attrs['company']=attrs.get('company') or 'Unknown company'
         attrs['title']=attrs.get('title') or 'Untitled role'
-        if attrs.get('status') in ['applied','interview'] and not attrs.get('status_date'):
+        if attrs.get('status') in JobLead.DATED_STATUSES and not attrs.get('status_date'):
             attrs['status_date']=timezone.localdate()
-        if attrs.get('status') not in ['applied','interview']:
+        if attrs.get('status') not in JobLead.DATED_STATUSES:
             attrs['last_update_date']=None
         return super().create(attrs)
     def update(self, instance, attrs):
         new_status=attrs.get('status')
-        if new_status in ['applied','interview'] and instance.status != new_status and not attrs.get('status_date'):
+        if new_status in JobLead.DATED_STATUSES and instance.status != new_status and not attrs.get('status_date'):
             attrs['status_date']=timezone.localdate()
         status_for_last_update=new_status or instance.status
-        if status_for_last_update not in ['applied','interview']:
+        if status_for_last_update not in JobLead.DATED_STATUSES:
             attrs['last_update_date']=None
         elif new_status and instance.status != new_status and not attrs.get('last_update_date'):
             attrs['last_update_date']=timezone.localdate()
-        if new_status and new_status not in ['applied','interview'] and instance.status != new_status and 'status_date' not in attrs:
+        if new_status and new_status not in JobLead.DATED_STATUSES and instance.status != new_status and 'status_date' not in attrs:
             attrs['status_date']=None
             attrs['feedback_due_date']=None
         if new_status and new_status != 'interview':
@@ -203,6 +206,41 @@ class JobLeadSerializer(serializers.ModelSerializer):
     def get_created_by_email(self, obj): return (obj.created_by.email or obj.created_by.username) if obj.created_by else ''
     def get_submitted_for_username(self, obj): return obj.submitted_for.username if obj.submitted_for else ''
     def get_submitted_for_email(self, obj): return (obj.submitted_for.email or obj.submitted_for.username) if obj.submitted_for else ''
+
+class JobEvaluationListSerializer(JobEvaluationSerializer):
+    """Nested evaluation for board rows only.
+
+    Keeps exactly what the dashboard renders: the score/priority chips, MatchGapPopup
+    (summary, main_match_reasons, main_gaps) and SkillLabels (required/matched/missing
+    plus skill_statuses). Drops structured_json_raw -- the whole raw LLM reply, ~3.7KB
+    per evaluation in the local snapshot and by far the biggest thing on the wire -- and
+    the long-form notes only the detail page shows. recommendation stays because the
+    board filters on it; skill_statuses is still computed from the instance, so it keeps
+    covering nice_to_have skills even though that list itself is not sent.
+    """
+    class Meta(JobEvaluationSerializer.Meta):
+        fields=('id','fit_score','priority','recommendation','summary','main_match_reasons','main_gaps','required_skills','matched_skills','missing_skills','skill_statuses')
+
+class JobLeadListSerializer(JobLeadSerializer):
+    """/api/jobs/ list rows. The detail endpoint keeps every field.
+
+    raw_description and original_source_text are a full job posting each and nothing on
+    the board reads them from the list response -- the job detail page fetches
+    /api/jobs/<id>/ for its editor and source-text pane.
+    """
+    class Meta(JobLeadSerializer.Meta):
+        fields=None  # DRF forbids fields and exclude together; the parent sets fields='__all__'
+        exclude=('raw_description','original_source_text')
+    def get_latest_evaluation(self, obj):
+        ev=obj.evaluations.first()
+        return JobEvaluationListSerializer(ev).data if ev else None
+
+class InviteCodeSerializer(serializers.ModelSerializer):
+    """Owner-facing view of an invite code. `code` is generated server-side, never posted."""
+    class Meta:
+        model=InviteCode
+        fields=('id','code','label','active','expires_at','created_at')
+        read_only_fields=('id','code','active','created_at')
 
 class PublicSubmissionSerializer(serializers.Serializer):
     invite_code=serializers.CharField(max_length=80, required=False, allow_blank=True)
@@ -241,7 +279,10 @@ class PublicSubmissionSerializer(serializers.Serializer):
             raise serializers.ValidationError('Provide at least a job URL, description, company, or title')
         return attrs
     def create(self, data):
-        data.pop('invite_code', None); data.pop('website', None)
+        # An anonymous submission belongs to whoever minted the code, otherwise the row is
+        # ownerless and only staff can see it. public_submit overwrites submitted_for for
+        # authenticated submitters, so this only takes effect on the anonymous path.
+        recipient=InviteCode.recipient_for(data.pop('invite_code', None)); data.pop('website', None)
         data['company']=data.get('company') or 'Unknown company'
         data['title']=data.get('title') or 'Untitled role'
-        return JobLead.objects.create(source='friend', **data)
+        return JobLead.objects.create(source='friend', submitted_for=recipient, **data)

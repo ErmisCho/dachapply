@@ -57,6 +57,7 @@ cd frontend
 npm install
 cd ../backend
 uv run manage.py migrate
+uv run manage.py createcachetable
 python manage.py createsuperuser
 python manage.py seed_demo
 python manage.py runserver 127.0.0.1:8000
@@ -101,6 +102,7 @@ npm run build
 cd ../backend
 python manage.py collectstatic --noinput
 python manage.py migrate
+python manage.py createcachetable
 python manage.py runserver 127.0.0.1:8000
 ```
 

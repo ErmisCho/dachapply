@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
 
@@ -119,6 +120,13 @@ else:
         raise ImproperlyConfigured('DATABASE_URL must be set for production when DEBUG=False.')
     DATABASES={'default': {'ENGINE': os.getenv('DB_ENGINE','django.db.backends.sqlite3'), 'NAME': os.getenv('DB_NAME', str(BASE_DIR/'db.sqlite3'))}}
 
+# Throttle counters live in the cache. The default per-process LocMemCache gave every gunicorn
+# worker its own counter, so a "5/hour" limit was really 5 x WEB_CONCURRENCY and reset on every
+# revision swap. DatabaseCache is a store all workers already share and that survives a deploy;
+# scripts/start-container.sh runs createcachetable next to migrate, and Django's test runner
+# creates the table itself.
+CACHES={'default':{'BACKEND':'django.core.cache.backends.db.DatabaseCache','LOCATION':os.getenv('CACHE_TABLE','dachapply_cache')}}
+
 AUTH_PASSWORD_VALIDATORS=[{'NAME':'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},{'NAME':'django.contrib.auth.password_validation.MinimumLengthValidator'},{'NAME':'django.contrib.auth.password_validation.CommonPasswordValidator'},{'NAME':'django.contrib.auth.password_validation.NumericPasswordValidator'}]
 LANGUAGE_CODE='en-us'; TIME_ZONE='Europe/Vienna'; USE_I18N=True; USE_TZ=True
 STATIC_URL='/static/'; STATIC_ROOT=BASE_DIR/'staticfiles'; STATICFILES_DIRS=[]
@@ -135,7 +143,9 @@ REST_FRAMEWORK={
         'login_account': os.getenv('RATE_LIMIT_LOGIN_ACCOUNT', '20/minute' if DEBUG else '5/minute'),
         'register_ip': os.getenv('RATE_LIMIT_REGISTER_IP', '20/hour' if DEBUG else '5/hour'),
         'password_reset_ip': os.getenv('RATE_LIMIT_PASSWORD_RESET_IP', '20/hour' if DEBUG else '5/hour'),
+        'password_reset_confirm_ip': os.getenv('RATE_LIMIT_PASSWORD_RESET_CONFIRM_IP', '20/hour' if DEBUG else '5/hour'),
         'password_reset_email': os.getenv('RATE_LIMIT_PASSWORD_RESET_EMAIL', '5/hour'),
+        'email_verification_ip': os.getenv('RATE_LIMIT_EMAIL_VERIFICATION_IP', '60/hour' if DEBUG else '20/hour'),
         'public_submit_ip': os.getenv('RATE_LIMIT_PUBLIC_SUBMIT_IP', '60/hour' if DEBUG else '20/hour'),
         'import_user': os.getenv('RATE_LIMIT_IMPORT_USER', '120/hour' if DEBUG else '60/hour'),
         'cv_generation_user': os.getenv('RATE_LIMIT_CV_GENERATION_USER', '100/hour'),
@@ -222,3 +232,108 @@ SECURE_HSTS_INCLUDE_SUBDOMAINS=env_bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', False)
 SECURE_HSTS_PRELOAD=env_bool('SECURE_HSTS_PRELOAD', False)
 SECURE_CONTENT_TYPE_NOSNIFF=True
 SECURE_REFERRER_POLICY=os.getenv('SECURE_REFERRER_POLICY', 'same-origin')
+
+# --- Error alerting -----------------------------------------------------------------------------
+# Unhandled 500s used to be invisible, not merely hard to find. Django's default console handler
+# carries a require_debug_true filter, so with DEBUG=False a 500 traceback went nowhere at all
+# (measured: emitting one under DEFAULT_LOGGING produced no output on either stream), and the
+# default mail_admins handler was a no-op because ADMINS was never set. gunicorn is started without
+# --access-logfile, so not even a status line was left behind. The uptime monitor sees "down", not
+# "erroring".
+#
+# No new dependency for this. Sentry would add a monkeypatching SDK plus an account and a DSN to
+# deliver a signal over a channel this app already has working (Brevo SMTP, exercised by password
+# reset). What Sentry gives that this does not: grouping, search and retention -- accepted losses.
+# Its rate limiting is the one feature with a failure mode if missing, so it is replaced below.
+#
+# Inert until configured: with ERROR_ALERT_EMAILS unset, ADMINS is empty and AdminEmailHandler.emit
+# returns immediately. The only behaviour change with nothing set is that ERROR tracebacks now reach
+# stdout in production, where previously they reached nothing.
+ADMINS = [('DACHApply alerts', address) for address in env_list('ERROR_ALERT_EMAILS')]
+# Django's default SERVER_EMAIL is root@localhost, which a relay like Brevo rejects because it is not
+# a verified sender -- the alert would bounce instead of arriving.
+SERVER_EMAIL = os.getenv('SERVER_EMAIL') or DEFAULT_FROM_EMAIL
+EMAIL_SUBJECT_PREFIX = os.getenv('EMAIL_SUBJECT_PREFIX', '[DACHApply] ')
+ERROR_ALERT_COOLDOWN_SECONDS = int(os.getenv('ERROR_ALERT_COOLDOWN_SECONDS', '300'))
+
+_alert_last_sent = {}
+
+
+def _alert_key(record):
+    """Group by where the exception was actually raised, so distinct bugs alert independently."""
+    exc_type, _, tb = record.exc_info or (None, None, None)
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb is not None:
+        return f'{exc_type.__name__}:{tb.tb_frame.f_code.co_filename}:{tb.tb_lineno}'
+    return f'{record.name}:{record.getMessage()}'
+
+
+class ErrorAlertCooldown:
+    """Send at most one alert per distinct failure per ERROR_ALERT_COOLDOWN_SECONDS.
+
+    A crash loop on a hot path would otherwise send one email per request and burn the shared Brevo
+    quota that password-reset mail depends on: the alerting would break the thing it is watching.
+
+    Deliberately never raises. A logging filter runs outside the try/except that guards emit(), so an
+    exception here would abort the request being reported on. It fails open for the same reason -- a
+    missed cooldown costs a duplicate email, a swallowed record costs the alert.
+
+    ponytail: the window is per process, so N gunicorn workers can each send one alert per window.
+    A shared counter would have to live in the DatabaseCache, and the database going down is exactly
+    the failure most likely to cause the storm -- the cooldown must not depend on it.
+    """
+
+    def filter(self, record):
+        if ERROR_ALERT_COOLDOWN_SECONDS <= 0:
+            return True
+        try:
+            key = _alert_key(record)
+            now = time.monotonic()
+            last = _alert_last_sent.get(key)
+            if last is not None and now - last < ERROR_ALERT_COOLDOWN_SECONDS:
+                return False
+            if len(_alert_last_sent) > 500:
+                _alert_last_sent.clear()
+            _alert_last_sent[key] = now
+        except Exception:
+            pass
+        return True
+
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'filters': {
+        # Order matters: logging stops at the first filter that rejects, so the cheap
+        # production-only check runs before any bookkeeping.
+        'require_debug_false': {'()': 'django.utils.log.RequireDebugFalse'},
+        'error_alert_cooldown': {'()': ErrorAlertCooldown},
+    },
+    'formatters': {'app': {'format': '[{asctime}] {levelname} {name} {message}', 'style': '{'}},
+    'handlers': {
+        # No require_debug_true filter, unlike Django's default console handler: production stdout
+        # is where the traceback has to land when the email channel is not configured.
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'app'},
+        'mail_admins': {
+            'level': 'ERROR',
+            'class': 'django.utils.log.AdminEmailHandler',
+            'filters': ['require_debug_false', 'error_alert_cooldown'],
+        },
+    },
+    'loggers': {
+        # django.request logs 4xx at WARNING and 5xx at ERROR, so an ERROR-level handler already
+        # excludes 404s and throttled 429s. Verified in jobradar/tests/test_error_alerting.py rather
+        # than assumed. These loggers keep propagate=True: the parent 'django' handler prints them,
+        # and pytest's caplog needs records to reach the root logger.
+        'django': {'handlers': ['console'], 'level': 'INFO'},
+        'django.request': {'handlers': ['mail_admins'], 'level': 'INFO'},
+        # django.security.* logs SuspiciousOperation at ERROR -- including DisallowedHost, which any
+        # bot probing the container by IP triggers. No handler of its own, so it propagates to
+        # 'django' above and lands on the console only: that is log noise, not a page.
+        'django.security': {'level': 'INFO'},
+        # Application logger.exception() sites are the silent-breakage class this task exists for:
+        # a password-reset mail that fails to send returns 200 to the user and 500s nothing.
+        'jobradar': {'handlers': ['console', 'mail_admins'], 'level': 'INFO'},
+    },
+}

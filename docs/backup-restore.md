@@ -4,25 +4,153 @@ DACHApply stores user data in PostgreSQL/Neon in production. Treat the database 
 
 ## Database backups
 
-Recommended baseline for beta:
+Two independent layers, because they fail differently:
 
-1. Enable Neon backups/restore points for the production branch.
-2. Before risky deploys or migrations, create a manual restore point/snapshot in Neon.
-3. Periodically verify that a restore can be made into a separate non-production branch.
+| Layer | Covers | Window | Status |
+| --- | --- | --- | --- |
+| Neon history retention (point-in-time) | "the migration ate the data 20 minutes ago" | see [Neon point-in-time retention](#neon-point-in-time-retention) | needs owner verification |
+| Nightly `pg_dump` to Azure Blob | "the Neon project itself is gone or the account is locked out" | 30 days of nightly dumps | needs owner setup, see below |
 
-Optional manual logical backup:
+Neon's own retention lives inside Neon, so it cannot help if the Neon project, the account, or the
+billing relationship disappears. That is what the off-site dump is for. Neither layer replaces the
+other.
+
+### Nightly automated dump
+
+`.github/workflows/database-backup.yml` runs `pg_dump --format=custom` against production at 03:17
+UTC daily and PUTs the dump into a private Azure Blob Storage container.
+
+**Not a workflow artifact, on purpose.** `ErmisCho/dachapply` is a public repository, and workflow
+artifacts inherit repository read access — on a public repo that means anyone can download them. A
+production dump is every user's job search, so the workflow must never use `actions/upload-artifact`
+while the repo is public.
+
+The workflow refuses to upload a dump it cannot vouch for. It fails the run if the dump is under
+20 KB, if `pg_restore --list` cannot parse it, or if it contains fewer than 15 `TABLE DATA` entries.
+A backup job that reports success while producing nothing is worse than no backup job at all.
+
+#### Owner setup (one-time, roughly five minutes)
+
+1. Create a storage account and a private container (any region; `dachapply-backups` below):
+
+   ```bash
+   az storage account create --name dachapplybackups --resource-group <rg> \
+     --sku Standard_LRS --kind StorageV2 --allow-blob-public-access false
+   az storage container create --name dachapply-backups --account-name dachapplybackups
+   ```
+
+2. Generate a **write-only** container SAS. `--permissions cw` means create+write with no read and
+   no delete, so a leaked CI token can neither download the backups nor destroy them:
+
+   ```bash
+   az storage container generate-sas --name dachapply-backups \
+     --account-name dachapplybackups --permissions cw \
+     --expiry 2027-08-16 --https-only --output tsv
+   ```
+
+   The full secret value is the container URL plus that token:
+   `https://dachapplybackups.blob.core.windows.net/dachapply-backups?<sas-token>`
+
+3. Add two repository secrets at **Settings → Secrets and variables → Actions**:
+
+   | Secret | Value |
+   | --- | --- |
+   | `DATABASE_URL` | the production Neon connection string (`?sslmode=require`) |
+   | `BACKUP_UPLOAD_URL` | the container URL + SAS from step 2 |
+
+4. Apply a 30-day retention rule. This is a storage-account lifecycle policy rather than code in the
+   workflow, because deleting old blobs from CI would require a SAS with delete permission:
+
+   ```bash
+   az storage account management-policy create --account-name dachapplybackups \
+     --resource-group <rg> --policy '{"rules":[{"enabled":true,"name":"expire-30d","type":"Lifecycle",
+     "definition":{"filters":{"blobTypes":["blockBlob"],"prefixMatch":["dachapply-backups/dachapply-"]},
+     "actions":{"baseBlob":{"delete":{"daysAfterModificationGreaterThan":30}}}}}]}'
+   ```
+
+5. Run the workflow once manually (**Actions → Database backup → Run workflow**) and confirm a blob
+   appears. Then do the restore drill below against that real dump.
+
+**The SAS expires.** Note the expiry date from step 2 — when it passes, the workflow starts failing,
+which is the intended loud behaviour. Renew with the same command.
+
+#### When a backup run fails
+
+The workflow exits nonzero and GitHub emails the repository owner, the same way
+`uptime-monitor.yml` already reports outages. Confirm that path is actually on:
+**<https://github.com/settings/notifications> → Actions → Notify on: "Failed workflows only"** (or
+"All workflows"), with email enabled. If that box is off, backup failures are silent and the whole
+workflow is decorative.
+
+### Restore drill
+
+Performed 2026-08-16 with PostgreSQL 17.5 client tooling against a disposable Docker Postgres 17.
+Commands below are exactly what was executed; only the source database differs from a live restore,
+which is called out at the end.
 
 ```bash
-pg_dump "$DATABASE_URL" --format=custom --file=dachapply-$(date +%Y%m%d-%H%M).dump
+# 1. Scratch Postgres, thrown away afterwards. Never restore into anything shared.
+export PGPASSWORD="$(openssl rand -base64 18)"   # throwaway, lives only in this shell
+docker run -d --name dachapply-backup-drill -e POSTGRES_PASSWORD="$PGPASSWORD" \
+  -p 55432:5432 postgres:17-alpine
+psql -h localhost -p 55432 -U postgres -c "CREATE DATABASE dachapply_drill_restore;"
+
+# 2. Fetch the dump to restore. Either download the newest blob from the backup container,
+#    or produce one by hand with the same flags the workflow uses:
+pg_dump "$SOURCE_DATABASE_URL" --format=custom --no-owner --no-acl \
+  --file="dachapply-$(date -u +%Y%m%dT%H%M%SZ).dump"
+
+# 3. Inspect before trusting. A dump that lists no TABLE DATA is not a backup.
+pg_restore --list dachapply-<stamp>.dump | grep -c 'TABLE DATA'
+
+# 4. Restore. --exit-on-error turns a partial restore into a failure instead of a surprise.
+pg_restore --dbname "postgres://postgres:$PGPASSWORD@localhost:55432/dachapply_drill_restore" \
+  --no-owner --no-acl --clean --if-exists --exit-on-error dachapply-<stamp>.dump
+
+# 5. Verify the restore rather than assuming it.
+psql -h localhost -p 55432 -U postgres -d dachapply_drill_restore \
+  -tAc "select count(*) from information_schema.tables where table_schema='public'"
+psql -h localhost -p 55432 -U postgres -d dachapply_drill_restore -tAc "select count(*) from auth_user"
+
+# 6. Strongest check: Django agrees the restored schema is complete and current.
+cd backend && env DATABASE_URL="postgres://postgres:$PGPASSWORD@localhost:55432/dachapply_drill_restore" \
+  DB_SSL_REQUIRE=0 uv run manage.py migrate --check
+
+# 7. Clean up.
+docker rm -f dachapply-backup-drill
 ```
 
-Restore into a non-production database first:
+Result of the 2026-08-16 run: dump 72,350 bytes with 21 `TABLE DATA` entries; `pg_restore` exited 0;
+source and restored databases both reported 21 public tables and the same row counts;
+`migrate --check` exited 0, so no migration was missing from the restored schema.
 
-```bash
-pg_restore --dbname "$RESTORE_DATABASE_URL" --clean --if-exists dachapply-YYYYMMDD-HHMM.dump
-```
+`--no-owner --no-acl` matter: the dump carries Neon's role names, and a scratch database has
+different roles. Without those flags the restore fails on ownership statements that are irrelevant
+to recovery.
 
-Do not restore over production until you have confirmed the backup and understand the data loss window.
+Caveat, stated plainly: the drilled dump came from a scratch database carrying the real migrated
+schema and a single seeded row, not from production — production is deliberately off-limits to
+tooling runs. The command sequence and the schema round-trip are proven; dump *size* and restore
+*duration* at production data volume are not. Re-run steps 2–6 against the first real nightly blob
+once `BACKUP_UPLOAD_URL` is configured, and record the timing here.
+
+Do not restore over production until you have confirmed the backup and understand the data loss
+window.
+
+### Neon point-in-time retention
+
+**Unverified — needs the owner to check the console.** Neon keeps a WAL history that lets you branch
+from any moment inside the retention window, which is the fastest recovery path for "the last
+migration deleted the wrong rows".
+
+To verify and record it: <https://console.neon.tech> → the DACHApply project → **Settings → Storage
+→ History retention**. Read the configured window, then replace this paragraph with the actual value
+and the plan it comes from. Free-tier projects retain far less than paid ones, and the difference
+decides whether Neon alone is a usable recovery path or whether the nightly dump is the only real
+one. Do not assume a value; read it.
+
+Before risky deploys or migrations, create a named restore point / branch in Neon regardless of the
+window, so recovery does not depend on guessing a timestamp.
 
 ## App-level export/import check
 

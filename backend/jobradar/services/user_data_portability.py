@@ -8,20 +8,21 @@ except ImportError:  # pragma: no cover - dependency is declared in requirements
     Workbook = load_workbook = None
 from collections import defaultdict
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import DateField
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from jobradar.models import ApplicationNote, FollowUp, JobEvaluation, JobLead, UserProfile
+from jobradar.services.access import owned_by
 from jobradar.services.cleaning import clean_job_location
 
 SCHEMA_VERSION = 1
 APP_NAME = 'dachapply'
 
-JOB_FIELDS = ['company','title','location','url','source','raw_description','original_source_text','submitted_by','submitter_reason','salary_info','language_requirements','work_mode','status','status_date','interview_stage','interview_total','last_update_date','feedback_due_date']
+JOB_FIELDS = ['company','title','location','url','source','raw_description','original_source_text','submitted_by','submitter_reason','salary_info','language_requirements','work_mode','status','status_date','applied_at','interview_stage','interview_total','interview_at','interview_note','apply_by','last_update_date','feedback_due_date']
 EVALUATION_FIELDS = ['fit_score','priority','recommendation','summary','main_match_reasons','main_gaps','required_skills','nice_to_have_skills','matched_skills','missing_skills','cv_adjustment_notes','interview_prep_notes','risk_notes','next_action','structured_json_raw']
 NOTE_FIELDS = ['note','note_type']
 FOLLOWUP_FIELDS = ['follow_up_date','reason','completed']
-PROFILE_FIELDS = ['candidate_profile','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template']
+PROFILE_FIELDS = ['candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template']
 
 # InviteCode is intentionally excluded: ownership is ambiguous and codes can act as
 # access credentials/secrets. Django auth/session/admin/permission/token models are
@@ -41,7 +42,12 @@ def _clean_record(obj, fields, extra=None):
     return data
 
 def owned_jobs(user):
-    qs = JobLead.objects.filter(Q(created_by=user) | Q(submitted_for=user))
+    # The ownership rule itself lives in services.access.owned_by; this is the one consumer that
+    # does not go through accessible_jobs (staff export their own rows plus legacy unowned ones,
+    # not the whole table), so it borrows the predicate rather than restating it. Restating it was
+    # the bug: this function exported the recipient's evaluations, notes and follow-ups to anyone
+    # who had submitted the job for them.
+    qs = JobLead.objects.filter(owned_by(user))
     if getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False):
         # Legacy MVP data may predate user ownership and have both owner fields empty.
         # Only staff/superusers may export/import against these unowned local records;
@@ -236,11 +242,17 @@ def parse_import_payload(request):
             raise ValueError(f'Invalid JSON: {exc.msg}')
     return with_options(parsed)
 
-def _parse_value(field, value):
+def _parse_value(obj, field, value):
+    # Ask the model what the field is, rather than guessing from its name. The old
+    # field.endswith('_date') test silently skipped parsing for date fields named
+    # otherwise (applied_at, interview_at, apply_by), so an exported ISO string was
+    # compared against a date object and every re-import reported a false conflict.
+    model_field = obj._meta.get_field(field)
+    is_temporal = isinstance(model_field, DateField)
     if value in ('', None):
-        return None if field.endswith('_date') else value
-    if field.endswith('_date'):
-        return parse_date(value) if isinstance(value, str) else value
+        return None if is_temporal else value
+    if is_temporal:
+        return model_field.to_python(value) if isinstance(value, str) else value
     if field == 'location':
         return clean_job_location(value)
     return value
@@ -250,7 +262,7 @@ def _assign_fields(obj, fields, data):
     for field in fields:
         if field not in data:
             continue
-        value = _parse_value(field, data[field])
+        value = _parse_value(obj, field, data[field])
         if getattr(obj, field) != value:
             setattr(obj, field, value)
             changed = True
@@ -280,7 +292,7 @@ def _changed_fields(obj, fields, data):
     for field in fields:
         if field not in data:
             continue
-        if getattr(obj, field) != _parse_value(field, data[field]):
+        if getattr(obj, field) != _parse_value(obj, field, data[field]):
             changed.append(field)
     return changed
 

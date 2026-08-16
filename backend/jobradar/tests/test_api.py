@@ -1,15 +1,23 @@
 import json
 import re
+from datetime import datetime, timezone as dt_timezone
+from importlib import import_module
 
 import pytest
+from django.apps import apps as django_apps
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.contrib.auth.tokens import default_token_generator
 from django.core import mail
 from django.core.cache import cache
+from django.db import connection
 from django.db.models import Q
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, override_settings
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 from rest_framework.test import APIClient
 from jobradar.models import InviteCode, JobLead, JobEvaluation, ApplicationNote, FollowUp, SiteDailyUsage, SiteVisitor, UserDailyUsage, UserProfile, VisitorDailyUsage
 
@@ -30,7 +38,12 @@ def assert_rate_limited(response):
 
 @pytest.fixture
 def owner(db):
-    return User.objects.create_user('owner', password='pw')
+    user = User.objects.create_user('owner', password='pw')
+    # An account that completed onboarding. Before TASK-73 this fixture had no profile at all and
+    # every prompt test still passed, because prompt generation quietly substituted the app
+    # author's own bio. Tests for the profile-less case create their own user.
+    UserProfile.objects.create(user=user, candidate_profile='OWNER_FIXTURE_PROFILE backend engineer')
+    return user
 
 @pytest.fixture
 def client(db, owner):
@@ -313,6 +326,42 @@ def test_can_override_status_date(client, job):
     r=client.patch(f'/api/jobs/{job.id}/', {'status':'interview','status_date':'2026-01-02'}, format='json')
     assert r.status_code==200 and r.data['status_date']=='2026-01-02'
 
+
+def test_status_walk_applied_interview_offer_accepted(client, job):
+    today=timezone.localdate().isoformat()
+    r=client.patch(f'/api/jobs/{job.id}/', {'status':'applied','status_date':'2026-01-05'}, format='json')
+    assert r.status_code==200 and r.data['status']=='applied' and r.data['applied_at']=='2026-01-05'
+    r=client.patch(f'/api/jobs/{job.id}/', {'status':'interview'}, format='json')
+    assert r.status_code==200 and r.data['status']=='interview' and r.data['status_date']==today and r.data['applied_at']=='2026-01-05'
+    r=client.patch(f'/api/jobs/{job.id}/', {'status':'offer'}, format='json')
+    assert r.status_code==200 and r.data['status']=='offer' and r.data['status_date']==today and r.data['applied_at']=='2026-01-05'
+    r=client.patch(f'/api/jobs/{job.id}/', {'status':'accepted'}, format='json')
+    assert r.status_code==200 and r.data['status']=='accepted' and r.data['status_date'] is None and r.data['applied_at']=='2026-01-05'
+    job.refresh_from_db()
+    assert job.status=='accepted' and job.applied_at.isoformat()=='2026-01-05'
+
+
+def test_applied_at_survives_later_transitions_and_reentry(client, job):
+    client.patch(f'/api/jobs/{job.id}/', {'status':'applied','status_date':'2026-01-05'}, format='json')
+    client.patch(f'/api/jobs/{job.id}/', {'status':'rejected'}, format='json')
+    r=client.patch(f'/api/jobs/{job.id}/', {'status':'applied'}, format='json')
+    assert r.status_code==200 and r.data['status_date']==timezone.localdate().isoformat()
+    assert r.data['applied_at']=='2026-01-05'
+    # the only way to change it is an explicit correction, so unbackfillable history can be fixed by hand
+    r=client.patch(f'/api/jobs/{job.id}/', {'applied_at':'2025-12-01'}, format='json')
+    assert r.status_code==200 and r.data['applied_at']=='2025-12-01'
+
+
+def test_terminal_statuses_never_go_stale_but_an_old_offer_does(client):
+    old=timezone.localdate()-timezone.timedelta(days=30)
+    stale_offer=make_job(client, company='StaleOffer', title='Old offer', status='offer', status_date=old)
+    accepted=make_job(client, company='Accepted', title='Old accepted', status='accepted', status_date=old)
+    withdrawn=make_job(client, company='Withdrawn', title='Old withdrawn', status='withdrawn', status_date=old)
+    ids=[row['id'] for row in client.get('/api/jobs/').data]
+    assert ids[-1]==stale_offer.id
+    assert ids.index(accepted.id) < ids.index(stale_offer.id)
+    assert ids.index(withdrawn.id) < ids.index(stale_offer.id)
+
 def test_generate_prompt(client, job):
     original='Original complete source ' + 'vollständig ' * 400
     JobLead.objects.filter(pk=job.pk).update(original_source_text=original, raw_description='Edited summary')
@@ -338,7 +387,7 @@ def test_candidate_evidence_is_required_and_loaded(tmp_path, settings):
     from jobradar.services.cv_generator import load_candidate_evidence
     settings.CODEX_CV_WORKSPACE=str(tmp_path)
     settings.CODEX_CANDIDATE_EVIDENCE_PATH=str(tmp_path/'missing.md')
-    with pytest.raises(RuntimeError, match='cannot be read'):
+    with pytest.raises(RuntimeError, match='paste it into account settings'):
         load_candidate_evidence('profile')
     evidence=tmp_path/'evidence.md'; evidence.write_text('verified evidence', encoding='utf-8')
     settings.CODEX_CANDIDATE_EVIDENCE_PATH=str(evidence)
@@ -367,15 +416,29 @@ def test_correction_image_validation(monkeypatch):
         cv_generator.decode_correction_image(PNG_DATA_URL)
 
 
-def test_generated_application_names_have_no_language_suffix(job):
-    from jobradar.services.cv_generator import _target_names
-    expected=('Chorinopoulos-Ermis-CV-Acme-Python-Engineer.tex','Chorinopoulos-Ermis-Letter-Acme-Python-Engineer.tex')
-    assert _target_names(job, 'en', 'en')==expected
-    assert _target_names(job, 'de', 'de')==expected
+@override_settings(CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_generated_application_names_derive_from_the_requesting_user(db, job):
+    from jobradar.services.cv_generator import _target_names, applicant_name
+
+    # TASK-83 AC2: the owner's own output is unchanged. These are the exact filenames the hardcoded
+    # prefix produced before the name became per-user, so their existing files on the workspace --
+    # and the latest_generated_sources lookups that read them back -- keep matching.
+    owner=User.objects.create_user('owner@example.test', email='owner@example.test')
+    assert _target_names(job, applicant_name(owner))==('Chorinopoulos-Ermis-CV-Acme-Python-Engineer.tex','Chorinopoulos-Ermis-Letter-Acme-Python-Engineer.tex')
+
+    # An enabled second user ships documents titled with their own name, never the owner's.
+    friend=User.objects.create_user('jane@example.test', email='jane@example.test', first_name='jane', last_name='doe')
+    assert _target_names(job, applicant_name(friend))==('Doe-Jane-CV-Acme-Python-Engineer.tex','Doe-Jane-Letter-Acme-Python-Engineer.tex')
+    # No first/last name set: fall back to the account name, still never to somebody else's.
+    assert applicant_name(User.objects.create_user('sam.smith@example.test', email='sam.smith@example.test'))=='Sam-Smith'
+    assert applicant_name(None)=='Candidate'
+
+    # The job half of the name is unchanged: gendered suffixes stripped, TÜV kept readable, and no
+    # language ever reached it -- _target_names takes no language argument at all now.
     job.title='Machine Learning Engineer (gn*)'
-    assert _target_names(job, 'de', 'de')==('Chorinopoulos-Ermis-CV-Acme-Machine-Learning-Engineer.tex','Chorinopoulos-Ermis-Letter-Acme-Machine-Learning-Engineer.tex')
+    assert _target_names(job, 'Doe-Jane')==('Doe-Jane-CV-Acme-Machine-Learning-Engineer.tex','Doe-Jane-Letter-Acme-Machine-Learning-Engineer.tex')
     job.company='TÜV AUSTRIA'
-    assert _target_names(job, 'de', 'de')[0]=='Chorinopoulos-Ermis-CV-TUV-Austria-Machine-Learning-Engineer.tex'
+    assert _target_names(job, 'Doe-Jane')[0]=='Doe-Jane-CV-TUV-Austria-Machine-Learning-Engineer.tex'
 
 
 def test_cv_generation_requires_original_job_text(db):
@@ -398,16 +461,21 @@ def test_candidate_evidence_uses_saved_compact_snapshot(tmp_path,settings):
     assert 'Keep facts.' in context and 'Keep caveats.' in context and 'Drop interview notes.' not in context and 'duplicate facts' not in context
 
 
-def test_latest_generated_sources_survive_task_state_loss(job, tmp_path, settings):
+def test_latest_generated_sources_survive_task_state_loss(job, tmp_path, settings, db):
     from jobradar.services.cv_generator import latest_generated_sources
     settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    applicant=User.objects.create_user('ermis@example.test', first_name='Ermis', last_name='Chorinopoulos')
     cv_dir=tmp_path/'CVs'; letter_dir=tmp_path/'output'; cv_dir.mkdir(); letter_dir.mkdir()
     old=cv_dir/'Chorinopoulos-Ermis-CV-acme-python-engineer.tex'; old.write_text('old'); __import__('os').utime(old,(1,1))
     latest=cv_dir/'Chorinopoulos-Ermis-CV-acme-python-engineer-2.tex'; latest.write_text('latest')
     letter=letter_dir/'Chorinopoulos-Ermis-Letter-acme-python-engineer.tex'; letter.write_text('letter')
     sent=cv_dir/'sent'; sent.mkdir(); legacy=sent/'Chorinopoulos-Ermis-CV-acme-python-engineer-3.tex'; legacy.write_text('legacy latest')
     future=__import__('time').time()+10; __import__('os').utime(legacy,(future,future))
-    assert latest_generated_sources(job, 'de')==(str(legacy),str(letter))
+    assert latest_generated_sources(job, applicant)==(str(legacy),str(letter))
+    # The lookup is per user: another account's files for the same job carry their own name prefix,
+    # so nobody recompiles or revises somebody else's document out of the shared workspace.
+    other=User.objects.create_user('mara@example.test', first_name='Mara', last_name='Vogel')
+    assert latest_generated_sources(job, other)==(None,None)
 
 
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
@@ -433,7 +501,7 @@ def test_cv_generation_can_be_disabled(client, owner, job):
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
 def test_cv_generation_starts_asynchronously(client, owner, job, monkeypatch):
     owner.email='owner@example.test'; owner.save(update_fields=['email'])
-    UserProfile.objects.create(user=owner, learned_application_preferences='- [CV] Keep the profile concise')
+    UserProfile.objects.filter(user=owner).update(learned_application_preferences='- [CV] Keep the profile concise')
     other=User.objects.create_user('other-preferences')
     UserProfile.objects.create(user=other, learned_application_preferences='OTHER_ACCOUNT_PREFERENCE')
     selected={}
@@ -467,7 +535,7 @@ def test_cv_task_status_and_download_are_owner_only(client, owner, job, monkeypa
     monkeypatch.setattr('jobradar.views.start_cv_compile_task',lambda *args: compile_config.update(args=args) or 'compile123')
     recovered_config={}
     monkeypatch.setattr('jobradar.views.latest_generated_sources', lambda job,cv: ('latest-cv.tex',None))
-    monkeypatch.setattr('jobradar.views.load_candidate_evidence', lambda profile, learned='': profile + learned)
+    monkeypatch.setattr('jobradar.views.load_candidate_evidence', lambda profile, learned='', evidence='': profile + learned)
     def start_recovered(*args,**kwargs): recovered_config.update(args=args,kwargs=kwargs); return 'restart123'
     monkeypatch.setattr('jobradar.views.start_cv_task', start_recovered)
     assert client.get('/api/cv-generation/tasks/task123/').data['stage']=='Ready'
@@ -490,6 +558,68 @@ def test_cv_task_status_and_download_are_owner_only(client, owner, job, monkeypa
     assert other_client.get('/api/cv-generation/tasks/task123/').status_code==404
     assert other_client.post('/api/cv-generation/tasks/task123/cancel/').status_code==404
     assert other_client.post('/api/cv-generation/tasks/task123/revise/', {'instructions':'hack'}, format='json').status_code==404
+
+
+@throttled_rest_framework(cv_generation_user='100/hour')
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
+def test_cv_capability_flag_opens_generation_to_a_non_owner_and_defaults_closed(db, monkeypatch):
+    started={}
+    monkeypatch.setattr('jobradar.views.start_cv_task', lambda *args, **kwargs: started.update(args=args) or 'task-flagged')
+    friend=User.objects.create_user('friend@example.test', email='friend@example.test', password='pw')
+    UserProfile.objects.create(user=friend, candidate_profile='FRIEND_PROFILE backend engineer')
+    job=JobLead.objects.create(company='ACME', title='Python Engineer', raw_description='Python Django SQL', created_by=friend)
+    payload={'cv_template':'en','letter_template':'motivation_letter','provider':'openai','model':'gpt-5.5','effort':'medium'}
+    c=APIClient(); c.force_authenticate(friend)
+
+    # Default account: the flag is off, so the endpoints do not exist for it and the frontend hides
+    # the whole CV panel because /auth/me says so.
+    assert UserProfile.objects.get(user=friend).can_generate_cv is False
+    assert c.get('/api/auth/me/').data['can_generate_cv'] is False
+    assert c.get(f'/api/jobs/{job.id}/cv-generation/').status_code==404
+    assert c.post(f'/api/jobs/{job.id}/cv-generation/run/', payload, format='json').status_code==404
+    assert c.get('/api/cv-generation/tasks/task-flagged/').status_code==404
+    assert c.post('/api/cv-generation/tasks/task-flagged/cancel/').status_code==404
+    assert c.get('/api/cv-generation/tasks/task-flagged/download/').status_code==404
+    assert started=={}
+
+    UserProfile.objects.filter(user=friend).update(can_generate_cv=True)
+    # A fresh client, because the authenticated user object caches its profile relation.
+    enabled=APIClient(); enabled.force_authenticate(User.objects.get(pk=friend.pk))
+    assert enabled.get('/api/auth/me/').data['can_generate_cv'] is True
+    assert enabled.get(f'/api/jobs/{job.id}/cv-generation/').status_code==200
+    run=enabled.post(f'/api/jobs/{job.id}/cv-generation/run/', payload, format='json')
+    assert run.status_code==202 and run.data['task_id']=='task-flagged'
+    # Started for the friend, not for the owner: their own evidence and their own filenames.
+    assert started['args'][1]==friend.id
+
+
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
+def test_env_owner_keeps_cv_access_when_the_flag_was_never_set(db):
+    # The env fallback is what makes the flag safe to ship: a deployment where 0027 has not run, or
+    # an owner with no UserProfile row, must not lock the owner out of their own generator.
+    owner=User.objects.create_user('owner@example.test', email='owner@example.test', password='pw')
+    UserProfile.objects.create(user=owner, candidate_profile='OWNER backend engineer')
+    job=JobLead.objects.create(company='ACME', title='Python Engineer', raw_description='Python Django SQL', created_by=owner)
+    c=APIClient(); c.force_authenticate(owner)
+    assert UserProfile.objects.get(user=owner).can_generate_cv is False
+    assert c.get('/api/auth/me/').data['can_generate_cv'] is True
+    assert c.get(f'/api/jobs/{job.id}/cv-generation/').status_code==200
+
+    profileless=User.objects.create_user('owner-alias', email='owner@example.test', password='pw')
+    alias=APIClient(); alias.force_authenticate(profileless)
+    assert alias.get('/api/auth/me/').data['can_generate_cv'] is True
+
+
+@override_settings(CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_migration_0027_enables_the_flag_for_the_env_owner_only(db):
+    module=import_module('jobradar.migrations.0027_userprofile_can_generate_cv')
+    owner=User.objects.create_user('owner@example.test', email='owner@example.test')
+    other=User.objects.create_user('other@example.test', email='other@example.test')
+    UserProfile.objects.create(user=owner); UserProfile.objects.create(user=other)
+
+    module.enable_cv_for_env_owner(django_apps, None)
+    assert UserProfile.objects.get(user=owner).can_generate_cv is True
+    assert UserProfile.objects.get(user=other).can_generate_cv is False
 
 
 def test_cv_model_discovery_includes_anthropic_and_installed_local_models(monkeypatch):
@@ -715,8 +845,10 @@ def test_cv_task_completes_and_is_user_scoped(job, monkeypatch, tmp_path):
     clipboard='% ===== latest.tex =====\ngenerated CV TeX 📌\n\n% ===== latest-letter.tex =====\ngenerated letter TeX 📌'
     assert cv_tasks._clipboard_contents({'cv_tex':str(latest)})=='generated CV TeX 📌'
     assert cv_tasks._clipboard_contents({'letter_tex':str(latest_letter)})=='generated letter TeX 📌'
-    def generate(job, profile, cv, letter, create_letter, provider, model, effort, speed, progress, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, cancelled=None):
+    def generate(job, profile, cv, letter, create_letter, provider, model, effort, speed, progress, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, cancelled=None, user_id=None):
         assert (provider,model,effort,speed)==('openai','gpt-5.5','medium','normal')
+        # The generator names the output files after this user, so the id has to reach it.
+        assert user_id==job.created_by_id
         calls.append((source_cv,source_letter,revision_instructions,correction_image))
         progress(10,'Generating CV and motivation letter'); progress(95,'Motivation letter compiled')
         return b'zip','application.zip',{'cv_pdf':'ready.pdf','cv_tex':str(latest),'letter_tex':str(latest_letter)}
@@ -1067,7 +1199,8 @@ def test_latest_generated_artifacts_survive_a_restart_by_reading_the_workspace(t
 
     settings.CODEX_CV_WORKSPACE=str(tmp_path)
     job=SimpleNamespace(id=1, company='ACME', title='AI Engineer', raw_description='', language_requirements='', source_text='')
-    cv_name,letter_name=cv_generator._target_names(job,'english','english')
+    user=SimpleNamespace(first_name='Jane', last_name='Doe', email='jane@example.test', username='jane@example.test')
+    cv_name,letter_name=cv_generator._target_names(job,cv_generator.applicant_name(user))
     (tmp_path/'CVs').mkdir(parents=True)
     (tmp_path/'output').mkdir(parents=True)
     cv_tex=tmp_path/'CVs'/cv_name; cv_tex.write_text('cv', encoding='utf-8')
@@ -1075,12 +1208,14 @@ def test_latest_generated_artifacts_survive_a_restart_by_reading_the_workspace(t
     letter_tex=tmp_path/'output'/letter_name; letter_tex.write_text('letter', encoding='utf-8')
 
     # No task record exists here at all -- this is what a page load after a Django restart sees.
-    artifacts=cv_generator.latest_generated_artifacts(job,'english')
+    artifacts=cv_generator.latest_generated_artifacts(job,user)
     assert artifacts['cv_tex']==str(cv_tex) and artifacts['cv_pdf']==str(cv_pdf)
     # The letter PDF was never compiled: report the TeX, never invent a path to a missing file.
     assert artifacts['letter_tex']==str(letter_tex) and 'letter_pdf' not in artifacts
     # The preview is the route that carries them to the client once polling is over.
-    assert cv_generator.generation_preview(job)['artifacts']==artifacts
+    assert cv_generator.generation_preview(job,user)['artifacts']==artifacts
+    # Another account's preview of the same job shows none of them.
+    assert cv_generator.generation_preview(job,SimpleNamespace(first_name='Mara', last_name='Vogel', email='mara@example.test', username='mara@example.test'))['artifacts']=={}
 
 
 def test_latest_generated_artifacts_is_empty_when_nothing_was_generated(tmp_path, settings):
@@ -1505,7 +1640,8 @@ def test_import_keeps_distinct_job_query_ids(client):
 def test_original_job_text_is_full_immutable_and_portable(client):
     from jobradar.services.user_data_portability import build_user_export, import_user_export
     original='Full source text. ' * 1000
-    UserProfile.objects.create(user=client.user, learned_application_preferences='- [Letter] Use a direct opening')
+    client.user.jobradar_profile.learned_application_preferences='- [Letter] Use a direct opening'
+    client.user.jobradar_profile.save(update_fields=['learned_application_preferences'])
     payload={'jobs':[{'company':'Snapshot Co','title':'Role','raw_description':'Clean description','original_source_text':original}]}
     assert client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json').status_code==201
     saved=JobLead.objects.get(company='Snapshot Co')
@@ -1676,6 +1812,26 @@ def test_import_conflict_list_for_existing_url(client):
     assert r.status_code == 200
     assert r.data['skipped']['jobs'] == 1
 
+def test_reimporting_an_untouched_export_reports_no_conflicts(client):
+    # Date fields not named *_date (applied_at, interview_at, apply_by) used to skip parsing,
+    # so their exported ISO strings were compared against date objects and every re-import of
+    # an unmodified export reported a false 'changed' conflict.
+    user = User.objects.get(username='owner')
+    job = JobLead.objects.create(company='Roundtrip Co', title='Role', url='https://roundtrip.test/job',
+                                 status='applied', status_date=timezone.localdate(),
+                                 applied_at=timezone.localdate(),
+                                 apply_by=timezone.localdate() + timezone.timedelta(days=5),
+                                 interview_at=timezone.now() + timezone.timedelta(days=2),
+                                 interview_note='second round', created_by=user)
+    exported = client.get('/api/export/')
+    assert exported.status_code == 200
+    payload = json.loads(exported.content.decode())
+    assert any(j['company'] == 'Roundtrip Co' for j in payload['data']['jobs'])
+    r = client.post('/api/import/', {'json': json.dumps(payload)}, format='json')
+    assert r.status_code == 200, getattr(r, 'data', None)
+    job.refresh_from_db()
+    assert job.applied_at is not None and job.apply_by is not None and job.interview_at is not None
+
 def test_import_does_not_overwrite_another_users_data(client, db):
     other = User.objects.create_user('other', password='pw')
     other_job = JobLead.objects.create(id=1234, company='Other Co', title='Secret', url='https://other.test/job', created_by=other)
@@ -1732,6 +1888,35 @@ def test_jobs_default_excludes_archived_and_status_filter_allows_multiple(client
     r=client.get('/api/jobs/?status=archived')
     assert [x['company'] for x in r.data] == ['Archived']
 
+def test_jobs_list_is_slim_while_detail_keeps_everything(client):
+    """TASK-91: the list is unpaginated, so every per-row field is multiplied by lifetime history.
+
+    Sizes here mirror the local snapshot: ~1.2KB raw_description, a pasted posting in
+    original_source_text, ~3.6KB structured_json_raw per evaluation.
+    """
+    from rest_framework.renderers import JSONRenderer
+    from jobradar.serializers import JobLeadSerializer
+    source='Wir suchen eine Backend Engineer. '*120
+    for i in range(12):
+        lead=make_job(client, company=f'Co {i}', title=f'Role {i}', raw_description='Python Django SQL REST. '*50, original_source_text=source)
+        JobEvaluation.objects.create(job=lead, fit_score=70, priority='high', recommendation='apply', summary='Solid backend match.',
+            main_match_reasons=['Python','Django'], main_gaps=['Kubernetes'], required_skills=['Python'], nice_to_have_skills=['Go'],
+            matched_skills=['Python'], missing_skills=['Kubernetes'], cv_adjustment_notes='c'*400, interview_prep_notes='i'*400,
+            risk_notes='r'*200, next_action='Apply today.', structured_json_raw={'raw':'q'*3600})
+    r=client.get('/api/jobs/', HTTP_ACCEPT='application/json')
+    row=r.data[0]
+    assert 'raw_description' not in row and 'original_source_text' not in row
+    assert set(row['latest_evaluation']) == {'id','fit_score','priority','recommendation','summary','main_match_reasons','main_gaps','required_skills','matched_skills','missing_skills','skill_statuses'}
+    detail=client.get(f'/api/jobs/{row["id"]}/', HTTP_ACCEPT='application/json')
+    assert detail.data['original_source_text']==source
+    assert detail.data['raw_description'].startswith('Python Django SQL REST.')
+    assert detail.data['latest_evaluation']['structured_json_raw']=={'raw':'q'*3600}
+    patched=client.patch(f'/api/jobs/{row["id"]}/', {'status':'reviewed'}, format='json')
+    assert 'original_source_text' in patched.data  # the board replaces the row with this response
+    before=len(JSONRenderer().render(JobLeadSerializer(JobLead.objects.filter(id__in=[x['id'] for x in r.data]), many=True).data))
+    after=len(r.content)
+    assert after < before/4, f'list payload {after} bytes vs {before} before slimming'
+
 def test_owner_can_restore_archived_job(client):
     archived=make_job(client, company='Archived', title='Restore me', status='archived')
     other=User.objects.create_user('archive-other', password='pw')
@@ -1769,7 +1954,7 @@ def test_stats_include_application_pace(client):
     week_start = today - timezone.timedelta(days=today.weekday())
     last_week = week_start - timezone.timedelta(days=1)
     make_job(client, company='Applied', title='This week', status='applied', status_date=today)
-    make_job(client, company='Interview', title='Also counts', status='interview', status_date=week_start)
+    make_job(client, company='Interview', title='Also counts', status='interview', status_date=week_start, applied_at=week_start)
     make_job(client, company='Old', title='Last week', status='applied', status_date=last_week)
     make_job(client, company='Rejected', title='No longer active', status='rejected', status_date=today)
     new_high = make_job(client, company='New high', title='Priority', status='new')
@@ -1786,6 +1971,48 @@ def test_stats_include_application_pace(client):
     assert r.data['month_week_applications'][0]['range'].startswith('1-')
     assert len(r.data['weekly_applications']) == 4
     assert r.data['weekly_applications'][-1]['count'] == 3
+
+
+def test_stats_count_one_application_for_a_job_walked_to_rejection(client):
+    today=timezone.localdate()
+    week_start=today-timezone.timedelta(days=today.weekday())
+    walked=make_job(client, company='Walked', title='Applied then rejected')
+    for status in ['applied','interview','rejected']:
+        assert client.patch(f'/api/jobs/{walked.id}/', {'status':status}, format='json').status_code==200
+    walked.refresh_from_db()
+    assert walked.status=='rejected' and walked.status_date is None and walked.applied_at==today
+    r=client.get('/api/stats/')
+    assert r.data['applications_sent'] == 1
+    assert r.data['applications_this_week'] == 1
+    assert sum(bucket['count'] for bucket in r.data['weekly_applications']) == 1
+    assert r.data['weekly_applications'][-1]['count'] == 1
+    assert [bucket['count'] for bucket in r.data['workday_applications'] if bucket['date'] == today.isoformat()] in ([1], [])
+    assert r.data['weekly_applications'][-1]['start'] == week_start.isoformat()
+
+
+def test_stats_count_downstream_statuses_and_ignore_undated_rejections(client):
+    today=timezone.localdate()
+    week_start=today-timezone.timedelta(days=today.weekday())
+    make_job(client, company='Accepted', title='Won', status='accepted', applied_at=week_start)
+    make_job(client, company='Offer', title='Pending', status='offer', status_date=today, applied_at=week_start)
+    make_job(client, company='Withdrawn', title='Pulled out', status='withdrawn', applied_at=week_start)
+    make_job(client, company='NeverApplied', title='Rejected before applying', status='rejected', status_date=today)
+    r=client.get('/api/stats/')
+    assert r.data['applications_sent'] == 3
+    assert r.data['applications_this_week'] == 3
+    assert r.data['offers'] == 1 and r.data['accepted'] == 1 and r.data['withdrawn'] == 1 and r.data['rejected'] == 1
+    assert r.data['jobs_by_status'] == {'accepted': 1, 'offer': 1, 'withdrawn': 1, 'rejected': 1}
+
+
+def test_backfill_migration_only_fills_jobs_still_in_applied(client):
+    today=timezone.localdate()
+    applied=make_job(client, company='Backfill', title='Applied', status='applied', status_date=today)
+    moved_on=make_job(client, company='MovedOn', title='Interviewing', status='interview', status_date=today)
+    JobLead.objects.filter(pk__in=[applied.pk, moved_on.pk]).update(applied_at=None)
+    import_module('jobradar.migrations.0022_backfill_applied_at').backfill_applied_at(django_apps, None)
+    applied.refresh_from_db(); moved_on.refresh_from_db()
+    assert applied.applied_at == today
+    assert moved_on.applied_at is None
 
 def test_default_sort_new_first_then_priority_and_fit(client):
     old=make_job(client, company='Old', title='Applied', status='applied')
@@ -1910,6 +2137,94 @@ def test_approved_friend_submitter_flow_remains_accessible_to_owner_and_submitte
     assert job.id not in [row['id'] for row in stranger_client.get('/api/jobs/').data]
 
 
+def test_submitter_of_a_handed_off_job_sees_the_submission_and_nothing_the_recipient_writes(db):
+    recipient=User.objects.create_user('recipient', password='pw')
+    helper=User.objects.create_user('helper', password='pw')
+    UserProfile.objects.create(user=helper, submit_for=recipient)
+    helper_client=APIClient(); helper_client.force_authenticate(helper)
+    recipient_client=APIClient(); recipient_client.force_authenticate(recipient)
+
+    assert helper_client.post('/api/public/submit/', {'company':'FriendCo','title':'Referral','url':'https://friend.test/job'}, format='json').status_code==201
+    job=JobLead.objects.get(url='https://friend.test/job')
+    own=JobLead.objects.create(company='OwnCo', title='For myself', created_by=helper)
+
+    # The recipient works the job. This is the material that used to accumulate on the submitter's
+    # copy of "their" job: their evaluation, their recruiter notes, their interview arrangements.
+    JobEvaluation.objects.create(job=job, fit_score=91, priority='high', recommendation='apply', summary='Great fit; prep the salary question', interview_prep_notes='Ask about the on-call rota')
+    ApplicationNote.objects.create(job=job, note='Recruiter said the budget is 85k', created_by=recipient)
+    FollowUp.objects.create(job=job, follow_up_date=timezone.localdate(), reason='Chase the recruiter')
+    JobLead.objects.filter(pk=job.pk).update(status='interview', status_date=timezone.localdate(), interview_note='Second round with the CTO', interview_stage=2)
+
+    rows={row['id']:row for row in helper_client.get('/api/jobs/').data}
+    assert set(rows)=={job.id, own.id}  # the submission is still visible: they sent it
+    submitted=rows[job.id]
+    assert submitted['submission_only'] is True
+    assert (submitted['company'],submitted['title'],submitted['url'])==('FriendCo','Referral','https://friend.test/job')
+    # Coarse status only, and none of the recipient's workflow.
+    assert submitted['status']=='new' and submitted['latest_evaluation'] is None
+    assert submitted['interview_note']=='' and submitted['status_date']=='' and submitted['interview_stage'] is None
+    assert 'Great fit' not in json.dumps(submitted) and 'budget is 85k' not in json.dumps(submitted)
+    # AC3: a job they created for themselves is untouched by any of this.
+    assert 'submission_only' not in rows[own.id] and rows[own.id]['title']=='For myself'
+
+    # No other route hands the recipient's work back, and none of them can be mutated.
+    assert helper_client.get(f'/api/jobs/{job.id}/').status_code==404
+    assert helper_client.get(f'/api/jobs/{job.id}/evaluations/').status_code==404
+    assert helper_client.get(f'/api/jobs/{job.id}/notes/').status_code==404
+    assert helper_client.get(f'/api/jobs/{job.id}/followups/').status_code==404
+    assert helper_client.patch(f'/api/jobs/{job.id}/', {'status':'rejected'}, format='json').status_code==404
+    assert helper_client.post(f'/api/jobs/{job.id}/notes/', {'note':'peeking'}, format='json').status_code==404
+    assert helper_client.delete(f'/api/jobs/{job.id}/').status_code==404
+    assert [row['id'] for row in helper_client.get('/api/evaluations/').data]==[]
+    assert [row['id'] for row in helper_client.get('/api/followups/').data]==[]
+    export=helper_client.get('/api/export/').data['data']
+    assert [row['id'] for row in export['jobs']]==[own.id] and export['evaluations']==[] and export['notes']==[] and export['followups']==[]
+    assert helper_client.get('/api/stats/').data['total_jobs']==1
+
+    # AC2: the recipient's access and workflow are exactly what they were.
+    detail=recipient_client.get(f'/api/jobs/{job.id}/')
+    assert detail.status_code==200 and detail.data['status']=='interview' and detail.data['interview_note']=='Second round with the CTO'
+    assert detail.data['latest_evaluation']['fit_score']==91
+    assert [note['note'] for note in recipient_client.get(f'/api/jobs/{job.id}/notes/').data]==['Recruiter said the budget is 85k']
+    assert [follow_up['reason'] for follow_up in recipient_client.get(f'/api/jobs/{job.id}/followups/').data]==['Chase the recruiter']
+    assert recipient_client.patch(f'/api/jobs/{job.id}/', {'status':'offer'}, format='json').status_code==200
+    assert recipient_client.get('/api/jobs/').data[0]['id']==job.id
+
+
+def test_recipient_keeps_full_access_to_a_submission_with_no_creator(db):
+    # Anonymous invite-code submissions land with created_by=None. The rule is written in terms of
+    # the recipient, so an ownerless job is fully the recipient's -- there is no submitter account
+    # for it to be limited for.
+    recipient=User.objects.create_user('code-owner', password='pw')
+    stranger=User.objects.create_user('nobody', password='pw')
+    job=JobLead.objects.create(company='AnonCo', title='Sent by a stranger', created_by=None, submitted_for=recipient, source='friend')
+    recipient_client=APIClient(); recipient_client.force_authenticate(recipient)
+
+    listed=recipient_client.get('/api/jobs/').data
+    assert [row['id'] for row in listed]==[job.id] and 'submission_only' not in listed[0]
+    assert recipient_client.get(f'/api/jobs/{job.id}/').status_code==200
+    assert recipient_client.patch(f'/api/jobs/{job.id}/', {'status':'to_apply'}, format='json').status_code==200
+    stranger_client=APIClient(); stranger_client.force_authenticate(stranger)
+    assert stranger_client.get('/api/jobs/').data==[] and stranger_client.get(f'/api/jobs/{job.id}/').status_code==404
+
+
+def test_public_submit_duplicate_conflict_never_returns_the_recipients_job(db):
+    # The duplicate check runs against the recipient's board, so its payload is the recipient's row.
+    recipient=User.objects.create_user('board-owner', password='pw')
+    helper=User.objects.create_user('link-sender', password='pw')
+    UserProfile.objects.create(user=helper, submit_for=recipient)
+    job=JobLead.objects.create(company='ACME', title='Python Engineer', url='https://acme.test/job', created_by=recipient)
+    JobEvaluation.objects.create(job=job, fit_score=77, priority='high', recommendation='apply', summary='Worth applying, salary is low')
+    JobLead.objects.filter(pk=job.pk).update(status='interview', interview_note='Panel on Thursday')
+
+    helper_client=APIClient(); helper_client.force_authenticate(helper)
+    conflict=helper_client.post('/api/public/submit/', {'company':'ACME','title':'Python Engineer','url':'https://acme.test/job'}, format='json')
+    assert conflict.status_code==400 and conflict.data['type']=='duplicate_conflicts'
+    existing=conflict.data['conflicts'][0]['existing_jobs'][0]
+    assert existing['submission_only'] is True and existing['status']=='new' and existing['latest_evaluation'] is None
+    assert 'Panel on Thursday' not in json.dumps(existing) and 'salary is low' not in json.dumps(existing)
+
+
 def test_user_a_cannot_create_or_update_job_into_user_b_dashboard(db):
     user_a = User.objects.create_user('a', password='pw')
     user_b = User.objects.create_user('b', password='pw')
@@ -1993,6 +2308,117 @@ def test_prompt_template_from_profile_page_is_used(client, job):
     assert 'PROFILE=Candidate profile:\nPROFILE_FROM_SETTINGS' in prompt
     assert f'Job ID: {job.id}' in prompt
     assert '"jobs"' in prompt
+
+
+def test_prompt_generation_refuses_for_an_account_with_no_candidate_profile(db):
+    # The whole point of TASK-73: an account that skipped onboarding used to have every job
+    # evaluated against the app author's real bio, and got fit scores describing a stranger.
+    user = User.objects.create_user('no-profile@example.test', password='pw')
+    job = JobLead.objects.create(company='NoProfile Co', title='Backend Engineer', raw_description='Python Django', created_by=user)
+    c = APIClient(); c.force_authenticate(user)
+
+    requests = [('/api/prompts/generate/', {'job_ids': [job.id]}),
+                ('/api/prompts/combined/', {'job_ids': [job.id]}),
+                ('/api/prompts/enrich/', {'job_ids': [job.id]}),
+                ('/api/prompts/bulk-links/', {'links': 'https://example.test/job'})]
+    for path, payload in requests:
+        r = c.post(path, payload, format='json')
+        assert r.status_code == 400, path
+        assert r.data['code'] == 'candidate_profile_required', path
+        assert 'Add your candidate profile' in r.data['detail'], path
+        # Nothing was generated, and no substitute persona (real or placeholder) was handed out.
+        assert 'generated_prompt' not in r.data and 'Vienna' not in json.dumps(r.data), path
+
+    # Refusing must not quietly write a profile for them either.
+    assert UserProfile.objects.get(user=user).candidate_profile == ''
+    assert c.get('/api/auth/me/').data['candidate_profile_missing'] is True
+
+    # ... and saving one clears the nudge and unblocks generation, with their own words in it.
+    assert c.patch('/api/profile/', {'candidate_profile': 'OWN_WORDS_UNIQUE Rust in Lisbon'}, format='json').status_code == 200
+    assert c.get('/api/auth/me/').data['candidate_profile_missing'] is False
+    for path, payload in requests:
+        r = c.post(path, payload, format='json')
+        assert r.status_code == 200 and 'OWN_WORDS_UNIQUE Rust in Lisbon' in r.data['generated_prompt'], path
+
+
+def test_clearing_the_candidate_profile_keeps_it_cleared(db):
+    # Saving an empty profile used to store the author's bio instead, so it could never be emptied.
+    user = User.objects.create_user('clearer@example.test', password='pw')
+    c = APIClient(); c.force_authenticate(user)
+    assert c.patch('/api/profile/', {'candidate_profile': 'Temporary text'}, format='json').status_code == 200
+    assert c.patch('/api/profile/', {'candidate_profile': ''}, format='json').data['candidate_profile'] == ''
+    assert UserProfile.objects.get(user=user).candidate_profile == ''
+    assert 'Vienna' not in c.get('/api/export/chatgpt-brief.md').content.decode()
+
+
+def test_migration_0025_pins_the_legacy_default_without_touching_anyone(db):
+    module = import_module('jobradar.migrations.0025_candidate_profile_default_and_candidate_evidence')
+    legacy = module.LEGACY_DEFAULT_CANDIDATE_PROFILE
+    held = UserProfile.objects.create(user=User.objects.create_user('legacy-holder'), candidate_profile=legacy)
+    typed = UserProfile.objects.create(user=User.objects.create_user('typed-the-same'), candidate_profile=legacy, target_roles='TYPED_BY_HAND')
+    empty = UserProfile.objects.create(user=User.objects.create_user('never-onboarded'))
+    assert empty.candidate_profile == ''  # the field default is no longer somebody's bio
+
+    for _ in range(2):  # idempotent: running it twice must be indistinguishable from once
+        module.pin_legacy_default_profiles(django_apps, None)
+
+    held.refresh_from_db(); typed.refresh_from_db(); empty.refresh_from_db()
+    assert held.candidate_profile == legacy  # existing accounts keep working unchanged
+    assert typed.candidate_profile == legacy and typed.target_roles == 'TYPED_BY_HAND'  # not clobbered
+    assert empty.candidate_profile == ''  # empty rows are never backfilled with the legacy bio
+
+
+def test_candidate_evidence_comes_from_the_users_profile_field(tmp_path, settings, db):
+    from jobradar.services.cv_generator import load_candidate_evidence
+    settings.CODEX_CV_WORKSPACE = str(tmp_path)
+    settings.CODEX_CANDIDATE_EVIDENCE_PATH = str(tmp_path / 'not-on-this-machine.md')
+
+    context = load_candidate_evidence('profile notes', '', 'STORED_EVIDENCE_UNIQUE achievements')
+    assert 'AUTHORITATIVE CANDIDATE EVIDENCE:\nSTORED_EVIDENCE_UNIQUE achievements' in context
+    # Stored evidence is personal data and the compact snapshot path is per-workspace, not per-user.
+    assert not (tmp_path / '.dachapply-cache' / 'candidate-evidence-compact.md').exists()
+
+    # With no stored evidence and no readable file, refuse with a message that names the fix.
+    with pytest.raises(RuntimeError, match='paste it into account settings'):
+        load_candidate_evidence('profile notes')
+
+
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_cv_generation_uses_the_requesting_users_stored_evidence(client, owner, job, tmp_path, settings, monkeypatch):
+    owner.email = 'owner@example.test'; owner.save(update_fields=['email'])
+    settings.CODEX_CANDIDATE_EVIDENCE_PATH = str(tmp_path / 'missing.md')  # no host-local file at all
+    assert client.patch('/api/profile/', {'candidate_evidence': 'PASTED_EVIDENCE_UNIQUE'}, format='json').status_code == 200
+    assert client.get('/api/profile/').data['candidate_evidence'] == 'PASTED_EVIDENCE_UNIQUE'
+
+    captured = {}
+    def start(job_id, user_id, profile, *args, **kwargs):
+        captured['profile'] = profile
+        return 'task123'
+    monkeypatch.setattr('jobradar.views.start_cv_task', start)
+    r = client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'cv_template': 'de', 'provider': 'openai', 'model': 'gpt-5.5', 'effort': 'high', 'speed': 'fast'}, format='json')
+    assert r.status_code == 202, r.data
+    assert 'PASTED_EVIDENCE_UNIQUE' in captured['profile']
+
+
+def test_candidate_evidence_is_exported_reimportable_and_deleted_with_the_account(db):
+    user = User.objects.create_user('evidence-export@example.test', email='evidence-export@example.test', password='secretpw')
+    c = APIClient(); c.force_authenticate(user)
+    assert c.patch('/api/profile/', {'candidate_evidence': 'EVIDENCE_EXPORT_UNIQUE'}, format='json').status_code == 200
+
+    exported = c.get('/api/export/')
+    assert exported.data['data']['profile'][0]['candidate_evidence'] == 'EVIDENCE_EXPORT_UNIQUE'
+    assert 'EVIDENCE_EXPORT_UNIQUE' in c.get('/api/export/?type=csv&kind=full').content.decode()
+
+    # A text field added to the export must round-trip: re-importing an untouched export is a no-op.
+    payload = json.loads(exported.content.decode())
+    r = c.post('/api/import/', {'json': json.dumps(payload)}, format='json')
+    assert r.status_code == 200 and not r.data['errors']
+    assert r.data['updated'].get('profile', 0) == 0 and r.data['skipped'].get('profile') == 1
+    assert UserProfile.objects.get(user=user).candidate_evidence == 'EVIDENCE_EXPORT_UNIQUE'
+
+    assert c.delete('/api/auth/account/', {'password': 'secretpw'}, format='json').status_code == 200
+    assert not UserProfile.objects.filter(candidate_evidence='EVIDENCE_EXPORT_UNIQUE').exists()
+    assert not User.objects.filter(username='evidence-export@example.test').exists()
 
 
 def test_demo_login_creates_rich_demo_dashboard(db):
@@ -2137,9 +2563,9 @@ def test_register_rate_limit_returns_429(db):
     c = APIClient()
     with throttled_rest_framework(register_ip='1/minute'):
         cache.clear()
-        r = c.post('/api/auth/register/', {'email': 'register-limit-1@example.test', 'password': 'secret1'}, format='json')
+        r = c.post('/api/auth/register/', {'email': 'register-limit-1@example.test', 'password': 'quiet-harbour-42'}, format='json')
         assert r.status_code == 201
-        assert_rate_limited(c.post('/api/auth/register/', {'email': 'register-limit-2@example.test', 'password': 'secret2'}, format='json'))
+        assert_rate_limited(c.post('/api/auth/register/', {'email': 'register-limit-2@example.test', 'password': 'quiet-harbour-43'}, format='json'))
 
 
 def test_password_reset_request_rate_limit_returns_429(db):
@@ -2176,6 +2602,61 @@ def test_user_data_import_rate_limit_returns_429(client):
         r = client.post('/api/import/', data='not-json', content_type='application/json')
         assert r.status_code == 400
         assert_rate_limited(client.post('/api/import/', data='not-json', content_type='application/json'))
+
+
+def test_password_reset_confirm_rate_limit_returns_429(db):
+    c = APIClient()
+    with throttled_rest_framework(password_reset_confirm_ip='1/minute'):
+        cache.clear()
+        r = c.post('/api/auth/password-reset/confirm/', {'uid': 'bogus', 'token': 'bogus', 'password': 'quiet-harbour-42'}, format='json')
+        assert r.status_code == 400
+        assert_rate_limited(c.post('/api/auth/password-reset/confirm/', {'uid': 'bogus', 'token': 'bogus', 'password': 'quiet-harbour-42'}, format='json'))
+
+
+def test_throttle_counters_live_in_a_shared_database_cache(db):
+    """A per-process LocMemCache gave each gunicorn worker its own counter (limit x workers).
+
+    The counter row being in the database is the proof it is shared: any worker process, and any
+    process started after a revision swap, reads the same rows.
+    """
+    assert settings.CACHES['default']['BACKEND'] == 'django.core.cache.backends.db.DatabaseCache'
+    table = settings.CACHES['default']['LOCATION']
+    c = APIClient()
+    with throttled_rest_framework(login_ip='2/minute', login_account='2/minute'):
+        cache.clear()
+        c.post('/api/auth/login/', {'username': 'shared-cache@example.test', 'password': 'wrong'}, format='json')
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT cache_key FROM %s' % connection.ops.quote_name(table))
+            keys = [row[0] for row in cursor.fetchall()]
+    assert any('throttle_login_ip' in key for key in keys), keys
+
+
+def test_register_rejects_a_password_the_django_validators_reject(db):
+    r = APIClient().post('/api/auth/register/', {'email': 'weak-register@example.test', 'password': '123456'}, format='json')
+    assert r.status_code == 400
+    assert 'too short' in r.data['detail'] and 'too common' in r.data['detail'] and 'entirely numeric' in r.data['detail']
+    assert not User.objects.filter(username='weak-register@example.test').exists()
+
+
+def test_change_password_rejects_a_password_the_django_validators_reject(db):
+    user = User.objects.create_user('weak-change@example.test', email='weak-change@example.test', password='quiet-harbour-42')
+    c = APIClient(); c.force_authenticate(user)
+    r = c.post('/api/auth/change-password/', {'current_password': 'quiet-harbour-42', 'new_password': '123456'}, format='json')
+    assert r.status_code == 400
+    assert 'too common' in r.data['detail']
+    user.refresh_from_db()
+    assert user.check_password('quiet-harbour-42')
+
+
+def test_password_reset_confirm_rejects_a_password_the_django_validators_reject(db):
+    user = User.objects.create_user('weak-reset@example.test', email='weak-reset@example.test', password='quiet-harbour-42')
+    uid = urlsafe_base64_encode(force_bytes(user.pk))
+    token = default_token_generator.make_token(user)
+    r = APIClient().post('/api/auth/password-reset/confirm/', {'uid': uid, 'token': token, 'password': '123456'}, format='json')
+    assert r.status_code == 400
+    assert 'too common' in r.data['detail']
+    user.refresh_from_db()
+    assert user.check_password('quiet-harbour-42')
 
 
 def test_account_deletion_deletes_current_user_data_and_account(db):
@@ -2226,3 +2707,418 @@ def test_export_before_account_delete_contains_user_data_then_delete_removes_it(
     assert r.status_code == 200
     assert not User.objects.filter(username='export-delete@example.test').exists()
     assert not JobLead.objects.filter(company='ExportDeleteCo').exists()
+
+
+def test_job_holds_interview_datetime_note_and_apply_by_deadline(client, job):
+    r=client.patch(f'/api/jobs/{job.id}/', {'interview_at':'2026-09-03T10:00:00Z','interview_note':'Zoom, 2nd round with the team lead','apply_by':'2026-08-28'}, format='json')
+    assert r.status_code==200
+    # rendered in the server timezone, so compare the instant rather than the string
+    assert parse_datetime(r.data['interview_at'])==datetime(2026, 9, 3, 10, 0, tzinfo=dt_timezone.utc)
+    assert r.data['interview_note']=='Zoom, 2nd round with the team lead'
+    assert r.data['apply_by']=='2026-08-28'
+    job.refresh_from_db()
+    assert job.apply_by.isoformat()=='2026-08-28' and job.interview_at.hour==10
+    # the add form posts the same serializer
+    created=client.post('/api/jobs/', {'company':'Deadline','title':'Closes Friday','apply_by':'2026-08-21'}, format='json')
+    assert created.status_code==201 and created.data['apply_by']=='2026-08-21'
+
+
+def test_stats_list_upcoming_interviews_soonest_first_and_drop_past_ones(client):
+    now=timezone.now()
+    soon=make_job(client, company='Soon', title='Tomorrow', status='interview', interview_at=now+timezone.timedelta(days=1), interview_note='On site')
+    later=make_job(client, company='Later', title='Next week', status='applied', interview_at=now+timezone.timedelta(days=7))
+    make_job(client, company='Past', title='Yesterday', status='interview', interview_at=now-timezone.timedelta(days=1))
+    make_job(client, company='Dropped', title='Rejected before it happened', status='rejected', interview_at=now+timezone.timedelta(days=2))
+    FollowUp.objects.create(job=later, follow_up_date=timezone.localdate(), reason='ping recruiter')
+    r=client.get('/api/stats/')
+    assert r.status_code==200
+    assert [row['company'] for row in r.data['upcoming_interviews']]==['Soon','Later']
+    assert r.data['upcoming_interviews'][0]['id']==soon.id
+    assert r.data['upcoming_interviews'][0]['interview_note']=='On site'
+    wire=json.loads(r.content)['upcoming_interviews'][0]  # the frontend reads an ISO string, not a datetime
+    assert parse_datetime(wire['interview_at'])==soon.interview_at and set(wire)=={'id','company','title','interview_at','interview_note'}
+    # distinct from due follow-ups and from the plain interview-status count
+    assert r.data['jobs_needing_follow_up']==1 and r.data['interviews']==2
+
+
+def test_board_surfaces_approaching_deadlines_and_sinks_untouched_old_leads(client):
+    today=timezone.localdate()
+    normal=make_job(client, company='Normal', title='Fresh lead', status='new')
+    due_soon=make_job(client, company='DueSoon', title='Closes this week', status='to_apply', apply_by=today+timezone.timedelta(days=JobLead.DEADLINE_SOON_DAYS-1))
+    overdue=make_job(client, company='Overdue', title='Deadline passed', status='new', apply_by=today-timezone.timedelta(days=3))
+    evergreen=make_job(client, company='Evergreen', title='Far off deadline', status='new', apply_by=today+timezone.timedelta(days=90))
+    forgotten=make_job(client, company='Forgotten', title='Never touched', status='to_apply')
+    JobLead.objects.filter(pk=forgotten.pk).update(created_at=timezone.now()-timezone.timedelta(days=JobLead.STALE_UNAPPLIED_DAYS+1))
+    ids=[row['id'] for row in client.get('/api/jobs/').data]
+    assert set(ids[:2])=={due_soon.id, overdue.id}
+    assert ids[-1]==forgotten.id
+    assert ids.index(normal.id) < ids.index(forgotten.id)
+    assert ids.index(evergreen.id) < ids.index(forgotten.id)
+    # one click archives a stale lead through the existing jobs endpoint -- no new route needed
+    assert client.patch(f'/api/jobs/{forgotten.id}/', {'status':'archived'}, format='json').status_code==200
+    assert forgotten.id not in [row['id'] for row in client.get('/api/jobs/').data]
+
+
+def test_me_publishes_the_board_thresholds_the_ordering_uses(client):
+    r=client.get('/api/auth/me/')
+    assert r.status_code==200
+    assert r.data['board_thresholds']=={
+        'stale_applied_days':21, 'stale_unapplied_days':30, 'deadline_soon_days':7,
+        'unapplied_statuses':['new','reviewed','to_apply'], 'dated_statuses':['applied','interview','offer'],
+    }
+    assert r.data['board_thresholds']['stale_unapplied_days']==JobLead.STALE_UNAPPLIED_DAYS
+
+
+def test_export_and_reimport_keep_interview_and_deadline_dates(client, job):
+    client.patch(f'/api/jobs/{job.id}/', {'interview_at':'2026-09-03T10:00:00Z','interview_note':'2nd round','apply_by':'2026-08-28'}, format='json')
+    exported=client.get('/api/export/')
+    row=exported.data['data']['jobs'][0]
+    assert row['apply_by']=='2026-08-28' and row['interview_note']=='2nd round'
+    assert parse_datetime(row['interview_at'])==datetime(2026, 9, 3, 10, 0, tzinfo=dt_timezone.utc)
+    JobLead.objects.filter(pk=job.pk).update(apply_by=None, interview_at=None, interview_note='')
+    payload={**json.loads(json.dumps(exported.data)), 'duplicate_strategy':'override'}
+    reimported=client.post('/api/import/', payload, format='json')
+    assert reimported.status_code==200, reimported.data
+    job.refresh_from_db()
+    assert job.apply_by.isoformat()=='2026-08-28' and job.interview_note=='2nd round'
+    assert job.interview_at==datetime(2026, 9, 3, 10, 0, tzinfo=dt_timezone.utc)
+
+
+# --- TASK-85: funnel conversion and source effectiveness -------------------------------------
+
+def test_funnel_rates_use_applied_at_not_current_status(client):
+    """4 applications, 3 of which reached interview, 1 of those an offer.
+
+    Two of the four have already left the interview/offer columns, so an implementation that
+    counted current status would report 4 -> 1 -> 0 instead of 4 -> 3 -> 1.
+    """
+    today=timezone.localdate()
+    make_job(client, company='Still applied', title='A', status='applied', applied_at=today, source='linkedin')
+    make_job(client, company='Interviewing', title='B', status='interview', applied_at=today, source='linkedin')
+    # Rejected after interviewing: the interview really happened, the status no longer says so.
+    make_job(client, company='Rejected after interview', title='C', status='rejected', applied_at=today, interview_stage=2, source='karriere')
+    # Accepted: reached applied, interview and offer, and is in none of those columns now.
+    make_job(client, company='Accepted', title='D', status='accepted', applied_at=today, source='karriere')
+    # Never applied, so it belongs to no funnel cohort at all.
+    make_job(client, company='Lead', title='E', status='new', source='linkedin')
+
+    funnel=client.get('/api/stats/').data['funnel']
+    assert funnel['all_time']['applications']==4
+    assert funnel['all_time']['interviews']==3  # B (status), C (interview_stage), D (past offer)
+    assert funnel['all_time']['offers']==1      # D only
+    assert funnel['all_time']['applied_to_interview_rate']==75.0   # 3/4
+    assert funnel['all_time']['interview_to_offer_rate']==33.3     # 1/3, one decimal
+    assert funnel['interviews_without_application']==0
+
+
+def test_funnel_recent_window_is_narrower_than_all_time(client):
+    today=timezone.localdate()
+    old=today-timezone.timedelta(days=JobLead.FUNNEL_RECENT_DAYS+5)
+    make_job(client, company='Old applied', title='A', status='applied', applied_at=old)
+    make_job(client, company='Old interview', title='B', status='interview', applied_at=old)
+    make_job(client, company='New applied', title='C', status='applied', applied_at=today)
+    make_job(client, company='New applied 2', title='D', status='applied', applied_at=today)
+
+    funnel=client.get('/api/stats/').data['funnel']
+    assert funnel['recent_window_days']==90
+    assert funnel['recent_window_start']==(today-timezone.timedelta(days=90)).isoformat()
+    assert funnel['all_time']=={'applications':4, 'interviews':1, 'offers':0, 'applied_to_interview_rate':25.0, 'interview_to_offer_rate':0.0}
+    # The recent window drops both old rows, so its interview rate is 0/2, not 1/4.
+    assert funnel['recent']=={'applications':2, 'interviews':0, 'offers':0, 'applied_to_interview_rate':0.0, 'interview_to_offer_rate':None}
+
+
+def test_funnel_rate_is_null_not_zero_when_nothing_was_applied_to(client):
+    make_job(client, company='Lead', title='Never applied', status='new')
+    data=client.get('/api/stats/').data
+    assert data['funnel']['all_time']['applications']==0
+    # Undefined, not 0%: "nothing to measure yet" must not render as "you convert nothing".
+    assert data['funnel']['all_time']['applied_to_interview_rate'] is None
+    assert data['funnel']['all_time']['interview_to_offer_rate'] is None
+    assert data['source_effectiveness']==[]
+
+
+def test_interview_without_an_application_cannot_push_a_rate_over_100(client):
+    """Status can be set straight to interview, leaving applied_at null.
+
+    Counting that job in the numerator against an applied_at denominator is how a funnel
+    silently reports 200%. It is excluded from both sides and reported on its own instead.
+    """
+    today=timezone.localdate()
+    make_job(client, company='Applied properly', title='A', status='applied', applied_at=today)
+    straight_to_interview=make_job(client, company='Skipped applied', title='B', status='interview')
+    straight_to_interview.refresh_from_db()
+    assert straight_to_interview.applied_at is None
+
+    funnel=client.get('/api/stats/').data['funnel']
+    assert funnel['all_time']['applications']==1
+    assert funnel['all_time']['interviews']==0
+    assert funnel['all_time']['applied_to_interview_rate']==0.0
+    assert funnel['all_time']['applied_to_interview_rate'] <= 100
+    assert funnel['interviews_without_application']==1
+
+
+def test_source_effectiveness_groups_applications_and_interview_rate(client):
+    today=timezone.localdate()
+    for i in range(3):
+        make_job(client, company=f'LI {i}', title='x', status='applied', applied_at=today, source='linkedin')
+    make_job(client, company='LI interview', title='y', status='interview', applied_at=today, source='linkedin')
+    make_job(client, company='Karriere', title='z', status='offer', applied_at=today, source='karriere')
+    make_job(client, company='No source', title='w', status='applied', applied_at=today)
+    # Never applied, so it must not appear as a source with zero applications.
+    make_job(client, company='Unapplied lead', title='v', status='new', source='stepstone')
+
+    rows=client.get('/api/stats/').data['source_effectiveness']
+    assert [r['source'] for r in rows]==['linkedin', '', 'karriere']  # busiest first, then by name
+    assert rows[0]=={'source':'linkedin', 'applications':4, 'interviews':1, 'interview_rate':25.0}
+    assert rows[1]=={'source':'', 'applications':1, 'interviews':0, 'interview_rate':0.0}
+    assert rows[2]=={'source':'karriere', 'applications':1, 'interviews':1, 'interview_rate':100.0}
+
+
+def test_funnel_only_counts_the_requesting_users_jobs(client):
+    today=timezone.localdate()
+    stranger=User.objects.create_user('funnel-stranger', password='pw')
+    make_job(client, company='Mine', title='A', status='applied', applied_at=today)
+    JobLead.objects.create(company='Theirs', title='B', status='interview', applied_at=today, created_by=stranger)
+    funnel=client.get('/api/stats/').data['funnel']
+    assert funnel['all_time']=={'applications':1, 'interviews':0, 'offers':0, 'applied_to_interview_rate':0.0, 'interview_to_offer_rate':None}
+
+
+# --- TASK-86: daily reminder digest ----------------------------------------------------------
+
+@pytest.fixture
+def digest_owner(db):
+    return User.objects.create_user('digest', email='digest@example.test', password='pw')
+
+
+def test_digest_emails_due_follow_ups_and_overdue_feedback(digest_owner):
+    from jobradar.services.followup_digest import send_due_digests
+
+    today=timezone.localdate()
+    job=JobLead.objects.create(company='ACME', title='Python Engineer', created_by=digest_owner)
+    FollowUp.objects.create(job=job, follow_up_date=today, reason='Ask about the timeline')
+    JobLead.objects.create(company='Globex', title='Backend', status='interview', feedback_due_date=today-timezone.timedelta(days=3), created_by=digest_owner)
+    # Neither of these is due, so neither may appear.
+    FollowUp.objects.create(job=job, follow_up_date=today+timezone.timedelta(days=5), reason='Not yet due')
+    JobLead.objects.create(company='ClosedCo', title='Rejected', status='rejected', feedback_due_date=today-timezone.timedelta(days=9), created_by=digest_owner)
+
+    assert send_due_digests()==1
+    assert len(mail.outbox)==1
+    email=mail.outbox[0]
+    assert email.to==['digest@example.test']
+    assert email.subject=='DACHApply reminders: 2 items need attention'
+    assert 'ACME - Python Engineer' in email.body and 'Ask about the timeline' in email.body
+    assert 'Globex - Backend' in email.body
+    assert 'Not yet due' not in email.body and 'ClosedCo' not in email.body
+    assert 'turn these reminders off' in email.body
+
+
+def test_digest_sends_nothing_when_no_item_is_due(digest_owner):
+    from jobradar.services.followup_digest import send_due_digests
+
+    today=timezone.localdate()
+    job=JobLead.objects.create(company='ACME', title='Python Engineer', created_by=digest_owner)
+    FollowUp.objects.create(job=job, follow_up_date=today+timezone.timedelta(days=2), reason='Not yet')
+    JobLead.objects.create(company='Later', title='Waiting', status='interview', feedback_due_date=today+timezone.timedelta(days=4), created_by=digest_owner)
+    assert send_due_digests()==0
+    assert mail.outbox==[]
+
+
+def test_digest_respects_the_profile_opt_out(digest_owner):
+    from jobradar.services.followup_digest import send_due_digests
+
+    job=JobLead.objects.create(company='ACME', title='Python Engineer', created_by=digest_owner)
+    FollowUp.objects.create(job=job, follow_up_date=timezone.localdate(), reason='Due today')
+    UserProfile.objects.create(user=digest_owner, follow_up_digest_enabled=False)
+    assert send_due_digests()==0
+    assert mail.outbox==[]
+
+
+def test_digest_is_idempotent_for_the_day(digest_owner):
+    from jobradar.services.followup_digest import send_due_digests
+
+    job=JobLead.objects.create(company='ACME', title='Python Engineer', created_by=digest_owner)
+    FollowUp.objects.create(job=job, follow_up_date=timezone.localdate(), reason='Due today')
+    assert send_due_digests()==1
+    # A scheduler retry inside the same local day must find the run already claimed.
+    assert send_due_digests()==0
+    assert len(mail.outbox)==1
+
+
+def test_digest_skips_a_user_without_an_email_and_still_sends_the_rest(digest_owner):
+    from jobradar.services.followup_digest import send_due_digests
+
+    today=timezone.localdate()
+    mailless=User.objects.create_user('no-mailbox', password='pw')
+    for user in [mailless, digest_owner]:
+        job=JobLead.objects.create(company=f'ACME {user.username}', title='Engineer', created_by=user)
+        FollowUp.objects.create(job=job, follow_up_date=today, reason='Due today')
+    assert send_due_digests()==1
+    assert [m.to for m in mail.outbox]==[['digest@example.test']]
+
+
+def test_one_failing_send_does_not_stop_the_rest_of_the_batch(digest_owner, monkeypatch):
+    from jobradar.services import followup_digest
+
+    today=timezone.localdate()
+    broken=User.objects.create_user('broken', email='broken@example.test', password='pw')
+    for user in [broken, digest_owner]:
+        job=JobLead.objects.create(company=f'ACME {user.username}', title='Engineer', created_by=user)
+        FollowUp.objects.create(job=job, follow_up_date=today, reason='Due today')
+
+    real_send=followup_digest.send_mail
+    def explode(subject, body, from_email, recipients, **kwargs):
+        if recipients==['broken@example.test']:
+            raise OSError('SMTP 550 mailbox unavailable')
+        return real_send(subject, body, from_email, recipients, **kwargs)
+    monkeypatch.setattr(followup_digest, 'send_mail', explode)
+
+    assert followup_digest.send_due_digests()==1
+    assert [m.to for m in mail.outbox]==[['digest@example.test']]
+
+
+def test_digest_only_reports_the_users_own_jobs_even_for_staff(digest_owner):
+    from jobradar.services.followup_digest import digest_items
+
+    today=timezone.localdate()
+    digest_owner.is_staff=True; digest_owner.save()
+    stranger=User.objects.create_user('digest-stranger', email='s@example.test', password='pw')
+    theirs=JobLead.objects.create(company='Not mine', title='Engineer', created_by=stranger)
+    FollowUp.objects.create(job=theirs, follow_up_date=today, reason='Their follow-up')
+    followups, overdue=digest_items(digest_owner, today)
+    assert followups==[] and overdue==[]
+
+
+# --- TASK-97: whitelisted board ordering -----------------------------------------------------
+
+def _evaluate(job, fit_score, priority='medium'):
+    return JobEvaluation.objects.create(job=job, fit_score=fit_score, priority=priority, recommendation='apply',
+                                        summary='', main_match_reasons=[], main_gaps=[], required_skills=[],
+                                        nice_to_have_skills=[], matched_skills=[], missing_skills=[])
+
+
+def _pin_created_at(job, days_ago):
+    """created_at is auto_now_add, so it can only be set by going around the model."""
+    JobLead.objects.filter(pk=job.pk).update(created_at=timezone.now()-timezone.timedelta(days=days_ago))
+
+
+@pytest.fixture
+def sortable_board(client):
+    """Three jobs, one evaluation each, distinct fit scores / ages / feedback dates.
+
+    `Low` also carries an imminent apply_by, which makes stale_rank surface it under the
+    default formula. That is deliberate: without it the default order would coincide with
+    `-fit_score` and the fallback test could not tell the two apart.
+    """
+    today=timezone.localdate()
+    low=make_job(client, company='Low', title='a', apply_by=today, feedback_due_date=today+timezone.timedelta(days=30))
+    high=make_job(client, company='High', title='b', feedback_due_date=today+timezone.timedelta(days=1))
+    mid=make_job(client, company='Mid', title='c', feedback_due_date=None)
+    _evaluate(low, 40); _evaluate(high, 90); _evaluate(mid, 70)
+    _pin_created_at(low, 3); _pin_created_at(high, 2); _pin_created_at(mid, 1)
+    return {'low':low, 'high':high, 'mid':mid}
+
+
+def test_board_ordering_by_fit_score_puts_the_best_match_first(client, sortable_board):
+    r=client.get('/api/jobs/?ordering=-fit_score')
+    assert r.status_code==200
+    assert [j['company'] for j in r.data]==['High', 'Mid', 'Low']  # 90, 70, 40
+    assert len(r.data)==3  # one row per job, no join fan-out
+
+
+def test_board_ordering_by_created_at_puts_the_newest_first(client, sortable_board):
+    r=client.get('/api/jobs/?ordering=-created_at')
+    assert r.status_code==200
+    # Mid is 1 day old, High 2, Low 3 -- and this is deliberately not the fit-score order.
+    assert [j['company'] for j in r.data]==['Mid', 'High', 'Low']
+    assert len(r.data)==3
+
+
+def test_board_ordering_by_feedback_due_date_is_ascending_with_nulls_last(client, sortable_board):
+    r=client.get('/api/jobs/?ordering=feedback_due_date')
+    assert r.status_code==200
+    # Soonest feedback first; the job with no feedback date sinks to the bottom rather than
+    # floating to the top, which is the whole point of nulls_last.
+    assert [j['company'] for j in r.data]==['High', 'Low', 'Mid']
+    assert len(r.data)==3
+
+
+@pytest.mark.parametrize('junk', ['password', '../../etc/passwd', '-evaluations__job__created_by__password', 'fit_score', '-id', 'company', '?', ''])
+def test_unknown_ordering_falls_back_to_the_default_instead_of_reaching_order_by(client, sortable_board, junk):
+    """The whitelist's only proof: nothing a client sends can reach order_by().
+
+    An unrecognised key must be indistinguishable from sending no key at all -- not a 500, not
+    a partial reorder, and above all not an ordering over a related auth column, which would
+    leak password-hash ordering one bit at a time.
+    """
+    # Urgency-first: Low has an imminent apply_by, so it outranks the better fit scores. This
+    # order matches none of the three whitelisted ones, so "fell back" is distinguishable
+    # from "silently applied a sort" -- without it the assertion below would be vacuous.
+    default=[j['company'] for j in client.get('/api/jobs/').data]
+    assert default==['Low', 'High', 'Mid']
+    assert default not in (['High', 'Mid', 'Low'], ['Mid', 'High', 'Low'], ['High', 'Low', 'Mid'])
+    r=client.get(f'/api/jobs/?ordering={junk}')
+    assert r.status_code==200
+    assert [j['company'] for j in r.data]==default
+
+
+def test_ordering_keeps_the_urgency_annotations_applied(client):
+    """Sorting overrides the final order_by only; stale_rank and friends must still annotate.
+
+    If the annotations were dropped instead, the queryset would raise FieldError the moment
+    anything referenced them, and the board's urgency signals would silently vanish.
+    """
+    today=timezone.localdate()
+    urgent=make_job(client, company='Deadline', title='a', status='new', apply_by=today)
+    calm=make_job(client, company='Calm', title='b', status='new')
+    _pin_created_at(urgent, 1); _pin_created_at(calm, 2)
+    # Default: the deadline job is surfaced by stale_rank=-1 regardless of age.
+    assert [j['company'] for j in client.get('/api/jobs/').data]==['Deadline', 'Calm']
+    # Overridden: pure recency wins, and the request still succeeds with the annotations live.
+    assert [j['company'] for j in client.get('/api/jobs/?ordering=-created_at').data]==['Deadline', 'Calm']
+    JobLead.objects.filter(pk=urgent.pk).update(created_at=timezone.now()-timezone.timedelta(days=9))
+    assert [j['company'] for j in client.get('/api/jobs/?ordering=-created_at').data]==['Calm', 'Deadline']
+    assert [j['company'] for j in client.get('/api/jobs/').data]==['Deadline', 'Calm']
+
+
+def test_job_with_two_evaluations_is_returned_twice_by_the_board(client):
+    """PRE-EXISTING BUG, pinned here so it is visible and so a fix fails loudly.
+
+    `.distinct()` cannot dedupe a row whose SELECT list carries a per-evaluation column, and
+    get_queryset has two such columns: the `priority_rank` annotation (always) and
+    `-evaluations__fit_score` in the default/`-fit_score` order_by. So a job with two
+    evaluations comes back twice. This predates the ordering parameter -- the default board
+    has always done it -- and `?ordering=-fit_score` inherits exactly the default's exposure,
+    it adds none of its own. `-created_at` is only affected via `priority_rank`.
+
+    Fix (own task, changes the shared board formula so out of scope here): compute
+    priority_rank and the fit-score sort from aggregates/subqueries over evaluations
+    (Min('evaluations__priority')-style or a Subquery of the latest evaluation) so no
+    per-evaluation column reaches the SELECT list.
+    """
+    job=make_job(client, company='Multi', title='a')
+    _evaluate(job, 90, 'high'); _evaluate(job, 40, 'low')
+    assert JobLead.objects.count()==1
+    # Differing fit_score duplicates the default and -fit_score orderings...
+    assert [j['company'] for j in client.get('/api/jobs/').data]==['Multi', 'Multi']
+    assert [j['company'] for j in client.get('/api/jobs/?ordering=-fit_score').data]==['Multi', 'Multi']
+    # ...and differing priority duplicates every ordering, via the priority_rank annotation.
+    assert [j['company'] for j in client.get('/api/jobs/?ordering=-created_at').data]==['Multi', 'Multi']
+
+
+def test_two_evaluations_of_equal_priority_do_not_duplicate_the_non_related_orderings(client):
+    """Bounds the bug above: the fan-out needs a column that actually differs per evaluation."""
+    job=make_job(client, company='Multi', title='a')
+    _evaluate(job, 90, 'high'); _evaluate(job, 40, 'high')
+    assert [j['company'] for j in client.get('/api/jobs/?ordering=-created_at').data]==['Multi']
+    assert [j['company'] for j in client.get('/api/jobs/?ordering=feedback_due_date').data]==['Multi']
+    # Only the fit-score orderings still fan out, because fit_score is what differs.
+    assert [j['company'] for j in client.get('/api/jobs/?ordering=-fit_score').data]==['Multi', 'Multi']
+
+
+def test_profile_endpoint_exposes_and_updates_the_digest_toggle(client):
+    r=client.get('/api/profile/')
+    assert r.data['follow_up_digest_enabled'] is True
+    r=client.patch('/api/profile/', {'follow_up_digest_enabled': False}, format='json')
+    assert r.status_code==200 and r.data['follow_up_digest_enabled'] is False
+    assert client.get('/api/profile/').data['follow_up_digest_enabled'] is False
+    assert UserProfile.objects.get(user=client.user).follow_up_digest_enabled is False

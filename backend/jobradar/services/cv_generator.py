@@ -14,6 +14,7 @@ from pathlib import Path
 from threading import Lock
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.utils.text import slugify
 
 
@@ -254,7 +255,7 @@ def _compact_candidate_evidence(content):
     return canonical.strip()
 
 
-def load_candidate_evidence(profile, learned_preferences=''):
+def load_candidate_evidence(profile, learned_preferences='', stored_evidence=''):
     def load(path_value, label):
         path=Path(path_value) if path_value else None
         if not path or not path.is_file():
@@ -266,9 +267,21 @@ def load_candidate_evidence(profile, learned_preferences=''):
         if not content:
             raise RuntimeError(f'{label} file is empty.')
         return content
-    evidence=_compact_candidate_evidence(load(settings.CODEX_CANDIDATE_EVIDENCE_PATH, 'Candidate evidence'))
+    # The requesting user's own pasted evidence wins. The file path is the fallback for the one
+    # account that still keeps its evidence on disk; it is empty in production and exists on
+    # nobody else's machine, which is why it cannot be the primary source.
+    stored=(stored_evidence or '').strip()
+    if stored:
+        evidence=_compact_candidate_evidence(stored)
+    else:
+        try:
+            evidence=_compact_candidate_evidence(load(settings.CODEX_CANDIDATE_EVIDENCE_PATH, 'Candidate evidence'))
+        except RuntimeError:
+            raise RuntimeError('Candidate evidence is empty: paste it into account settings, or fix the configured evidence file.') from None
     workspace=Path(settings.CODEX_CV_WORKSPACE) if settings.CODEX_CV_WORKSPACE else None
-    if workspace and workspace.is_dir():
+    # Only the file-sourced evidence is cached. The snapshot path is global, so writing a user's
+    # stored evidence there would hand it to whoever generates next in a shared workspace.
+    if workspace and workspace.is_dir() and not stored:
         try:
             snapshot=workspace/'.dachapply-cache'/'candidate-evidence-compact.md'
             snapshot.parent.mkdir(exist_ok=True)
@@ -281,10 +294,44 @@ def load_candidate_evidence(profile, learned_preferences=''):
     return f'AUTHORITATIVE CANDIDATE EVIDENCE:\n{evidence}\n\nMANDATORY APPLICATION ADAPTATION RULES:\n{rules}{learned}\n\nDACHAPPLY PROFILE NOTES:\n{profile}'
 
 
-def is_cv_owner(user):
+def is_env_cv_owner(user):
+    """The single account named by CODEX_CV_OWNER_EMAIL, ignoring the capability flag."""
     owner=(settings.CODEX_CV_OWNER_EMAIL or '').strip().lower()
     identities={(getattr(user, 'email', '') or '').strip().lower(), (getattr(user, 'username', '') or '').strip().lower()}
-    return bool(settings.CODEX_CV_ENABLED and getattr(user, 'is_authenticated', False) and owner and owner in identities)
+    return bool(owner and owner in identities)
+
+
+def is_cv_owner(user):
+    """Whether this account may use the CV endpoints at all.
+
+    The per-account UserProfile.can_generate_cv flag is the gate (TASK-83); the env owner email
+    stays as a fallback so the one account that can generate today cannot lose access to a flag
+    that was never set -- on a deployment where migration 0027 has not run, or an owner with no
+    UserProfile row at all. CODEX_CV_ENABLED remains the server-wide kill switch above both.
+    """
+    if not (settings.CODEX_CV_ENABLED and getattr(user, 'is_authenticated', False)):
+        return False
+    profile=getattr(user, 'jobradar_profile', None)
+    return bool(getattr(profile, 'can_generate_cv', False)) or is_env_cv_owner(user)
+
+
+def applicant_name(user):
+    """Filename prefix for this user's generated documents, family name first.
+
+    The env owner keeps their historic prefix unconditionally, so their existing files -- and the
+    latest_generated_sources lookups that read them back off the workspace -- are byte-identical
+    to what they were before this became per-user. Everyone else derives from their own name, then
+    their account name, because shipping an application titled with somebody else's surname is
+    worse than shipping one titled 'Candidate'.
+    """
+    if is_env_cv_owner(user):
+        return os.getenv('CODEX_CV_OWNER_NAME', 'Chorinopoulos-Ermis')
+    parts=[(getattr(user, 'last_name', '') or '').strip(), (getattr(user, 'first_name', '') or '').strip()]
+    raw='-'.join(part for part in parts if part) or (getattr(user, 'username', '') or '').split('@')[0]
+    # slugify drops dots and underscores rather than splitting on them, which would turn the
+    # common 'sam.smith@...' account into 'Samsmith'.
+    slug=slugify(re.sub(r'[._]+', '-', raw))[:60]
+    return '-'.join(part.capitalize() for part in slug.split('-') if part) or 'Candidate'
 
 
 def detect_job_language(job):
@@ -294,7 +341,7 @@ def detect_job_language(job):
     return 'de' if german > english else 'en'
 
 
-def generation_preview(job):
+def generation_preview(job, user=None):
     language=detect_job_language(job)
     workspace=Path(settings.CODEX_CV_WORKSPACE) if settings.CODEX_CV_WORKSPACE else None
     letters=[]
@@ -316,24 +363,28 @@ def generation_preview(job):
         'letters': letters,
         'models': available_model_options(),
         'configured': bool(settings.CODEX_CV_ENABLED and workspace and workspace.is_dir()),
-        'artifacts': latest_generated_artifacts(job, language),
+        'artifacts': latest_generated_artifacts(job, user),
         # Lets the client show a short workspace-relative path while still copying the absolute one.
         'workspace': str(workspace) if workspace else '',
     }
 
 
-def _target_names(job, _cv_language, _letter_language):
+# The document language never reached these names -- the two language arguments this function used
+# to take were both dead -- so the requesting user's name takes their place rather than being
+# threaded alongside them.
+def _target_names(job, applicant):
     title=re.sub(r'\s*[\[(]?\s*(?:gn\*?|[mwfdx](?:\s*/\s*[mwfdx]){1,3})\s*[\])]?[\s*]*$', '', job.title or '', flags=re.IGNORECASE)
     raw=slugify(f'{job.company}-{title}'.replace('T�V','TUV'))[:90]
     target='-'.join('TUV' if part.lower() == 'tuv' else part.capitalize() for part in raw.split('-')) or f'Job-{job.id}'
-    return f'Chorinopoulos-Ermis-CV-{target}.tex', f'Chorinopoulos-Ermis-Letter-{target}.tex'
+    return f'{applicant}-CV-{target}.tex', f'{applicant}-Letter-{target}.tex'
 
 
-def latest_generated_sources(job, cv_key):
-    cv_name,letter_name=_target_names(job, cv_key, cv_key)
+def latest_generated_sources(job, user=None):
+    applicant=applicant_name(user)
+    cv_name,letter_name=_target_names(job, applicant)
     raw_target=slugify(f'{job.company}-{job.title}')[:90] or f'job-{job.id}'
-    old_cv=f'Chorinopoulos-Ermis-CV-{raw_target}.tex'
-    old_letter=f'Chorinopoulos-Ermis-Letter-{raw_target}.tex'
+    old_cv=f'{applicant}-CV-{raw_target}.tex'
+    old_letter=f'{applicant}-Letter-{raw_target}.tex'
     def latest(directories, names):
         files=[path for directory in directories for name in set(names) for path in directory.glob(f'{Path(name).stem}*.tex')]
         return str(max(files, key=lambda path:path.stat().st_mtime)) if files else None
@@ -359,11 +410,11 @@ def reveal_artifact_folder(path):
     return True
 
 
-def latest_generated_artifacts(job, cv_key):
+def latest_generated_artifacts(job, user=None):
     # Task records live in memory only (cv_tasks._tasks), so artifact paths vanish on a Django
     # restart. Reading them back off the workspace keeps them visible for as long as the files
     # themselves survive, without persisting task state.
-    cv_source,letter_source=latest_generated_sources(job, cv_key)
+    cv_source,letter_source=latest_generated_sources(job, user)
     artifacts={}
     for prefix,source in (('cv',cv_source),('letter',letter_source)):
         if not source:
@@ -612,7 +663,7 @@ def validate_model_capability(provider, model, effort, speed):
     return model_option
 
 
-def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed='normal', progress=None, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, cancelled=None):
+def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed='normal', progress=None, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, cancelled=None, user_id=None):
     _ensure_active(cancelled)
 
     reported_progress=0
@@ -651,7 +702,10 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
     if missing:
         raise RuntimeError('Missing private CV template files: ' + ', '.join(missing))
 
-    cv_name, letter_name=_target_names(job, cv_key, letter_language)
+    # Resolved here rather than passed as a name, so the running task cannot be told to write
+    # somebody else's name onto a document: only the id of the user the task was started for.
+    requesting_user=get_user_model().objects.filter(pk=user_id).first() if user_id else None
+    cv_name, letter_name=_target_names(job, applicant_name(requesting_user))
     filename=f'application-{job.id}-{cv_key}.zip'
     cache_paths=None
     if settings.CODEX_CV_CACHE and not is_revision:

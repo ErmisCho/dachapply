@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from jobradar.models import ScheduledTaskRun
 from jobradar.services.demo_data import ensure_demo_user
+from jobradar.services.followup_digest import send_due_digests
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,9 @@ def _scheduler_loop():
             now = _now_local()
             if now.time() >= RUN_AT:
                 seed_demo_if_due()
+                # Second task on the same daily tick; it keeps its own ScheduledTaskRun day
+                # guard, so a retry after a seeding failure still never double-sends.
+                send_due_digests()
             next_run = _next_run_after(_now_local())
             seconds = max(60, min((next_run - _now_local()).total_seconds(), 3600))
         except DatabaseError as exc:

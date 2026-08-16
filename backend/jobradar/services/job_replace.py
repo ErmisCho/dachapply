@@ -18,8 +18,12 @@ REPLACE_FIELDS = {
     'work_mode': 'unknown',
     'status': 'new',
     'status_date': None,
+    'applied_at': None,
     'interview_stage': None,
     'interview_total': None,
+    'interview_at': None,
+    'interview_note': '',
+    'apply_by': None,
     'last_update_date': None,
     'feedback_due_date': None,
 }

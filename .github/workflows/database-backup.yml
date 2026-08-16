@@ -1,0 +1,133 @@
+name: Database backup
+
+# docs/backup-restore.md was a runbook, not a backup: it told you how to run pg_dump but nothing
+# ever ran one. This does, nightly.
+#
+# WHERE THE DUMP GOES, AND WHY NOT AN ARTIFACT
+# ErmisCho/dachapply is a PUBLIC repository, and workflow artifacts inherit repository read access
+# -- on a public repo that means anyone on the internet can download them. A dump of the production
+# database is every user's job search, so `actions/upload-artifact` is forbidden here. Do not add it
+# back unless the repository is private. The dump is PUT straight into private Azure Blob Storage
+# (the project already runs on Azure) via a write-only container SAS URL.
+#
+# FAILING LOUD
+# A backup job that "succeeds" while producing nothing is worse than no backup job, because it
+# manufactures false confidence. Every step below either produces a verified dump or exits nonzero,
+# and GitHub emails the repository owner on workflow failure -- the same mechanism uptime-monitor.yml
+# already relies on.
+
+on:
+  schedule:
+    # 03:17 UTC daily. Off the hour on purpose: GitHub's scheduler queues hardest at :00.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    # A pg_dump hung against an unreachable Neon would otherwise burn hours before anyone is told.
+    timeout-minutes: 30
+
+    steps:
+      - name: Check required secrets are configured
+        shell: bash
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_UPLOAD_URL: ${{ secrets.BACKUP_UPLOAD_URL }}
+        run: |
+          set -euo pipefail
+          missing=0
+          [ -n "${DATABASE_URL:-}" ] || { echo "::error::secret DATABASE_URL is not set"; missing=1; }
+          if [ -z "${BACKUP_UPLOAD_URL:-}" ]; then
+            echo "::error::secret BACKUP_UPLOAD_URL is not set (write-only Azure Blob container SAS URL)"
+            missing=1
+          elif [ "${BACKUP_UPLOAD_URL#*\?sv=}" = "$BACKUP_UPLOAD_URL" ] || [ "${BACKUP_UPLOAD_URL#*sig=}" = "$BACKUP_UPLOAD_URL" ]; then
+            # A URL without the SAS query would be split into nonsense below and PUT anonymously.
+            echo "::error::BACKUP_UPLOAD_URL does not look like a container SAS URL (expected ...?sv=...&sig=...)"
+            missing=1
+          fi
+          # Fail here rather than three steps later with a confusing libpq or 403 error.
+          [ "$missing" -eq 0 ] || { echo "::error::see docs/backup-restore.md for how to create both"; exit 1; }
+
+      - name: Dump the production database
+        shell: bash
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          DUMP="dachapply-$(date -u +%Y%m%dT%H%M%SZ).dump"
+          echo "DUMP=$DUMP" >> "$GITHUB_ENV"
+
+          # The runner's bundled pg_dump lags Neon's server major, and pg_dump refuses to dump a
+          # newer server. Pinning the client image keeps that a one-line bump instead of an outage.
+          # Must be >= the Neon server major -- check with: SELECT version();
+          # `-e DBURL` with no value inherits from this shell's environment, so the connection
+          # string never appears in any argv on the runner.
+          export DBURL="$DATABASE_URL"
+          docker run --rm -e DBURL postgres:17-alpine \
+            sh -c 'pg_dump "$DBURL" --format=custom --no-owner --no-acl' > "$DUMP"
+
+          ls -l "$DUMP"
+
+      - name: Verify the dump is real before uploading it
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 1. Size floor. The 2026-08-16 restore drill produced 72,350 bytes from a freshly
+          #    migrated, near-empty database, so anything under 20 KB is a truncated or failed dump.
+          size=$(stat -c %s "$DUMP")
+          echo "dump size: $size bytes"
+          if [ "$size" -lt 20000 ]; then
+            echo "::error::dump is only $size bytes -- refusing to upload a truncated backup"
+            exit 1
+          fi
+
+          # 2. pg_restore --list parses the whole custom-format table of contents, so it fails on a
+          #    corrupt or half-written file that the size check would wave through.
+          docker run --rm -v "$PWD:/w" -w /w postgres:17-alpine \
+            pg_restore --list "$DUMP" > toc.txt
+
+          # 3. Content floor. A dump that authenticated but selected nothing is the silent failure
+          #    this whole workflow exists to prevent. The drill measured 21 TABLE DATA entries;
+          #    migrations only ever add tables, so 15 is a floor with room to spare.
+          # `|| true`: grep exits 1 on zero matches, which under `set -e` would kill the step
+          # silently -- and zero matches is precisely the failure this guard exists to report.
+          tables=$(grep -c 'TABLE DATA' toc.txt || true)
+          echo "TABLE DATA entries: $tables"
+          if [ "$tables" -lt 15 ]; then
+            echo "::error::dump contains only $tables TABLE DATA entries -- expected at least 15"
+            exit 1
+          fi
+
+      - name: Upload to private Azure Blob Storage
+        shell: bash
+        env:
+          BACKUP_UPLOAD_URL: ${{ secrets.BACKUP_UPLOAD_URL }}
+        run: |
+          set -euo pipefail
+
+          # BACKUP_UPLOAD_URL is a container-level SAS URL:
+          #   https://<account>.blob.core.windows.net/<container>?sv=...&sig=...
+          base="${BACKUP_UPLOAD_URL%%\?*}"
+          query="${BACKUP_UPLOAD_URL#*\?}"
+
+          # Azure validates Content-MD5 server-side and rejects a mismatch with 400, which verifies
+          # the upload without granting the SAS any read permission -- the token stays write-only,
+          # so a leaked token cannot download the backups.
+          md5=$(openssl dgst -md5 -binary "$DUMP" | base64)
+
+          curl --fail-with-body --silent --show-error --retry 3 --retry-all-errors \
+            -X PUT \
+            -H 'x-ms-blob-type: BlockBlob' \
+            -H "Content-MD5: $md5" \
+            --upload-file "$DUMP" \
+            "$base/$DUMP?$query"
+
+          echo "uploaded $DUMP to ${base##*/} (container)"
+
+          # Retention is an Azure Blob lifecycle management rule on the container, not code here --
+          # see docs/backup-restore.md. Deleting old blobs from this job would need a SAS with
+          # delete permission, which is exactly what you do not want a CI token to hold.

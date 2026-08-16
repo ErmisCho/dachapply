@@ -134,7 +134,7 @@ def ensure_demo_user():
     jobs = [
         {
             'company': 'Dynatrace', 'title': 'Senior Python Backend Engineer', 'location': 'Vienna', 'work_mode': 'hybrid',
-            'url': 'https://demo.dachapply.local/jobs/dynatrace-python-backend', 'status': 'interview', 'status_date': today - timedelta(days=10),
+            'url': 'https://demo.dachapply.local/jobs/dynatrace-python-backend', 'status': 'interview', 'status_date': today - timedelta(days=10), 'applied_at': today - timedelta(days=24),
             'interview_stage': 3, 'interview_total': 5, 'feedback_due_date': today + timedelta(days=2), 'last_update_date': today - timedelta(days=1),
             'raw_description': 'Backend platform role using Python services, APIs, PostgreSQL, observability, async workers, and pragmatic cloud delivery.',
             'language_requirements': 'English required; German helpful', 'salary_info': '€75k-90k',
@@ -144,7 +144,7 @@ def ensure_demo_user():
         },
         {
             'company': 'AI Search Lab', 'title': 'RAG / Search Engineer', 'location': 'Vienna', 'work_mode': 'hybrid',
-            'url': 'https://demo.dachapply.local/jobs/ai-search-rag', 'status': 'interview', 'status_date': today - timedelta(days=18),
+            'url': 'https://demo.dachapply.local/jobs/ai-search-rag', 'status': 'interview', 'status_date': today - timedelta(days=18), 'applied_at': today - timedelta(days=32),
             'interview_stage': 2, 'interview_total': 4, 'feedback_due_date': today - timedelta(days=1), 'last_update_date': today - timedelta(days=6),
             'raw_description': 'Search and RAG role using embeddings, LangChain, retrieval evaluation, Python APIs, and OpenSearch.',
             'language_requirements': 'English; German B1+', 'salary_info': '€70k-85k',
@@ -154,7 +154,7 @@ def ensure_demo_user():
         },
         {
             'company': 'FinTech GmbH', 'title': 'Django Developer', 'location': 'Berlin', 'work_mode': 'remote',
-            'url': 'https://demo.dachapply.local/jobs/fintech-django', 'status': 'applied', 'status_date': today - timedelta(days=7),
+            'url': 'https://demo.dachapply.local/jobs/fintech-django', 'status': 'applied', 'status_date': today - timedelta(days=7), 'applied_at': today - timedelta(days=7),
             'interview_stage': None, 'interview_total': None, 'feedback_due_date': today + timedelta(days=14), 'last_update_date': today - timedelta(days=7),
             'raw_description': 'Django and PostgreSQL product role for payments workflows, REST APIs, Celery workers, and compliance-heavy feature delivery.',
             'language_requirements': 'English; German nice to have', 'salary_info': '€68k-82k',
@@ -188,7 +188,7 @@ def ensure_demo_user():
         },
         {
             'company': 'MedTech Rails GmbH', 'title': 'Python API Engineer', 'location': 'Munich', 'work_mode': 'hybrid',
-            'url': 'https://demo.dachapply.local/referrals/medtech-python-api', 'status': 'interview', 'status_date': today - timedelta(days=3),
+            'url': 'https://demo.dachapply.local/referrals/medtech-python-api', 'status': 'interview', 'status_date': today - timedelta(days=3), 'applied_at': today - timedelta(days=17),
             'interview_stage': 1, 'interview_total': 3, 'feedback_due_date': today + timedelta(days=5), 'last_update_date': today - timedelta(days=1),
             'submitted_by': 'Max', 'submitter_reason': 'Max referred this after seeing the backend/API focus and realistic German requirement.',
             'raw_description': 'Referral from Max: Python/FastAPI services for healthcare workflow integrations, PostgreSQL, audit trails, and secure APIs.',
@@ -198,7 +198,7 @@ def ensure_demo_user():
         },
         {
             'company': 'Swiss AI Systems', 'title': 'Applied AI Backend Engineer', 'location': 'Zurich', 'work_mode': 'hybrid',
-            'url': 'https://demo.dachapply.local/referrals/swiss-ai-backend', 'status': 'interview', 'status_date': today - timedelta(days=12),
+            'url': 'https://demo.dachapply.local/referrals/swiss-ai-backend', 'status': 'interview', 'status_date': today - timedelta(days=12), 'applied_at': today - timedelta(days=26),
             'interview_stage': 4, 'interview_total': 5, 'feedback_due_date': today + timedelta(days=1), 'last_update_date': today,
             'submitted_by': 'Sophie', 'submitter_reason': 'Sophie is a recruiter referral and flagged the role as backend-heavy, not research-heavy.',
             'raw_description': 'Recruiter referral from Sophie: applied AI backend role with Python APIs, vector search, retrieval, evaluation, and product integration.',

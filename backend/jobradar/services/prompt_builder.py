@@ -1,9 +1,27 @@
 import json
 
 from django.db import connection
+from rest_framework.exceptions import APIException
 
-from jobradar.models import DEFAULT_CANDIDATE_PROFILE, UserProfile
+from jobradar.models import UserProfile
 from jobradar.services.cleaning import clean_job_location
+
+
+class CandidateProfileRequired(APIException):
+    """Refuse prompt generation rather than evaluate the job against nobody.
+
+    There used to be a fallback here: an account with an empty profile silently borrowed one
+    specific person's bio, so every fit score, gap list and recommendation it produced described
+    a stranger. A placeholder would have the same defect -- the model still scores against it --
+    so an empty profile refuses instead. `code` is stable for the frontend nudge.
+    """
+    status_code = 400
+
+    def __init__(self):
+        super().__init__({
+            'code': 'candidate_profile_required',
+            'detail': 'Add your candidate profile in Settings before generating a prompt. Prompts are scored against your profile, and an empty one would score every job against nobody.',
+        })
 
 RECOMMENDATION_RULES = '''Recommendation rules:
 apply = realistic fit with acceptable gaps.
@@ -140,31 +158,45 @@ def encode_profile_value(field, value):
 
 
 def user_profile_settings(user):
-    defaults={field: encode_profile_value(field, '') for field in PROFILE_FIELD_NAMES if field != 'candidate_profile'}
-    defaults['candidate_profile']=DEFAULT_CANDIDATE_PROFILE
+    # No candidate_profile default and no backfill: an account with an empty profile keeps it
+    # empty, so prompt generation refuses instead of borrowing somebody else's bio.
+    defaults={field: encode_profile_value(field, '') for field in PROFILE_FIELD_NAMES}
     profile, _ = UserProfile.objects.get_or_create(user=user, defaults=defaults)
-    if not profile.candidate_profile:
-        profile.candidate_profile = DEFAULT_CANDIDATE_PROFILE
-        profile.save(update_fields=['candidate_profile'])
     return profile
+
+
+def _profile_parts(profile):
+    parts = []
+    for label, field in PROFILE_FIELDS:
+        value = (decode_profile_value(getattr(profile, field, '')) or '').strip()
+        if value:
+            parts.append(f'{label}:\n{value}')
+    return parts
 
 
 def build_candidate_profile_text(user):
     if not getattr(user, 'is_authenticated', False):
-        return DEFAULT_CANDIDATE_PROFILE
-    profile = user_profile_settings(user)
-    parts = []
-    for label, field in PROFILE_FIELDS:
-        value = (decode_profile_value(getattr(profile, field, '')) or '').strip()
-        if field == 'candidate_profile' and not value:
-            value = DEFAULT_CANDIDATE_PROFILE
-        if value:
-            parts.append(f'{label}:\n{value}')
-    return '\n\n'.join(parts) or DEFAULT_CANDIDATE_PROFILE
+        return ''
+    return '\n\n'.join(_profile_parts(user_profile_settings(user)))
+
+
+def has_candidate_profile(user):
+    """Whether this account has profile text of its own. Read-only: never creates a profile row.
+
+    Deliberately queried rather than read off user.jobradar_profile: that relation is cached on the
+    user instance, so a reused instance answers with the profile as it looked before the last save.
+    """
+    if not getattr(user, 'is_authenticated', False):
+        return False
+    profile = UserProfile.objects.filter(user=user).first()
+    return bool(profile and _profile_parts(profile))
 
 
 def _profile(candidate_profile=None):
-    return (candidate_profile or DEFAULT_CANDIDATE_PROFILE).strip()
+    text = (candidate_profile or '').strip()
+    if not text:
+        raise CandidateProfileRequired
+    return text
 
 
 def _custom_instructions_section(custom_instructions):

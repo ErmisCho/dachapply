@@ -26,6 +26,30 @@ def _isolated_candidate_files(settings, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _never_send_real_email(settings):
+    """Pin every test to the in-memory mail backend.
+
+    Two reasons, the first of which is why this is autouse rather than per-test:
+
+    1. Only locmem populates django.core.mail.outbox. Measured on a clean checkout,
+       config.settings_test resolves to the *console* backend (no BREVO_*/LOCAL_* keys in
+       either .env, so EMAIL_PROVIDER='auto' falls through to the DEBUG default), which
+       prints the message and records nothing -- so any outbox assertion would silently
+       pass on an empty list rather than proving a mail was sent.
+
+    2. That resolution depends on the environment, not on the test settings. config.settings
+       picks the backend from EMAIL_PROVIDER / BREVO_* / EMAIL_BACKEND, all of which are read
+       from the two .env files. The moment someone configures real SMTP locally -- which the
+       docs actively describe for testing password reset -- the suite would start sending real
+       mail from a developer machine. It does not do that today; this fixture is what keeps it
+       that way regardless of local configuration.
+
+    Tests that want a specific backend still override it.
+    """
+    settings.EMAIL_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
+
+
+@pytest.fixture(autouse=True)
 def _reset_model_options_cache():
     """available_model_options() memoises for 60s at module level.
 

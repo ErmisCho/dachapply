@@ -1,5 +1,7 @@
 import csv, io, json
-from jobradar.models import DEFAULT_CANDIDATE_PROFILE, JobLead
+from jobradar.models import JobLead
+
+NO_CANDIDATE_PROFILE = '(no candidate profile saved - add one in Settings before using this brief)'
 
 def jobs_json(queryset=None):
     rows=[]
@@ -19,7 +21,9 @@ def jobs_csv(queryset=None):
     return buf.getvalue()
 
 def chatgpt_brief(queryset=None, candidate_profile=None):
-    parts=['# DACHApply ChatGPT Brief','', '## Candidate profile', candidate_profile or DEFAULT_CANDIDATE_PROFILE, '', '## Jobs']
+    # The brief still exports the user's jobs when the profile is empty; it just says so, rather
+    # than filling the section with somebody else's bio the way it used to.
+    parts=['# DACHApply ChatGPT Brief','', '## Candidate profile', candidate_profile or NO_CANDIDATE_PROFILE, '', '## Jobs']
     qs=queryset if queryset is not None else JobLead.objects.all()
     for j in qs[:100]:
         outcome=f'status: {j.status}'
