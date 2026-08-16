@@ -68,11 +68,13 @@ jobs:
 
           # The runner's bundled pg_dump lags Neon's server major, and pg_dump refuses to dump a
           # newer server. Pinning the client image keeps that a one-line bump instead of an outage.
-          # Must be >= the Neon server major -- check with: SELECT version();
+          # Must be >= the Neon server major. Measured 2026-08-16 from a failed run:
+          #   pg_dump: detail: server version: 18.4 (c9a59a4); pg_dump version: 17.11
+          # Bump this tag when that reappears -- check with: SELECT version();
           # `-e DBURL` with no value inherits from this shell's environment, so the connection
           # string never appears in any argv on the runner.
           export DBURL="$DATABASE_URL"
-          docker run --rm -e DBURL postgres:17-alpine \
+          docker run --rm -e DBURL postgres:18-alpine \
             sh -c 'pg_dump "$DBURL" --format=custom --no-owner --no-acl' > "$DUMP"
 
           ls -l "$DUMP"
@@ -93,7 +95,7 @@ jobs:
 
           # 2. pg_restore --list parses the whole custom-format table of contents, so it fails on a
           #    corrupt or half-written file that the size check would wave through.
-          docker run --rm -v "$PWD:/w" -w /w postgres:17-alpine \
+          docker run --rm -v "$PWD:/w" -w /w postgres:18-alpine \
             pg_restore --list "$DUMP" > toc.txt
 
           # 3. Content floor. A dump that authenticated but selected nothing is the silent failure

@@ -140,7 +140,7 @@ which is called out at the end.
 # 1. Scratch Postgres, thrown away afterwards. Never restore into anything shared.
 export PGPASSWORD="$(openssl rand -base64 18)"   # throwaway, lives only in this shell
 docker run -d --name dachapply-backup-drill -e POSTGRES_PASSWORD="$PGPASSWORD" \
-  -p 55432:5432 postgres:17-alpine
+  -p 55432:5432 postgres:18-alpine
 psql -h localhost -p 55432 -U postgres -c "CREATE DATABASE dachapply_drill_restore;"
 
 # 2. Fetch the dump to restore. Either download the newest blob from the backup container,
