@@ -54,11 +54,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Put the backups in the same resource group as the app, discovered the way the deploy
-          # workflow discovers it rather than hardcoded, so this keeps working if the group is renamed.
-          RG=$(az containerapp list --query "[?name=='dachapply'].resourceGroup | [0]" -o tsv)
-          test -n "$RG" || { echo "::error::could not find the dachapply container app -- wrong subscription?"; exit 1; }
+          # Derive BOTH the subscription and the resource group from the app's own resource id.
+          # Taking only the resource group and trusting the login's default subscription is what
+          # broke the first run: `az containerapp list` found rg-dachapply, then the very next
+          # storage call failed with SubscriptionNotFound, because the credential's default
+          # subscription is not the one holding the app. The id is
+          # /subscriptions/<sub>/resourceGroups/<rg>/... so both fall out of one lookup.
+          APP_ID=$(az containerapp list --query "[?name=='dachapply'].id | [0]" -o tsv)
+          if [ -z "$APP_ID" ]; then
+            echo "::error::could not find the dachapply container app in any accessible subscription"
+            echo "subscriptions this credential can see:"
+            az account list --query '[].{name:name,id:id}' -o tsv || true
+            exit 1
+          fi
+          SUB=$(echo "$APP_ID" | cut -d/ -f3)
+          RG=$(echo "$APP_ID" | cut -d/ -f5)
+          az account set --subscription "$SUB"
           LOCATION=$(az group show --name "$RG" --query location -o tsv)
+          echo "subscription: $SUB"
           echo "resource group: $RG ($LOCATION)"
 
           if az storage account show --name "$ACCOUNT" --resource-group "$RG" --only-show-errors -o none 2>/dev/null; then
