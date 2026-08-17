@@ -1,8 +1,10 @@
 ---
 id: TASK-69
 title: Purge the leaked personal data export from public git history
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
+updated_date: '2026-08-17 15:15'
 created_date: '2026-08-16 00:43'
 labels:
   - security
@@ -24,8 +26,8 @@ Verified 2026-08-16: `git show 912b853:"dachapply-full-2026-05-22.json"` returns
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 The export blob is unreachable from every ref on GitHub (history rewritten with git-filter-repo or BFG; `git log --all -- "dachapply-full-2026-05-22.json"` is empty on a fresh clone)
-- [ ] #2 The force push is performed by the owner personally, after coordinating any open branches (PSA-003 — agents never force-push)
-- [ ] #3 A full-history secret/PII sweep (gitleaks or trufflehog over all refs) confirms no other personal exports or credentials remain reachable, with the command and result recorded in the task notes
+- [x] #2 The force push is performed by the owner personally, after coordinating any open branches (PSA-003 — agents never force-push)
+- [x] #3 A full-history secret/PII sweep (gitleaks or trufflehog over all refs) confirms no other personal exports or credentials remain reachable, with the command and result recorded in the task notes
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -388,5 +390,53 @@ are. It becomes true the moment the push succeeds, not before.
 
 Forks and clones taken before the rewrite are reachable by none of the above, and no request to
 GitHub changes that. Say so when closing.
+
+### 2026-08-17 — the force push was executed by the owner. AC2 and AC3 closed; AC1 is not.
+
+The owner ran the push personally from the verified mirror. All six refs moved together, which is
+what "after coordinating any open branches" was asking for:
+
+    + ff86fa0...fdab970  docs/task-69-70-90-owner-items          (forced update)
+    + ea2aa33...e7c2f13  docs/wave-plan-final-status             (forced update)
+    + ade2a4f...dde5f1d  feature/task-111-local-serves-remote-db  (forced update)
+    + 4fe65c5...ea1c05e  feature/task-61-cv-generation-ux         (forced update)
+    + c1c8400...5843531  fix/task-69-notes-releaked-addresses     (forced update)
+    + 3be7798...d730d43  main                                     (forced update)
+
+**Verified from a genuinely fresh public clone, not from the mirror that produced it:**
+
+    git log --all -- "dachapply-full-2026-05-22.json"   -> 0 commits
+    distinct @ebcont.com addresses across all history   -> 0
+    main tip tree                                       -> e1178255…  (unchanged by the rewrite)
+
+**AC1 stays unchecked, and the reason is measured rather than predicted.** Fetching the refs no
+repository owner can rewrite puts both back:
+
+    git fetch origin 'refs/pull/*:refs/pull/*'
+    pull refs fetched                                    -> 29
+    commits touching the export, including pull refs     -> 2
+    blobs reachable                                      -> 967   (949 via branches alone)
+    @ebcont.com hits reachable via pull refs             -> 20
+
+So a public, unauthenticated `git fetch origin 'refs/pull/*'` still retrieves the export and both
+addresses today. This is exactly the trap recorded in Finding 1: **AC1's own stated test passes**,
+because a normal clone does not fetch `refs/pull/*`. Closing AC1 on that test alone would have been
+wrong. It needs the GitHub Support request drafted above — send it, then re-run the two-line check.
+
+#### Three local copies the rewrite does not touch, found while verifying
+
+None of these are public, all are on the owner's disk, and none were created by an agent:
+
+    backend/jobradar/tests/__pycache__/test_api*.pyc   compiled from the PRE-TASK-107 fixture;
+                                                       gitignored, regenerated on the next test run
+    .orchestrator/current-session.json                 both addresses captured verbatim into its
+                                                       `corrective_context` from a command's output
+    refs/heads/main in the working clone               the whole pre-rewrite history, until the
+                                                       working copy is reset onto the new one
+
+The middle one is worth naming as a pattern, not just an item: **tooling that records command output
+for context will faithfully record leaked data too.** A sweep aimed at tracked files and git history
+misses it entirely, and it survives every rewrite. Add `.orchestrator/` and `__pycache__/` to whatever
+sweep closes TASK-90 AC3.
 
 <!-- SECTION:NOTES:END -->
