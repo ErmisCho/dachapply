@@ -138,3 +138,16 @@ def test_guard_still_blocks_bare_invocation():
         'postgresql://prod-host/db', {'DATABASE_URL'}, allow_prod_db=False,
         argv=['manage.py'],
     ) is True
+
+
+def test_guard_exempts_gmail_oauth_setup_which_opens_no_connection():
+    """Regression: gmail_oauth_setup shipped blocked by this guard and could not run at all in the
+    owner's real configuration (DATABASE_URL lives in their .env). It opens no database connection
+    -- it does an OAuth handshake and writes a token file -- so the guard had nothing to protect and
+    refusing to start was a false positive. Exempt for that reason, NOT because it may reach
+    production; see LOCAL_DB_GUARD_NO_DB_COMMANDS vs LOCAL_PROD_DB_SERVING_COMMANDS.
+    """
+    assert local_db_guard_blocks(
+        'postgresql://prod-host/db', {'DATABASE_URL'}, allow_prod_db=False,
+        argv=['manage.py', 'gmail_oauth_setup'],
+    ) is False

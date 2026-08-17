@@ -64,6 +64,13 @@ _env_file_keys |= load_env_file(BASE_DIR / '.env')
 # production from a laptop stays an explicit per-command opt-in. check_mailbox is a server in this
 # sense -- its whole purpose is writing suggestions where the website can show them.
 LOCAL_PROD_DB_SERVING_COMMANDS = frozenset({'runserver', 'check_mailbox'})
+# Separate reason, deliberately not folded into the set above: these commands open no database
+# connection at all, so the guard has nothing to protect and refusing to start is a false positive
+# that blocks real work. gmail_oauth_setup does an OAuth handshake and writes a token file; it
+# imports settings only because it is a management command. Keeping the two sets apart matters --
+# "exempt because it deliberately uses production" and "exempt because it never touches a database"
+# are different claims, and merging them would let a future DB-touching command inherit the wrong one.
+LOCAL_DB_GUARD_NO_DB_COMMANDS = frozenset({'gmail_oauth_setup'})
 
 
 def local_db_guard_blocks(database_url, file_sourced_keys, allow_prod_db, argv=None):
@@ -74,11 +81,13 @@ def local_db_guard_blocks(database_url, file_sourced_keys, allow_prod_db, argv=N
     this command -- exported in the shell, or the DATABASE_URL='' + DB_NAME=... workaround, which
     leaves 'DATABASE_URL' out of file_sourced_keys entirely -- is left alone. Serving commands
     (LOCAL_PROD_DB_SERVING_COMMANDS) are never blocked: per TASK-111 the local app deliberately
-    runs against the same remote database as the deployed site.
+    runs against the same remote database as the deployed site. Commands that open no database
+    connection at all (LOCAL_DB_GUARD_NO_DB_COMMANDS) are also never blocked, for the opposite
+    reason -- there is nothing to protect, so refusing to start is a false positive.
     """
     args = sys.argv if argv is None else argv
     command = args[1] if len(args) > 1 else ''
-    if command in LOCAL_PROD_DB_SERVING_COMMANDS:
+    if command in LOCAL_PROD_DB_SERVING_COMMANDS or command in LOCAL_DB_GUARD_NO_DB_COMMANDS:
         return False
     return bool(database_url) and 'DATABASE_URL' in file_sourced_keys and not allow_prod_db
 
@@ -150,6 +159,22 @@ GMAIL_DRAFTS_FOLDER = os.getenv('GMAIL_DRAFTS_FOLDER', '[Gmail]/Drafts')
 # to "no floor, no blocklist"), same opt-in shape as GMAIL_CALENDAR_ICS_URL above.
 MAILBOX_SALARY_FLOOR_EUR = os.getenv('MAILBOX_SALARY_FLOOR_EUR', '').strip()
 MAILBOX_DO_NOT_DISCLOSE = env_list('MAILBOX_DO_NOT_DISCLOSE', '')
+
+# TASK-109 AC1: Gmail-API OAuth path -- the remaining route when the owner has declined 2-Step
+# Verification (Google only issues app passwords with 2SV on, and retired "less secure app access"
+# entirely, so GMAIL_IMAP_APP_PASSWORD above is then simply unusable). Same "absent unless
+# configured" idiom as GMAIL_IMAP_USER/APP_PASSWORD: unset client id/secret means run_check() treats
+# OAuth as not configured either (see services/mailbox.py run_check()'s gate). Set up once with
+# `manage.py gmail_oauth_setup` (see docs/email-setup.md) -- that command writes the refresh token to
+# GMAIL_OAUTH_TOKEN_PATH, never here; the client id/secret are the only OAuth values that belong in
+# .env, same treatment as every other credential in this block.
+GMAIL_OAUTH_CLIENT_ID = os.getenv('GMAIL_OAUTH_CLIENT_ID', '')
+GMAIL_OAUTH_CLIENT_SECRET = os.getenv('GMAIL_OAUTH_CLIENT_SECRET', '')
+# Local file the refresh token is written to and read from. Defaults to a `dachapply-*.json` name at
+# the repo root so it rides the existing gitignore rule below (see .gitignore) instead of needing a
+# new one -- same "local-only by construction" property as GMAIL_IMAP_APP_PASSWORD, just as a file
+# instead of an env var (a long-lived refresh token belongs in neither `.env` nor git).
+GMAIL_OAUTH_TOKEN_PATH = os.getenv('GMAIL_OAUTH_TOKEN_PATH', str(BASE_DIR.parent / 'dachapply-gmail-oauth-token.json'))
 
 SECRET_KEY = os.getenv('SECRET_KEY')
 if DEBUG:

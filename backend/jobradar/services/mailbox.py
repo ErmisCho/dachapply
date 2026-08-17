@@ -2,23 +2,32 @@
 suggestions. TASK-110 extends the same pipeline: a message classified as reply-wanting (an
 interview/scheduling invitation, a recruiter reply, or an offer to negotiate) gets a reply drafted
 and placed in Gmail's own Drafts folder for the owner to review and send from Gmail -- this module
-never sends mail (no smtplib import anywhere in it), and a draft that fails a guardrail is never
-written to Gmail at all, only logged.
+never sends mail (no smtplib import, and no call to the Gmail API's users.messages.send, anywhere in
+it), and a draft that fails a guardrail is never written to Gmail at all, only logged.
+
+Two interchangeable transports read the mailbox, whichever is configured (IMAP wins if both are --
+see run_check()/_default_transport()): ImapTransport (app password, needs 2-Step Verification) and
+GmailApiTransport (OAuth, TASK-109 AC1 -- the route for an owner who has declined 2SV, since Google
+only issues app passwords with 2SV on and retired "less secure app access" entirely).
 
 Local mode only, like CV generation (services/cv_generator.py): the owner's mail credentials and
 message content never reach the Azure deployment. In practice that boundary already holds by
-construction here, not just by policy -- GMAIL_IMAP_USER/APP_PASSWORD only ever live in a local
-.env, so run_check() simply no-ops (returns None before touching the database) everywhere they are
-unset, and this module is wired into nothing that starts automatically with the web process (see
+construction here, not just by policy -- GMAIL_IMAP_USER/APP_PASSWORD and
+GMAIL_OAUTH_CLIENT_ID/SECRET only ever live in a local .env (the OAuth refresh token lives in its own
+local, gitignored file -- see config.settings.GMAIL_OAUTH_TOKEN_PATH), so run_check() simply no-ops
+(returns None before touching the database) whenever neither transport is configured, and this module
+is wired into nothing that starts automatically with the web process (see
 management/commands/check_mailbox.py: it runs only when something -- Windows Task Scheduler, or a
 developer -- explicitly invokes it).
 
-Architecture note for testability: every IMAP call is behind the `transport` parameter of
-run_check()/ImapTransport, so every test in tests/test_mailbox.py injects a FakeTransport and never
+Architecture note for testability: every IMAP/Gmail-API call is behind the `transport` parameter of
+run_check() (ImapTransport/GmailApiTransport), so every test in tests/test_mailbox.py injects either a
+FakeTransport or a real GmailApiTransport with its module-level network calls monkeypatched, and never
 opens a socket.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -28,7 +37,7 @@ from datetime import timezone as dt_timezone
 from email.message import EmailMessage
 from email.utils import format_datetime
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from django.conf import settings
@@ -62,6 +71,9 @@ class RawMessage:
     message_id: str = ''
     references: str = ''  # TASK-110 AC1: threading chain for build_reply_mime's References header
     body_text: str = ''  # transient only -- never persisted, see MailboxMessage docstring
+    gmail_id: str = ''  # TASK-109 AC1: Gmail API's own opaque message id; '' for IMAP-sourced messages
+    internal_date_ms: int | None = None  # Gmail's own ms-epoch resume marker; None for IMAP-sourced messages
+    thread_id: str = ''  # TASK-110 AC1: Gmail's own thread id for explicit draft threading; transient, never persisted (like body_text)
 
 
 class ImapTransport:
@@ -119,10 +131,14 @@ class ImapTransport:
             except Exception:
                 pass
 
-    def append_draft(self, mime_message: bytes) -> None:
+    def append_draft(self, mime_message: bytes, thread_id: str | None = None) -> None:
         """TASK-110 AC1: IMAP APPEND into the Drafts mailbox -- the only way this app ever puts a
         reply anywhere near Gmail. No SMTP client is ever imported or invoked; a message this
         library only ever appends can never be sent by this app, only by the owner in Gmail itself.
+        thread_id is Gmail-API-only (accepted-and-ignored here so both transports share one
+        append_draft(mime, thread_id=...) call site in maybe_draft_reply()) -- IMAP has no such
+        concept; Gmail still threads an IMAP-appended draft purely off the In-Reply-To/References
+        headers build_reply_mime already set.
         """
         import imaplib
         import time
@@ -136,6 +152,194 @@ class ImapTransport:
                 conn.logout()
             except Exception:
                 pass
+
+
+# --- Gmail-API OAuth transport (TASK-109 AC1 alternative route) --------------------------------
+#
+# Stdlib urllib + email only, no google-api-python-client/google-auth/google-auth-oauthlib: the whole
+# surface this app needs is one refresh-token POST (RFC 6749 sec 6) and a handful of plain REST+JSON
+# Gmail API calls -- same "no third-party client" idiom ImapTransport documents above. Scope is
+# gmail.modify (narrower than mail.google.com -- Google's own scope table for users.drafts.create
+# lists gmail.modify as sufficient, alongside gmail.compose/mail.google.com), and nothing in this
+# class, or anywhere else in this module, ever calls users.messages.send.
+
+GMAIL_OAUTH_SCOPE = 'https://www.googleapis.com/auth/gmail.modify'
+GMAIL_OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token'
+GMAIL_OAUTH_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
+GMAIL_OAUTH_REDIRECT_URI = 'http://localhost'  # loopback, no server run -- see oauth_authorization_url()
+GMAIL_API_BASE = 'https://www.googleapis.com/gmail/v1/users/me'
+
+
+def oauth_authorization_url(client_id: str) -> str:
+    """The URL `manage.py gmail_oauth_setup` prints for the owner to open once in a browser.
+    redirect_uri is the bare http://localhost loopback -- Google's "Desktop app" OAuth client type
+    accepts it without anything ever listening there; after consenting, the browser lands on an
+    unreachable localhost page and the authorization code is sitting right there in that dead page's
+    own address bar (`...?code=...`) for the owner to copy back into the terminal. No local HTTP
+    server needed for a flow that only ever runs once per token lifetime.
+    access_type=offline + prompt=consent is what makes Google actually hand back a refresh_token
+    (silently omitted on a repeat consent otherwise).
+    """
+    params = {
+        'client_id': client_id, 'redirect_uri': GMAIL_OAUTH_REDIRECT_URI, 'response_type': 'code',
+        'scope': GMAIL_OAUTH_SCOPE, 'access_type': 'offline', 'prompt': 'consent',
+    }
+    return f'{GMAIL_OAUTH_AUTH_URL}?{urlencode(params)}'
+
+
+def oauth_exchange_code(client_id: str, client_secret: str, code: str) -> dict:
+    """One-time exchange of the pasted authorization code for tokens -- only `gmail_oauth_setup`
+    calls this. Returns the full token response; the caller persists only refresh_token (see
+    write_refresh_token), never the short-lived access_token, which every real run re-derives itself.
+    """
+    body = urlencode({
+        'client_id': client_id, 'client_secret': client_secret, 'code': code,
+        'redirect_uri': GMAIL_OAUTH_REDIRECT_URI, 'grant_type': 'authorization_code',
+    }).encode('utf-8')
+    return _oauth_token_request(body)
+
+
+def write_refresh_token(token_path: str, refresh_token: str) -> None:
+    """Writes ONLY the refresh token, as {"refresh_token": "..."} -- never the client secret (that
+    stays in .env, same place GMAIL_IMAP_APP_PASSWORD already lives) and never printed to stdout by
+    the calling command.
+    """
+    with open(token_path, 'w', encoding='utf-8') as fh:
+        json.dump({'refresh_token': refresh_token}, fh)
+
+
+def _read_refresh_token(token_path: str) -> str:
+    try:
+        with open(token_path, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f'No usable Gmail OAuth refresh token at {token_path}. Run `manage.py gmail_oauth_setup` '
+            'once to authorize (see docs/email-setup.md).'
+        ) from exc
+    refresh_token = data.get('refresh_token', '')
+    if not refresh_token:
+        raise RuntimeError(f'{token_path} has no refresh_token. Re-run `manage.py gmail_oauth_setup`.')
+    return refresh_token
+
+
+def _oauth_refresh_access_token(client_id: str, client_secret: str, refresh_token: str) -> str:
+    """AC7: raises on any failure -- including Google saying the refresh token itself is expired or
+    revoked, which is *normal* in OAuth "testing" publishing status after about 7 days (see
+    docs/email-setup.md) -- rather than ever returning a stale or empty token. run_check()'s existing
+    except-and-record-on-MailboxRun.error path is what surfaces that to the owner, the same mechanism
+    every other check_mailbox failure already goes through -- no new surfacing mechanism needed here.
+    """
+    body = urlencode({
+        'client_id': client_id, 'client_secret': client_secret, 'refresh_token': refresh_token,
+        'grant_type': 'refresh_token',
+    }).encode('utf-8')
+    token_response = _oauth_token_request(body)
+    access_token = token_response.get('access_token', '')
+    if not access_token:
+        raise RuntimeError('Gmail OAuth token refresh returned no access_token.')
+    return access_token
+
+
+def _oauth_token_request(body: bytes) -> dict:
+    request = Request(GMAIL_OAUTH_TOKEN_URL, data=body, headers={'Content-Type': 'application/x-www-form-urlencoded'}, method='POST')
+    try:
+        with urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except HTTPError as exc:
+        details = exc.read().decode('utf-8', errors='replace')
+        raise RuntimeError(
+            f'Gmail OAuth token request failed with HTTP {exc.code}: {details} -- in "testing" '
+            'publishing status a refresh token expires after about 7 days; re-run `manage.py '
+            'gmail_oauth_setup` to re-authorize, or publish the OAuth consent screen to stop the '
+            '7-day expiry (see docs/email-setup.md).'
+        ) from exc
+    except URLError as exc:
+        raise RuntimeError(f'Could not reach {GMAIL_OAUTH_TOKEN_URL}: {exc}') from exc
+
+
+def _gmail_api_request(method: str, url: str, access_token: str, data: bytes | None = None) -> dict:
+    request = Request(url, data=data, headers={'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'}, method=method)
+    try:
+        with urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except HTTPError as exc:
+        details = exc.read().decode('utf-8', errors='replace')
+        raise RuntimeError(f'Gmail API {method} {url} failed with HTTP {exc.code}: {details}') from exc
+    except URLError as exc:
+        raise RuntimeError(f'Could not reach Gmail API at {url}: {exc}') from exc
+
+
+class GmailApiTransport:
+    """Gmail-API OAuth transport (TASK-109 AC1 alternative to ImapTransport, for an owner who has
+    declined 2-Step Verification and so cannot get an IMAP app password). Resume marker is Gmail's own
+    internalDate (ms epoch), not an IMAP UID -- see MailboxMessage.internal_date_ms and run_check().
+    """
+
+    def __init__(self, client_id, client_secret, token_path):
+        self.client_id, self.client_secret, self.token_path = client_id, client_secret, token_path
+
+    def _access_token(self) -> str:
+        refresh_token = _read_refresh_token(self.token_path)
+        return _oauth_refresh_access_token(self.client_id, self.client_secret, refresh_token)
+
+    def fetch_new(self, last_marker_ms: int) -> list[RawMessage]:
+        """`after:` is Gmail search syntax and only second-granular, so it is queried with a 1s
+        safety margin behind last_marker_ms and then every result is re-checked against the exact ms
+        marker below -- that ms check, not the search query, is what actually decides skip-vs-not
+        (AC1: a missed run must never skip a message). The same overlap is exactly why run_check()
+        also dedups on gmail_id before creating a row: belt and braces against the identical message
+        coming back on two consecutive runs (AC1: a missed run must also never duplicate a message).
+        """
+        import email.policy
+
+        access_token = self._access_token()
+        after_seconds = max(last_marker_ms // 1000 - 1, 0)
+        message_ids = []
+        page_token = None
+        while True:
+            params = {'labelIds': 'INBOX'}
+            if after_seconds:
+                params['q'] = f'after:{after_seconds}'
+            if page_token:
+                params['pageToken'] = page_token
+            listing = _gmail_api_request('GET', f'{GMAIL_API_BASE}/messages?{urlencode(params)}', access_token)
+            message_ids.extend(m['id'] for m in listing.get('messages') or [])
+            page_token = listing.get('nextPageToken')
+            if not page_token:
+                break
+
+        messages = []
+        for msg_id in message_ids:
+            detail = _gmail_api_request('GET', f'{GMAIL_API_BASE}/messages/{msg_id}?format=raw', access_token)
+            internal_date_ms = int(detail.get('internalDate') or 0)
+            if internal_date_ms <= last_marker_ms:
+                continue
+            encoded = detail.get('raw', '')
+            raw_bytes = base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4))
+            parsed = email.message_from_bytes(raw_bytes, policy=email.policy.default)
+            body = parsed.get_body(preferencelist=('plain',))
+            messages.append(RawMessage(
+                uid=0, sender=parsed.get('From', ''), subject=parsed.get('Subject', ''),
+                received_at=_parse_email_date(parsed.get('Date', '')),
+                message_id=parsed.get('Message-ID', ''), references=parsed.get('References', ''),
+                body_text=(body.get_content() if body is not None else '')[:5000],
+                gmail_id=msg_id, internal_date_ms=internal_date_ms, thread_id=detail.get('threadId', ''),
+            ))
+        return messages
+
+    def append_draft(self, mime_message: bytes, thread_id: str | None = None) -> None:
+        """TASK-110 AC1: users.drafts.create only -- no call to users.messages.send exists anywhere
+        in this module (see module docstring). Threaded on the original both ways: threadId here (the
+        Gmail-native, deterministic mechanism) plus the In-Reply-To/References headers
+        build_reply_mime already baked into mime_message.
+        """
+        encoded = base64.urlsafe_b64encode(mime_message).decode('ascii').rstrip('=')
+        payload = {'message': {'raw': encoded}}
+        if thread_id:
+            payload['message']['threadId'] = thread_id
+        access_token = self._access_token()
+        _gmail_api_request('POST', f'{GMAIL_API_BASE}/drafts', access_token, data=json.dumps(payload).encode('utf-8'))
 
 
 def _parse_email_date(value):
@@ -789,7 +993,7 @@ def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, cl
             message=message, job=job, status='blocked', block_reason=block_reason[:250],
             subject=subject, body_text=body_text, evaluator=evaluator,
         )
-    transport.append_draft(build_reply_mime(raw, settings.GMAIL_IMAP_USER, body_text))
+    transport.append_draft(build_reply_mime(raw, _reply_from_address(), body_text), thread_id=raw.thread_id or None)
     return MailboxDraft.objects.create(
         message=message, job=job, status='written', subject=subject, body_text=body_text, evaluator=evaluator,
     )
@@ -803,6 +1007,24 @@ def _owner_user():
         return None
     User = get_user_model()
     return User.objects.filter(Q(email__iexact=email) | Q(username__iexact=email)).first()
+
+
+def _reply_from_address() -> str:
+    """AC1: the IMAP path's From address always was GMAIL_IMAP_USER; the OAuth path has no equivalent
+    env var (the refresh token itself already names the account), so it reuses CODEX_CV_OWNER_EMAIL --
+    the same "the owner's own address" setting _owner_user() above already matches against.
+    """
+    return settings.GMAIL_IMAP_USER or settings.CODEX_CV_OWNER_EMAIL or ''
+
+
+def _default_transport():
+    """AC1: IMAP app password wins when both are configured (matches the gate check below, which has
+    always checked GMAIL_IMAP_USER/APP_PASSWORD first); Gmail-API OAuth is the fallback for an owner
+    who cannot get an app password (2SV declined) -- see module docstring and docs/email-setup.md.
+    """
+    if settings.GMAIL_IMAP_USER and settings.GMAIL_IMAP_APP_PASSWORD:
+        return ImapTransport(settings.GMAIL_IMAP_HOST, settings.GMAIL_IMAP_USER, settings.GMAIL_IMAP_APP_PASSWORD)
+    return GmailApiTransport(settings.GMAIL_OAUTH_CLIENT_ID, settings.GMAIL_OAUTH_CLIENT_SECRET, settings.GMAIL_OAUTH_TOKEN_PATH)
 
 
 def _claim_tick(now, cadence_minutes, force=False):
@@ -832,7 +1054,10 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
     cadence isn't due) -- callers should not treat None as an error. Returns the MailboxRun row for
     every real attempt, whether it went on to skip for quiet hours or fetched mail.
     """
-    if not (settings.GMAIL_IMAP_USER and settings.GMAIL_IMAP_APP_PASSWORD):
+    if not (
+        (settings.GMAIL_IMAP_USER and settings.GMAIL_IMAP_APP_PASSWORD)
+        or (settings.GMAIL_OAUTH_CLIENT_ID and settings.GMAIL_OAUTH_CLIENT_SECRET)
+    ):
         return None
     owner = _owner_user()
     if owner is None:
@@ -852,16 +1077,41 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             run.save()
             return run
 
-        active_transport = transport or ImapTransport(settings.GMAIL_IMAP_HOST, settings.GMAIL_IMAP_USER, settings.GMAIL_IMAP_APP_PASSWORD)
-        last_uid = MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0
-        raw_messages = active_transport.fetch_new(last_uid)
+        active_transport = transport or _default_transport()
+        # AC1: Gmail-API messages have no IMAP UID, so their resume marker is Gmail's own ascending
+        # internalDate (ms epoch) instead -- MAX(uid) stays the IMAP marker exactly as before (this
+        # branch never changes what an IMAP-configured run does), and the two never mix because only
+        # one transport is ever configured on a given machine (see the gate above/_default_transport).
+        is_gmail_api = isinstance(active_transport, GmailApiTransport)
+        if is_gmail_api:
+            last_marker = MailboxMessage.objects.aggregate(Max('internal_date_ms'))['internal_date_ms__max'] or 0
+        else:
+            last_marker = MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0
+        raw_messages = active_transport.fetch_new(last_marker)
         job_domains = owned_job_domains(owner)
 
-        for raw in sorted(raw_messages, key=lambda item: item.uid):
+        # Gmail-sourced messages get a locally-assigned uid (MailboxMessage.uid is a required, unique,
+        # IMAP-shaped int; Gmail's own id is a hex string that does not fit it) -- assigned here in
+        # processing order so -uid ordering (see MailboxRunSerializer.get_digest_messages) still reads
+        # newest-last, same as the real IMAP UIDs it stands in for.
+        next_uid = (MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0) if is_gmail_api else None
+        sort_key = (lambda item: item.internal_date_ms or 0) if is_gmail_api else (lambda item: item.uid)
+        for raw in sorted(raw_messages, key=sort_key):
+            # Gmail's `after:` search is only second-granular (see GmailApiTransport.fetch_new), so a
+            # message right at the resume boundary can come back on two consecutive runs -- this dedup
+            # guard is what actually makes that harmless instead of a duplicated log/suggestion/draft.
+            if is_gmail_api and raw.gmail_id and MailboxMessage.objects.filter(gmail_id=raw.gmail_id).exists():
+                continue
             matched = match_job(raw, job_domains)
             classification, interview_at, evaluator = classify_email(raw, domain_known=matched is not None)
+            if is_gmail_api:
+                next_uid += 1
+                assigned_uid = next_uid
+            else:
+                assigned_uid = raw.uid
             message = MailboxMessage.objects.create(
-                run=run, uid=raw.uid, message_id=raw.message_id[:250], sender=raw.sender[:254], subject=raw.subject[:500],
+                run=run, uid=assigned_uid, gmail_id=raw.gmail_id, internal_date_ms=raw.internal_date_ms,
+                message_id=raw.message_id[:250], sender=raw.sender[:254], subject=raw.subject[:500],
                 received_at=raw.received_at, classification=classification, evaluator=evaluator, matched_job=matched,
             )
             run.fetched_count += 1
