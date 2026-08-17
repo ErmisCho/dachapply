@@ -4,7 +4,7 @@ title: Rotate and remove the legacy publish profile and stray data files
 status: In Progress
 assignee:
   - '@claude'
-updated_date: '2026-08-17 14:40'
+updated_date: '2026-08-17 15:50'
 created_date: '2026-08-16 00:43'
 labels:
   - security
@@ -124,5 +124,53 @@ git while leaving four copies in a synced folder is half a fix. One command, fro
 
 Keep `db.sqlite3` if a local dev database is still wanted; it is the only one of the seven with a
 plausible reason to exist.
+
+### 2026-08-17 — re-measured; all seven files are still present, unchanged, nothing to close
+
+Fresh `ls -la` from the repo root, not carried over from the 2026-08-16 note:
+
+    dachapply.PublishSettings              2184 B   May 22 16:48
+    db.sqlite3                           577536 B   Jun  6 14:18
+    azure-sqlite-data.json               412215 B   Jun  6 14:21
+    dachapply-full-2026-05-22.json        52452 B   May 22 18:18
+    dachapply-full-2026-05-22 (1).json    52452 B   May 22 18:19
+    dachapply-full-2026-05-22 (2).json    54912 B   May 22 18:24
+    dachapply-full-2026-05-22 (3).json    75912 B   May 22 18:29
+
+Sizes and mtimes are byte-for-byte identical to the previous inventory — none of the seven has been
+touched since. Re-verified untracked and gitignored, not just re-asserted:
+
+    git check-ignore -v dachapply.PublishSettings db.sqlite3 azure-sqlite-data.json \
+      "dachapply-full-2026-05-22.json" "dachapply-full-2026-05-22 (1).json" \
+      "dachapply-full-2026-05-22 (2).json" "dachapply-full-2026-05-22 (3).json"
+    .gitignore:2:*.PublishSettings   dachapply.PublishSettings
+    .gitignore:8:*.sqlite3           db.sqlite3
+    .gitignore:26:azure-sqlite-data.json   azure-sqlite-data.json
+    .gitignore:27:dachapply-*.json   dachapply-full-2026-05-22.json
+    .gitignore:27:dachapply-*.json   dachapply-full-2026-05-22 (1).json
+    .gitignore:27:dachapply-*.json   dachapply-full-2026-05-22 (2).json
+    .gitignore:27:dachapply-*.json   dachapply-full-2026-05-22 (3).json
+
+    git ls-files dachapply.PublishSettings db.sqlite3 azure-sqlite-data.json \
+      "dachapply-full-2026-05-22.json" [...] "dachapply-full-2026-05-22 (3).json"
+    -> empty output, exit 0 -- none tracked
+
+So none of the three named "no longer exists" cases apply: nothing here changes AC2 or AC3's status,
+and per PSA-003 (these are the owner's personal files, not agent-created) this session did not delete
+them, only inventoried them.
+
+**The exact command to run from the repo root, dry-run-verified via `ls` (not `rm`) to confirm the
+glob selects precisely these seven and nothing else:**
+
+    rm dachapply.PublishSettings db.sqlite3 azure-sqlite-data.json dachapply-full-2026-05-22*.json
+
+`ls -la dachapply-full-2026-05-22*.json` confirms the glob expands to exactly the four export copies
+above (space-and-parenthesis names included) and nothing else in the root. Drop `db.sqlite3` from the
+command if a local dev database is still wanted — it is the only one of the seven with a plausible
+reason to stay.
+
+**AC2 and AC3 remain open. Exact blocker: the owner runs the command above (or the owner's chosen
+subset of it) from the repo root.** No agent action can close either box — that would require
+deleting files this session did not create, which PSA-003 forbids outright.
 
 <!-- SECTION:NOTES:END -->
