@@ -244,10 +244,14 @@ removed them from `main`, and this is the proof rather than the assumption.
 **1. It is 2 third-party addresses, not 3.** A binary-safe sweep of all 941 blobs across every ref
 found exactly four real addresses in the entire history:
 
-    redacted@example.test        third party  -> redacted by this rewrite
-    redacted@example.test    third party  -> redacted by this rewrite
-    ermis702@gmail.com               owner        -> existed ONLY inside the export; purged with the file
-    ermis.chorinopoulos@gmail.com    owner        -> deliberately kept (see below)
+    <first>@ebcont.com             third party  -> redacted by this rewrite
+    <second>@ebcont.com            third party  -> redacted by this rewrite
+    <owner-second>@gmail.com       owner        -> existed ONLY inside the export; purged with the file
+    ermis.chorinopoulos@gmail.com  owner        -> deliberately kept (see below)
+
+The two third-party local parts are deliberately **not** written out here — see the correction below
+about this very table. They are recoverable from git when the rewrite needs them, which is why the
+runbook generates the replacement expressions out of git rather than from anything typed by hand.
 
 Everything else — all 81 other address-shaped strings — is `@example.test`, `@acme.test`,
 `@example.com`, `@dachapply.test` or a `your-…@gmail.com` placeholder.
@@ -264,6 +268,23 @@ returned `[]` and read as "nothing leaked".
 clone time now advertises `refs/pull/1/head` through `refs/pull/25/head`. Every one of them reaches
 the pre-rewrite history, and none can be force-pushed or deleted by a repository owner. The support
 request below is corrected to name all of them rather than #1.
+
+**4. The table in correction 1 put both addresses back on `main`.** Added 2026-08-17, after the
+rewrite above was verified. Documenting the redaction re-published the exact data the redaction
+existed to remove — into a public repository, at the tip, where it needs no history fetch to read.
+
+It was caught by the tip-tree gate on the very next run, and only because that gate had just been
+changed to capture `$BEFORE` from the clone instead of comparing against a hardcoded hash. The
+hardcoded hash was `92935554…`, taken before this table existed; a run against it would have compared
+the new tree to a stale constant and reported the mismatch as "the recorded hash is out of date",
+which is exactly the shrug that lets a real failure through. The self-checking version had no such
+excuse available, and stopped the push.
+
+The general shape, worth more than this instance: **a privacy task's own notes are in scope for the
+privacy task.** Findings get written up inside the repository being cleaned, so the write-up becomes
+another copy — and the copy that survives, because nobody thinks to sweep it. AC3's sweep has to run
+over `backlog/` as well as over code; this was found by `git grep` across the whole tree, not just
+`backend/`.
 
 #### One deliberate non-change: the company name stays
 
