@@ -64,6 +64,13 @@ _env_file_keys |= load_env_file(BASE_DIR / '.env')
 # production from a laptop stays an explicit per-command opt-in. check_mailbox is a server in this
 # sense -- its whole purpose is writing suggestions where the website can show them.
 LOCAL_PROD_DB_SERVING_COMMANDS = frozenset({'runserver', 'check_mailbox'})
+# Separate reason, deliberately not folded into the set above: these commands open no database
+# connection at all, so the guard has nothing to protect and refusing to start is a false positive
+# that blocks real work. gmail_oauth_setup does an OAuth handshake and writes a token file; it
+# imports settings only because it is a management command. Keeping the two sets apart matters --
+# "exempt because it deliberately uses production" and "exempt because it never touches a database"
+# are different claims, and merging them would let a future DB-touching command inherit the wrong one.
+LOCAL_DB_GUARD_NO_DB_COMMANDS = frozenset({'gmail_oauth_setup'})
 
 
 def local_db_guard_blocks(database_url, file_sourced_keys, allow_prod_db, argv=None):
@@ -74,11 +81,13 @@ def local_db_guard_blocks(database_url, file_sourced_keys, allow_prod_db, argv=N
     this command -- exported in the shell, or the DATABASE_URL='' + DB_NAME=... workaround, which
     leaves 'DATABASE_URL' out of file_sourced_keys entirely -- is left alone. Serving commands
     (LOCAL_PROD_DB_SERVING_COMMANDS) are never blocked: per TASK-111 the local app deliberately
-    runs against the same remote database as the deployed site.
+    runs against the same remote database as the deployed site. Commands that open no database
+    connection at all (LOCAL_DB_GUARD_NO_DB_COMMANDS) are also never blocked, for the opposite
+    reason -- there is nothing to protect, so refusing to start is a false positive.
     """
     args = sys.argv if argv is None else argv
     command = args[1] if len(args) > 1 else ''
-    if command in LOCAL_PROD_DB_SERVING_COMMANDS:
+    if command in LOCAL_PROD_DB_SERVING_COMMANDS or command in LOCAL_DB_GUARD_NO_DB_COMMANDS:
         return False
     return bool(database_url) and 'DATABASE_URL' in file_sourced_keys and not allow_prod_db
 
