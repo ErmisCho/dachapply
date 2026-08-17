@@ -439,4 +439,39 @@ for context will faithfully record leaked data too.** A sweep aimed at tracked f
 misses it entirely, and it survives every rewrite. Add `.orchestrator/` and `__pycache__/` to whatever
 sweep closes TASK-90 AC3.
 
+### 2026-08-17 — the support request is filed. AC1 is now waiting on GitHub, not on us.
+
+Submitted from the owner's account: **ticket #4672555**, open, at
+https://support.github.com/tickets/personal/0 — "Purge pull-request refs and cached commit views
+after a history rewrite (PII)". The ticket carries the measured numbers rather than a description:
+the fetch that still returns the data, 2 commits, 967 blobs against 949, 20 address hits, and the
+blob SHA.
+
+**The range was corrected on the way in.** The draft above said `refs/pull/1/head` through
+`refs/pull/25/head`; the live count at submission was **30**, because PRs #26–#30 were opened by this
+work itself. A support request that names too small a range invites a partial fix, so the number was
+re-measured (`git ls-remote origin 'refs/pull/*/head' | wc -l`) rather than copied from the draft.
+
+**A trap in the form, worth recording for anyone repeating this.** The obvious category for "please
+purge these refs" is **Deletes** — and it is wrong. Selecting it expands the form into repository
+deletion, ending at *"Please confirm your action. Once the repository is purged, it cannot be
+restored. → Delete / Don't Delete"*. That flow requests deletion of the whole repository, not the
+refs. The correct path is **Repository features → Branches**, which asks only for the repo URL.
+
+GitHub's own pre-submission triage independently confirmed the approach before the ticket was
+created: it stated the rewrite had been done correctly, that pushes to `refs/pull/*` fail by design
+and being unable to force-push them is expected, and that the remaining cleanup — dereferencing the
+affected pull requests, server-side GC, removing cached views — is Support's to do. It also
+confirmed this qualifies as sensitive-data removal rather than ordinary historical data.
+
+**AC1 stays unchecked until Support confirms and the check re-runs clean**, which is the same
+standard applied throughout this task — the request being sent is not the same as the data being
+gone:
+
+    git clone https://github.com/ErmisCho/dachapply.git verify && cd verify
+    git fetch origin 'refs/pull/*:refs/pull/*'
+    git log --all -- "dachapply-full-2026-05-22.json"     # must be empty; today it returns 2
+
+Forks and clones taken before the rewrite remain out of reach of all of this. Say so when closing.
+
 <!-- SECTION:NOTES:END -->
