@@ -58,6 +58,8 @@ CODEX_CV_ENABLED=False
 
 Local development defaults it on when `DEBUG=True`; `.env.local.example` also records the explicit owner and `C:\latex` workspace settings. Do not commit CV templates or Codex authentication.
 
+`UserProfile.can_generate_cv` can be granted to any account from Django admin, but generation always uses the site owner's private LaTeX templates and the owner's own photograph, writing into a shared output directory -- there is no per-user template or photo. The admin field's `help_text` says this at the point of granting; do not flip the flag for a second account without the underlying sharing (TASK-99) fixed first.
+
 ## 4. Smoke tests after deployment
 
 Run these checks on the deployed HTTPS origin:
