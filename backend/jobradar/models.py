@@ -288,6 +288,14 @@ class MailboxRun(models.Model):
     # suggestion_count's shape -- a cheap run-level summary on top of the per-message MailboxDraft log.
     draft_written_count=models.PositiveIntegerField(default=0)
     draft_blocked_count=models.PositiveIntegerField(default=0)
+    # True when this run found no prior resume marker and therefore suppressed reply drafting. The
+    # first run against an existing mailbox reads the whole history: on 2026-08-17 that meant 641
+    # messages fetched and 112 drafts written into the owner's real Gmail Drafts folder, replies to
+    # threads months dead. Classification and suggestions are in-app and harmless, but drafting is
+    # the one step that writes outside the app, so a cold start now establishes a baseline instead
+    # of acting on history. Recorded per-run rather than only logged: a run reporting job-related
+    # mail and zero drafts must be able to say why, or it reads as a broken drafting path.
+    drafting_skipped=models.BooleanField(default=False)
     error=models.TextField(blank=True, default='')
     class Meta: ordering=['-started_at']
     def __str__(self): return f'Run {self.started_at}: ' + (f'skipped ({self.skip_reason})' if self.skipped else f'{self.fetched_count} fetched')

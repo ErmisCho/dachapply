@@ -89,6 +89,24 @@ def raw(uid, sender='hr@acme.test', subject='', body='', received_at=None, messa
     return RawMessage(uid=uid, sender=sender, subject=subject, received_at=received_at, body_text=body, message_id=message_id, references=references)
 
 
+@pytest.fixture
+def not_cold_start(db):
+    """Steady state: a mailbox with prior history, so reply drafting is active.
+
+    A first run deliberately writes no drafts (see test_cold_start_records_everything_but_writes_no_drafts),
+    so any test asserting drafting behaviour has to say it is past that point. The baseline row uses
+    uid=0 on purpose: it makes MailboxMessage.objects.exists() true without moving MAX(uid) above
+    zero, so `fetch_new(0)` still returns the uid=1 messages these tests build.
+    """
+    baseline_run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=baseline_run, uid=0, message_id='baseline@example.test', sender='old@acme.test',
+        subject='(pre-existing history)', received_at=None, classification='not_job_related',
+        evaluator='heuristic',
+    )
+    return baseline_run
+
+
 # --- Classification heuristic floor (AC2) --------------------------------------------------------
 
 def test_classify_email_detects_rejection():
@@ -430,6 +448,33 @@ def test_run_check_resumes_from_last_seen_uid(db, owner):
     assert MailboxMessage.objects.count() == 3  # uid 5 not re-logged, only the new uid 6
 
 
+def test_cold_start_records_everything_but_writes_no_drafts(db, owner):
+    """Regression, 2026-08-17: the first live run had no resume marker, so fetch_new(0) returned the
+    whole mailbox and drafting replied to 112 months-dead threads in the owner's real Gmail Drafts
+    folder. Classification and suggestions stay in-app and are harmless over history; drafting is the
+    one step that writes outside the app, so a cold start now only establishes the baseline.
+    """
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    transport = FakeTransport([raw(1, subject='Interview invitation', body='Can you meet on Tuesday?')])
+    run = run_check(transport=transport)
+    assert run.drafting_skipped is True
+    assert transport.appended_drafts == []  # nothing reached the mailbox
+    assert run.draft_written_count == 0 and run.draft_blocked_count == 0
+    assert MailboxMessage.objects.count() == 1  # but the message IS logged, so the marker advances
+
+
+def test_run_after_cold_start_drafts_normally(db, owner):
+    """The suppression is first-run-only, not a permanent off switch -- the run after a cold start
+    must draft, or the fix would have quietly disabled the feature instead of bounding it.
+    """
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    run_check(transport=FakeTransport([raw(1, subject='Interview invitation', body='Can you meet on Tuesday?')]))
+    second = FakeTransport([raw(2, subject='Interview invitation', body='Can you meet on Thursday?')])
+    run = run_check(transport=second, force=True)
+    assert run.drafting_skipped is False
+    assert len(second.appended_drafts) == 1
+
+
 def test_run_check_skips_and_does_not_fetch_when_calendar_busy(db, owner, monkeypatch):
     JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
     monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now: True)
@@ -694,7 +739,7 @@ def test_template_offer_acknowledgment_never_states_a_number(applied_job, owner)
 
 # --- End-to-end via run_check (AC1, AC4, AC5, AC6) --------------------------------------------------
 
-def test_interview_invitation_gets_a_written_scheduling_draft(db, owner, applied_job):
+def test_interview_invitation_gets_a_written_scheduling_draft(not_cold_start, db, owner, applied_job):
     transport = FakeTransport([raw(1, sender='hr@acme.test', subject='Interview invite', body='We would like to invite you to an interview on 03.03.2026 at 14:00.')])
     run = run_check(transport=transport)
     message = MailboxMessage.objects.get(uid=1)
@@ -709,7 +754,7 @@ def test_interview_invitation_gets_a_written_scheduling_draft(db, owner, applied
     assert parsed['To'] == 'hr@acme.test'
 
 
-def test_recruiter_reply_gets_a_written_follow_up_draft(db, owner, applied_job):
+def test_recruiter_reply_gets_a_written_follow_up_draft(not_cold_start, db, owner, applied_job):
     transport = FakeTransport([raw(1, sender='hr@acme.test', body='Thanks for your patience, still reviewing internally.')])
     run_check(transport=transport)
     message = MailboxMessage.objects.get(uid=1)
@@ -746,7 +791,7 @@ def _fake_post_json_offer_classify_and_negotiate(reply_text):
     return _fake
 
 
-def test_offer_draft_blocked_by_salary_floor_is_never_written_to_gmail(db, owner, applied_job, monkeypatch):
+def test_offer_draft_blocked_by_salary_floor_is_never_written_to_gmail(not_cold_start, db, owner, applied_job, monkeypatch):
     profile = user_profile_settings(owner)
     profile.mailbox_salary_floor_eur = 60000
     profile.save(update_fields=['mailbox_salary_floor_eur'])
@@ -763,7 +808,7 @@ def test_offer_draft_blocked_by_salary_floor_is_never_written_to_gmail(db, owner
     assert transport.appended_drafts == []
 
 
-def test_injection_email_cannot_lower_salary_floor(db, owner, applied_job, monkeypatch):
+def test_injection_email_cannot_lower_salary_floor(not_cold_start, db, owner, applied_job, monkeypatch):
     """AC3: even a (mocked) LLM that obeys an injected instruction and drafts a reply stating a
     number below the floor still gets blocked -- check_guardrails runs on the generated text in
     code, never on what the model was told, so the injected email cannot change the verdict.
@@ -796,7 +841,7 @@ def test_sanitize_inbound_text_leaves_ordinary_text_untouched():
     assert sanitize_inbound_text(text) == text
 
 
-def test_mailbox_run_digest_serializes_draft_status(client, owner, applied_job):
+def test_mailbox_run_digest_serializes_draft_status(not_cold_start, client, owner, applied_job):
     transport = FakeTransport([raw(1, sender='hr@acme.test', subject='Interview invite', body='We would like to invite you to an interview on 03.03.2026 at 14:00.')])
     with override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test'):
         run = run_check(transport=transport)
@@ -898,7 +943,7 @@ def test_gmail_api_transport_resumes_from_internal_date_marker(db, owner, monkey
         assert MailboxMessage.objects.filter(gmail_id='msg-3').exists()
 
 
-def test_gmail_api_transport_creates_draft_never_calls_send(db, owner, applied_job, monkeypatch):
+def test_gmail_api_transport_creates_draft_never_calls_send(not_cold_start, db, owner, applied_job, monkeypatch):
     """TASK-110 AC1: only users.drafts.create is ever called, threaded via threadId -- never
     users.messages.send, the app's absolute no-send guarantee holding for the OAuth path too.
     """

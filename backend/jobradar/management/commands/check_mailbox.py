@@ -42,3 +42,11 @@ class Command(BaseCommand):
                 f'{run.uncertain_count} uncertain, {run.suggestion_count} suggestion(s), '
                 f'{run.draft_written_count} draft(s) ready, {run.draft_blocked_count} draft(s) blocked.'
             ))
+            if run.drafting_skipped:
+                # Say it out loud: without this line a first run reports job-related mail and zero
+                # drafts, which reads as a broken drafting path rather than the deliberate baseline.
+                self.stdout.write(self.style.WARNING(
+                    'This was a first run with no prior history, so reply drafting was skipped -- '
+                    'otherwise it would have drafted replies to your entire mailbox. Messages and '
+                    'suggestions above are recorded as normal; drafting starts from the next run.'
+                ))
