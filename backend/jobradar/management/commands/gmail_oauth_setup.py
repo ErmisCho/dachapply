@@ -15,6 +15,19 @@ class Command(BaseCommand):
         'only, `manage.py check_mailbox` is what actually reads mail afterward.'
     )
 
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--code',
+            default='',
+            help=(
+                'The authorization code from the consent redirect. Supplying it skips the interactive '
+                'prompt, so the handshake works in a non-interactive shell (agent harnesses, CI, '
+                'anything without a TTY -- input() raises EOFError there). Run once with no arguments '
+                'to print the URL, consent in a browser, then re-run with --code=<value>. The code is '
+                'single-use and expires within minutes, so it is not a durable secret.'
+            ),
+        )
+
     def handle(self, *args, **opts):
         client_id = settings.GMAIL_OAUTH_CLIENT_ID
         client_secret = settings.GMAIL_OAUTH_CLIENT_SECRET
@@ -25,14 +38,26 @@ class Command(BaseCommand):
             ))
             return
 
-        self.stdout.write('Open this URL in a browser, sign in with the mailbox you want checked, and consent:\n')
-        self.stdout.write(oauth_authorization_url(client_id))
-        self.stdout.write(
-            '\nAfter consenting you will land on an unreachable localhost page (e.g. "This site can\'t '
-            'be reached") -- that is expected, nothing is meant to be listening there. Copy the value '
-            'of the `code=` parameter out of that page\'s own address bar.\n'
-        )
-        code = input('Paste the authorization code here: ').strip()
+        code = (opts.get('code') or '').strip()
+        if not code:
+            self.stdout.write('Open this URL in a browser, sign in with the mailbox you want checked, and consent:\n')
+            self.stdout.write(oauth_authorization_url(client_id))
+            self.stdout.write(
+                '\nAfter consenting you will land on an unreachable localhost page (e.g. "This site can\'t '
+                'be reached") -- that is expected, nothing is meant to be listening there. Copy the value '
+                'of the `code=` parameter out of that page\'s own address bar.\n'
+            )
+            try:
+                code = input('Paste the authorization code here: ').strip()
+            except EOFError:
+                # No TTY: an agent harness, CI, or any piped invocation. Falling back to a clear
+                # instruction beats an EOFError traceback that looks like a bug in the handshake.
+                self.stdout.write(self.style.WARNING(
+                    '\nNo interactive input available in this shell. Consent using the URL above, then '
+                    're-run this command with the code as an argument:\n\n'
+                    '    manage.py gmail_oauth_setup --code=<the code= value>\n'
+                ))
+                return
         if not code:
             self.stdout.write(self.style.ERROR('No code entered; aborting.'))
             return
