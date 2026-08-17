@@ -35,3 +35,16 @@ DATABASES = {
 }
 
 CODEX_CV_WORKSPACE = tempfile.mkdtemp(prefix='dachapply-test-workspace-')
+
+# The mailbox feature is "configured" when EITHER the IMAP pair or the OAuth pair is set, and both
+# pairs are read from the developer's own .env. Left alone, a developer who has actually set up the
+# Gmail check gets different test results from one who has not -- and the difference shows up as
+# tests failing locally while passing in CI, which ships no .env. That is the same shape as the
+# untracked-personal-file dependency CI caught once before, so it is neutralised here rather than
+# left to each test to remember. Any test that wants the feature configured sets these itself via
+# the `settings` fixture.
+GMAIL_IMAP_USER = ''
+GMAIL_IMAP_APP_PASSWORD = ''
+GMAIL_OAUTH_CLIENT_ID = ''
+GMAIL_OAUTH_CLIENT_SECRET = ''
+GMAIL_CALENDAR_ICS_URL = ''

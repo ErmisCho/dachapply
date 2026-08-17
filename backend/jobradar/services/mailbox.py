@@ -1087,6 +1087,17 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             last_marker = MailboxMessage.objects.aggregate(Max('internal_date_ms'))['internal_date_ms__max'] or 0
         else:
             last_marker = MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0
+        # A zero marker means nothing has ever been recorded, so fetch_new() returns the entire
+        # mailbox rather than "new mail since last run". Classifying and suggesting over that history
+        # is fine -- both stay inside the app and are reviewable. Drafting is not: it writes into the
+        # owner's real Gmail Drafts folder, and on the first live run that produced 112 replies to
+        # long-dead threads. A cold start establishes the baseline; drafting begins next run.
+        # Asked as "have we ever recorded a message?" rather than "is the marker zero?" -- the two
+        # agree in production but the first is the actual question, and a marker can legitimately be
+        # zero while history exists (an IMAP mailbox whose first UID is 0, a Gmail row with no
+        # internalDate). Getting this wrong suppresses drafting forever instead of once.
+        is_cold_start = not MailboxMessage.objects.exists()
+        run.drafting_skipped = is_cold_start
         raw_messages = active_transport.fetch_new(last_marker)
         job_domains = owned_job_domains(owner)
 
@@ -1121,12 +1132,13 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
                 run.job_related_count += 1
             if matched is not None:
                 run.suggestion_count += build_suggestions(message, matched, classification, interview_at)
-                draft = maybe_draft_reply(message, raw, matched, classification, interview_at, owner, profile, active_transport)
-                if draft is not None:
-                    if draft.status == 'written':
-                        run.draft_written_count += 1
-                    else:
-                        run.draft_blocked_count += 1
+                if not is_cold_start:
+                    draft = maybe_draft_reply(message, raw, matched, classification, interview_at, owner, profile, active_transport)
+                    if draft is not None:
+                        if draft.status == 'written':
+                            run.draft_written_count += 1
+                        else:
+                            run.draft_blocked_count += 1
 
         run.finished_at = timezone.now()
         run.save()

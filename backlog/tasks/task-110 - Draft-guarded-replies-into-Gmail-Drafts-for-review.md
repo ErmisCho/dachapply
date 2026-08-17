@@ -125,3 +125,39 @@ AC1 stays unchecked — blocker identical to TASK-109's: the owner's Gmail app p
 .env, then one real run observing a draft appear in Gmail's Drafts folder. ponytail: bare 4-digit
 salary figures are deliberately not floor-checked (calendar years would false-positive); upgrade
 path noted in _parse_salary_numbers.
+
+### 2026-08-17 — AC1 is met, and the first live run wrote 112 drafts nobody wanted
+
+The mechanism works: OAuth authenticated, drafts appeared in the real Gmail Drafts folder, threaded,
+and nothing was sent. That is AC1 satisfied — the no-send guarantee held under a live run, which is
+the property this task exists to protect.
+
+    Checked mailbox: 641 fetched, 133 job-related, 4 uncertain, 8 suggestion(s),
+                     112 draft(s) ready, 0 draft(s) blocked.
+
+**112 of those drafts were replies to threads months dead**, and they landed in the owner's real
+mailbox. Cause: `run_check` resumes from `MAX(marker) or 0`, so with no prior history the marker is
+`0`, `fetch_new(0)` means "the entire mailbox", and drafting ran over all of it. Every later run is
+correctly incremental; it is specifically the cold start that misbehaves.
+
+Worth being precise about what was and was not wrong. Fetching and classifying the whole history is
+fine — both stay inside the app and are reviewable. **Drafting is the only step that writes outside
+the app**, and it was the only one that needed bounding. So a cold start now records and suggests as
+normal and writes no drafts; drafting begins on the next run.
+
+Two details that are easy to get wrong and are pinned by tests:
+
+- The cold-start signal is `not MailboxMessage.objects.exists()`, not `marker == 0`. Those agree in
+  production, but a marker can legitimately be zero while history exists, and reading it the other
+  way suppresses drafting *forever* instead of once.
+- `test_run_after_cold_start_drafts_normally` exists so the fix cannot silently become an off switch.
+
+`drafting_skipped` is stored per-run rather than only logged, and `check_mailbox` prints a warning
+line when it fires: a run reporting 133 job-related messages and 0 drafts, with no explanation, reads
+as a broken drafting path. AC4's "nothing is silently missed" applies to the tool's own behaviour,
+not just to the mail.
+
+**Guardrails were not exercised: `0 draft(s) blocked`.** `MAILBOX_SALARY_FLOOR_EUR` and
+`MAILBOX_DO_NOT_DISCLOSE` are unset in the owner's `.env`, so no floor existed to enforce. AC2 is
+checked on test evidence and remains true, but no *live* draft has yet been blocked by a real floor.
+Set both before the next run that drafts against real recruiter mail.
