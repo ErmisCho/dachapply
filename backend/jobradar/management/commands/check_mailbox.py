@@ -5,12 +5,14 @@ from jobradar.services.mailbox import run_check, seed_fake_run
 
 class Command(BaseCommand):
     help = (
-        'TASK-109/TASK-110: check the owner Gmail mailbox (IMAP app password + calendar-aware quiet '
-        'hours, both from the local .env) for new job-search email, produce reviewable pipeline '
-        'suggestions, and draft guarded replies into Gmail Drafts for reply-wanting messages. '
-        'Intended to be invoked by Windows Task Scheduler (or a developer) roughly hourly; the '
-        'command itself enforces the configured cadence, so a more frequent scheduler trigger is '
-        'harmless. The app only ever appends drafts -- sending is exclusively the owner in Gmail.'
+        'TASK-109/TASK-110: check the owner Gmail mailbox (IMAP app password, or Gmail-API OAuth via '
+        '`manage.py gmail_oauth_setup` for an owner who has declined 2-Step Verification -- plus '
+        'calendar-aware quiet hours, all from the local .env) for new job-search email, produce '
+        'reviewable pipeline suggestions, and draft guarded replies into Gmail Drafts for '
+        'reply-wanting messages. Intended to be invoked by Windows Task Scheduler (or a developer) '
+        'roughly hourly; the command itself enforces the configured cadence, so a more frequent '
+        'scheduler trigger is harmless. The app only ever appends drafts -- sending is exclusively '
+        'the owner in Gmail.'
     )
 
     def add_arguments(self, parser):
@@ -29,7 +31,7 @@ class Command(BaseCommand):
 
         run = run_check(force=opts['force'])
         if run is None:
-            self.stdout.write('Not due yet (or GMAIL_IMAP_USER/APP_PASSWORD/owner account are not configured).')
+            self.stdout.write('Not due yet (or neither GMAIL_IMAP_USER/APP_PASSWORD nor GMAIL_OAUTH_CLIENT_ID/SECRET, nor the owner account, are configured).')
         elif run.skipped:
             self.stdout.write(self.style.WARNING(f'Skipped: {run.skip_reason}.'))
         elif run.error:

@@ -299,11 +299,18 @@ class MailboxMessage(models.Model):
     model. Only sender/subject/date/classification are stored, never the body (task's minimal-
     metadata requirement); the body is read transiently off the wire to classify and then dropped.
     `uid` is the mailbox's own IMAP UID and doubles as the last-seen marker: check_mailbox resumes
-    from MAX(uid) instead of keeping a separate state row.
+    from MAX(uid) instead of keeping a separate state row. TASK-109 AC1's Gmail-API OAuth transport has
+    no IMAP UID (its message ids are hex strings) -- for a Gmail-API-sourced row, `uid` is instead a
+    locally-assigned sequence number (see services.mailbox.run_check) and `internal_date_ms` (Gmail's
+    own ascending ms-epoch received time) is the real resume marker GmailApiTransport.fetch_new()
+    consumes; `gmail_id` is Gmail's own opaque message id, kept as a dedup guard against the same
+    message coming back on two consecutive runs. Both are blank/null for every IMAP-sourced row.
     """
     CLASSIFICATIONS=[('rejection','Rejection'),('interview_invitation','Interview invitation'),('offer','Offer'),('recruiter_reply','Recruiter reply'),('uncertain','Uncertain'),('not_job_related','Not job related')]
     run=models.ForeignKey(MailboxRun, related_name='messages', on_delete=models.CASCADE)
     uid=models.PositiveIntegerField(unique=True)
+    gmail_id=models.CharField(max_length=32, blank=True, default='')
+    internal_date_ms=models.PositiveBigIntegerField(null=True, blank=True)
     message_id=models.CharField(max_length=250, blank=True, default='')
     sender=models.CharField(max_length=254, blank=True, default='')
     subject=models.CharField(max_length=500, blank=True, default='')

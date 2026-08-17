@@ -151,6 +151,22 @@ GMAIL_DRAFTS_FOLDER = os.getenv('GMAIL_DRAFTS_FOLDER', '[Gmail]/Drafts')
 MAILBOX_SALARY_FLOOR_EUR = os.getenv('MAILBOX_SALARY_FLOOR_EUR', '').strip()
 MAILBOX_DO_NOT_DISCLOSE = env_list('MAILBOX_DO_NOT_DISCLOSE', '')
 
+# TASK-109 AC1: Gmail-API OAuth path -- the remaining route when the owner has declined 2-Step
+# Verification (Google only issues app passwords with 2SV on, and retired "less secure app access"
+# entirely, so GMAIL_IMAP_APP_PASSWORD above is then simply unusable). Same "absent unless
+# configured" idiom as GMAIL_IMAP_USER/APP_PASSWORD: unset client id/secret means run_check() treats
+# OAuth as not configured either (see services/mailbox.py run_check()'s gate). Set up once with
+# `manage.py gmail_oauth_setup` (see docs/email-setup.md) -- that command writes the refresh token to
+# GMAIL_OAUTH_TOKEN_PATH, never here; the client id/secret are the only OAuth values that belong in
+# .env, same treatment as every other credential in this block.
+GMAIL_OAUTH_CLIENT_ID = os.getenv('GMAIL_OAUTH_CLIENT_ID', '')
+GMAIL_OAUTH_CLIENT_SECRET = os.getenv('GMAIL_OAUTH_CLIENT_SECRET', '')
+# Local file the refresh token is written to and read from. Defaults to a `dachapply-*.json` name at
+# the repo root so it rides the existing gitignore rule below (see .gitignore) instead of needing a
+# new one -- same "local-only by construction" property as GMAIL_IMAP_APP_PASSWORD, just as a file
+# instead of an env var (a long-lived refresh token belongs in neither `.env` nor git).
+GMAIL_OAUTH_TOKEN_PATH = os.getenv('GMAIL_OAUTH_TOKEN_PATH', str(BASE_DIR.parent / 'dachapply-gmail-oauth-token.json'))
+
 SECRET_KEY = os.getenv('SECRET_KEY')
 if DEBUG:
     SECRET_KEY = SECRET_KEY or 'dev-only-change-me'

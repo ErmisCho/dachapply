@@ -4,10 +4,12 @@ Every test here is fixture-based -- FakeTransport for IMAP, a canned ICS string 
 and a monkeypatched _post_json/_post_json_via_windows_curl for the optional local-LLM path. No test
 opens a socket; ImapTransport (the only class that does) is never imported by name.
 """
+import base64
 import email
 import email.policy
 import json
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 
 import pytest
 from django.contrib.auth.models import User
@@ -79,7 +81,7 @@ class FakeTransport:
         self.calls.append(last_uid)
         return [m for m in self.messages if m.uid > last_uid]
 
-    def append_draft(self, mime_message):
+    def append_draft(self, mime_message, thread_id=None):
         self.appended_drafts.append(mime_message)
 
 
@@ -817,3 +819,151 @@ def test_seed_fake_run_includes_a_written_and_a_blocked_draft(db, owner):
     blocked = MailboxDraft.objects.get(status='blocked', job=job)
     assert blocked.block_reason
     assert '40000' in blocked.body_text
+
+
+# ===================================================================================================
+# TASK-109 AC1: Gmail-API OAuth transport -- no IMAP UID exists, so resume is keyed off Gmail's own
+# internalDate (ms epoch) instead. Every test here fakes mailbox._gmail_api_request/
+# _oauth_refresh_access_token/_read_refresh_token (same module-level monkeypatch idiom already used
+# for _fetch_ics/_post_json above); GmailApiTransport itself is real, never opens a socket.
+# ===================================================================================================
+
+def _gmail_raw_b64(sender, subject, body, message_id='<m@example.test>'):
+    msg = EmailMessage()
+    msg['From'] = sender
+    msg['Subject'] = subject
+    msg['Message-ID'] = message_id
+    msg.set_content(body)
+    return base64.urlsafe_b64encode(msg.as_bytes()).decode('ascii').rstrip('=')
+
+
+class _FakeGmailHttp:
+    """Stands in for mailbox._gmail_api_request. Deliberately keeps returning every id ever added to
+    `message_ids` on every list call (never narrows by `q=after:...`) -- exactly the imprecise-search
+    overlap GmailApiTransport.fetch_new()'s ms-exact internalDate filter (and run_check()'s gmail_id
+    dedup guard) must handle correctly on its own, not by trusting the query.
+    """
+
+    def __init__(self, message_ids, details):
+        self.message_ids = message_ids
+        self.details = details  # {gmail_id: {'internalDate': ..., 'threadId': ..., 'raw': ...}}
+        self.calls = []  # (method, url) in call order
+        self.draft_payloads = []  # decoded JSON body of every POST to .../drafts
+
+    def __call__(self, method, url, access_token, data=None):
+        self.calls.append((method, url))
+        assert access_token == 'fake-access-token'
+        if url.endswith('/drafts') and method == 'POST':
+            self.draft_payloads.append(json.loads(data.decode('utf-8')))
+            return {'id': 'draft-1'}
+        if '/messages?' in url and method == 'GET':
+            return {'messages': [{'id': mid} for mid in self.message_ids]}
+        if '/messages/' in url and 'format=raw' in url and method == 'GET':
+            msg_id = url.split('/messages/')[1].split('?')[0]
+            return self.details[msg_id]
+        raise AssertionError(f'Unexpected fake Gmail API call: {method} {url}')
+
+
+def _patch_gmail_oauth(monkeypatch, fake_http, access_token='fake-access-token'):
+    monkeypatch.setattr(mailbox, '_read_refresh_token', lambda token_path: 'fake-refresh-token')
+    monkeypatch.setattr(mailbox, '_oauth_refresh_access_token', lambda cid, secret, refresh: access_token)
+    monkeypatch.setattr(mailbox, '_gmail_api_request', fake_http)
+
+
+def test_gmail_api_transport_resumes_from_internal_date_marker(db, owner, monkeypatch):
+    """AC1: a missed/skipped run must be harmless -- the second run here must not re-log msg-1/msg-2
+    (already seen) and must not skip msg-3 (new), even though the fake list endpoint deliberately
+    re-returns msg-1/msg-2 too on every call (simulating Gmail's `after:` overlap margin). The
+    ms-precise internalDate filter inside fetch_new(), not the search query, is what decides resume.
+    """
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    details = {
+        'msg-1': {'internalDate': '1000000', 'threadId': 'thread-1', 'raw': _gmail_raw_b64('hr@acme.test', 'First', 'body one')},
+        'msg-2': {'internalDate': '2000000', 'threadId': 'thread-2', 'raw': _gmail_raw_b64('hr@acme.test', 'Second', 'body two')},
+    }
+    fake_http = _FakeGmailHttp(['msg-1', 'msg-2'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+        first = run_check(transport=transport)
+        assert first is not None and not first.error
+        assert MailboxMessage.objects.count() == 2
+        assert set(MailboxMessage.objects.values_list('gmail_id', flat=True)) == {'msg-1', 'msg-2'}
+
+        details['msg-3'] = {'internalDate': '3000000', 'threadId': 'thread-3', 'raw': _gmail_raw_b64('hr@acme.test', 'Third', 'body three')}
+        fake_http.message_ids.append('msg-3')
+        second = run_check(transport=transport, force=True)
+        assert second is not None and not second.error
+        assert MailboxMessage.objects.count() == 3  # msg-1/msg-2 not re-logged, only msg-3 is new
+        assert MailboxMessage.objects.filter(gmail_id='msg-3').exists()
+
+
+def test_gmail_api_transport_creates_draft_never_calls_send(db, owner, applied_job, monkeypatch):
+    """TASK-110 AC1: only users.drafts.create is ever called, threaded via threadId -- never
+    users.messages.send, the app's absolute no-send guarantee holding for the OAuth path too.
+    """
+    details = {
+        'msg-1': {
+            'internalDate': '1000000', 'threadId': 'thread-abc',
+            'raw': _gmail_raw_b64('hr@acme.test', 'Interview invite', 'We would like to invite you to an interview on 03.03.2026 at 14:00.'),
+        },
+    }
+    fake_http = _FakeGmailHttp(['msg-1'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+        run = run_check(transport=transport)
+    assert run is not None and not run.error
+    message = MailboxMessage.objects.get(gmail_id='msg-1')
+    assert message.classification == 'interview_invitation'
+    draft = MailboxDraft.objects.get(message=message)
+    assert draft.status == 'written'
+    assert run.draft_written_count == 1
+    assert len(fake_http.draft_payloads) == 1
+    assert fake_http.draft_payloads[0]['message']['threadId'] == 'thread-abc'
+    assert not any(url.endswith('/send') for _method, url in fake_http.calls)
+
+
+def test_gmail_api_transport_refresh_failure_surfaces_as_run_error(db, owner, monkeypatch):
+    """AC7: a refresh-token failure (expired/revoked -- the normal shape of OAuth "testing" mode after
+    ~7 days) must never fail silently -- it lands on MailboxRun.error, the same mechanism every other
+    check_mailbox failure already goes through, not a new/separate surfacing path.
+    """
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    monkeypatch.setattr(mailbox, '_read_refresh_token', lambda token_path: 'stale-refresh-token')
+
+    def _boom(client_id, client_secret, refresh_token):
+        raise RuntimeError('Gmail OAuth token request failed with HTTP 400: invalid_grant')
+    monkeypatch.setattr(mailbox, '_oauth_refresh_access_token', _boom)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+        run = run_check(transport=transport)
+    assert run is not None
+    assert 'invalid_grant' in run.error
+    assert run.finished_at is not None
+    assert MailboxMessage.objects.count() == 0
+
+
+def test_run_check_returns_none_when_neither_imap_nor_oauth_configured(settings, db, owner):
+    settings.GMAIL_IMAP_USER = ''
+    settings.GMAIL_OAUTH_CLIENT_ID = ''
+    settings.GMAIL_OAUTH_CLIENT_SECRET = ''
+    assert run_check(force=True) is None
+    assert MailboxRun.objects.count() == 0
+
+
+def test_run_check_uses_oauth_transport_when_only_oauth_is_configured(db, owner, monkeypatch):
+    """AC1/_default_transport(): with IMAP unset and OAuth configured, run_check() must build a
+    GmailApiTransport itself (not silently no-op) when no transport is injected.
+    """
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    details = {'msg-1': {'internalDate': '1000000', 'threadId': 't1', 'raw': _gmail_raw_b64('news@random.test', 'Newsletter', 'buy stuff')}}
+    fake_http = _FakeGmailHttp(['msg-1'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(
+        GMAIL_IMAP_USER='', GMAIL_IMAP_APP_PASSWORD='', GMAIL_OAUTH_CLIENT_ID='cid',
+        GMAIL_OAUTH_CLIENT_SECRET='secret', GMAIL_OAUTH_TOKEN_PATH='unused-token-path',
+    ):
+        run = run_check(force=True)
+    assert run is not None and not run.error
+    assert MailboxMessage.objects.filter(gmail_id='msg-1').exists()
