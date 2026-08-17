@@ -37,7 +37,7 @@ boundary is a hard requirement, not a preference.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A local job (management command runnable by the existing scheduler pattern or a Windows scheduled task) fetches new mail since its last run via IMAP app password or Gmail-API OAuth in personal testing mode; credentials live only in the local .env, which stays gitignored. Cadence is hourly while the machine is on (owner decision 2026-08-16); a missed or skipped run is harmless because the next run catches up from the last-seen marker
+- [x] #1 A local job (management command runnable by the existing scheduler pattern or a Windows scheduled task) fetches new mail since its last run via IMAP app password or Gmail-API OAuth in personal testing mode; credentials live only in the local .env, which stays gitignored. Cadence is hourly while the machine is on (owner decision 2026-08-16); a missed or skipped run is harmless because the next run catches up from the last-seen marker
 - [ ] #7 Calendar-aware quiet hours (owner decision 2026-08-16): before running, the job checks the owner's Google Calendar via its private ICS URL (stored only in the local .env); if the current time falls inside a busy event, the run is skipped and the next idle-hour run catches up — no OAuth or Calendar API, and a fetch failure fails open (the run proceeds) so a broken calendar URL cannot silently stop mail checking
 - [x] #8 Cadence and calendar-quiet are owner-changeable settings in the app (profile/settings page), defaulting to hourly + calendar-aware; the local job reads the stored setting on each tick, so changing it on the website takes effect without touching the machine
 - [x] #2 Classification has a heuristic floor that works with no LLM configured; a local LLM is an optional env-gated upgrade, matching the CV-generation pattern
@@ -55,6 +55,45 @@ imaplib + email parsing); the Gmail API is the upgrade path if labels/threads ar
 Owner involvement is one-time: creating the app password (see wave-plan owner checklist). Uncertain
 classification goes in the digest rather than being dropped — a missed recruiter email costs an
 interview; a false positive costs a glance.
+
+### 2026-08-17 — AC1 CLOSED against a live mailbox, via OAuth rather than an app password
+
+The owner declined 2-Step Verification. Google only issues app passwords when 2SV is on and retired
+"less secure app access", so the IMAP route was permanently unavailable to them — not deferred,
+closed. AC1 already allowed the alternative ("or Gmail-API OAuth in personal testing mode"), so the
+Gmail-API transport was built to that clause rather than the AC being reworded.
+
+**Measured on the real mailbox, not on fixtures:**
+
+    run 1 (cold):        641 fetched, 133 job-related, 4 uncertain, 8 suggestion(s)
+    run 2 (incremental):   0 fetched
+
+Run 2 is the AC's actual requirement — "a missed or skipped run is harmless because the next run
+catches up from the last-seen marker". Zero re-reads and zero duplicates against a 641-message
+history is that marker working end to end. Credentials live in the gitignored `.env`
+(`.gitignore:6`) and the refresh token in `dachapply-gmail-oauth-token.json` (`.gitignore:27`);
+neither is committable. Cadence default is 60 minutes.
+
+Scope granted is `https://www.googleapis.com/auth/gmail.modify`, confirmed in the live consent URL.
+Bolting XOAUTH2 onto the existing IMAP transport would have been a far smaller diff, but IMAP OAuth
+requires `https://mail.google.com/` — full mailbox access. Bigger diff, smaller grant.
+
+**Two defects that only running it could have found**, both fixed before AC1 was checked:
+
+- `gmail_oauth_setup` was refused by the local prod-DB guard (`settings.py:216`) because it is not a
+  "serving command", and so could not run at all in the owner's configuration. It opens no database
+  connection; the guard had nothing to protect. Exempted via a second frozenset rather than the
+  existing one, because "deliberately uses production" and "never touches a database" are different
+  claims and merging them would hand the wrong exemption to the next command added.
+- The same command then died on `EOFError`: `input()` has no TTY in an agent harness or CI. It now
+  takes `--code` and degrades to a printed instruction instead of a traceback.
+
+**AC7 stays unchecked.** `GMAIL_CALENDAR_ICS_URL` is unset, so the calendar path has never executed
+against a real calendar. The fail-open behaviour is proven by test (a raised `TimeoutError` and an
+unparseable body both let the run proceed) but not by observation. Unblock: paste the private ICS
+address from Google Calendar → Settings → *Integrate calendar* → *Secret address in iCal format*
+into `.env` as `GMAIL_CALENDAR_ICS_URL`, then run `check_mailbox` once during a calendar event and
+confirm the run records `skip_reason=quiet_hours`.
 
 ### 2026-08-17 verification (code-implementer, credential-vs-code audit for AC1/AC7)
 
