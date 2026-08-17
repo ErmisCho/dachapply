@@ -295,6 +295,8 @@ clone rather than depending on any artifact from this session, and the replaceme
     git clone --mirror https://github.com/ErmisCho/dachapply.git repo.git
     cd repo.git
 
+    BEFORE=$(git rev-parse main^{tree})          # capture BEFORE, do not hardcode a hash
+
     git cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype)' \
       | awk '$2=="blob"{print $1}' > ../blobs.txt
     git cat-file --batch < ../blobs.txt \
@@ -306,10 +308,19 @@ clone rather than depending on any artifact from this session, and the replaceme
                     --replace-text ../replacements.txt --force
 
     git cat-file -e 59fcfc77187f88491fd3b1c11a6d4d18453ef855 && echo "STILL PRESENT" || echo "purged"
-    git rev-parse main^{tree}          # must equal 92935554b51974f108709900d38b2e7ed61973d9
+    [ "$BEFORE" = "$(git rev-parse main^{tree})" ] \
+      && echo "tip content unchanged: OK" || echo "*** TIP CONTENT CHANGED -- STOP, DO NOT PUSH ***"
 
     git remote add origin https://github.com/ErmisCho/dachapply.git
     git push --force origin 'refs/heads/*:refs/heads/*'
+
+The tree check is captured from the clone rather than compared against a written-down hash, and that
+is not fussiness: the hash recorded when this note was first written was invalidated by the very
+commit that recorded it. A verification step that has to be maintained by hand is one that silently
+goes stale and then fails for the wrong reason. `$BEFORE` is always right.
+
+If that check ever prints the failure line, **do not push**: it means `--replace-text` matched a
+string that still exists at the tip, so the rewrite would edit live files as well as history.
 
 Push `refs/heads/*` explicitly rather than `--mirror`: a mirror push also tries to update and delete
 `refs/pull/*`, which GitHub rejects, turning a clean push into a confusing partial failure.
