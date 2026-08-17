@@ -28,7 +28,7 @@ For an app holding a user's entire job search, an unscheduled backup is a runboo
 - [x] #1 A scheduled job (e.g. GitHub Actions cron using the DATABASE_URL secret) runs pg_dump against production on a fixed cadence and stores the dump in a private location with a retention policy — never in the public repo (see TASK-69)
 - [x] #2 A restore drill from a produced dump into a scratch database has been performed, with the exact commands recorded in docs/backup-restore.md
 - [ ] #3 A failed backup run is visible (workflow failure notification), not silent
-- [ ] #4 Neon's own point-in-time retention is verified enabled and its window documented
+- [x] #4 Neon's own point-in-time retention is verified enabled and its window documented
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -267,5 +267,33 @@ The nightly cron (03:17 UTC) now has everything it needs. **AC2's caveat still s
 executed against a scratch database, not this blob. Re-running it against a real dump means putting a
 full production export on a local disk, which is the owner's call to make deliberately rather than
 something to do in passing — the commands are in `docs/backup-restore.md`.
+
+### AC4 CLOSED 2026-08-17 — the window is 6 hours, and it changes which layer is primary
+
+The owner read it from Neon Console → project → Settings → Storage → History retention: **6 hours**.
+Recorded in `docs/backup-restore.md`, both in the two-layer table and in its own section. Deliberately
+not guessed earlier, and the reason that mattered is now visible: the number is small enough to
+invert the design.
+
+The assumption baked into this task was "Neon for recent mistakes, off-site dumps for disasters".
+At a 6-hour window that is wrong. **Six hours is shorter than a night's sleep**, so a bad migration at
+23:00 noticed at 08:00 is already outside it. The real split:
+
+    noticed within 6 h   -> Neon branch from a timestamp   -> near-zero loss
+    noticed after 6 h    -> last nightly dump (03:17 UTC)  -> up to 24 h of loss
+
+So the nightly dump is not the exotic-failure backstop this task treated it as — it is the primary
+recovery path for anything not caught inside one working session. That reframing is the actual
+deliverable of AC4; the number on its own would have been trivia.
+
+Two mitigations written into the doc rather than left implied: run migrations in the morning (the
+window is only worth anything while someone is awake inside it), and create a named Neon branch
+before risky work, because a branch does not expire with the retention window and so converts 6 hours
+into an indefinite window for the one moment you cared about.
+
+**AC3 is the last one open** and is not a code question: it asks whether a failed run actually reaches
+the owner. Run **31959476142** is a genuine failure of this workflow on `main` — search the inbox for
+`from:notifications@github.com dachapply` around 2026-08-16 and record yes or no here. A "no" proves
+AC3 *not* met and points at https://github.com/settings/notifications → Actions → email on failure.
 
 <!-- SECTION:NOTES:END -->

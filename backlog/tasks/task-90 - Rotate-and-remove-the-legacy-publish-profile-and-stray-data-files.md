@@ -22,7 +22,7 @@ The root also collects untracked personal-data files: `db.sqlite3`, `azure-sqlit
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The old App Service publish credential is rotated, or the App Service itself is retired
+- [x] #1 The old App Service publish credential is rotated, or the App Service itself is retired
 - [ ] #2 dachapply.PublishSettings is deleted from disk
 - [ ] #3 The root-level personal exports and sqlite files are moved outside the synced repo folder or deleted — owner's choice, recorded in the closing notes
 <!-- AC:END -->
@@ -70,5 +70,57 @@ there.
 Retiring the old App Service (or rotating its publish profile in the Azure portal) is what actually
 closes AC1; the secret deletion just removes the copy that CI could have used. AC2 and AC3 are files
 on the owner's disk that no agent created.
+
+### AC1 CLOSED 2026-08-17 — the App Service is deleted, so both credential copies are inert
+
+On the owner's explicit instruction, and only after checking that deleting it could not take
+production with it. The checks, because "it returns 503 so it must be dead" is a guess, not a
+verification:
+
+    App Service dachapply    hostNames: [dachapply-dhfugxhsabavcnet.westeurope-01.azurewebsites.net]
+                             custom domains: none  <- nothing else could be pointing at it
+    Container App dachapply  fqdn: dachapply.livelysea-3461ad21.westeurope.azurecontainerapps.io
+    uptime-monitor.yml:18    DEFAULT_APP_URL: https://dachapply.livelysea-...azurecontainerapps.io
+
+The probed production URL is the Container App's, and the App Service carried no custom domain, so
+no DNS name in use could have resolved to it. Then:
+
+    az webapp delete --name dachapply --resource-group rg-dachapply            -> 0
+    az appservice plan delete --name asp-dachapply-f1 -g rg-dachapply --yes    -> 0
+
+    rg-dachapply now contains: dachapply-env, dachapply, dachapplybackups
+    (Container Apps environment, the Container App, the backup storage account — nothing else)
+
+Verified afterwards rather than assumed, since the whole risk of this action was collateral damage:
+
+    https://dachapply.livelysea-...azurecontainerapps.io/api/health/   200 {"status":"ok","database":"ok"}
+    https://dachapply-dhfugxhsabavcnet.westeurope-01.azurewebsites.net/  HTTP 000 (no listener)
+
+**What this closes, precisely.** AC1 offered rotation *or* retirement; retirement is the stronger of
+the two because it invalidates every copy of the credential at once rather than one at a time. The
+MSDeploy password in `dachapply.PublishSettings` and the deleted `AZURE_WEBAPP_PUBLISH_PROFILE`
+secret now authenticate against an endpoint that does not exist. It also stops an F1 plan and one
+Running site from sitting in the subscription looking like production to anyone who finds them.
+
+**This downgrades AC2/AC3 from security to hygiene, and they are still the owner's to do.** These
+files were not created by an agent, so PSA-003 says an agent does not delete them. Still on disk:
+
+    dachapply.PublishSettings            2,184 B   credential, now inert
+    db.sqlite3                         577,536 B   local data
+    azure-sqlite-data.json             412,215 B   local data
+    dachapply-full-2026-05-22.json      52,452 B   account export (the one also purged from git)
+    dachapply-full-2026-05-22 (1).json  52,452 B
+    dachapply-full-2026-05-22 (2).json  54,912 B
+    dachapply-full-2026-05-22 (3).json  75,912 B
+                                          1.2 MB total
+
+All seven are untracked and gitignored. The four exports are the same personal data TASK-69 removed
+from git history, sitting in a directory named `Backup` that may sync elsewhere — deleting them from
+git while leaving four copies in a synced folder is half a fix. One command, from the repo root:
+
+    rm dachapply.PublishSettings db.sqlite3 azure-sqlite-data.json dachapply-full-2026-05-22*.json
+
+Keep `db.sqlite3` if a local dev database is still wanted; it is the only one of the seven with a
+plausible reason to exist.
 
 <!-- SECTION:NOTES:END -->

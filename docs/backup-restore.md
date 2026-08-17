@@ -8,12 +8,16 @@ Two independent layers, because they fail differently:
 
 | Layer | Covers | Window | Status |
 | --- | --- | --- | --- |
-| Neon history retention (point-in-time) | "the migration ate the data 20 minutes ago" | see [Neon point-in-time retention](#neon-point-in-time-retention) | needs owner verification |
-| Nightly `pg_dump` to Azure Blob | "the Neon project itself is gone or the account is locked out" | 30 days of nightly dumps | needs owner setup, see below |
+| Neon history retention (point-in-time) | "the migration ate the data 20 minutes ago" | **6 hours** — [verified 2026-08-17](#neon-point-in-time-retention) | live |
+| Nightly `pg_dump` to Azure Blob | "the Neon project itself is gone", and anything noticed more than 6 h late | 30 days of nightly dumps, 03:17 UTC | live since 2026-08-16 |
 
 Neon's own retention lives inside Neon, so it cannot help if the Neon project, the account, or the
 billing relationship disappears. That is what the off-site dump is for. Neither layer replaces the
 other.
+
+**The 6-hour Neon window is the binding constraint**, not the 30-day dump retention. Anything not
+noticed the same working day falls to the nightly dump and loses up to 24 hours of data — see
+[Neon point-in-time retention](#neon-point-in-time-retention) for what to do about that.
 
 ### Nightly automated dump
 
@@ -187,18 +191,35 @@ window.
 
 ### Neon point-in-time retention
 
-**Unverified — needs the owner to check the console.** Neon keeps a WAL history that lets you branch
-from any moment inside the retention window, which is the fastest recovery path for "the last
-migration deleted the wrong rows".
+**Verified 2026-08-17 by the owner, read from Neon Console → project → Settings → Storage →
+History retention: the window is 6 hours.**
 
-To verify and record it: <https://console.neon.tech> → the DACHApply project → **Settings → Storage
-→ History retention**. Read the configured window, then replace this paragraph with the actual value
-and the plan it comes from. Free-tier projects retain far less than paid ones, and the difference
-decides whether Neon alone is a usable recovery path or whether the nightly dump is the only real
-one. Do not assume a value; read it.
+Neon keeps a WAL history that lets you branch from any moment inside that window, which is the
+fastest recovery path for "the last migration deleted the wrong rows" — but only if you notice
+within six hours.
 
-Before risky deploys or migrations, create a named restore point / branch in Neon regardless of the
-window, so recovery does not depend on guessing a timestamp.
+**Six hours is shorter than a night's sleep, and that is the operative fact here.** A bad migration
+at 23:00 that nobody sees until 08:00 the next morning is already outside the window. So the
+division of labour between the two layers is not "Neon for recent, dumps for disasters" — it is:
+
+| When you notice | Recovery path | Data loss |
+| --- | --- | --- |
+| within 6 h | Neon branch from a timestamp | near zero |
+| after 6 h | restore the last nightly dump | everything since 03:17 UTC that day — **up to 24 h** |
+
+The nightly dump is therefore the *primary* recovery path for anything not caught inside one working
+session, not a backstop for exotic failures. Two consequences worth acting on rather than reading:
+
+- **Run migrations and other risky operations in the morning**, not last thing at night. The whole
+  value of the 6-hour window is that someone is awake inside it.
+- **Create a named Neon branch/restore point before any risky deploy or migration**, every time. A
+  branch does not expire with the retention window, so it converts a 6-hour window into an
+  indefinite one for the specific moment you cared about. This is the single cheapest mitigation
+  available and it costs one click.
+
+If the recovery-point objective ever needs to be better than "up to 24 hours", the lever is either a
+longer Neon window (a paid-plan setting) or a more frequent dump cadence — the workflow's cron is one
+line. Neither is worth doing speculatively; both are worth knowing about before an incident.
 
 ## App-level export/import check
 
