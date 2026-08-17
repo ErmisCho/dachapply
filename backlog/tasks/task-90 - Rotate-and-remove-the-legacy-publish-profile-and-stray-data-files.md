@@ -1,8 +1,10 @@
 ---
 id: TASK-90
 title: Rotate and remove the legacy publish profile and stray data files
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
+updated_date: '2026-08-17 14:40'
 created_date: '2026-08-16 00:43'
 labels:
   - security

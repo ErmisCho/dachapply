@@ -1,11 +1,11 @@
 ---
 id: TASK-70
 title: Automate database backups and prove restore
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-08-16 00:43'
-updated_date: '2026-08-16 15:05'
+updated_date: '2026-08-17 14:40'
 labels:
   - ops
   - backend
@@ -27,7 +27,7 @@ For an app holding a user's entire job search, an unscheduled backup is a runboo
 <!-- AC:BEGIN -->
 - [x] #1 A scheduled job (e.g. GitHub Actions cron using the DATABASE_URL secret) runs pg_dump against production on a fixed cadence and stores the dump in a private location with a retention policy — never in the public repo (see TASK-69)
 - [x] #2 A restore drill from a produced dump into a scratch database has been performed, with the exact commands recorded in docs/backup-restore.md
-- [ ] #3 A failed backup run is visible (workflow failure notification), not silent
+- [x] #3 A failed backup run is visible (workflow failure notification), not silent
 - [x] #4 Neon's own point-in-time retention is verified enabled and its window documented
 <!-- AC:END -->
 
@@ -295,5 +295,37 @@ into an indefinite window for the one moment you cared about.
 the owner. Run **31959476142** is a genuine failure of this workflow on `main` — search the inbox for
 `from:notifications@github.com dachapply` around 2026-08-16 and record yes or no here. A "no" proves
 AC3 *not* met and points at https://github.com/settings/notifications → Actions → email on failure.
+
+### 2026-08-17 — AC3 closed by measuring delivery, and the first unattended cron ran
+
+The note above routed AC3 to the owner's inbox. It did not need to go there: GitHub's own notification
+inbox is readable with `gh`, so delivery can be **measured** instead of inferred from the settings
+page. That distinction is the whole point of the AC — configuration can be correct while delivery is
+broken, and only one of those is worth checking.
+
+Two independent failed runs, each matched to the notification it produced:
+
+    gh run list --workflow=database-backup.yml
+      31959476142  failure  2026-08-16T16:43:57Z
+      31971384024  failure  2026-08-16T20:43:33Z
+
+    gh api /notifications?all=true
+      16:44:27Z  CheckSuite  reason=ci_activity  "Database backup workflow run failed for main branch"
+      20:44:13Z  CheckSuite  reason=ci_activity  "Database backup workflow run failed for main branch"
+
+Thirty and forty seconds after their respective runs. A failed backup is not silent — **AC3 met**.
+Two samples rather than one deliberately: a single notification could have been coincidental to other
+activity on the same branch, whereas these are separate dispatches four hours apart.
+
+**The nightly cron has also now run unattended and succeeded** — run `31993183820`, `schedule`
+trigger, 2026-08-17T04:04Z, 52s. That is the first backup nobody dispatched by hand; every earlier
+success was a `workflow_dispatch`, which is what AC1 was really asking for. Note it fires nearer 04:00
+than the declared 03:17 UTC — ordinary GitHub scheduled-workflow drift under load, not a
+misconfiguration, but worth knowing before someone debugs a "late" backup.
+
+All four ACs are now met, so this task is **Done**. AC2's caveat stands unchanged: the restore drill
+ran against a scratch database, not against a production dump. That is a recorded limit of the drill,
+not an open action — re-running it for real means putting a full production export on a local disk,
+which stays the owner's deliberate call.
 
 <!-- SECTION:NOTES:END -->
