@@ -4,6 +4,7 @@ title: Check Gmail regularly and sync recruiter email into the pipeline
 status: In Progress
 assignee: []
 created_date: '2026-08-16 18:57'
+updated_date: '2026-08-17 15:50'
 labels:
   - product
   - email
@@ -54,6 +55,73 @@ imaplib + email parsing); the Gmail API is the upgrade path if labels/threads ar
 Owner involvement is one-time: creating the app password (see wave-plan owner checklist). Uncertain
 classification goes in the digest rather than being dropped — a missed recruiter email costs an
 interview; a false positive costs a glance.
+
+### 2026-08-17 verification (code-implementer, credential-vs-code audit for AC1/AC7)
+
+Independently re-read `backend/jobradar/services/mailbox.py` and
+`backend/jobradar/management/commands/check_mailbox.py` end to end (not just the prior outcome
+notes) and ran the backend test suite before writing this. Both open ACs are CODE-COMPLETE,
+CREDENTIAL-BLOCKED — nothing in the code itself is missing or stubbed:
+
+- **AC1** (fetch since last run via a marker that makes a missed run harmless, hourly cadence):
+  `run_check()` (mailbox.py:828) no-ops — returns `None`, touches no table — unless
+  `settings.GMAIL_IMAP_USER` and `settings.GMAIL_IMAP_APP_PASSWORD` are both set
+  (`config/settings.py:135-137`, read only from `os.getenv`, no default). `ImapTransport.fetch_new()`
+  (mailbox.py:73) resumes via IMAP `UID {last_uid+1}:*` where `last_uid =
+  MailboxMessage.objects.aggregate(Max('uid'))` (mailbox.py:856) — the resume point is the highest
+  UID this app has ever logged, not a separate cursor that could drift or get lost, so a missed run
+  is genuinely harmless. `_claim_tick()` (mailbox.py:808) enforces
+  `profile.mailbox_check_cadence_minutes` (default 60, i.e. hourly) via a `select_for_update` claim;
+  `--force` bypasses only the cadence gate, never the calendar check below. Verified by test, not
+  just by reading: `test_run_check_resumes_from_last_seen_uid` asserts the second run's fetch call is
+  `[5]` (MAX(uid) from the first run), never `[0]`; `test_run_check_respects_cadence_gate_and_force_overrides_it`
+  asserts a same-tick second call returns `None` and `--force` overrides it. Both pass.
+
+- **AC7** (calendar-aware quiet hours, fails open on fetch failure): `calendar_busy_now()`
+  (mailbox.py:399-414) reads `settings.GMAIL_CALENDAR_ICS_URL` and returns `False` immediately if
+  blank. When set, the fetch+parse path is wrapped in `except (HTTPError, URLError, TimeoutError,
+  ValueError)` *and* a catch-all `except Exception` underneath it — both branches log a warning and
+  return `False`; there is no exception a broken calendar URL could raise that escapes this and
+  stops mail checking. Call site traced: `run_check()` only calls `calendar_busy_now()` at all when
+  `profile.mailbox_check_calendar_aware` is `True` (mailbox.py:848), and a skip sets
+  `run.skipped`/`run.skip_reason` *before* any IMAP fetch happens (`transport.calls == []` in the
+  skip test). This fail-open behaviour is covered by test, not just asserted:
+  `test_calendar_busy_now_fails_open_on_fetch_error` injects a raised `TimeoutError` from
+  `_fetch_ics` and asserts `calendar_busy_now(...) is False`;
+  `test_calendar_busy_now_fails_open_on_unparseable_text` feeds back garbage ICS text
+  (`DTSTART:not-a-date`) and asserts the same. Both pass.
+
+Also confirmed for TASK-110 AC1 (shares this task's credential): no send capability exists anywhere
+in this feature — `grep -n "smtplib\|messages.send\|\.send("
+backend/jobradar/services/mailbox.py backend/jobradar/management/commands/check_mailbox.py` returns
+zero matches, and the test double `FakeTransport` exposes only `fetch_new`/`append_draft`, no
+`send` method to even accidentally call.
+
+Test command run for this audit (from `backend/`):
+`uv run pytest -q -k "mailbox or gmail or draft or calendar"` →
+`89 passed, 321 deselected`.
+
+Exact env vars the owner sets in the local `.env` (commented template at
+`.env.local.example:18-22`) to close AC1 and AC7:
+```
+GMAIL_IMAP_USER=<the Gmail address>
+GMAIL_IMAP_APP_PASSWORD=<a Gmail App Password — spaces are stripped automatically>
+GMAIL_CALENDAR_ICS_URL=<the calendar's private "secret address" ICS URL, from Google Calendar
+  Settings -> Integrate calendar>
+```
+
+Exact command to close AC1/AC7 once those are set (from `backend/`):
+```
+uv run manage.py check_mailbox --force
+```
+then confirm against the real mailbox: the run's digest at `/mailbox` shows a non-zero
+`fetched_count` (or `0` if the inbox genuinely has nothing new since the last UID, which is also a
+valid observation), and — if the calendar is currently inside a busy event — a second run started
+during that window shows `skip_reason: quiet_hours` instead. Only after one real, observed run
+against the actual mailbox (and, for AC7, one observed quiet-hours skip or an explicit owner
+confirmation that the ICS URL is reachable) should these two boxes be checked and status flipped to
+Done. Nothing here is a code gap; both blockers are exactly "the credential does not exist locally
+yet."
 <!-- SECTION:NOTES:END -->
 
 ## Outcome (2026-08-16, wave 13 — In Progress, owner-blocked on two live halves)

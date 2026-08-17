@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-08-16 00:43'
-updated_date: '2026-08-16 15:05'
+updated_date: '2026-08-17 15:50'
 labels:
   - ops
   - backend
@@ -117,6 +117,49 @@ authenticated endpoint with a payload that reaches the ORM but not validation, o
 `DATABASE_URL` at an unreachable host on a throwaway revision. Simplest honest option is to wait for
 the first real 500 and record that one — the AC asks for an end-to-end delivery, not for a synthetic
 one.
+
+### 2026-08-17 — checked whether AC2 is verifiable without the owner's inbox, and it is not
+
+TASK-70 AC3 closed by reading GitHub's own notification API instead of the owner's email. Checked
+whether an equivalent exists here: a Brevo API that would show whether the alert was delivered,
+without opening the inbox.
+
+**Every Brevo credential this repo ever configures is an SMTP relay login, not the Transactional API.**
+Grepped every place Brevo is wired up:
+
+    backend/config/settings.py:276-278   BREVO_EMAIL_HOST_USER / BREVO_EMAIL_HOST_PASSWORD -> EMAIL_HOST_USER/PASSWORD
+    .env.example, .env.azure.example,
+    .env.local-smtp.example              BREVO_EMAIL_HOST=smtp-relay.brevo.com, BREVO_EMAIL_HOST_USER=..., BREVO_EMAIL_HOST_PASSWORD=...
+    grep -r "BREVO_API\|api.brevo.com" .  -> no matches anywhere in the repo
+
+Brevo's sending log lives behind `api.brevo.com/v3/...` and needs a separate Transactional-API key
+(`xkeysib-...`, sent as an `api-key` header) — an SMTP login/password does not authenticate against
+it. This repo has never had that key as a concept, so there is nothing to look up even in principle,
+and `.env` (the local file) has no `BREVO_*` variable at all — checked directly, it holds only Neon/CV
+settings, no mail credentials of any kind. Local dev cannot even send through Brevo, let alone query
+its log.
+
+**`/api/auth/email-diagnostics/` is a real endpoint but answers a different question.** Read the view
+(`backend/jobradar/views.py:335-370`) and its tests
+(`backend/jobradar/tests/test_api.py:1250-1289`): GET returns non-secret SMTP config (host, ports,
+whether credentials are *set*), and POST calls `send_mail(...)` straight to `request.user.email` using
+`DEFAULT_FROM_EMAIL` — that is the password-reset delivery path, proving Brevo SMTP works at all. It
+never touches `ADMINS` / `AdminEmailHandler` / `mail_admins`, which is the actual AC2 channel, and it
+is staff-only (`if not request.user.is_staff: 404`), so even reachable it would need the owner's own
+authenticated production session — not something this session has or should acquire.
+
+**Conclusion: AC2 is not verifiable from this environment by any channel, not just the inbox.** There
+is no Brevo credential of the kind (API key) that would show a sending log, and the one diagnostics
+endpoint that exists checks a different mail path under a login this session does not have. Per the
+hard rule for this task, no error was deliberately raised in production to test it. AC2 stays open.
+
+**Exact blocker, precisely named:** the owner needs to (a) open the inbox at
+`ermis.chorinopoulos@gmail.com` and check for a `[DACHApply] ` subject after the next real production
+500 — no synthetic trigger, per the notes above — and record what arrived here; or (b), if a
+same-day answer is wanted, add a Brevo **Transactional API key** (`BREVO_API_KEY`, not the existing
+SMTP login) so `GET https://api.brevo.com/v3/smtp/statistics/events` could be queried instead. (b) is
+a new credential this repo has never held, so it is a decision for the owner, not something to add
+unilaterally here.
 
 ### AC1 closed 2026-08-16 — configured through the deploy, not the console
 
