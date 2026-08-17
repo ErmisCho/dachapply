@@ -154,6 +154,15 @@ class ImapTransport:
                 pass
 
 
+from django.views.decorators.debug import sensitive_variables
+
+
+# Django's ExceptionReporter dumps every frame's local variables into an HTML traceback, and
+# the `jobradar` logger is wired to mail_admins (settings.py:471). AdminEmailHandler defaults to
+# include_html=False, whose plain-text report omits frame locals -- which is the ONLY reason the
+# client secret and refresh token below are not already emailed on the ~weekly token expiry this
+# feature expects by design. That is an unrelated default holding a credential safeguard up, so
+# the locals are marked sensitive here instead of relying on it staying False forever.
 # --- Gmail-API OAuth transport (TASK-109 AC1 alternative route) --------------------------------
 #
 # Stdlib urllib + email only, no google-api-python-client/google-auth/google-auth-oauthlib: the whole
@@ -187,6 +196,7 @@ def oauth_authorization_url(client_id: str) -> str:
     return f'{GMAIL_OAUTH_AUTH_URL}?{urlencode(params)}'
 
 
+@sensitive_variables('client_id', 'client_secret', 'refresh_token', 'access_token', 'code', 'body', 'token', 'payload')
 def oauth_exchange_code(client_id: str, client_secret: str, code: str) -> dict:
     """One-time exchange of the pasted authorization code for tokens -- only `gmail_oauth_setup`
     calls this. Returns the full token response; the caller persists only refresh_token (see
@@ -199,6 +209,7 @@ def oauth_exchange_code(client_id: str, client_secret: str, code: str) -> dict:
     return _oauth_token_request(body)
 
 
+@sensitive_variables('client_id', 'client_secret', 'refresh_token', 'access_token', 'code', 'body', 'token', 'payload')
 def write_refresh_token(token_path: str, refresh_token: str) -> None:
     """Writes ONLY the refresh token, as {"refresh_token": "..."} -- never the client secret (that
     stays in .env, same place GMAIL_IMAP_APP_PASSWORD already lives) and never printed to stdout by
@@ -208,6 +219,7 @@ def write_refresh_token(token_path: str, refresh_token: str) -> None:
         json.dump({'refresh_token': refresh_token}, fh)
 
 
+@sensitive_variables('client_id', 'client_secret', 'refresh_token', 'access_token', 'code', 'body', 'token', 'payload')
 def _read_refresh_token(token_path: str) -> str:
     try:
         with open(token_path, 'r', encoding='utf-8') as fh:
@@ -223,6 +235,7 @@ def _read_refresh_token(token_path: str) -> str:
     return refresh_token
 
 
+@sensitive_variables('client_id', 'client_secret', 'refresh_token', 'access_token', 'code', 'body', 'token', 'payload')
 def _oauth_refresh_access_token(client_id: str, client_secret: str, refresh_token: str) -> str:
     """AC7: raises on any failure -- including Google saying the refresh token itself is expired or
     revoked, which is *normal* in OAuth "testing" publishing status after about 7 days (see
@@ -241,6 +254,7 @@ def _oauth_refresh_access_token(client_id: str, client_secret: str, refresh_toke
     return access_token
 
 
+@sensitive_variables('client_id', 'client_secret', 'refresh_token', 'access_token', 'code', 'body', 'token', 'payload')
 def _oauth_token_request(body: bytes) -> dict:
     request = Request(GMAIL_OAUTH_TOKEN_URL, data=body, headers={'Content-Type': 'application/x-www-form-urlencoded'}, method='POST')
     try:
@@ -258,6 +272,7 @@ def _oauth_token_request(body: bytes) -> dict:
         raise RuntimeError(f'Could not reach {GMAIL_OAUTH_TOKEN_URL}: {exc}') from exc
 
 
+@sensitive_variables('client_id', 'client_secret', 'refresh_token', 'access_token', 'code', 'body', 'token', 'payload')
 def _gmail_api_request(method: str, url: str, access_token: str, data: bytes | None = None) -> dict:
     request = Request(url, data=data, headers={'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'}, method=method)
     try:
@@ -268,6 +283,31 @@ def _gmail_api_request(method: str, url: str, access_token: str, data: bytes | N
         raise RuntimeError(f'Gmail API {method} {url} failed with HTTP {exc.code}: {details}') from exc
     except URLError as exc:
         raise RuntimeError(f'Could not reach Gmail API at {url}: {exc}') from exc
+
+
+def _body_text(body) -> str:
+    """Decode a message part's text, never raising.
+
+    `get_content()` raises LookupError on an unrecognised charset -- `charset="unicode"` and friends
+    are routine in spam and legacy Outlook mail -- and it raised inside fetch_new(), i.e. BEFORE any
+    MailboxMessage row was created. One such message therefore aborted the whole run, left the marker
+    un-advanced, and the next hourly run re-fetched it and died identically: the mailbox check stayed
+    permanently dead, with a real interview invitation sitting unread behind the bad message. The
+    IMAP path never had this because it decodes with errors='replace' (see ImapTransport).
+
+    Returning '' rather than raising keeps the message in the run: it is still logged, still
+    classified (as not_job_related, on empty text) and still advances the marker, so one unreadable
+    message costs that one message instead of the entire feature.
+    """
+    if body is None:
+        return ''
+    try:
+        return body.get_content()
+    except (LookupError, UnicodeDecodeError, AttributeError):
+        payload = body.get_payload(decode=True)
+        if isinstance(payload, bytes):
+            return payload.decode('utf-8', errors='replace')
+        return ''
 
 
 class GmailApiTransport:
@@ -313,8 +353,17 @@ class GmailApiTransport:
         for msg_id in message_ids:
             detail = _gmail_api_request('GET', f'{GMAIL_API_BASE}/messages/{msg_id}?format=raw', access_token)
             internal_date_ms = int(detail.get('internalDate') or 0)
-            if internal_date_ms <= last_marker_ms:
-                continue
+            # Deliberately NOT skipped on `internal_date_ms <= last_marker_ms`. That filter dropped a
+            # message permanently and silently in three reachable cases, because run_check()'s
+            # gmail_id dedup -- the check that is actually exact -- never got to run:
+            #   * two messages sharing an internalDate to the millisecond (burst/multi-recipient
+            #     delivery): the second was skipped on every subsequent run,
+            #   * a message with no internalDate at all: 0 <= marker is true for EVERY marker,
+            #     including 0, so it could never be read,
+            #   * a message indexed late or re-labelled into INBOX with an older internalDate.
+            # Letting everything the query returned through costs one dedup lookup per overlapping
+            # message and cannot duplicate anything: the gmail_id guard is an exact identity test,
+            # where the timestamp was only ever a proxy for one.
             encoded = detail.get('raw', '')
             raw_bytes = base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4))
             parsed = email.message_from_bytes(raw_bytes, policy=email.policy.default)
@@ -323,7 +372,7 @@ class GmailApiTransport:
                 uid=0, sender=parsed.get('From', ''), subject=parsed.get('Subject', ''),
                 received_at=_parse_email_date(parsed.get('Date', '')),
                 message_id=parsed.get('Message-ID', ''), references=parsed.get('References', ''),
-                body_text=(body.get_content() if body is not None else '')[:5000],
+                body_text=_body_text(body)[:5000],
                 gmail_id=msg_id, internal_date_ms=internal_date_ms, thread_id=detail.get('threadId', ''),
             ))
         return messages
@@ -1092,11 +1141,19 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         # is fine -- both stay inside the app and are reviewable. Drafting is not: it writes into the
         # owner's real Gmail Drafts folder, and on the first live run that produced 112 replies to
         # long-dead threads. A cold start establishes the baseline; drafting begins next run.
-        # Asked as "have we ever recorded a message?" rather than "is the marker zero?" -- the two
-        # agree in production but the first is the actual question, and a marker can legitimately be
-        # zero while history exists (an IMAP mailbox whose first UID is 0, a Gmail row with no
-        # internalDate). Getting this wrong suppresses drafting forever instead of once.
-        is_cold_start = not MailboxMessage.objects.exists()
+        # Keyed to THE SAME marker the fetch above uses, deliberately. An earlier version asked
+        # "have we ever recorded a message?" instead, reasoning that a marker could legitimately be
+        # zero while history exists. That reasoning was right about the situation and wrong about the
+        # response: rows with a NULL internal_date_ms (every IMAP-era row, every seed_fake_run() row)
+        # make `exists()` true while the marker stays 0 -- so drafting switched on at exactly the
+        # moment fetch_new was returning the entire mailbox. That is the 112-drafts-to-dead-threads
+        # incident re-armed, reachable by running `check_mailbox --seed-fake` once first.
+        #
+        # A marker of zero MEANS "this fetch saw everything", so suppressing drafting whenever it is
+        # zero is correct every time, not just the first. If the marker never advances, drafting
+        # stays off -- which is the right outcome, because every run would otherwise sweep the whole
+        # mailbox again.
+        is_cold_start = last_marker == 0
         run.drafting_skipped = is_cold_start
         raw_messages = active_transport.fetch_new(last_marker)
         job_domains = owned_job_domains(owner)
