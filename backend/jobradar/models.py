@@ -64,6 +64,16 @@ class UserProfile(models.Model):
     # web-only compromise can never raise the floor or shrink the blocklist below the machine's own.
     mailbox_salary_floor_eur=models.PositiveIntegerField(default=0)
     mailbox_do_not_disclose=models.TextField(blank=True, default='')
+    # TASK-115: one or more quiet-hours ICS calendar URLs, same one-per-line idiom as
+    # mailbox_do_not_disclose above (services.calendar_ics.parse_calendar_ics_urls also tolerates
+    # comma-separated and a pasted `[a, b, c]` list literal -- AC8). This profile value is the only
+    # place these are configured (AC7, reversed 2026-08-18): no environment-variable fallback and
+    # nothing in the UI or docs points anywhere else, so the app is never silently overridden by a
+    # value the owner cannot see or change here.
+    # Unlike every other field in this serializer, this one is a secret: an ICS "private" URL grants
+    # read access to the whole calendar with no authentication. CandidateProfileSerializer masks it
+    # on every read (owner decision 2026-08-18) and never lets a masked value overwrite a real one.
+    mailbox_calendar_ics_urls=models.TextField(blank=True, default='')
     # TASK-83: the capability that gates the nine CV endpoints. Off by default -- generation shells
     # out to a model CLI and LaTeX on the server, so it is granted per account in the admin, never
     # by signing up. services.cv_generator.is_cv_owner still honours CODEX_CV_OWNER_EMAIL as a
