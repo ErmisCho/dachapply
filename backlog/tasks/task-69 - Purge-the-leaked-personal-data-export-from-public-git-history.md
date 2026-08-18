@@ -474,4 +474,43 @@ gone:
 
 Forks and clones taken before the rewrite remain out of reach of all of this. Say so when closing.
 
+### 2026-08-18 — Support replied, a choice was made, and correction 4 happened again
+
+**GitHub Support answered and the ticket sat in "Pending" waiting on us.** Nothing progresses in that
+state, and nothing announces it — the only reason it was noticed is that the ticket was checked
+while re-testing whether `refs/pull/1/head` had stopped resolving. Worth knowing for next time: a
+support ticket blocking an AC needs an explicit check, because "filed" and "progressing" are
+different states that look identical from the repository side.
+
+Their tooling found references to the sensitive commit in **29 pull requests** (1–29, more than
+expected because merging a commit puts it in the history of every later PR involving that branch),
+and offered two ways to remove them:
+
+1. delete the entire pull request — conversation, reviews and diffs
+2. delete just the pull request references — removes the file diffs, leaves the conversation
+
+**Chose option 2**, replied 2026-08-18. The blob lives in the diffs; the conversations hold the
+reasoning and verification record for the rewrite itself, and destroying 29 of them to remove data
+that is not in them would be a bad trade.
+
+**But option 2 was not safe until one thing was fixed, and that thing was ours.** PR #29 — the pull
+request whose entire purpose was removing these addresses from `main` — quoted **both of them
+verbatim in its description**. That is correction 4 above, repeated by the same session that wrote
+correction 4 down, roughly an hour later, in a public place that a `git grep` over the tree does not
+reach. It survived every sweep because every sweep looked at files.
+
+Measured scope before acting: commit messages clean, working tree clean, and of all pull request
+bodies only #29 contained them. Redacted in place (the description now reads `<redacted>@ebcont.com`
+with a note explaining why), verified zero remaining, and Support was told — so that if their tooling
+still finds a reference in a conversation rather than a diff, they tell us which one and we redact it
+rather than deleting that pull request.
+
+**The reusable lesson, now twice-earned: a privacy sweep that only searches the repository is not a
+privacy sweep.** Pull request descriptions, issue bodies, commit messages, CI logs and support
+tickets are all places the data can be written *while documenting its removal*, and none of them are
+reachable from `git grep`. AC3's sweep should be understood to cover them.
+
+**AC1 still unchecked.** Verified again today: `git ls-remote origin 'refs/pull/1/head'` still returns
+`4fe65c5…`, the pre-rewrite SHA. It closes when Support completes the removal and that command stops
+resolving to pre-rewrite history — not when they reply saying they will.
 <!-- SECTION:NOTES:END -->
