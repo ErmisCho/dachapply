@@ -1,7 +1,7 @@
 ---
 id: TASK-121
 title: Persist Gmail draft and thread ids, and open the conversation in Gmail
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 labels:
@@ -68,9 +68,9 @@ must handle that rather than rendering a broken link.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `append_draft` returns Gmail's response and `MailboxDraft` persists the draft id, the draft's message id and the thread id; `ImapTransport.append_draft` returns the same shape (empty) so the one call site stays uniform. Verified by reading the stored row after a real `check_mailbox` run, not from a unit test alone
+- [x] #1 `append_draft` returns Gmail's response and `MailboxDraft` persists the draft id, the draft's message id and the thread id; `ImapTransport.append_draft` returns the same shape (empty) so the one call site stays uniform. Verified by reading the stored row after a real `check_mailbox` run, not from a unit test alone
 - [x] #2 `MailboxMessage` persists the inbound `thread_id` too — it is a different id from the draft's, and it is what a per-message "open this conversation" link needs
-- [ ] #3 Exactly ONE Gmail URL builder exists in the codebase, and the URL form it produces is recorded in the task notes with evidence that it actually opened the right thing in a real browser — not inferred from Gmail documentation
+- [x] #3 Exactly ONE Gmail URL builder exists in the codebase, and the URL form it produces is recorded in the task notes with evidence that it actually opened the right thing in a real browser — not inferred from Gmail documentation
 - [x] #4 The link works for a row sourced by EITHER transport, or the UI says plainly why it cannot for that row. A row with no usable id shows no link rather than a link that 404s into an empty Gmail search
 - [x] #5 Rows written before this task (empty ids) render without a broken link and without a crash, verified against an actual pre-existing row
 - [x] #6 `purge_app_drafts` prefers the stored draft id when present and keeps the body-text match only as the fallback for pre-existing rows — the permanent-delete safety argument in TASK-114 must not be weakened, and a hand-written draft must still be unmatchable
@@ -129,3 +129,39 @@ conversation in a real browser" has not been demonstrated. Doing so requires ope
 Gmail with a real `Message-ID` from their mailbox, which was deliberately not done without their say
 so. **AC3 stays unchecked and this task stays open on that one criterion.** One click by the owner on
 the link the app now renders closes it.
+
+### AC1 closed 2026-08-18, against a real run
+
+`uv run manage.py check_mailbox --force` against the owner's live mailbox: *5 fetched, 2 job-related,
+0 uncertain, 1 suggestion, 2 drafts ready, 0 blocked*. The rows it wrote:
+
+    draft 116  gmail_draft_id 'r1827526902737800498'  gmail_message_id '1a015989bf9644bc'  thread '1a01440b7014fc0b'
+    draft 115  gmail_draft_id 'r8366615584492002470'  gmail_message_id '1a0159896dd0e208'  thread '1a010a4170efa4cd'
+    draft 114  ''                                     ''                                   ''
+
+`MailboxMessage.thread_id` matched the draft's thread id on both new rows. Draft 114 predates this
+task and has empty ids — which also demonstrates AC5 against a genuinely pre-existing row rather
+than a synthesised one.
+
+Noted in passing, not this task's to fix: the run's calendar quiet-hours check raised
+`URLError: unknown url type: [https` and failed open. That is TASK-115's filed defect — the stored
+calendar URLs are a bracketed list literal passed whole to `_fetch_ics` — so quiet hours are not
+actually in effect today.
+
+### AC3 closed 2026-08-18, in the owner's real browser
+
+The URL form is `#search/rfc822msgid:<Message-ID>`, angle brackets stripped and percent-encoded, with
+the mailbox's own address passed as `authuser`:
+
+    https://mail.google.com/mail/u/0/?authuser=ermis.chorinopoulos%40gmail.com#search/rfc822msgid:1385634551.312604.1787046179094%40email-sender-55f5787d55-szj9p
+
+Opened in the owner's browser it returned **1-1 of 1** and landed on the right conversation:
+*"Feedback on your application as Senior Software Engineer - Python (All Genders) at zooplus"*.
+Gmail resolved `authuser` and redirected to `/mail/u/3/`, dropping the parameter.
+
+**The first attempt failed, and that is why `authuser` is there.** A bare `/mail/u/0/#search/...`
+opened whichever Google account had signed in first in that browser — the owner had to hand-edit
+`/u/0/` to `/u/3/` before the search found anything. The task file predicted exactly this
+("`/mail/u/0/` addresses whichever Google account signed in first ... a real failure mode on a
+machine with two accounts") and named `_reply_from_address()` as the input to the fix, which is what
+`serializers._gmail_url` now passes. Nothing in the search syntax was wrong; the account was.

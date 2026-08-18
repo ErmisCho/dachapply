@@ -158,6 +158,17 @@ export function selectGeneralNote(notes:{note_type:string}[]|null|undefined):any
   return (notes||[]).find(n=>n.note_type==='general')||null
 }
 
+// TASK-126 AC1/AC2/AC3: the board's mail trigger has three states -- a pending decision (unchanged
+// from TASK-117), history with nothing pending (new: TASK-120's per-job view was otherwise only
+// reachable while a decision was waiting), or no mailbox history at all (render nothing, AC3 --
+// the board must not grow an inert icon on every row). Pulled out as its own pure branch, with its
+// own test, because AC2 is explicit that collapsing 'pending' and 'history' into one look dilutes
+// the actionable signal -- a regression here should fail a test, not wait for a browser check.
+export type MailboxIndicatorState='pending'|'history'|null
+export function mailboxIndicatorState(hasPendingSuggestion:boolean,hasMailboxHistory?:boolean):MailboxIndicatorState{
+  return hasPendingSuggestion?'pending':hasMailboxHistory?'history':null
+}
+
 const routeTitles:Record<string,string>={'/':'Board','/add':'Add job','/public-submit':submitDe.title,'/prompts':'Prompts','/import':'Import','/followups':'Follow-ups','/export':'Export','/bookmarklet':'Bookmarklet','/practice':'Practice','/mailbox':'Mailbox','/login':'Sign in','/onboarding':'Setup','/privacy':'Privacy','/terms':'Terms','/settings/profile':'Profile settings','/settings/account':'Account settings'};
 export function pathTitle(pathname:string){return routeTitles[pathname]||(pathname.startsWith('/jobs/')?'Job':pathname.startsWith('/reset-password/')?'Reset password':pathname.startsWith('/verify-email/')?'Confirm email':'')}
 

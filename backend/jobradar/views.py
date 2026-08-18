@@ -8,7 +8,7 @@ from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.db import connection, transaction
-from django.db.models import Avg, Case, Count, F, IntegerField, Q, Value, When
+from django.db.models import Avg, Case, Count, Exists, F, IntegerField, OuterRef, Q, Value, When
 from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.encoding import force_str
@@ -564,6 +564,14 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             # TASK-108: pipeline order for ordering=status, distinct from status_rank's attention
             # order above -- see BOARD_ORDERINGS' comment.
             status_pipeline_rank=_status_pipeline_rank(),
+            # TASK-126 AC4: recorded decision -- option 1 from the task notes. A boolean Exists()
+            # subquery rather than a Count(): this queryset already joins/filters through
+            # `evaluations` and ends in .distinct(), so a Count() on a second reverse relation would
+            # fan out with that join and need its own distinct-count gymnastics for a value this view
+            # only ever treats as true/false. Exists() never joins, so it costs nothing beyond one
+            # correlated subquery per row and is exposed only on JobLeadListSerializer (the /jobs/
+            # list), never widening the detail response.
+            has_mailbox_history=Exists(MailboxMessage.objects.filter(matched_job=OuterRef('pk'))),
         ).order_by(*parse_board_ordering(p.get('ordering')))
         return qs.distinct()
     def list(self, request, *args, **kwargs):
@@ -776,6 +784,27 @@ class MailboxDraftViewSet(viewsets.GenericViewSet):
             return Response({'detail': reason}, status=400)
         draft.refresh_from_db()
         return Response(self.get_serializer(draft).data)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def raise_test_error(request):
+    """TASK-88 AC2: deliberately raise, so the alerting path can be proven end to end in production.
+
+    AC1 wired unhandled 500s to AdminEmailHandler, but "it is configured" and "an alert actually
+    arrives in the owner's inbox" are different claims, and only the second one is worth anything at
+    3am. There was no way to make the app fail on purpose, so the channel had never been exercised
+    against production -- ERROR_ALERT_EMAILS, the Brevo relay, SERVER_EMAIL being a verified sender,
+    and the cooldown all had to be right simultaneously, untested.
+
+    Owner-gated (is_cv_owner, the same gate /api/mailbox-runs/ uses) and POST-only, so it cannot be
+    reached by a stray GET, a crawler, or another account. Kept rather than deleted after the first
+    successful alert: the same three things can silently rot -- a Brevo key rotates, a sender
+    verification lapses, a recipient changes -- and this is how you find out before an outage does
+    rather than after.
+    """
+    if not is_cv_owner(request.user):
+        return Response({'detail': 'Not found.'}, status=404)
+    raise RuntimeError('TASK-88 AC2: deliberate test error, raised on purpose to prove alerting works.')
 
 @api_view(['POST'])
 def practice_evaluate(request):

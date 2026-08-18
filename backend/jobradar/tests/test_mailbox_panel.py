@@ -114,6 +114,44 @@ def test_job_mailbox_endpoint_for_inaccessible_job_is_404_with_no_body_leaked(db
     assert 'very private salary and rejection details' not in r.content.decode('utf-8')
 
 
+# --- TASK-126 AC1/AC4: has_mailbox_history on /api/jobs/ (the board's list) -----------------------
+# The bug: the board used to derive "this job has mail" only from /mailbox-suggestions/, which is
+# pending-only by default, so a job whose one suggestion was already decided showed no indicator at
+# all even though TASK-120's history/notes view still had something to show. has_mailbox_history is
+# the recorded fix (option 1 in the task notes): an Exists() annotation on the list queryset itself,
+# true the moment ANY MailboxMessage is matched to the job, regardless of what its suggestions (if
+# any) decided to.
+
+def test_jobs_list_flags_has_mailbox_history_for_a_job_with_a_pending_suggestion(client, applied_job):
+    message = _log_message(applied_job, 'interview_invitation')
+    MailboxSuggestion.objects.create(message=message, job=applied_job, suggestion_type='interview_date', payload={})
+
+    r = client.get('/api/jobs/')
+
+    row = next(j for j in r.data if j['id'] == applied_job.id)
+    assert row['has_mailbox_history'] is True
+
+
+def test_jobs_list_flags_has_mailbox_history_for_a_job_whose_only_suggestion_is_decided(client, applied_job):
+    """The exact bug: a suggestion that has already been confirmed/dismissed must not make the
+    job's mail history invisible again -- that decided suggestion still came with a message.
+    """
+    message = _log_message(applied_job, 'rejection')
+    MailboxSuggestion.objects.create(message=message, job=applied_job, suggestion_type='status_change', payload={'status': 'rejected'}, status='confirmed', decided_at=timezone.now())
+
+    r = client.get('/api/jobs/')
+
+    row = next(j for j in r.data if j['id'] == applied_job.id)
+    assert row['has_mailbox_history'] is True
+
+
+def test_jobs_list_has_mailbox_history_false_for_a_job_with_no_mail_at_all(client, applied_job):
+    r = client.get('/api/jobs/')
+
+    row = next(j for j in r.data if j['id'] == applied_job.id)
+    assert row['has_mailbox_history'] is False
+
+
 # --- TASK-120 AC3/AC4: the job's notes travel with its mail in the same response -------------------
 
 def test_job_mailbox_endpoint_includes_the_jobs_notes_newest_first_with_their_type(client, applied_job):
@@ -157,8 +195,27 @@ def test_job_mailbox_endpoint_message_gmail_url_is_built_from_the_message_id(cli
     r = client.get(f'/api/jobs/{applied_job.id}/mailbox/')
 
     row = next(m for m in r.data['messages'] if m['id'] == message.id)
-    assert row['gmail_url'] == mailbox.gmail_conversation_url('<abc123@mail.gmail.com>')
+    assert row['gmail_url'] == mailbox.gmail_conversation_url('<abc123@mail.gmail.com>', authuser=mailbox._reply_from_address() or '')
     assert 'rfc822msgid:abc123' in row['gmail_url']
+
+
+def test_job_mailbox_endpoint_gmail_url_names_the_account_it_means(client, applied_job, settings):
+    """TASK-121 AC3, measured in the owner's real browser 2026-08-18 and then regression-guarded.
+
+    A bare /mail/u/0/#search/... opens whichever Google account signed in FIRST in that browser. The
+    owner's mailbox was account index 3, so the first link found nothing until /u/0/ was hand-edited
+    to /u/3/. Passing the mailbox's own address as authuser makes Gmail resolve the account itself
+    (confirmed: it redirected to /mail/u/3/ and found the message). Without this the link is a
+    coin flip on any machine signed into more than one Google account.
+    """
+    settings.GMAIL_IMAP_USER = 'owner@example.test'
+    message = _log_message(applied_job, 'uncertain', message_id='<acct@mail.gmail.com>')
+
+    r = client.get(f'/api/jobs/{applied_job.id}/mailbox/')
+
+    url = next(m for m in r.data['messages'] if m['id'] == message.id)['gmail_url']
+    assert 'authuser=owner%40example.test' in url, 'the link must say which account it means'
+    assert url.index('authuser=') < url.index('#'), 'authuser is a query param, not part of the fragment'
 
 
 # --- AC6: unmatched list -------------------------------------------------------------------------
@@ -342,3 +399,33 @@ def test_edit_draft_action_for_a_job_the_user_cannot_see_is_404(client, applied_
     draft.refresh_from_db()
     assert draft.body_text == 'old text'
     assert calls == []
+
+
+# --- TASK-88 AC2: the deliberate-error endpoint that proves alerting works ------------------------
+
+def test_raise_test_error_is_owner_gated_and_does_not_leak_its_existence(db):
+    """A deliberate-500 endpoint is a liability if anyone can reach it: every hit mails the owner,
+    so an open one is both an alert-spam vector and a way to burn the Brevo quota that password-reset
+    mail depends on. Non-owners get 404 (not 403), so the endpoint does not advertise itself.
+    """
+    from django.contrib.auth import get_user_model
+    from rest_framework.test import APIClient
+
+    other = get_user_model().objects.create_user('stranger@example.test', email='stranger@example.test', password='pw')
+    client = APIClient()
+    client.force_authenticate(other)
+
+    r = client.post('/api/debug/raise-test-error/')
+
+    assert r.status_code == 404, 'a non-owner must not be able to trigger an alert'
+
+
+def test_raise_test_error_actually_raises_for_the_owner(client, owner, settings):
+    """The whole point: it must genuinely raise so Django's django.request logger fires the
+    AdminEmailHandler. A view that returned 500 without raising would test nothing.
+    """
+    import pytest
+    settings.CODEX_CV_OWNER_EMAIL = owner.email
+
+    with pytest.raises(RuntimeError, match='TASK-88 AC2'):
+        client.post('/api/debug/raise-test-error/')

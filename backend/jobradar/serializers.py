@@ -252,6 +252,14 @@ class JobLeadListSerializer(JobLeadSerializer):
     the board reads them from the list response -- the job detail page fetches
     /api/jobs/<id>/ for its editor and source-text pane.
     """
+    # TASK-126 AC1/AC4: the board's mail indicator used to derive "this job has mail" only from
+    # /mailbox-suggestions/ (pending-only), so it vanished the moment a suggestion was decided --
+    # see the task's Description for the measured bug. This is the recorded decision from that
+    # task's notes: option 1 (a field on the list response), not a second per-row request (option 2,
+    # which TASK-91 was filed to avoid) or overloading /mailbox-suggestions/ to return decided rows
+    # too (option 3). Read-only: sourced from the Exists() annotation JobLeadViewSet.get_queryset()
+    # adds for every row already in this one list query, not a per-row lookup.
+    has_mailbox_history=serializers.BooleanField(read_only=True, default=False)
     class Meta(JobLeadSerializer.Meta):
         fields=None  # DRF forbids fields and exclude together; the parent sets fields='__all__'
         exclude=('raw_description','original_source_text')
@@ -293,8 +301,15 @@ class PracticeEvaluateSerializer(serializers.Serializer):
 # (inside the function, not at module level) because services.mailbox itself imports
 # JobLeadSerializer from this module -- a top-level import here would be circular.
 def _gmail_url(message_id):
-    from .services.mailbox import gmail_conversation_url
-    return gmail_conversation_url(message_id) or None
+    # TASK-121 AC3/AC4, measured against the owner's real mailbox 2026-08-18: a bare
+    # https://mail.google.com/mail/u/0/#search/... opens whichever Google account signed in FIRST in
+    # that browser, not necessarily the mailbox the app reads. The owner had to hand-edit /u/0/ to
+    # /u/3/ before the link found the message. Passing the mailbox's own address as authuser makes
+    # the link say which account it means instead of relying on tab order.
+    # Imported inside the function on purpose: services.mailbox imports JobLeadSerializer from this
+    # module, so a module-level import here is a circular import that breaks the whole app.
+    from .services.mailbox import _reply_from_address, gmail_conversation_url
+    return gmail_conversation_url(message_id, authuser=_reply_from_address() or '') or None
 
 class MailboxDraftSerializer(serializers.ModelSerializer):
     """TASK-110 AC5. Read-only everywhere -- MailboxDraft is append-only, same shape as

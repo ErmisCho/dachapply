@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {copyToClipboard,deadlineBadge,describeOrdering,fromDateTimeLocal,germanSubmitError,groupMailboxSuggestions,initPanelOrder,nextSortKeys,pathTitle,ratePercent,selectGeneralNote,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {copyToClipboard,deadlineBadge,describeOrdering,fromDateTimeLocal,germanSubmitError,groupMailboxSuggestions,initPanelOrder,mailboxIndicatorState,nextSortKeys,pathTitle,ratePercent,selectGeneralNote,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -198,6 +198,27 @@ describe('selectGeneralNote (TASK-123)',()=>{
     expect(selectGeneralNote([])).toBe(null)
     expect(selectGeneralNote(null)).toBe(null)
     expect(selectGeneralNote(undefined)).toBe(null)
+  })
+})
+
+// TASK-126: the exact defect was a job with mail history but no pending suggestion showing no
+// board indicator at all -- these three cases are the whole bug, plus AC2's requirement that
+// 'pending' wins even when history is also true (both can be true on a job with older decided
+// suggestions and one fresh undecided one).
+describe('mailboxIndicatorState (TASK-126 AC1/AC2/AC3)',()=>{
+  it('is pending when a decision is waiting, regardless of older history',()=>{
+    expect(mailboxIndicatorState(true,true)).toBe('pending')
+    expect(mailboxIndicatorState(true,false)).toBe('pending')
+    expect(mailboxIndicatorState(true,undefined)).toBe('pending')
+  })
+
+  it('is history when there is mail but every suggestion on it is decided',()=>{
+    expect(mailboxIndicatorState(false,true)).toBe('history')
+  })
+
+  it('is null (no indicator) when the job has no mailbox history at all',()=>{
+    expect(mailboxIndicatorState(false,false)).toBe(null)
+    expect(mailboxIndicatorState(false,undefined)).toBe(null)
   })
 })
 

@@ -1,3 +1,5 @@
+from datetime import time
+
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -56,6 +58,19 @@ class UserProfile(models.Model):
     # collide with prompt_builder's generic profile codec, which treats a falsy value as "unset".
     mailbox_check_cadence_minutes=models.PositiveIntegerField(default=60)
     mailbox_check_calendar_aware=models.BooleanField(default=True)
+    # TASK-125 AC1/AC2: the explicit off switch. Deliberately not cadence=0 -- the validator above
+    # rejects 0 for a documented reason (it would read back as "unset" through the profile codec and
+    # fall back to the default, silently meaning "every hour" rather than "never"). Default True so
+    # every existing account keeps checking exactly as it did before this field existed.
+    mailbox_check_enabled=models.BooleanField(default=True)
+    # TASK-125 AC3/AC4/AC5: the check only runs inside this window, interpreted in settings.TIME_ZONE
+    # (Europe/Vienna) via timezone.localtime() -- see services.mailbox.is_within_check_window and
+    # run_check, the one place both fields are read. Two times rather than a string, so the
+    # midnight-wrap case (e.g. 22:00-06:00) is a comparison, not a parse. Equal start/end (the
+    # default for both) means "no restriction" -- every existing account keeps checking around the
+    # clock exactly as before until it explicitly sets a window.
+    mailbox_check_window_start=models.TimeField(default=time(0, 0))
+    mailbox_check_window_end=models.TimeField(default=time(0, 0))
     # TASK-110 AC2. Guardrails, not prompt text -- neither field is in prompt_builder.PROFILE_FIELDS,
     # so it never reaches an LLM prompt; services.mailbox.check_guardrails reads it only to check the
     # *generated* draft text in code. 0 / '' both mean "not configured" (no floor, no blocklist), same
@@ -275,6 +290,12 @@ class PracticeSession(models.Model):
 class ScheduledTaskRun(models.Model):
     name=models.CharField(max_length=120, unique=True)
     last_run_at=models.DateTimeField(null=True, blank=True)
+    # TASK-124 AC4: set only by services.mailbox._claim_run while a run for this task is actually in
+    # flight, and cleared by _release_run() the instant it finishes (success, error, or any skip) --
+    # a dedicated marker rather than reading MailboxRun.finished_at IS NULL, because plenty of test
+    # fixtures (and seed_fake_run's historical-baseline rows) create a MailboxRun directly without
+    # ever setting finished_at, which would misread as "still running" if this reused that column.
+    running_since=models.DateTimeField(null=True, blank=True)
     updated_at=models.DateTimeField(auto_now=True)
     def __str__(self): return f'{self.name}: {self.last_run_at or "never"}'
 
@@ -285,7 +306,16 @@ class MailboxRun(models.Model):
     only a real attempt (whether it goes on to skip for calendar-quiet-hours or fetches mail) is
     worth a row, so this table doubles as the run digest AC4 asks for without extra bookkeeping.
     """
-    SKIP_REASONS=[('', 'Not skipped'), ('quiet_hours', 'Calendar busy')]
+    # TASK-125 AC6: every reason a run does nothing is a value here, never a second mechanism --
+    # this column is the one place a skip is recorded, and the gate order in services.mailbox.run_check
+    # decides which one wins when more than one would apply (disabled, then outside_window, then
+    # quiet_hours -- cheapest and most specific first).
+    SKIP_REASONS=[
+        ('', 'Not skipped'),
+        ('quiet_hours', 'Calendar busy'),
+        ('disabled', 'Checking turned off'),
+        ('outside_window', 'Outside the allowed time window'),
+    ]
     started_at=models.DateTimeField(auto_now_add=True)
     finished_at=models.DateTimeField(null=True, blank=True)
     skipped=models.BooleanField(default=False)
@@ -309,6 +339,24 @@ class MailboxRun(models.Model):
     error=models.TextField(blank=True, default='')
     class Meta: ordering=['-started_at']
     def __str__(self): return f'Run {self.started_at}: ' + (f'skipped ({self.skip_reason})' if self.skipped else f'{self.fetched_count} fetched')
+
+class MailboxCheckRequest(models.Model):
+    """TASK-124 AC2/AC3: a manual "run now" request recorded on a backend with no mail credentials
+    (the deployed site), for the owner's own machine to pick up on its next check_mailbox tick.
+
+    Deliberately its own model rather than overloading ScheduledTaskRun, which tracks a recurring
+    SCHEDULE's last-run-at, not a one-off ask -- see the task notes. `handled_at` is the once-only
+    marker (AC3: picked up and run on the next tick, then never acted on again, whatever the
+    outcome); `result_run` links to the MailboxRun the request actually produced -- including a
+    skipped one (disabled/outside_window/quiet_hours all still count as "this was handled") -- so the
+    app can show the outcome of the specific thing that was asked for.
+    """
+    requested_at=models.DateTimeField(auto_now_add=True)
+    requested_by=models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    handled_at=models.DateTimeField(null=True, blank=True)
+    result_run=models.ForeignKey(MailboxRun, null=True, blank=True, related_name='fulfilled_requests', on_delete=models.SET_NULL)
+    class Meta: ordering=['-requested_at']
+    def __str__(self): return f'Request at {self.requested_at}: ' + (f'handled -> run {self.result_run_id}' if self.handled_at else 'pending')
 
 class MailboxMessage(models.Model):
     """TASK-109 AC5: the append-only log of every message check_mailbox read.

@@ -48,10 +48,11 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, time as dt_time, timedelta
 from datetime import timezone as dt_timezone
 from email.message import EmailMessage
 from email.utils import format_datetime
+from statistics import median
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
@@ -62,7 +63,7 @@ from django.db import DatabaseError, IntegrityError, transaction
 from django.db.models import Max, Q
 from django.utils import timezone
 
-from jobradar.models import ApplicationNote, JobLead, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun
+from jobradar.models import ApplicationNote, JobLead, MailboxCheckRequest, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun
 from jobradar.services.followup_digest import owned_jobs
 from jobradar.services.prompt_builder import user_profile_settings
 # Reuse of interview_coach's local-LLM plumbing (TASK-104): same LLM_PROVIDER env gate, same
@@ -1400,15 +1401,60 @@ def _default_transport():
     """AC1: IMAP app password wins when both are configured (matches the gate check below, which has
     always checked GMAIL_IMAP_USER/APP_PASSWORD first); Gmail-API OAuth is the fallback for an owner
     who cannot get an app password (2SV declined) -- see module docstring and docs/email-setup.md.
+
+    TASK-124 AC2: returns None when NEITHER pair is configured -- the one "can this backend run a
+    mailbox check at all" capability check. run_check()'s own gate stays a separate, explicit boolean
+    (unchanged, and reached first) so this branch is only ever exercised by callers that ask before
+    calling run_check -- see has_mailbox_credentials(), which the manual "run now" trigger uses to
+    decide whether to start a check immediately or record a request instead of guessing from the
+    hostname.
     """
     if settings.GMAIL_IMAP_USER and settings.GMAIL_IMAP_APP_PASSWORD:
         return ImapTransport(settings.GMAIL_IMAP_HOST, settings.GMAIL_IMAP_USER, settings.GMAIL_IMAP_APP_PASSWORD)
-    return GmailApiTransport(settings.GMAIL_OAUTH_CLIENT_ID, settings.GMAIL_OAUTH_CLIENT_SECRET, settings.GMAIL_OAUTH_TOKEN_PATH)
+    if settings.GMAIL_OAUTH_CLIENT_ID and settings.GMAIL_OAUTH_CLIENT_SECRET:
+        return GmailApiTransport(settings.GMAIL_OAUTH_CLIENT_ID, settings.GMAIL_OAUTH_CLIENT_SECRET, settings.GMAIL_OAUTH_TOKEN_PATH)
+    return None
 
 
-def _claim_tick(now, cadence_minutes, force=False):
-    """Same select_for_update claim-before-work shape as demo_scheduler.seed_demo_if_due and
-    followup_digest._claim_today, adapted from a once-a-day guard to an every-N-minutes one.
+def has_mailbox_credentials() -> bool:
+    """TASK-124 AC2: the capability the client picks its wording from -- exposed rather than left for
+    the frontend to guess from the hostname (local vs deployed)."""
+    return _default_transport() is not None
+
+
+class MailboxCheckInProgress(Exception):
+    """TASK-124 AC4: raised by run_check() when another run (from any process -- the web app's own
+    background thread, the check_mailbox command, a second terminal) is already in flight. The
+    caller is told, rather than the second run being silently dropped or racing the first one over
+    MailboxMessage.uid's unique constraint (see run_check's MAX(uid) resume-marker comment).
+    """
+
+
+# TASK-124 AC4: a run started this long ago with no finished_at is treated as abandoned (a crashed
+# process, a killed terminal) rather than a permanent lock -- without this, one crash would wedge
+# every future run, scheduled or manual, forever. ponytail: fixed cutoff, not adaptive to the
+# cold-vs-incremental duration split estimate_seconds_from_history knows about; raise it (or make it
+# per-kind) if a real cold-start run is ever observed taking longer than this.
+_STALE_RUN_MINUTES = 30
+
+
+def _claim_run(now, cadence_minutes, force=False):
+    """DB-level guard combining AC4 (no two runs in progress at once, from any process or trigger)
+    with the pre-existing cadence gate, and now creates the MailboxRun row itself while still holding
+    the lock -- checking "is anything in progress" and creating the row that WOULD make this run "in
+    progress" have to happen atomically together, or two callers could both pass the check before
+    either creates its row. Same select_for_update claim-before-work shape as
+    demo_scheduler.seed_demo_if_due and followup_digest._claim_today, adapted from a once-a-day guard
+    to an every-N-minutes one.
+
+    `ScheduledTaskRun.running_since` (cleared by _release_run() once run_check finishes) is the
+    concurrency marker, deliberately NOT MailboxRun.finished_at IS NULL -- plenty of fixtures across
+    this test suite (and seed_fake_run's historical-baseline rows) create a MailboxRun directly
+    without ever setting finished_at, which would misread as "still running" if this reused that
+    column instead of a marker only a real claimed run ever touches.
+
+    Returns the new MailboxRun on a successful claim, None when the cadence isn't due yet (unchanged
+    behaviour, still no row for a non-attempt), or raises MailboxCheckInProgress.
     """
     try:
         with transaction.atomic():
@@ -1416,22 +1462,120 @@ def _claim_tick(now, cadence_minutes, force=False):
                 task, _created = ScheduledTaskRun.objects.select_for_update().get_or_create(name=TASK_NAME)
             except IntegrityError:
                 task = ScheduledTaskRun.objects.select_for_update().get(name=TASK_NAME)
+            stale_cutoff = now - timedelta(minutes=_STALE_RUN_MINUTES)
+            if task.running_since and task.running_since >= stale_cutoff:
+                raise MailboxCheckInProgress('A mailbox check is already running.')
             if not force and task.last_run_at and (now - task.last_run_at) < timedelta(minutes=cadence_minutes):
-                return False
+                return None
             task.last_run_at = now
-            task.save(update_fields=['last_run_at', 'updated_at'])
-            return True
+            task.running_since = now
+            task.save(update_fields=['last_run_at', 'running_since', 'updated_at'])
+            return MailboxRun.objects.create()
     except DatabaseError as exc:
         logger.warning('Could not claim mailbox check tick: %s', exc)
-        return False
+        return None
+
+
+def _release_run():
+    """Clears the running_since marker _claim_run() set, so the next caller (any process) can claim a
+    run again. Best-effort: a DatabaseError here must not hide the run's own outcome -- the stale-run
+    cutoff in _claim_run already bounds how long a crash between claiming and releasing can wedge
+    future runs, so a failed release here is not a permanent lock either.
+    """
+    try:
+        ScheduledTaskRun.objects.filter(name=TASK_NAME).update(running_since=None)
+    except DatabaseError as exc:
+        logger.warning('Could not release the mailbox check run lock: %s', exc)
+
+
+# --- TASK-125 AC3/AC4: the time-of-day window, as a pure function --------------------------------
+
+def is_within_check_window(now_time, start, end) -> bool:
+    """True when `now_time` (a datetime.time, already converted to the timezone the window is
+    interpreted in -- see run_check) falls inside [start, end].
+
+    AC2/model default: start == end means "no restriction" -- the default for every account that has
+    never set a window, so existing behaviour is unchanged until the owner opts in.
+    AC4: start > end wraps past midnight (e.g. 22:00-06:00); "inside" then means now >= start OR
+    now <= end, the case a naive `start <= now <= end` comparison always gets wrong.
+    """
+    if start == end:
+        return True
+    if start < end:
+        return start <= now_time <= end
+    return now_time >= start or now_time <= end
+
+
+# --- TASK-124 AC7: a time estimate from history, not a constant ----------------------------------
+
+def estimate_seconds_from_history(durations: list[float]) -> float | None:
+    """Pure: the median of `durations` (completed-run seconds, already filtered by the caller to the
+    SAME kind -- cold or incremental -- as the run about to start), or None with no history to learn
+    from -- the caller says so rather than inventing a number. Median, not mean, so one unusually
+    slow or fast run does not skew the figure the owner is watching mid-run.
+    """
+    return median(durations) if durations else None
+
+
+def next_check_is_cold_start() -> bool:
+    """Best-effort guess at whether the NEXT run will be a cold start, mirroring run_check's own
+    `last_marker == 0` rule (see its comment): true exactly when no message has ever been logged,
+    since that marker is zero only when the table is empty. The configured transport does not change
+    between runs in practice (module docstring), so this holds regardless of which one is active.
+    """
+    return not MailboxMessage.objects.exists()
+
+
+def _recent_run_durations(is_cold_start: bool, limit: int = 10) -> list[float]:
+    """The impure half of the estimate: reads completed, non-skipped, non-errored runs of the same
+    kind as `is_cold_start` (drafting_skipped already records exactly that split -- see the model and
+    TASK-110's cold-start comment in run_check). Kept separate from estimate_seconds_from_history so
+    the actual math stays a pure function with its own test.
+    """
+    rows = MailboxRun.objects.filter(
+        drafting_skipped=is_cold_start, skipped=False, error='', finished_at__isnull=False,
+    ).order_by('-started_at')[:limit]
+    return [(row.finished_at - row.started_at).total_seconds() for row in rows]
+
+
+def mailbox_check_estimate() -> dict:
+    """AC7: {'kind': 'cold'|'incremental', 'estimated_seconds': float|None}. None means no history of
+    that kind exists yet -- the caller must say so rather than invent a number."""
+    is_cold = next_check_is_cold_start()
+    return {'kind': 'cold' if is_cold else 'incremental', 'estimated_seconds': estimate_seconds_from_history(_recent_run_durations(is_cold))}
+
+
+# --- TASK-124 AC2/AC3: queued requests on a backend with no credentials --------------------------
+
+def queue_mailbox_check_request(user) -> MailboxCheckRequest:
+    """AC2: recorded instead of failing when has_mailbox_credentials() is False -- picked up by
+    pending_mailbox_check_request() on the owner's own machine's next check_mailbox tick."""
+    return MailboxCheckRequest.objects.create(requested_by=user)
+
+
+def pending_mailbox_check_request() -> MailboxCheckRequest | None:
+    """AC3: the oldest not-yet-handled request, if any -- check_mailbox.py picks this up ahead of its
+    own cadence-gated tick and runs it regardless of whether the cadence is due."""
+    return MailboxCheckRequest.objects.filter(handled_at__isnull=True).order_by('requested_at').first()
+
+
+def current_mailbox_run() -> MailboxRun | None:
+    """AC5: the run currently in progress, if any. AC4's concurrency guard (_claim_run) means at most
+    one such row can exist at a time, so this is the one row a poller needs to read for live
+    fetched_count while a run is in flight."""
+    return MailboxRun.objects.filter(finished_at__isnull=True).order_by('-started_at').first()
 
 
 def run_check(force=False, transport=None) -> MailboxRun | None:
-    """The one entry point management/commands/check_mailbox.py calls.
+    """The one entry point management/commands/check_mailbox.py (and the manual "run now" trigger,
+    services.mailbox_tasks) calls.
 
-    Returns None whenever nothing happened at all (not configured, no owner account, or the
-    cadence isn't due) -- callers should not treat None as an error. Returns the MailboxRun row for
-    every real attempt, whether it went on to skip for quiet hours or fetched mail.
+    Returns None whenever nothing happened at all and there is nothing worth a row for (not
+    configured, no owner account, or the cadence isn't due) -- callers should not treat None as an
+    error. Returns the MailboxRun row for every real attempt, whether it went on to skip (disabled,
+    outside the check window, calendar quiet hours -- TASK-125 AC6) or fetched mail. Raises
+    MailboxCheckInProgress (TASK-124 AC4) rather than either of those when another run is already in
+    flight, from any process.
     """
     if not (
         (settings.GMAIL_IMAP_USER and settings.GMAIL_IMAP_APP_PASSWORD)
@@ -1444,11 +1588,28 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
     profile = user_profile_settings(owner)
     cadence = profile.mailbox_check_cadence_minutes or 60
     now = timezone.now()
-    if not _claim_tick(now, cadence, force=force):
+    run = _claim_run(now, cadence, force=force)
+    if run is None:
         return None
 
-    run = MailboxRun.objects.create()
     try:
+        # TASK-125 AC1/AC6: cheapest and most specific first, so the recorded reason is the most
+        # useful one when more than one would apply.
+        if not profile.mailbox_check_enabled:
+            run.skipped = True
+            run.skip_reason = 'disabled'
+            run.finished_at = timezone.now()
+            run.save()
+            return run
+        # AC5: interpreted in settings.TIME_ZONE (Europe/Vienna) via timezone.localtime() -- the same
+        # call calendar_busy_now/apply_suggestion already use elsewhere in this module, so there is
+        # exactly one timezone in play here, not two.
+        if not is_within_check_window(timezone.localtime(now).time(), profile.mailbox_check_window_start, profile.mailbox_check_window_end):
+            run.skipped = True
+            run.skip_reason = 'outside_window'
+            run.finished_at = timezone.now()
+            run.save()
+            return run
         if profile.mailbox_check_calendar_aware and calendar_busy_now(now):
             run.skipped = True
             run.skip_reason = 'quiet_hours'
@@ -1530,6 +1691,10 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
                             run.draft_written_count += 1
                         else:
                             run.draft_blocked_count += 1
+            # TASK-124 AC5: persisted after every message, not just once at the end -- a poller reading
+            # the row mid-run must see fetched_count actually move, and the first live run's 641
+            # messages is exactly the case a save-only-at-the-end would leave silent the whole time.
+            run.save(update_fields=['fetched_count', 'job_related_count', 'uncertain_count', 'suggestion_count', 'draft_written_count', 'draft_blocked_count'])
 
         run.finished_at = timezone.now()
         run.save()
@@ -1538,6 +1703,11 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         run.error = str(exc)[:2000]
         run.finished_at = timezone.now()
         run.save()
+    finally:
+        # TASK-124 AC4: released on every exit from the try above -- every early `return run` for a
+        # skip, the normal completion, and the exception path all go through this one finally, so a
+        # claimed run is never left marked "in progress" after run_check has actually returned.
+        _release_run()
     return run
 
 

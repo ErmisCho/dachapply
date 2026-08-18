@@ -1,6 +1,7 @@
 from django.core.management.base import BaseCommand
+from django.utils import timezone
 
-from jobradar.services.mailbox import run_check, seed_fake_run
+from jobradar.services.mailbox import MailboxCheckInProgress, pending_mailbox_check_request, run_check, seed_fake_run
 
 
 class Command(BaseCommand):
@@ -12,7 +13,11 @@ class Command(BaseCommand):
         'reply-wanting messages. Intended to be invoked by Windows Task Scheduler (or a developer) '
         'roughly hourly; the command itself enforces the configured cadence, so a more frequent '
         'scheduler trigger is harmless. The app only ever appends drafts -- sending is exclusively '
-        'the owner in Gmail.'
+        'the owner in Gmail.\n\n'
+        'TASK-124 AC3: before its own cadence-gated tick, this command first looks for a mailbox '
+        'check request recorded from a backend with no mail credentials (the deployed site) and, if '
+        'one is pending, runs that instead -- regardless of whether the cadence is due -- and marks '
+        'it handled so it only ever runs once.'
     )
 
     def add_arguments(self, parser):
@@ -29,9 +34,35 @@ class Command(BaseCommand):
             ))
             return
 
-        run = run_check(force=opts['force'])
+        pending_request = pending_mailbox_check_request()
+        if pending_request is not None:
+            try:
+                run = run_check(force=True)
+            except MailboxCheckInProgress as exc:
+                # Left unhandled on purpose: a check already in flight means this request will get
+                # picked up on a later tick instead, not lost.
+                self.stdout.write(self.style.WARNING(f'A mailbox check request is queued, but {exc} Will retry on the next tick.'))
+                return
+            pending_request.handled_at = timezone.now()
+            pending_request.result_run = run
+            pending_request.save(update_fields=['handled_at', 'result_run'])
+            self.stdout.write(f'Handled queued check request #{pending_request.id}.')
+            self._report(run)
+            return
+
+        try:
+            run = run_check(force=opts['force'])
+        except MailboxCheckInProgress as exc:
+            self.stdout.write(self.style.WARNING(str(exc)))
+            return
         if run is None:
             self.stdout.write('Not due yet (or neither GMAIL_IMAP_USER/APP_PASSWORD nor GMAIL_OAUTH_CLIENT_ID/SECRET, nor the owner account, are configured).')
+            return
+        self._report(run)
+
+    def _report(self, run):
+        if run is None:
+            self.stdout.write('Mailbox check did not run: no owner account is configured for this backend.')
         elif run.skipped:
             self.stdout.write(self.style.WARNING(f'Skipped: {run.skip_reason}.'))
         elif run.error:

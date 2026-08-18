@@ -8,18 +8,22 @@ import base64
 import email
 import email.policy
 import json
-from datetime import datetime, timedelta
+import threading
+import time
+from datetime import datetime, time as dt_time, timedelta
 from email.message import EmailMessage
 
 import pytest
 from django.contrib.auth.models import User
+from django.core.management import call_command
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from jobradar.models import ApplicationNote, JobLead, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, UserProfile
-from jobradar.services import mailbox
+from jobradar.models import ApplicationNote, JobLead, MailboxCheckRequest, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun, UserProfile
+from jobradar.services import mailbox, mailbox_tasks
 from jobradar.services.mailbox import (
+    MailboxCheckInProgress,
     RawMessage,
     apply_suggestion,
     attach_message_to_job,
@@ -28,12 +32,20 @@ from jobradar.services.mailbox import (
     calendar_busy_now,
     check_guardrails,
     classify_email,
+    current_mailbox_run,
     dismiss_suggestion,
+    estimate_seconds_from_history,
     gmail_conversation_url,
+    has_mailbox_credentials,
     is_busy_at,
+    is_within_check_window,
+    mailbox_check_estimate,
     match_job,
+    next_check_is_cold_start,
     owned_job_domains,
+    pending_mailbox_check_request,
     purge_app_drafts,
+    queue_mailbox_check_request,
     run_check,
     sanitize_inbound_text,
     seed_fake_run,
@@ -1664,3 +1676,358 @@ def test_update_draft_text_returns_a_reason_when_gmail_rejects_the_update(db, ow
     draft.refresh_from_db()
     assert draft.body_text == 'original text', 'the stored draft must be untouched when Gmail refused'
     assert draft.evaluator != 'human', 'a failed edit must not be recorded as a human edit'
+
+
+# ===================================================================================================
+# TASK-125: turn the check off, and confine it to a time-of-day window
+# ===================================================================================================
+
+# --- is_within_check_window: pure function (AC3/AC4/AC10) -----------------------------------------
+
+def test_is_within_check_window_equal_start_end_means_unrestricted():
+    """Model default (both fields start at 00:00): every existing account keeps checking around the
+    clock until it opts into a window."""
+    assert is_within_check_window(dt_time(3, 0), dt_time(0, 0), dt_time(0, 0)) is True
+    assert is_within_check_window(dt_time(23, 59), dt_time(0, 0), dt_time(0, 0)) is True
+
+
+def test_is_within_check_window_ordinary_same_day_range():
+    start, end = dt_time(8, 0), dt_time(20, 0)
+    assert is_within_check_window(dt_time(12, 0), start, end) is True
+    assert is_within_check_window(dt_time(8, 0), start, end) is True  # start boundary, inclusive
+    assert is_within_check_window(dt_time(20, 0), start, end) is True  # end boundary, inclusive
+    assert is_within_check_window(dt_time(7, 59), start, end) is False
+    assert is_within_check_window(dt_time(20, 1), start, end) is False
+
+
+def test_is_within_check_window_wraps_past_midnight():
+    """AC4: the case a naive `start <= now <= end` always gets wrong."""
+    start, end = dt_time(22, 0), dt_time(6, 0)
+    assert is_within_check_window(dt_time(23, 0), start, end) is True  # late night
+    assert is_within_check_window(dt_time(3, 0), start, end) is True  # small hours
+    assert is_within_check_window(dt_time(22, 0), start, end) is True  # start boundary
+    assert is_within_check_window(dt_time(6, 0), start, end) is True  # end boundary
+    assert is_within_check_window(dt_time(12, 0), start, end) is False  # midday, outside
+    assert is_within_check_window(dt_time(6, 1), start, end) is False  # just past the end boundary
+
+
+# --- run_check: disabled / outside-window gates (AC1, AC2, AC6) -----------------------------------
+
+def test_run_check_skips_and_does_not_fetch_when_disabled(db, owner):
+    profile = user_profile_settings(owner)
+    profile.mailbox_check_enabled = False
+    profile.save(update_fields=['mailbox_check_enabled'])
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    transport = FakeTransport([raw(1)])
+    run = run_check(transport=transport)
+    assert run.skipped is True and run.skip_reason == 'disabled'
+    assert transport.calls == [], 'off must mean no fetch happened, not just a counter staying at zero'
+    assert MailboxMessage.objects.count() == 0
+
+
+def test_run_check_runs_when_inside_a_real_configured_window(db, owner):
+    """Wiring test with a real wall-clock window (not a mocked gate) -- a wide, flake-proof band."""
+    profile = user_profile_settings(owner)
+    now_local = timezone.localtime(timezone.now())
+    profile.mailbox_check_window_start = (now_local - timedelta(hours=1)).time()
+    profile.mailbox_check_window_end = (now_local + timedelta(hours=1)).time()
+    profile.save(update_fields=['mailbox_check_window_start', 'mailbox_check_window_end'])
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    run = run_check(transport=FakeTransport([raw(1)]))
+    assert run.skipped is False
+
+
+def test_run_check_skips_and_does_not_fetch_when_outside_window(db, owner, monkeypatch):
+    monkeypatch.setattr(mailbox, 'is_within_check_window', lambda now_time, start, end: False)
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    transport = FakeTransport([raw(1)])
+    run = run_check(transport=transport)
+    assert run.skipped is True and run.skip_reason == 'outside_window'
+    assert transport.calls == []
+
+
+def test_run_check_passes_the_profiles_window_to_is_within_check_window(db, owner, monkeypatch):
+    profile = user_profile_settings(owner)
+    profile.mailbox_check_window_start = dt_time(9, 0)
+    profile.mailbox_check_window_end = dt_time(17, 0)
+    profile.save(update_fields=['mailbox_check_window_start', 'mailbox_check_window_end'])
+    seen = {}
+    def spy(now_time, start, end):
+        seen.update(start=start, end=end)
+        return True
+    monkeypatch.setattr(mailbox, 'is_within_check_window', spy)
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    run_check(transport=FakeTransport([raw(1)]))
+    assert seen == {'start': dt_time(9, 0), 'end': dt_time(17, 0)}
+
+
+def test_run_check_gate_order_disabled_beats_outside_window_and_calendar_busy(db, owner, monkeypatch):
+    """AC6: cheapest and most specific first -- when more than one reason would apply, the earliest
+    one in the chain is the one that gets recorded."""
+    profile = user_profile_settings(owner)
+    profile.mailbox_check_enabled = False
+    profile.save(update_fields=['mailbox_check_enabled'])
+    monkeypatch.setattr(mailbox, 'is_within_check_window', lambda *a, **k: False)
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now: True)
+    run = run_check(transport=FakeTransport([raw(1)]))
+    assert run.skip_reason == 'disabled'
+
+
+def test_run_check_gate_order_outside_window_beats_calendar_busy(db, owner, monkeypatch):
+    monkeypatch.setattr(mailbox, 'is_within_check_window', lambda *a, **k: False)
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now: True)
+    run = run_check(transport=FakeTransport([raw(1)]))
+    assert run.skip_reason == 'outside_window'
+
+
+# ===================================================================================================
+# TASK-124: run the mailbox check from the app, with live status and a time estimate
+# ===================================================================================================
+
+# --- run_check: DB-level concurrency guard, any process/trigger (AC4) -----------------------------
+
+def test_run_check_refuses_when_already_running(db, owner):
+    ScheduledTaskRun.objects.create(name=mailbox.TASK_NAME, running_since=timezone.now())
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    with pytest.raises(MailboxCheckInProgress):
+        run_check(transport=FakeTransport([raw(1)]))
+    assert MailboxRun.objects.count() == 0, 'the second caller must not create a duplicate run row'
+    assert MailboxMessage.objects.count() == 0
+
+
+def test_run_check_ignores_a_stale_abandoned_run(db, owner):
+    """A crashed process must not wedge every future run, scheduled or manual, forever."""
+    ScheduledTaskRun.objects.create(name=mailbox.TASK_NAME, running_since=timezone.now() - timedelta(minutes=90))
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    run = run_check(transport=FakeTransport([raw(1)]))
+    assert run is not None and not run.error and not run.skipped
+
+
+def test_run_check_releases_the_lock_after_finishing(db, owner):
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    run_check(transport=FakeTransport([raw(1)]), force=True)
+    task = ScheduledTaskRun.objects.get(name=mailbox.TASK_NAME)
+    assert task.running_since is None
+    # A second forced run (cadence bypassed) proves the lock is really gone, not just read wrong.
+    second = run_check(transport=FakeTransport([raw(2)]), force=True)
+    assert second is not None
+
+
+def test_run_check_releases_the_lock_even_when_the_run_errors(db, owner):
+    class BoomTransport:
+        def fetch_new(self, last_uid):
+            raise RuntimeError('IMAP connection refused')
+    run_check(transport=BoomTransport())
+    assert ScheduledTaskRun.objects.get(name=mailbox.TASK_NAME).running_since is None
+
+
+def test_run_check_releases_the_lock_when_skipped(db, owner):
+    profile = user_profile_settings(owner)
+    profile.mailbox_check_enabled = False
+    profile.save(update_fields=['mailbox_check_enabled'])
+    run_check(transport=FakeTransport([raw(1)]))
+    assert ScheduledTaskRun.objects.get(name=mailbox.TASK_NAME).running_since is None
+
+
+# --- run_check: progress persisted mid-run, not just at the end (AC5) -----------------------------
+
+def test_run_check_persists_progress_mid_run(db, owner, monkeypatch):
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    transport = FakeTransport([raw(1), raw(2), raw(3)])
+    snapshots = []
+    original_save = MailboxRun.save
+    def spy_save(self, *args, **kwargs):
+        original_save(self, *args, **kwargs)
+        snapshots.append(self.fetched_count)
+    monkeypatch.setattr(MailboxRun, 'save', spy_save)
+    run_check(transport=transport)
+    assert any(0 < count < 3 for count in snapshots), (
+        f'a poller reading the row mid-run must see fetched_count increase before the run finishes, saw {snapshots}'
+    )
+
+
+def test_current_mailbox_run_returns_the_in_progress_row(db, owner):
+    assert current_mailbox_run() is None
+    ScheduledTaskRun.objects.create(name=mailbox.TASK_NAME, running_since=timezone.now())
+    run = MailboxRun.objects.create()
+    assert current_mailbox_run() == run
+    run.finished_at = timezone.now()
+    run.save()
+    assert current_mailbox_run() is None
+
+
+# --- mailbox_check_estimate: from history, distinguishing cold from incremental (AC7) --------------
+
+def test_mailbox_check_estimate_says_so_with_no_history(db):
+    assert estimate_seconds_from_history([]) is None
+    result = mailbox_check_estimate()
+    assert result['estimated_seconds'] is None
+    assert result['kind'] == 'cold'  # no MailboxMessage ever logged -- the honest guess is cold
+
+
+def test_estimate_seconds_from_history_is_the_median_not_the_mean():
+    assert estimate_seconds_from_history([10, 20, 90]) == 20
+
+
+def test_mailbox_check_estimate_distinguishes_incremental_from_cold(db, owner):
+    """AC7's bimodality: 641 messages vs 0, orders of magnitude apart -- mixing the two kinds would be
+    wrong in the direction that matters most."""
+    baseline = MailboxRun.objects.create(drafting_skipped=True, finished_at=timezone.now())
+    MailboxMessage.objects.create(run=baseline, uid=1, classification='not_job_related')
+    assert next_check_is_cold_start() is False
+
+    started = timezone.now() - timedelta(seconds=3)
+    incremental_run = MailboxRun.objects.create(drafting_skipped=False, finished_at=timezone.now())
+    MailboxRun.objects.filter(pk=incremental_run.pk).update(started_at=started)
+
+    cold_run = MailboxRun.objects.create(drafting_skipped=True, finished_at=timezone.now())
+    MailboxRun.objects.filter(pk=cold_run.pk).update(started_at=timezone.now() - timedelta(seconds=500))
+
+    result = mailbox_check_estimate()
+    assert result['kind'] == 'incremental'
+    assert result['estimated_seconds'] == pytest.approx(3, abs=1)
+
+
+# --- has_mailbox_credentials / _default_transport (AC2) --------------------------------------------
+
+def test_has_mailbox_credentials_true_when_imap_configured(db):
+    assert has_mailbox_credentials() is True  # the isolated-env fixture sets fake IMAP creds
+
+
+def test_has_mailbox_credentials_false_when_nothing_configured(settings, db):
+    settings.GMAIL_IMAP_USER = ''
+    settings.GMAIL_IMAP_APP_PASSWORD = ''
+    settings.GMAIL_OAUTH_CLIENT_ID = ''
+    settings.GMAIL_OAUTH_CLIENT_SECRET = ''
+    assert has_mailbox_credentials() is False
+
+
+# --- MailboxCheckRequest: queued on a backend with no credentials (AC2/AC3) ------------------------
+
+def test_queue_mailbox_check_request_records_a_pending_request(db, owner):
+    request = queue_mailbox_check_request(owner)
+    assert request.handled_at is None
+    assert pending_mailbox_check_request() == request
+
+
+def test_pending_mailbox_check_request_is_none_when_nothing_queued(db):
+    assert pending_mailbox_check_request() is None
+
+
+def test_pending_mailbox_check_request_ignores_already_handled_requests(db, owner):
+    request = queue_mailbox_check_request(owner)
+    request.handled_at = timezone.now()
+    request.save(update_fields=['handled_at'])
+    assert pending_mailbox_check_request() is None
+
+
+# --- check_mailbox command: queued-request pickup, once (AC3), and the AC4 refusal -----------------
+
+def test_check_mailbox_command_picks_up_a_pending_request_even_when_cadence_is_not_due(db, owner, monkeypatch):
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    ScheduledTaskRun.objects.create(name='check_mailbox', last_run_at=timezone.now())  # cadence just ran
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: FakeTransport([raw(1)]))
+    request = queue_mailbox_check_request(owner)
+
+    call_command('check_mailbox')
+
+    request.refresh_from_db()
+    assert request.handled_at is not None
+    assert request.result_run is not None
+    assert request.result_run.fetched_count == 1
+    assert pending_mailbox_check_request() is None, 'runs once, not on every subsequent tick'
+
+
+def test_check_mailbox_command_leaves_a_pending_request_unhandled_when_a_run_is_already_in_progress(db, owner, capsys):
+    ScheduledTaskRun.objects.create(name='check_mailbox', running_since=timezone.now())
+    request = queue_mailbox_check_request(owner)
+
+    call_command('check_mailbox')
+
+    request.refresh_from_db()
+    assert request.handled_at is None, 'left for a later tick, not lost'
+    assert 'already running' in capsys.readouterr().out.lower()
+
+
+def test_check_mailbox_command_reports_rather_than_crashes_when_already_running(db, owner):
+    ScheduledTaskRun.objects.create(name='check_mailbox', running_since=timezone.now())
+    call_command('check_mailbox')  # must not raise
+
+
+# --- mailbox_tasks: the manual "run now" trigger (AC1, AC2, AC9's scoping half) ---------------------
+
+def test_start_mailbox_check_queues_a_request_without_credentials(settings, db, owner):
+    settings.GMAIL_IMAP_USER = ''
+    settings.GMAIL_IMAP_APP_PASSWORD = ''
+    settings.GMAIL_OAUTH_CLIENT_ID = ''
+    settings.GMAIL_OAUTH_CLIENT_SECRET = ''
+    result = mailbox_tasks.start_mailbox_check(owner)
+    assert result['queued'] is True
+    assert MailboxCheckRequest.objects.filter(pk=result['request_id']).exists()
+
+
+class _BlockingTransport:
+    """fetch_new() blocks until release() is called -- proves start_mailbox_check() returns a handle
+    before the run has finished, not only before a trivially-fast one does (AC1's own bar: verified
+    against a run slower than a normal request timeout)."""
+
+    def __init__(self, messages):
+        self.messages = messages
+        self._release = threading.Event()
+
+    def fetch_new(self, last_uid):
+        self._release.wait(timeout=5)
+        return [m for m in self.messages if m.uid > last_uid]
+
+    def release(self):
+        self._release.set()
+
+
+def test_start_mailbox_check_returns_a_handle_before_the_run_finishes(transactional_db, owner, monkeypatch):
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    blocking = _BlockingTransport([raw(1)])
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: blocking)
+
+    started_at = time.monotonic()
+    result = mailbox_tasks.start_mailbox_check(owner)
+    assert time.monotonic() - started_at < 1, 'must return a handle immediately, not block until the run finishes'
+    assert result['queued'] is False
+    task_id = result['task_id']
+    # Status was set to 'running' synchronously before the thread was even started, so this read is
+    # guaranteed correct regardless of whether the background thread has begun executing yet.
+    assert mailbox_tasks.get_mailbox_check_task(task_id, owner.id)['status'] == 'running'
+
+    blocking.release()
+    for _ in range(200):
+        task = mailbox_tasks.get_mailbox_check_task(task_id, owner.id)
+        if task['status'] != 'running':
+            break
+        time.sleep(.01)
+    assert task['status'] == 'done'
+    assert MailboxRun.objects.get(pk=task['run_id']).fetched_count == 1
+
+
+def test_start_mailbox_check_surfaces_the_already_running_refusal_through_the_task(transactional_db, owner, monkeypatch):
+    ScheduledTaskRun.objects.create(name=mailbox.TASK_NAME, running_since=timezone.now())
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: FakeTransport([]))
+
+    result = mailbox_tasks.start_mailbox_check(owner)
+    task_id = result['task_id']
+    task = mailbox_tasks.get_mailbox_check_task(task_id, owner.id)
+    for _ in range(200):
+        task = mailbox_tasks.get_mailbox_check_task(task_id, owner.id)
+        if task['status'] != 'running':
+            break
+        time.sleep(.01)
+    assert task['status'] == 'refused'
+    assert MailboxRun.objects.count() == 0
+
+
+def test_get_mailbox_check_task_is_scoped_to_the_starting_user(transactional_db, owner, monkeypatch):
+    blocking = _BlockingTransport([])
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: blocking)
+    result = mailbox_tasks.start_mailbox_check(owner)
+    other = User.objects.create_user('other-mailbox@example.test', password='pw')
+    assert mailbox_tasks.get_mailbox_check_task(result['task_id'], other.id) is None
+    assert mailbox_tasks.get_mailbox_check_task(result['task_id'], owner.id) is not None
+    blocking.release()
