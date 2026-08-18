@@ -115,6 +115,17 @@ export function nextSortKeys(current:SortKey[],key:string,max=3):SortKey[]{
 }
 export function sortOrderingString(keys:SortKey[]):string{return keys.map(k=>(k.dir==='desc'?'-':'')+k.key).join(',')}
 
+// TASK-117 AC3. The dashboard's saved panel order puts known ids first and appends anything the
+// saved list does not know about at the END - so a panel id added after a user already has a saved
+// order (e.g. mailbox_review, shipped after most users had already dragged panels around) lands
+// LAST for every one of them, never first. This puts unknown ids at the FRONT instead; a user with
+// no saved order yet gets allIds back unchanged.
+export function initPanelOrder(saved:string[],allIds:string[]):string[]{
+  const known=saved.filter(x=>allIds.includes(x))
+  const unknown=allIds.filter(x=>!saved.includes(x))
+  return [...unknown,...known]
+}
+
 const routeTitles:Record<string,string>={'/':'Board','/add':'Add job','/public-submit':submitDe.title,'/prompts':'Prompts','/import':'Import','/followups':'Follow-ups','/export':'Export','/bookmarklet':'Bookmarklet','/practice':'Practice','/mailbox':'Mailbox','/login':'Sign in','/onboarding':'Setup','/privacy':'Privacy','/terms':'Terms','/settings/profile':'Profile settings','/settings/account':'Account settings'};
 export function pathTitle(pathname:string){return routeTitles[pathname]||(pathname.startsWith('/jobs/')?'Job':pathname.startsWith('/reset-password/')?'Reset password':pathname.startsWith('/verify-email/')?'Confirm email':'')}
 

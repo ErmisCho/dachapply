@@ -17,11 +17,12 @@ from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from jobradar.models import JobLead, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, UserProfile
+from jobradar.models import ApplicationNote, JobLead, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, UserProfile
 from jobradar.services import mailbox
 from jobradar.services.mailbox import (
     RawMessage,
     apply_suggestion,
+    attach_message_to_job,
     build_suggestions,
     bulk_mail_reason,
     calendar_busy_now,
@@ -302,7 +303,7 @@ def test_build_suggestions_rejection_never_pairs_with_feedback_clear(db, applied
     assert MailboxSuggestion.objects.get(message=message).suggestion_type == 'status_change'
 
 
-# --- Confirm / dismiss lifecycle (AC3) -------------------------------------------------------
+# --- Confirm / dismiss lifecycle (AC3, TASK-117 AC4's note-on-confirm) -----------------------
 
 def test_apply_suggestion_rejection_updates_job_and_clears_feedback_clock(db, applied_job):
     applied_job.feedback_due_date = timezone.localdate() + timedelta(days=3); applied_job.save()
@@ -343,6 +344,86 @@ def test_dismiss_suggestion_leaves_job_untouched(db, applied_job):
     assert applied_job.status == 'applied'
     assert suggestion.status == 'dismissed'
     assert suggestion.decided_at is not None
+
+
+def test_apply_suggestion_confirm_writes_exactly_one_recruiter_message_note(db, applied_job):
+    """TASK-117 AC4: confirming leaves a trace naming the sender, subject and received date of the
+    mail that caused the change, asserted here on the job row (status) and the note count together.
+    """
+    run = MailboxRun.objects.create()
+    received = timezone.make_aware(datetime(2026, 8, 18, 9, 12), timezone.get_current_timezone())
+    message = MailboxMessage.objects.create(
+        run=run, uid=1, sender='hr@acme.test', subject='Einladung zum Gespräch',
+        received_at=received, classification='rejection', matched_job=applied_job,
+    )
+    suggestion = MailboxSuggestion.objects.create(message=message, job=applied_job, suggestion_type='status_change', payload={'status': 'rejected'})
+    apply_suggestion(suggestion)
+    applied_job.refresh_from_db()
+    assert applied_job.status == 'rejected'
+    notes = ApplicationNote.objects.filter(job=applied_job)
+    assert notes.count() == 1
+    note = notes.first()
+    assert note.note_type == 'recruiter_message'
+    assert 'hr@acme.test' in note.note
+    assert 'Einladung zum Gespräch' in note.note
+    assert '18.08.2026' in note.note
+
+
+def test_dismiss_suggestion_writes_no_note(db, applied_job):
+    message = _log_message(applied_job, 'rejection')
+    suggestion = MailboxSuggestion.objects.create(message=message, job=applied_job, suggestion_type='status_change', payload={'status': 'rejected'})
+    dismiss_suggestion(suggestion)
+    applied_job.refresh_from_db()
+    assert applied_job.status == 'applied'
+    assert ApplicationNote.objects.filter(job=applied_job).count() == 0
+
+
+# --- Manual attach (TASK-117 AC6) --------------------------------------------------------------
+
+def test_attach_message_to_job_produces_the_same_suggestions_a_domain_match_would(db, applied_job):
+    """The sender domain below matches no job -- match_job() would return None for it -- so this
+    message only reaches the board via the manual attach path, and must produce exactly what
+    build_suggestions() gives a domain-matched message with the same classification.
+    """
+    domain_matched_message = _log_message(applied_job, 'rejection')
+    expected_created = build_suggestions(domain_matched_message, applied_job, 'rejection', None)
+    expected = list(MailboxSuggestion.objects.filter(message=domain_matched_message, job=applied_job).values('suggestion_type', 'payload'))
+    assert expected_created == 1
+
+    domains = owned_job_domains(applied_job.created_by)
+    unmatched_raw = raw(999, sender='agent@totally-unrelated-agency.test')
+    assert match_job(unmatched_raw, domains) is None  # confirms the domain really matches nothing
+
+    unmatched_message = MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=999, sender=unmatched_raw.sender,
+        subject='x', classification='rejection', matched_job=None,
+    )
+    attach_message_to_job(unmatched_message, applied_job)
+    unmatched_message.refresh_from_db()
+    assert unmatched_message.matched_job == applied_job
+    actual = list(MailboxSuggestion.objects.filter(message=unmatched_message, job=applied_job).values('suggestion_type', 'payload'))
+    assert actual == expected
+
+
+def test_attach_message_to_job_re_derives_interview_at_from_stored_body(db, applied_job):
+    message = MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=1, sender='agent@unrelated-agency.test',
+        subject='Interview invite', body_text='We would like to invite you to an interview on 03.03.2026 at 14:00.',
+        classification='interview_invitation', matched_job=None,
+    )
+    attach_message_to_job(message, applied_job)
+    suggestion = MailboxSuggestion.objects.get(message=message, job=applied_job, suggestion_type='interview_date')
+    assert suggestion.payload['interview_at'].startswith('2026-03-03T14:00')
+
+
+def test_attach_message_to_job_twice_does_not_double_the_suggestions(db, applied_job):
+    message = MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=1, sender='agent@unrelated-agency.test',
+        subject='x', classification='rejection', matched_job=None,
+    )
+    attach_message_to_job(message, applied_job)
+    attach_message_to_job(message, applied_job)
+    assert MailboxSuggestion.objects.filter(message=message, job=applied_job).count() == 1
 
 
 # --- Calendar quiet hours (AC7): fail open ----------------------------------------------------
@@ -427,13 +508,24 @@ def test_run_check_logs_every_message_and_creates_suggestions_for_matches(db, ow
     assert MailboxSuggestion.objects.filter(message=matched, job=job).exists()
 
 
-def test_run_check_never_stores_the_message_body(db, owner):
+def test_run_check_stores_the_message_body(db, owner):
+    """TASK-117 AC1: replaces test_run_check_never_stores_the_message_body -- the owner reversed the
+    minimal-metadata default on 2026-08-18 (see the MailboxMessage docstring for why), so the body IS
+    now stored, and stored capped rather than unbounded.
+    """
     JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
     transport = FakeTransport([raw(1, sender='hr@acme.test', body='secret salary details nobody else should see')])
     run_check(transport=transport)
     message = MailboxMessage.objects.get(uid=1)
-    assert not hasattr(message, 'body_text')
-    assert 'secret salary details' not in str(MailboxMessage.objects.values()[0])
+    assert message.body_text == 'secret salary details nobody else should see'
+
+
+def test_run_check_caps_stored_body_at_5000_chars(db, owner):
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    transport = FakeTransport([raw(1, sender='hr@acme.test', body='x' * 6000)])
+    run_check(transport=transport)
+    message = MailboxMessage.objects.get(uid=1)
+    assert len(message.body_text) == 5000
 
 
 def test_run_check_respects_cadence_gate_and_force_overrides_it(db, owner):
