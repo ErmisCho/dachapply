@@ -144,6 +144,28 @@ export function groupMailboxSuggestions<S extends {message:{id:number}}>(suggest
   return groups
 }
 
+// TASK-127 AC1/AC6. The dashboard panel and /mailbox page work off the FLAT /mailbox-suggestions/
+// list (one row per suggestion, each carrying its own message and job), so several emails about one
+// application render as several separate cards unless something groups them first - the owner's
+// mental unit is the exchange with a company about a role (`matched_job`), not the individual email
+// TASK-119's groupMailboxSuggestions already collapses duplicate suggestions on top of.
+// Keyed by a caller-supplied function rather than a hardcoded `s.job`, so swapping in Gmail's
+// `thread_id` once it is backfilled onto the historic rows (5 of 653 today - see TASK-121) is a
+// one-line change at the call site, not a rewrite here. Order is first-seen conversation order;
+// suggestion order within a conversation is preserved too - nothing here re-sorts either.
+export type MailboxConversationGroup<S>={key:number|string;suggestions:S[]}
+export function groupSuggestionsByConversation<S>(suggestions:S[],keyOf:(s:S)=>number|string):MailboxConversationGroup<S>[]{
+  const groups:MailboxConversationGroup<S>[]=[]
+  const byKey=new Map<number|string,MailboxConversationGroup<S>>()
+  for(const s of suggestions){
+    const key=keyOf(s)
+    let group=byKey.get(key)
+    if(!group){group={key,suggestions:[]};byKey.set(key,group);groups.push(group)}
+    group.suggestions.push(s)
+  }
+  return groups
+}
+
 // TASK-123. The board's note button must only ever load/edit/delete a note it created itself - a
 // `general` note - never adopt a note of a different type (e.g. the `recruiter_message` audit note
 // apply_suggestion has written on every confirmed email suggestion since TASK-117) just because it

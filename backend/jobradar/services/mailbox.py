@@ -912,6 +912,56 @@ def attach_message_to_job(message: MailboxMessage, job: JobLead, user=None) -> M
     return message
 
 
+# --- TASK-129: detach job-board newsletters TASK-114 left matched to a job ------------------------
+
+def detach_job_board_messages(dry_run: bool = True):
+    """Clear `matched_job` on every MailboxMessage whose SENDER is a job board (is_job_board() --
+    the same predicate TASK-114 already applies on the live matching path; no second list here). The
+    false association is what is wrong, not the row: MailboxMessage rows are never deleted (TASK-109
+    AC5's append-only log survives), only `matched_job` is cleared.
+
+    Before TASK-114, owned_job_domains() mapped a lead saved off a board's OWN listing page (e.g.
+    xing.com/jobs/...) to the board's domain, so every newsletter that board ever sent matched that
+    job. TASK-114 stopped it going forward; this is the one-time cleanup for what it left behind.
+
+    Matches on the message's stored `sender` header ONLY -- never job/company name, never body text.
+    A genuine reply relayed through a board-owned domain is indistinguishable from a newsletter by
+    sender header alone; TASK-114's own owned_job_domains() predicate already accepts that exact
+    tradeoff for the live path (see its docstring), so this reuses it rather than inventing a second,
+    looser standard here. The cost of that choice is one-directional and deliberate: a message this
+    misses stays attached (noise, already true of live traffic), never that it wrongly detaches real
+    correspondence, which would destroy the one record that message is.
+
+    Any still-`pending` MailboxSuggestion derived from one of those messages is dismissed with it
+    (dismiss_suggestion -- writes no ApplicationNote, see its docstring) -- a newsletter must not keep
+    proposing a status change once its message is no longer "about" that job.
+
+    Returns one dict per affected job, `[]` when there is nothing to do (also true on a second run --
+    the query only ever looks at rows still carrying a `matched_job`, so nothing already cleared is
+    found again):
+        {'job': JobLead, 'message_count': int, 'dismissed_count': int}
+    dry_run=True (the default) matches and reports without writing anything.
+    """
+    candidates = (
+        MailboxMessage.objects.filter(matched_job__isnull=False).exclude(sender='')
+        .select_related('matched_job').order_by('matched_job_id', 'uid')
+    )
+    by_job = {}
+    for message in candidates:
+        if is_job_board(_sender_domain(message.sender)):
+            by_job.setdefault(message.matched_job, []).append(message)
+
+    results = []
+    for job, messages in by_job.items():
+        pending = list(MailboxSuggestion.objects.filter(message__in=messages, status='pending'))
+        if not dry_run:
+            for suggestion in pending:
+                dismiss_suggestion(suggestion)
+            MailboxMessage.objects.filter(pk__in=[m.pk for m in messages]).update(matched_job=None)
+        results.append({'job': job, 'message_count': len(messages), 'dismissed_count': len(pending)})
+    return results
+
+
 # --- Reply drafting into Gmail Drafts (TASK-110) -------------------------------------------------
 #
 # The pattern, in order, every time: template or (env-gated) LLM generates draft text -> the

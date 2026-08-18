@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {copyToClipboard,deadlineBadge,describeOrdering,fromDateTimeLocal,germanSubmitError,groupMailboxSuggestions,initPanelOrder,mailboxEstimateWording,mailboxIndicatorState,nextSortKeys,pathTitle,ratePercent,selectGeneralNote,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {copyToClipboard,deadlineBadge,describeOrdering,fromDateTimeLocal,germanSubmitError,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,mailboxEstimateWording,mailboxIndicatorState,nextSortKeys,pathTitle,ratePercent,selectGeneralNote,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -177,6 +177,37 @@ describe('groupMailboxSuggestions (TASK-119)',()=>{
 
   it('returns an empty list for no suggestions',()=>{
     expect(groupMailboxSuggestions([])).toEqual([])
+  })
+})
+
+// TASK-127 AC1/AC6: nine pending suggestions across four jobs (the owner's real production numbers,
+// measured 2026-08-18) is the exact case this groups for - several emails about ONE application must
+// collapse into one conversation, keyed generically so the call site (not this function) decides
+// whether that key is matched_job today or thread_id once history has it.
+describe('groupSuggestionsByConversation (TASK-127)',()=>{
+  it('groups suggestions from different emails that share one job into a single conversation, in first-seen order',()=>{
+    const s0={id:1,job:10}
+    const s1={id:2,job:11}
+    const s2={id:3,job:10}
+    expect(groupSuggestionsByConversation([s0,s1,s2],s=>s.job)).toEqual([
+      {key:10,suggestions:[s0,s2]},
+      {key:11,suggestions:[s1]},
+    ])
+  })
+
+  it('keeps a single-suggestion job as its own one-item conversation',()=>{
+    const s={id:1,job:5}
+    expect(groupSuggestionsByConversation([s],s=>s.job)).toEqual([{key:5,suggestions:[s]}])
+  })
+
+  it('returns an empty list for no suggestions',()=>{
+    expect(groupSuggestionsByConversation([] as {job:number}[],s=>s.job)).toEqual([])
+  })
+
+  it('keys off whatever the caller passes, so swapping matched_job for thread_id later is a one-line change at the call site',()=>{
+    const s0={id:1,job:10,threadId:'t1'}
+    const s1={id:2,job:11,threadId:'t1'}
+    expect(groupSuggestionsByConversation([s0,s1],s=>s.threadId)).toEqual([{key:'t1',suggestions:[s0,s1]}])
   })
 })
 

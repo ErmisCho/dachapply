@@ -33,6 +33,7 @@ from jobradar.services.mailbox import (
     check_guardrails,
     classify_email,
     current_mailbox_run,
+    detach_job_board_messages,
     dismiss_suggestion,
     estimate_seconds_from_history,
     gmail_conversation_url,
@@ -1515,6 +1516,90 @@ def test_xing_promotion_matches_nothing_and_drafts_nothing(not_cold_start, db, o
     assert transport.appended_drafts == []
     assert not MailboxDraft.objects.filter(message=message).exists()
     assert run.draft_written_count == 0
+
+
+# --- TASK-129: detach job-board newsletters TASK-114 left matched to a job (historical cleanup) ---
+
+
+def _board_message(job, uid, sender='XING Jobs <jobs@mail.xing.com>', classification='recruiter_reply'):
+    run = MailboxRun.objects.create()
+    return MailboxMessage.objects.create(run=run, uid=uid, sender=sender, subject='job alert', classification=classification, matched_job=job)
+
+
+def test_detach_job_board_messages_clears_matched_job_on_board_sender(db, board_job):
+    """The exact production shape this task exists for: job 538/Broadpin had 95 XING messages
+    (66 jobs@mail.xing.com, 29 info@e-mail.xing.com) all wrongly matched -- both sender hosts here.
+    """
+    _board_message(board_job, 1, sender='XING Jobs <jobs@mail.xing.com>')
+    _board_message(board_job, 2, sender='XING <info@e-mail.xing.com>')
+
+    results = detach_job_board_messages(dry_run=False)
+
+    assert results == [{'job': board_job, 'message_count': 2, 'dismissed_count': 0}]
+    assert list(MailboxMessage.objects.filter(matched_job=board_job)) == []
+    # AC1: the rows survive -- only the false association is cleared, never the append-only log.
+    assert MailboxMessage.objects.filter(uid__in=[1, 2]).count() == 2
+
+
+def test_detach_job_board_messages_leaves_employer_sender_attached(db, board_job, applied_job):
+    """AC4, with both kinds present in one run: the board sender is detached, the employer sender
+    (a real recruiter reply) is untouched.
+    """
+    board_message = _board_message(board_job, 1)
+    employer_message = _board_message(applied_job, 2, sender='hr@acme.test', classification='recruiter_reply')
+
+    results = detach_job_board_messages(dry_run=False)
+
+    assert results == [{'job': board_job, 'message_count': 1, 'dismissed_count': 0}]
+    board_message.refresh_from_db(); employer_message.refresh_from_db()
+    assert board_message.matched_job is None
+    assert employer_message.matched_job_id == applied_job.id
+
+
+def test_detach_job_board_messages_dismisses_pending_suggestions(db, board_job):
+    """AC3: a pending suggestion derived from a newsletter must not keep proposing a status change."""
+    message = _board_message(board_job, 1, classification='rejection')
+    suggestion = MailboxSuggestion.objects.create(message=message, job=board_job, suggestion_type='status_change', payload={'status': 'rejected'})
+    already_decided = MailboxSuggestion.objects.create(message=message, job=board_job, suggestion_type='status_change', payload={'status': 'rejected'}, status='confirmed')
+
+    assert MailboxSuggestion.objects.filter(status='pending').count() == 1
+    results = detach_job_board_messages(dry_run=False)
+    assert MailboxSuggestion.objects.filter(status='pending').count() == 0
+
+    assert results == [{'job': board_job, 'message_count': 1, 'dismissed_count': 1}]
+    suggestion.refresh_from_db()
+    assert suggestion.status == 'dismissed'
+    assert suggestion.decided_at is not None
+    already_decided.refresh_from_db()
+    assert already_decided.status == 'confirmed'  # already-decided rows are left alone, not re-dismissed
+
+
+def test_detach_job_board_messages_dry_run_changes_nothing(db, board_job):
+    """AC2: dry run is the default, and reports without writing."""
+    message = _board_message(board_job, 1)
+    suggestion = MailboxSuggestion.objects.create(message=message, job=board_job, suggestion_type='status_change', payload={'status': 'rejected'})
+
+    results = detach_job_board_messages()  # dry_run=True is the default
+
+    assert results == [{'job': board_job, 'message_count': 1, 'dismissed_count': 1}]
+    message.refresh_from_db(); suggestion.refresh_from_db()
+    assert message.matched_job_id == board_job.id
+    assert suggestion.status == 'pending'
+
+
+def test_detach_job_board_messages_is_idempotent(db, board_job):
+    """AC5: a second run finds nothing -- the query only looks at rows still carrying matched_job."""
+    _board_message(board_job, 1)
+    first = detach_job_board_messages(dry_run=False)
+    assert len(first) == 1
+
+    second = detach_job_board_messages(dry_run=False)
+    assert second == []
+
+
+def test_detach_job_board_messages_finds_nothing_when_no_board_sender_is_matched(db, applied_job):
+    _board_message(applied_job, 1, sender='hr@acme.test', classification='recruiter_reply')
+    assert detach_job_board_messages(dry_run=False) == []
 
 
 def test_devjobs_job_alert_matches_nothing_and_drafts_nothing(not_cold_start, db, owner):
