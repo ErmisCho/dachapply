@@ -161,6 +161,18 @@ against the actual mailbox (and, for AC7, one observed quiet-hours skip or an ex
 confirmation that the ICS URL is reachable) should these two boxes be checked and status flipped to
 Done. Nothing here is a code gap; both blockers are exactly "the credential does not exist locally
 yet."
+### 2026-08-18 — AC7's ".env" wording is superseded by TASK-115
+
+AC7 says the private ICS URL is "stored only in the local .env". Owner decision on 2026-08-18: quiet-hours
+calendars are managed from the app instead, several of them, and the `GMAIL_CALENDAR_ICS_URL`
+environment variable is removed. See [[TASK-115]], which carries that change and its reasoning.
+
+AC7's intent is untouched — calendar-aware quiet hours that fail open on a broken calendar — and it is
+still what has to be verified. Only the storage location moves, so the criterion is not weakened and is
+deliberately left as-is here rather than quietly rewritten; TASK-115 is the paper trail TW-005 asks for.
+
+Practical effect: AC7 no longer closes by pasting a URL into `.env`. It closes when TASK-115 ships and a
+real calendar configured through the app causes a run to record `skip_reason=quiet_hours`.
 <!-- SECTION:NOTES:END -->
 
 ## Outcome (2026-08-16, wave 13 — In Progress, owner-blocked on two live halves)
