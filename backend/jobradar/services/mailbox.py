@@ -14,6 +14,13 @@ purge_app_drafts(), which deletes drafts this app itself wrote -- the no-send gu
 about users.messages.send, which still appears nowhere; removing an unsent draft is its undo, not a
 weakening of it.
 
+TASK-121 stops discarding Gmail's own draft/message/thread ids (append_draft used to POST and throw
+the response away) and persists them onto MailboxDraft, plus the inbound thread_id onto
+MailboxMessage -- what gmail_conversation_url(), the one Gmail URL builder in the codebase, and the
+now-id-first purge_app_drafts() both key on. TASK-122 adds update_draft_text(): the owner editing a
+written draft by hand, re-guardrailed on the edited text and written via users.drafts.update (never
+users.messages.send) -- same no-send guarantee, one more writer of it, never a sender.
+
 Two interchangeable transports read the mailbox, whichever is configured (IMAP wins if both are --
 see run_check()/_default_transport()): ImapTransport (app password, needs 2-Step Verification) and
 GmailApiTransport (OAuth, TASK-109 AC1 -- the route for an owner who has declined 2SV, since Google
@@ -46,7 +53,7 @@ from datetime import timezone as dt_timezone
 from email.message import EmailMessage
 from email.utils import format_datetime
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from django.conf import settings
@@ -56,7 +63,6 @@ from django.db.models import Max, Q
 from django.utils import timezone
 
 from jobradar.models import ApplicationNote, JobLead, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun
-from jobradar.serializers import JobLeadSerializer
 from jobradar.services.followup_digest import owned_jobs
 from jobradar.services.prompt_builder import user_profile_settings
 # Reuse of interview_coach's local-LLM plumbing (TASK-104): same LLM_PROVIDER env gate, same
@@ -148,7 +154,7 @@ class ImapTransport:
             except Exception:
                 pass
 
-    def append_draft(self, mime_message: bytes, thread_id: str | None = None) -> None:
+    def append_draft(self, mime_message: bytes, thread_id: str | None = None) -> dict:
         """TASK-110 AC1: IMAP APPEND into the Drafts mailbox -- the only way this app ever puts a
         reply anywhere near Gmail. No SMTP client is ever imported or invoked; a message this
         library only ever appends can never be sent by this app, only by the owner in Gmail itself.
@@ -156,6 +162,11 @@ class ImapTransport:
         append_draft(mime, thread_id=...) call site in maybe_draft_reply()) -- IMAP has no such
         concept; Gmail still threads an IMAP-appended draft purely off the In-Reply-To/References
         headers build_reply_mime already set.
+
+        TASK-121 AC1: always returns {} -- IMAP's APPEND response carries no draft/message/thread id
+        (Gmail assigns those itself on receipt; an IMAP client never sees them), so this stays the
+        empty counterpart to GmailApiTransport.append_draft's response dict, letting the one call
+        site in maybe_draft_reply() read `response.get(...)` the same way regardless of transport.
         """
         import imaplib
         import time
@@ -169,6 +180,7 @@ class ImapTransport:
                 conn.logout()
             except Exception:
                 pass
+        return {}
 
 
 from django.views.decorators.debug import sensitive_variables
@@ -396,18 +408,35 @@ class GmailApiTransport:
             ))
         return messages
 
-    def append_draft(self, mime_message: bytes, thread_id: str | None = None) -> None:
+    def append_draft(self, mime_message: bytes, thread_id: str | None = None) -> dict:
         """TASK-110 AC1: users.drafts.create only -- no call to users.messages.send exists anywhere
         in this module (see module docstring). Threaded on the original both ways: threadId here (the
         Gmail-native, deterministic mechanism) plus the In-Reply-To/References headers
         build_reply_mime already baked into mime_message.
+
+        TASK-121 AC1: returns the parsed response ({id, message: {id, threadId}, ...}) instead of
+        discarding it -- maybe_draft_reply() persists these onto MailboxDraft so a later
+        users.drafts.update/.delete (see update_draft_text/purge_app_drafts) and a Gmail deep link
+        (see gmail_conversation_url) both have something to key on.
         """
         encoded = base64.urlsafe_b64encode(mime_message).decode('ascii').rstrip('=')
         payload = {'message': {'raw': encoded}}
         if thread_id:
             payload['message']['threadId'] = thread_id
         access_token = self._access_token()
-        _gmail_api_request('POST', f'{GMAIL_API_BASE}/drafts', access_token, data=json.dumps(payload).encode('utf-8'))
+        return _gmail_api_request('POST', f'{GMAIL_API_BASE}/drafts', access_token, data=json.dumps(payload).encode('utf-8'))
+
+    def update_draft(self, draft_id: str, mime_message: bytes, thread_id: str | None = None) -> dict:
+        """TASK-122 AC1: users.drafts.update -- replaces an existing draft's content in place, keyed
+        on the Gmail-issued id append_draft returned (see MailboxDraft.gmail_draft_id). Same shape as
+        append_draft; still never users.messages.send (see module docstring).
+        """
+        encoded = base64.urlsafe_b64encode(mime_message).decode('ascii').rstrip('=')
+        payload = {'message': {'raw': encoded}}
+        if thread_id:
+            payload['message']['threadId'] = thread_id
+        access_token = self._access_token()
+        return _gmail_api_request('PUT', f'{GMAIL_API_BASE}/drafts/{draft_id}', access_token, data=json.dumps(payload).encode('utf-8'))
 
     # --- TASK-114 AC6: undo. Deleting drafts this app itself created does not weaken the module's
     # standing no-send guarantee (see the module docstring) -- users.messages.send still appears
@@ -811,6 +840,12 @@ def apply_suggestion(suggestion: MailboxSuggestion, user=None) -> MailboxSuggest
     change, so the job's history says WHY it moved rather than just that it did. dismiss_suggestion
     below deliberately writes nothing at all, mail that was not acted on leaves no note.
     """
+    # Deliberately local, not module-level: serializers.py legitimately needs to import THIS module
+    # (TASK-121 AC3, gmail_conversation_url), and this module importing serializers.py back at import
+    # time would make that a circular import. JobLeadSerializer is only ever needed here, at call
+    # time, well after both modules have finished loading.
+    from jobradar.serializers import JobLeadSerializer
+
     with transaction.atomic():
         job = JobLead.objects.select_for_update().get(pk=suggestion.job_id)
         JobLeadSerializer().update(job, dict(suggestion.payload))
@@ -1204,10 +1239,47 @@ def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, cl
             message=message, job=job, status='blocked', block_reason=block_reason[:250],
             subject=subject, body_text=body_text, evaluator=evaluator,
         )
-    transport.append_draft(build_reply_mime(raw, _reply_from_address(), body_text), thread_id=raw.thread_id or None)
+    # TASK-121 AC1: persist Gmail's own ids from the response instead of discarding them -- '' for
+    # every id on the IMAP path (ImapTransport.append_draft returns {}, see its docstring), so a row
+    # written by that transport is indistinguishable from a pre-TASK-121 row, which is intentional:
+    # both cases mean "no stored id", and every consumer (gmail_conversation_url, purge_app_drafts,
+    # update_draft_text) already has to handle that.
+    response = transport.append_draft(build_reply_mime(raw, _reply_from_address(), body_text), thread_id=raw.thread_id or None)
+    response_message = response.get('message') or {}
     return MailboxDraft.objects.create(
         message=message, job=job, status='written', subject=subject, body_text=body_text, evaluator=evaluator,
+        gmail_draft_id=response.get('id', ''), gmail_message_id=response_message.get('id', ''),
+        gmail_thread_id=response_message.get('threadId', ''),
     )
+
+
+# --- Gmail deep link (TASK-121 AC3/AC4/AC5): the ONE Gmail URL builder in the codebase -----------
+
+def gmail_conversation_url(message_id: str, authuser: str = '') -> str:
+    """The single Gmail URL builder (AC3) -- every "open this in Gmail" link in the app goes through
+    this function. Takes MailboxMessage.message_id (the RFC 822 Message-ID header), the only id
+    populated by BOTH transports (RawMessage.gmail_id is '' on every IMAP-sourced row, so a link keyed
+    on it would be dead on a machine configured for IMAP -- see the task notes). Strips the header's
+    required angle brackets and URL-encodes the rest into Gmail's `rfc822msgid:` search operator,
+    which opens the whole conversation, not just one message.
+
+    Returns '' when there is no usable id (AC4/AC5: a row with no id, or one written before this
+    task shipped, must show no link rather than one that 404s into an empty search) -- callers must
+    treat a falsy return as "no link", never build a URL themselves.
+
+    `authuser`, when given (typically _reply_from_address(), the owner's own mailbox address),
+    disambiguates which signed-in Google account the link opens against -- `/mail/u/0/` alone always
+    addresses whichever account signed in first in the browser, which is wrong on a machine with more
+    than one Google account signed in.
+
+    NOT verified against a real Gmail inbox by this change -- see TASK-121 notes: report the produced
+    URL string so the coordinator can confirm it in an actual browser before AC3 is checked off.
+    """
+    stripped = (message_id or '').strip().strip('<>').strip()
+    if not stripped:
+        return ''
+    query = f'?{urlencode({"authuser": authuser})}' if authuser else ''
+    return f'https://mail.google.com/mail/u/0/{query}#search/rfc822msgid:{quote(stripped, safe="")}'
 
 
 # --- TASK-114 AC6: remove drafts this app already wrote ------------------------------------------
@@ -1220,24 +1292,90 @@ def _normalized_body(text: str) -> str:
 
 
 def purge_app_drafts(transport, dry_run: bool = True) -> list[tuple[str, str]]:
-    """Delete every Gmail draft whose body matches a draft THIS APP recorded writing, and return
-    [(draft_id, subject)] for the ones matched. dry_run=True matches and reports without deleting.
+    """Delete every Gmail draft THIS APP recorded writing, and return [(draft_id, subject)] for the
+    ones matched. dry_run=True matches and reports without deleting.
 
-    Identification is by exact body text against the MailboxDraft log rather than by a template
-    signature: it covers LLM-drafted replies (which have no fixed wording) and, more importantly, it
-    cannot match a draft the owner wrote by hand -- which is the only failure mode that matters when
-    the API call involved is a permanent delete with no Trash to recover from.
+    TASK-121 AC6: a stored gmail_draft_id (TASK-121 AC1) is now the PRIMARY match -- exact by
+    construction, since it is the id Gmail itself assigned when this app wrote the draft. Body-text
+    matching against the MailboxDraft log is kept only as the fallback for rows with no stored id
+    (every row written before this task shipped): it still cannot match a draft the owner wrote by
+    hand, which is the only failure mode that matters when the API call involved is a permanent
+    delete with no Trash to recover from. A row that HAS a stored id is never matched by body text --
+    that would let some other draft sharing the same wording (a clone, a coincidence) get caught by an
+    id-bearing row's fallback, which the id match makes unnecessary anyway.
     """
-    written = {_normalized_body(text) for text in MailboxDraft.objects.filter(status='written').values_list('body_text', flat=True) if text.strip()}
-    if not written:
+    written_ids = {
+        draft_id for draft_id in MailboxDraft.objects.filter(status='written').exclude(gmail_draft_id='').values_list('gmail_draft_id', flat=True)
+    }
+    written_bodies = {
+        _normalized_body(text) for text in MailboxDraft.objects.filter(status='written', gmail_draft_id='').values_list('body_text', flat=True) if text.strip()
+    }
+    if not written_ids and not written_bodies:
         return []
     removed = []
     for draft_id, subject, body_text in transport.list_drafts():
-        if _normalized_body(body_text) in written:
+        if draft_id in written_ids or _normalized_body(body_text) in written_bodies:
             if not dry_run:
                 transport.delete_draft(draft_id)
             removed.append((draft_id, subject))
     return removed
+
+
+# --- TASK-122 AC1: editing a written draft (owner's own edit, never a send) -----------------------
+
+def update_draft_text(draft: MailboxDraft, new_text: str, user=None) -> str:
+    """The owner's own edit to a 'written' MailboxDraft. Returns '' on success -- the draft is now
+    updated in BOTH Gmail Drafts and the database -- otherwise a short, human-readable refusal
+    reason, and NOTHING is written anywhere (not Gmail, not the database).
+
+    Guardrails run again, on the EDITED text, before anything is written: check_guardrails is the
+    same function maybe_draft_reply() runs on generated text (salary floor, do-not-disclose), so a
+    human edit cannot get past a rule the template itself could not.
+
+    Refuses rather than silently diverging when there is no stored gmail_draft_id (a row written
+    before TASK-121 persisted it, or an IMAP-written draft, which never gets one) -- updating only
+    the database would leave Gmail showing stale text with no way to tell the owner it happened.
+    IMAP itself is out of scope for the same reason purge_app_drafts' management command refuses it
+    (see management/commands/purge_app_drafts.py): there is no IMAP equivalent of drafts.update.
+
+    Records the edit by setting evaluator='human' (see MailboxDraft.evaluator vocabulary) so nothing
+    downstream keeps reporting 'template'/an LLM provider as having written text the owner rewrote.
+    Never sends: only users.drafts.update is called (see GmailApiTransport.update_draft) -- the same
+    no-send guarantee append_draft already holds (module docstring): users.messages.send and smtplib
+    still appear nowhere in this module.
+
+    `user` is accepted for call-site symmetry with apply_suggestion/attach_message_to_job's
+    `user=...` signature (a future attribution use is plausible -- TASK-122 AC5/AC6 is the frontend
+    half of this task) but is not otherwise used by this function today.
+    """
+    if not draft.gmail_draft_id:
+        return 'no stored Gmail draft id for this row -- cannot update it in Gmail (drafted before TASK-121, or via IMAP)'
+    owner = _owner_user()
+    profile = user_profile_settings(owner) if owner else None
+    block_reason = check_guardrails(new_text, _effective_salary_floor_eur(profile), _effective_do_not_disclose(profile))
+    if block_reason:
+        return block_reason
+    transport = _default_transport()
+    if not isinstance(transport, GmailApiTransport):
+        return 'draft editing needs the Gmail API (OAuth) transport; IMAP is not supported'
+    message = draft.message
+    raw = RawMessage(uid=message.uid, sender=message.sender, subject=message.subject, received_at=message.received_at, message_id=message.message_id)
+    mime_message = build_reply_mime(raw, _reply_from_address(), new_text)
+    # TASK-122 AC7: Gmail failing is ORDINARY, not exceptional -- the owner deletes the draft in
+    # Gmail, the refresh token expires, the network drops. Letting the RuntimeError _gmail_api_request
+    # raises escape turns every one of those into an HTTP 500 with a traceback and a "Please try
+    # again" the owner can do nothing with. Measured: editing a draft whose Gmail id no longer exists
+    # returned 500, not a reason. Returning it as a refusal keeps this function's one contract --
+    # '' means written to BOTH Gmail and the database, anything else means NOTHING was written.
+    try:
+        transport.update_draft(draft.gmail_draft_id, mime_message, thread_id=draft.gmail_thread_id or None)
+    except (RuntimeError, URLError, OSError) as exc:
+        logger.warning('update_draft_text: Gmail rejected the update for draft %s: %s', draft.pk, exc)
+        return f'Gmail would not accept the edit: {exc}'[:400]
+    draft.body_text = new_text
+    draft.evaluator = 'human'
+    draft.save(update_fields=['body_text', 'evaluator'])
+    return ''
 
 
 # --- Owner + cadence gate (AC1, AC8) -------------------------------------------------------------
@@ -1371,7 +1509,7 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
                 assigned_uid = raw.uid
             message = MailboxMessage.objects.create(
                 run=run, uid=assigned_uid, gmail_id=raw.gmail_id, internal_date_ms=raw.internal_date_ms,
-                message_id=raw.message_id[:250], sender=raw.sender[:254], subject=raw.subject[:500],
+                message_id=raw.message_id[:250], thread_id=raw.thread_id[:32], sender=raw.sender[:254], subject=raw.subject[:500],
                 # TASK-117 AC1: both transports already cap body_text at 5000 chars off the wire; the
                 # cap is re-applied here too, so the column itself cannot exceed it even if a
                 # transport changes.

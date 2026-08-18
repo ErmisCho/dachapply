@@ -8,6 +8,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A job's email history and its notes are visible where the decision is made: every message matched
+  to that job with its classification, a link that opens the conversation in Gmail, and every note
+  with its type, so a note the app wrote to record why a job moved is distinguishable from one you
+  typed.
+- Drafted replies can be edited in the app and saved back to Gmail Drafts. The salary-floor and
+  do-not-disclose guardrails run again on the edited text, so an edit cannot get past a rule the
+  template itself could not.
 - Email decisions on the dashboard. When a recruiter, a rejection or an interview invitation arrives,
   the board shows it first: the email itself, what the app made of it, what would change on the job,
   and the reply it drafted into Gmail Drafts. Agreeing applies the change and records on the job
@@ -60,6 +67,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- One email now shows as one entry in Email decisions. Previously an email that proposed two changes
+  was printed twice, in full, with two identical-looking buttons that did different things. Each
+  proposal keeps its own accept/decline, and there is a single action to accept them all.
+- The board's note button can no longer overwrite or delete the note the app writes to record which
+  email moved a job. It only ever edits a note you wrote yourself.
 - The dashboard no longer scrolls sideways on a phone. Wide panels — the conversion funnel,
   application pace, source effectiveness, upcoming interviews and email decisions — are now full
   width below 768px instead of being squeezed into half a column, and the two tables that still

@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {copyToClipboard,deadlineBadge,describeOrdering,fromDateTimeLocal,germanSubmitError,initPanelOrder,nextSortKeys,pathTitle,ratePercent,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {copyToClipboard,deadlineBadge,describeOrdering,fromDateTimeLocal,germanSubmitError,groupMailboxSuggestions,initPanelOrder,nextSortKeys,pathTitle,ratePercent,selectGeneralNote,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -150,6 +150,54 @@ describe('dashboard panel order (TASK-117 AC3)',()=>{
 
   it('drops a saved id no longer in the panel registry instead of keeping a dangling one',()=>{
     expect(initPanelOrder(['gone','a'],['a','b'])).toEqual(['b','a'])
+  })
+})
+
+// TASK-119 AC1/AC2/AC7: build_suggestions can emit two rows (status_change + feedback_clear) for one
+// inbound email, which is what regressed into two identical-looking cards - this is the pure grouping
+// step behind the fix, so a future regression fails here instead of only being noticed in a browser.
+describe('groupMailboxSuggestions (TASK-119)',()=>{
+  it('groups suggestions that share one email into a single card, preserving suggestion order',()=>{
+    const rejection={id:1,subject:'Absage'}
+    const interview={id:2,subject:'Interview invite'}
+    const s0={id:10,message:interview,suggestion_type:'interview_date'}
+    const s1={id:11,message:interview,suggestion_type:'feedback_clear'}
+    const s2={id:12,message:rejection,suggestion_type:'status_change'}
+    expect(groupMailboxSuggestions([s0,s1,s2])).toEqual([
+      {message:interview,suggestions:[s0,s1]},
+      {message:rejection,suggestions:[s2]},
+    ])
+  })
+
+  it('keeps a single-suggestion email as its own one-item group',()=>{
+    const m={id:5}
+    const s={id:20,message:m}
+    expect(groupMailboxSuggestions([s])).toEqual([{message:m,suggestions:[s]}])
+  })
+
+  it('returns an empty list for no suggestions',()=>{
+    expect(groupMailboxSuggestions([])).toEqual([])
+  })
+})
+
+// TASK-123 AC1/AC6: the exact defect - a job with no general note must never have the board's note
+// button silently adopt a differently-typed note (here, the recruiter_message audit trail
+// apply_suggestion writes) as if it were the one the modal itself is editing.
+describe('selectGeneralNote (TASK-123)',()=>{
+  it('picks the general note even when it is not the newest',()=>{
+    const notes=[{id:1,note_type:'recruiter_message'},{id:2,note_type:'general'}]
+    expect(selectGeneralNote(notes)).toEqual({id:2,note_type:'general'})
+  })
+
+  it('returns null - never the newest note of another type - when no general note exists yet',()=>{
+    const notes=[{id:3,note_type:'recruiter_message'}]
+    expect(selectGeneralNote(notes)).toBe(null)
+  })
+
+  it('returns null for an empty or missing note list',()=>{
+    expect(selectGeneralNote([])).toBe(null)
+    expect(selectGeneralNote(null)).toBe(null)
+    expect(selectGeneralNote(undefined)).toBe(null)
   })
 })
 

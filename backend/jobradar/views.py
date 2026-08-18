@@ -19,8 +19,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, permission_classes, action, throttle_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
-from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, MailboxMessage, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile, InviteCode
-from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxMessageSerializer, MailboxMessageWithSuggestionsSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, normalize_job_url
+from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile, InviteCode
+from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxDraftSerializer, MailboxMessageSerializer, MailboxMessageWithSuggestionsSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, normalize_job_url
 from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, has_candidate_profile, user_profile_settings
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
@@ -30,6 +30,7 @@ from .services.cleaning import clean_job_location
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
 from .services.interview_coach import analyze_answer, suggest_questions
+from .services import mailbox
 from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_suggestion
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, decode_correction_image, generation_preview, is_cv_owner, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
@@ -621,13 +622,32 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         ser=FollowUpSerializer(data={**request.data,'job':job.id}, context={'request': request}); ser.is_valid(raise_exception=True); ser.save(); return Response(ser.data, status=201)
     @action(detail=True, methods=['get'])
     def mailbox(self, request, pk=None):
-        """TASK-117 AC2: this job's mailbox messages, newest first, each with its draft and pending
-        suggestions. self.get_object() runs against get_queryset() (accessible_jobs) exactly like
-        every other detail action above -- a job this user cannot see 404s before any message is read.
+        """TASK-117 AC2 / TASK-120 AC1,AC3,AC4,AC5: every mailbox message matched to this job --
+        not only the ones with a pending suggestion -- plus the job's own ApplicationNotes, in one
+        response so the client needs no second round trip for the notes half of the decision view.
+        This is a flat per-job list, not a reconstructed thread: MailboxMessage has no parent-message
+        pointer to chain on (RawMessage.references is transient and Gmail's threadId was dropped
+        until TASK-121 persisted it), so grouping messages into real conversations is not attempted
+        here -- see TASK-120's task notes. self.get_object() runs against get_queryset()
+        (accessible_jobs) exactly like every other detail action above -- a job this user cannot see
+        404s before any message or note is read (TASK-120 AC6).
         """
         job=self.get_object()
-        messages=job.mailbox_messages.select_related('matched_job').prefetch_related('draft','suggestions').order_by('-uid')
-        return Response(MailboxMessageWithSuggestionsSerializer(messages, many=True).data)
+        # TASK-120 AC2: MailboxMessage.Meta.ordering ('-uid') is wrong for this view -- for
+        # Gmail-API rows uid is a locally-assigned sequence number minted in processing order (see
+        # that model's docstring), not a received time. received_at is nullable (rows written before
+        # it existed, or any transport hiccup that left it unset); nulls_last is a deliberate choice
+        # over the default arbitrary placement -- "we don't know when this arrived" reads closer to
+        # "oldest" than "newest" in a newest-first decision list.
+        messages=job.mailbox_messages.select_related('matched_job').prefetch_related('draft','suggestions').order_by(F('received_at').desc(nulls_last=True))
+        # One extra query for a single job instance -- not the N+1 that prefetch_related guards
+        # against for a list of parents -- same pattern as the sibling `notes` action above.
+        # ApplicationNote.Meta.ordering is already ['-created_at'], so this is newest first (AC3).
+        notes=job.notes.all()
+        return Response({
+            'messages': MailboxMessageWithSuggestionsSerializer(messages, many=True).data,
+            'notes': ApplicationNoteSerializer(notes, many=True).data,
+        })
 
 class EvaluationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class=JobEvaluationSerializer; queryset=JobEvaluation.objects.select_related('job').all()
@@ -728,6 +748,34 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         attach_message_to_job(message, job, user=request.user)
         message.refresh_from_db()
         return Response(MailboxMessageWithSuggestionsSerializer(message).data)
+
+class MailboxDraftViewSet(viewsets.GenericViewSet):
+    """TASK-122 AC1. MailboxDraft is documented append-only (see its model docstring) and, like
+    MailboxMessageViewSet above, exposes only one narrow write path -- editing a draft's own text --
+    never a generic list/retrieve/PATCH/DELETE. Scoped through the job the draft is attached to
+    (accessible_jobs), the same scoping the job itself uses, so a draft on a job this user cannot see
+    404s rather than leaking its text.
+    """
+    serializer_class=MailboxDraftSerializer
+    def get_queryset(self):
+        return MailboxDraft.objects.filter(job__in=accessible_jobs(self.request.user))
+    @action(detail=True, methods=['post'])
+    def edit(self, request, pk=None):
+        """TASK-122 AC1: the floor this whole feature rests on -- editing a draft's text by hand,
+        with no model involved. update_draft_text re-runs check_guardrails on the new text and
+        updates Gmail Drafts itself (TASK-121's stored draft id); a guardrail refusal leaves the
+        stored draft unchanged and reports why, the same '' = ok / reason-string = blocked
+        convention check_guardrails itself already uses.
+        """
+        draft=self.get_object()
+        new_text=(request.data.get('body_text') or '').strip()
+        if not new_text:
+            return Response({'detail':'body_text is required.'}, status=400)
+        reason=mailbox.update_draft_text(draft, new_text, user=request.user)
+        if reason:
+            return Response({'detail': reason}, status=400)
+        draft.refresh_from_db()
+        return Response(self.get_serializer(draft).data)
 
 @api_view(['POST'])
 def practice_evaluate(request):

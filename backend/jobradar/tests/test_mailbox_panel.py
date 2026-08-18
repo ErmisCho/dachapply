@@ -8,7 +8,8 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from jobradar.models import JobLead, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion
+from jobradar.models import ApplicationNote, JobLead, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion
+from jobradar.services import mailbox
 from jobradar.services.prompt_builder import user_profile_settings
 
 
@@ -47,9 +48,9 @@ def applied_job(db, owner):
     return JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', status='applied', status_date=timezone.localdate(), created_by=owner)
 
 
-def _log_message(job, classification='uncertain', sender='hr@acme.test', subject='x', body_text=''):
+def _log_message(job, classification='uncertain', sender='hr@acme.test', subject='x', body_text='', message_id='', received_at=None):
     run = MailboxRun.objects.create()
-    return MailboxMessage.objects.create(run=run, uid=MailboxMessage.objects.count() + 1, sender=sender, subject=subject, body_text=body_text, classification=classification, matched_job=job)
+    return MailboxMessage.objects.create(run=run, uid=MailboxMessage.objects.count() + 1, sender=sender, subject=subject, body_text=body_text, classification=classification, matched_job=job, message_id=message_id, received_at=received_at)
 
 
 # --- AC2: per-job mailbox endpoint --------------------------------------------------------------
@@ -63,8 +64,8 @@ def test_job_mailbox_endpoint_returns_messages_with_body_draft_and_pending_sugge
     r = client.get(f'/api/jobs/{applied_job.id}/mailbox/')
 
     assert r.status_code == 200
-    assert len(r.data) == 1
-    row = r.data[0]
+    assert len(r.data['messages']) == 1
+    row = r.data['messages'][0]
     assert row['id'] == message.id
     assert row['body_text'] == 'Sehr geehrter Herr Chorinopoulos, ...'
     assert row['draft']['body_text'] == 'Vielen Dank...'
@@ -73,11 +74,30 @@ def test_job_mailbox_endpoint_returns_messages_with_body_draft_and_pending_sugge
     assert decided.id not in suggestion_ids
 
 
-def test_job_mailbox_endpoint_orders_newest_first(client, applied_job):
-    older = _log_message(applied_job, 'uncertain')
-    newer = _log_message(applied_job, 'uncertain')
+def test_job_mailbox_endpoint_orders_by_received_at_not_uid(client, applied_job):
+    """TASK-120 AC2: uid is a locally-assigned sequence number for Gmail-API rows, not a received
+    time (see MailboxMessage's docstring) -- the message logged SECOND (higher uid) but received
+    EARLIER must still sort after the one logged FIRST but received LATER.
+    """
+    now = timezone.now()
+    logged_first_received_later = _log_message(applied_job, 'uncertain', received_at=now)
+    logged_second_received_earlier = _log_message(applied_job, 'uncertain', received_at=now - timezone.timedelta(days=1))
+
     r = client.get(f'/api/jobs/{applied_job.id}/mailbox/')
-    assert [row['id'] for row in r.data] == [newer.id, older.id]
+
+    assert [row['id'] for row in r.data['messages']] == [logged_first_received_later.id, logged_second_received_earlier.id]
+
+
+def test_job_mailbox_endpoint_puts_null_received_at_last(client, applied_job):
+    """TASK-120 AC2: received_at is nullable -- nulls sort last (deliberately, see the view's
+    comment), never interleaved arbitrarily among dated rows.
+    """
+    dated = _log_message(applied_job, 'uncertain', received_at=timezone.now())
+    undated = _log_message(applied_job, 'uncertain', received_at=None)
+
+    r = client.get(f'/api/jobs/{applied_job.id}/mailbox/')
+
+    assert [row['id'] for row in r.data['messages']] == [dated.id, undated.id]
 
 
 def test_job_mailbox_endpoint_for_inaccessible_job_is_404_with_no_body_leaked(db, applied_job):
@@ -92,6 +112,53 @@ def test_job_mailbox_endpoint_for_inaccessible_job_is_404_with_no_body_leaked(db
 
     assert r.status_code == 404
     assert 'very private salary and rejection details' not in r.content.decode('utf-8')
+
+
+# --- TASK-120 AC3/AC4: the job's notes travel with its mail in the same response -------------------
+
+def test_job_mailbox_endpoint_includes_the_jobs_notes_newest_first_with_their_type(client, applied_job):
+    _log_message(applied_job, 'uncertain')  # notes must appear even with no messages driving them
+    older = ApplicationNote.objects.create(job=applied_job, note='Called to follow up', note_type='follow_up')
+    newer = ApplicationNote.objects.create(job=applied_job, note='Confirmed: moved to rejected because they replied "no fit"', note_type='recruiter_message')
+
+    r = client.get(f'/api/jobs/{applied_job.id}/mailbox/')
+
+    assert r.status_code == 200
+    assert [n['id'] for n in r.data['notes']] == [newer.id, older.id]  # newest first
+    assert r.data['notes'][0]['note_type'] == 'recruiter_message'
+    assert r.data['notes'][1]['note_type'] == 'follow_up'
+
+
+def test_job_mailbox_endpoint_notes_of_an_inaccessible_job_are_not_leaked(db, applied_job):
+    ApplicationNote.objects.create(job=applied_job, note='very private note', note_type='general')
+    other = User.objects.create_user('other9@example.test', email='other9@example.test', password='pw')
+    other_client = APIClient(); other_client.force_authenticate(other)
+
+    r = other_client.get(f'/api/jobs/{applied_job.id}/mailbox/')
+
+    assert r.status_code == 404
+    assert 'very private note' not in r.content.decode('utf-8')
+
+
+# --- TASK-121 AC3/AC4: the Gmail link, exposed by the server so the client never builds one --------
+
+def test_job_mailbox_endpoint_message_gmail_url_is_null_without_a_usable_id(client, applied_job):
+    message = _log_message(applied_job, 'uncertain')  # message_id='' by default
+
+    r = client.get(f'/api/jobs/{applied_job.id}/mailbox/')
+
+    row = next(m for m in r.data['messages'] if m['id'] == message.id)
+    assert row['gmail_url'] is None
+
+
+def test_job_mailbox_endpoint_message_gmail_url_is_built_from_the_message_id(client, applied_job):
+    message = _log_message(applied_job, 'uncertain', message_id='<abc123@mail.gmail.com>')
+
+    r = client.get(f'/api/jobs/{applied_job.id}/mailbox/')
+
+    row = next(m for m in r.data['messages'] if m['id'] == message.id)
+    assert row['gmail_url'] == mailbox.gmail_conversation_url('<abc123@mail.gmail.com>')
+    assert 'rfc822msgid:abc123' in row['gmail_url']
 
 
 # --- AC6: unmatched list -------------------------------------------------------------------------
@@ -205,3 +272,73 @@ def test_mailbox_runs_still_owner_gated(db, owner):
 
     assert len(owner_client.get('/api/mailbox-runs/').data) == 1
     assert other_client.get('/api/mailbox-runs/').data == []
+
+
+# --- TASK-122 AC1: editing a draft's text ----------------------------------------------------------
+
+def _written_draft(job, message, **extra):
+    defaults = dict(status='written', subject='Re: x', body_text='old text', evaluator='template', gmail_draft_id='draft-1', gmail_message_id='msg-1', gmail_thread_id='thread-1')
+    defaults.update(extra)
+    return MailboxDraft.objects.create(message=message, job=job, **defaults)
+
+
+def _fake_gmail_transport(monkeypatch, calls):
+    """A real GmailApiTransport instance (never touches a socket -- __init__ only stores attrs) with
+    update_draft replaced, wired in as the module's _default_transport() so update_draft_text's
+    isinstance(transport, GmailApiTransport) check passes.
+    """
+    transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+    monkeypatch.setattr(transport, 'update_draft', lambda draft_id, mime_message, thread_id=None: calls.append((draft_id, thread_id)))
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: transport)
+    return transport
+
+
+def test_edit_draft_action_updates_gmail_and_database_and_marks_evaluator_human(client, applied_job, monkeypatch):
+    message = _log_message(applied_job, 'interview_invitation')
+    draft = _written_draft(applied_job, message)
+    calls = []
+    _fake_gmail_transport(monkeypatch, calls)
+
+    r = client.post(f'/api/mailbox-drafts/{draft.id}/edit/', {'body_text': 'new text'}, format='json')
+
+    assert r.status_code == 200
+    assert r.data['body_text'] == 'new text'
+    draft.refresh_from_db()
+    assert draft.body_text == 'new text'
+    assert draft.evaluator == 'human'
+    assert calls == [('draft-1', 'thread-1')]  # updated in Gmail, not only the database
+
+
+def test_edit_draft_action_refuses_on_guardrail_failure_and_leaves_draft_unchanged(client, owner, applied_job, monkeypatch):
+    message = _log_message(applied_job, 'interview_invitation')
+    draft = _written_draft(applied_job, message)
+    profile = user_profile_settings(owner)
+    profile.mailbox_do_not_disclose = 'my current salary'
+    profile.save()
+    calls = []
+    _fake_gmail_transport(monkeypatch, calls)
+
+    r = client.post(f'/api/mailbox-drafts/{draft.id}/edit/', {'body_text': 'Happy to share that my current salary is great.'}, format='json')
+
+    assert r.status_code == 400
+    assert 'current salary' in r.data['detail']
+    draft.refresh_from_db()
+    assert draft.body_text == 'old text'
+    assert draft.evaluator == 'template'
+    assert calls == []  # nothing written to Gmail on a refusal
+
+
+def test_edit_draft_action_for_a_job_the_user_cannot_see_is_404(client, applied_job, monkeypatch):
+    message = _log_message(applied_job, 'interview_invitation')
+    draft = _written_draft(applied_job, message)
+    calls = []
+    _fake_gmail_transport(monkeypatch, calls)
+    other = User.objects.create_user('other10@example.test', email='other10@example.test', password='pw')
+    other_client = APIClient(); other_client.force_authenticate(other)
+
+    r = other_client.post(f'/api/mailbox-drafts/{draft.id}/edit/', {'body_text': 'sneaky edit'}, format='json')
+
+    assert r.status_code == 404
+    draft.refresh_from_db()
+    assert draft.body_text == 'old text'
+    assert calls == []

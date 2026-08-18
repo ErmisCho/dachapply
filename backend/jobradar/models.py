@@ -341,6 +341,11 @@ class MailboxMessage(models.Model):
     own ascending ms-epoch received time) is the real resume marker GmailApiTransport.fetch_new()
     consumes; `gmail_id` is Gmail's own opaque message id, kept as a dedup guard against the same
     message coming back on two consecutive runs. Both are blank/null for every IMAP-sourced row.
+
+    TASK-121 AC2: `thread_id` is Gmail's own thread id for this INBOUND message (RawMessage.thread_id,
+    previously documented as "transient, never persisted") -- a different id from anything on
+    MailboxDraft (that one threads the REPLY), and it is what a per-message "open this conversation in
+    Gmail" link needs. Blank for every IMAP-sourced row, same as gmail_id.
     """
     CLASSIFICATIONS=[('rejection','Rejection'),('interview_invitation','Interview invitation'),('offer','Offer'),('recruiter_reply','Recruiter reply'),('uncertain','Uncertain'),('not_job_related','Not job related')]
     run=models.ForeignKey(MailboxRun, related_name='messages', on_delete=models.CASCADE)
@@ -348,6 +353,7 @@ class MailboxMessage(models.Model):
     gmail_id=models.CharField(max_length=32, blank=True, default='')
     internal_date_ms=models.PositiveBigIntegerField(null=True, blank=True)
     message_id=models.CharField(max_length=250, blank=True, default='')
+    thread_id=models.CharField(max_length=32, blank=True, default='')
     sender=models.CharField(max_length=254, blank=True, default='')
     subject=models.CharField(max_length=500, blank=True, default='')
     # TASK-117 AC1: capped to 5000 chars, the same cap RawMessage.body_text already applies off the wire.
@@ -387,6 +393,15 @@ class MailboxDraft(models.Model):
     that classify_email flagged as reply-wanting (see services.mailbox._DRAFT_WORTHY_CLASSIFICATIONS)
     and that matched a tracked job -- rejection/not_job_related/uncertain, and any message with no
     matched job, never get a row here at all.
+
+    TASK-121 AC1: `gmail_draft_id`/`gmail_message_id`/`gmail_thread_id` are the Gmail API's own
+    `users.drafts.create` response ids (services.mailbox.GmailApiTransport.append_draft used to POST
+    and discard them) -- `gmail_draft_id` is what a later `users.drafts.update`/`.delete` call is keyed
+    on (see services.mailbox.update_draft_text/purge_app_drafts), `gmail_message_id` is the draft's own
+    message id (distinct from MailboxMessage.message_id, the RFC 822 header of the INBOUND mail this is
+    a reply to), and `gmail_thread_id` is the thread the draft was placed in. All three are blank for
+    an IMAP-written draft (ImapTransport.append_draft returns no ids -- Gmail assigns them itself on
+    APPEND, unreachable from an IMAP response) and for every row written before this task.
     """
     STATUSES=[('written','Written to Gmail Drafts'),('blocked','Blocked')]
     message=models.OneToOneField(MailboxMessage, related_name='draft', on_delete=models.CASCADE)
@@ -396,9 +411,13 @@ class MailboxDraft(models.Model):
     block_reason=models.CharField(max_length=250, blank=True, default='')
     subject=models.CharField(max_length=500, blank=True, default='')
     body_text=models.TextField(blank=True, default='')
-    # 'template' for the no-LLM floor (AC4), or the LLM_PROVIDER value when the local-LLM upgrade
-    # produced the text -- same vocabulary as MailboxMessage.evaluator/PracticeSession.evaluator.
+    # 'template' for the no-LLM floor (AC4), the LLM_PROVIDER value when the local-LLM upgrade produced
+    # the text, or 'human' once update_draft_text() records an owner hand-edit (TASK-122 AC1) -- same
+    # vocabulary as MailboxMessage.evaluator/PracticeSession.evaluator.
     evaluator=models.CharField(max_length=30, default='template')
+    gmail_draft_id=models.CharField(max_length=32, blank=True, default='')
+    gmail_message_id=models.CharField(max_length=32, blank=True, default='')
+    gmail_thread_id=models.CharField(max_length=32, blank=True, default='')
     created_at=models.DateTimeField(auto_now_add=True)
     class Meta: ordering=['-created_at']
     def __str__(self): return f'Draft for {self.message}: {self.get_status_display()}'
