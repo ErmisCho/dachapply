@@ -44,7 +44,7 @@ So this is two things: a missing feature, and a configuration mistake that the s
 - [ ] #4 A configured-but-unusable calendar is no longer silent: when a configured URL fails, the run records it where the owner can see it (`MailboxRun.error` or an equivalent surfaced field), rather than only logging
 - [ ] #5 The stored URLs are never returned in full by the API: a GET returns them masked (calendar-owner part visible, the `private-<hash>` secret replaced), while a write accepts the full URL — an ICS private URL grants read access to an entire calendar with no authentication, so it is a secret, unlike every other mailbox setting in this serializer
 - [ ] #6 Masking is verified against an actual API response, not by reading the serializer — a GET on the profile endpoint contains no `private-<hash>` substring
-- [ ] #7 A `GMAIL_CALENDAR_ICS_URL` in .env still works and still wins over the stored value, matching the existing env-overrides-profile idiom (`_effective_salary_floor_eur`, `_effective_do_not_disclose`)
+- [ ] #7 The platform is the ONLY way to configure quiet-hours calendars: the `GMAIL_CALENDAR_ICS_URL` environment variable is removed, and nothing in the UI, docs or `.env.local.example` tells the owner to edit a file
 - [ ] #8 The parser tolerates a pasted `[a, b, c]` list literal and surrounding quotes rather than treating it as one URL — that shape is what someone naturally writes, and getting it wrong currently fails open and silent
 - [ ] #9 Backend tests cover multi-calendar parsing, the any-calendar-busy rule, the partial-failure case and the masking; no test fetches a real calendar
 <!-- AC:END -->
@@ -86,4 +86,26 @@ serializer, because a masking bug is exactly the kind that looks correct in code
 Blocked on the same thing as before: `mailbox.py` has uncommitted work from a parallel session. The
 model, migration, serializer and frontend do not touch that file, so those parts can start first if
 this is picked up before it clears.
+### 2026-08-18 — owner decision: platform-only, the env var goes away
+
+Superseding the env-override AC above. The owner wants all calendars managed from a menu in the app,
+with no mention of `.env` anywhere in the flow. So `GMAIL_CALENDAR_ICS_URL` is removed rather than
+kept as a hidden override.
+
+That is a deliberate departure from the `_effective_salary_floor_eur` / `_effective_do_not_disclose`
+idiom, where an env value wins over the stored one. Those two are non-secret operational knobs worth
+being able to force from the machine. A calendar list is neither: it is the owner's own data, it
+belongs with the rest of their settings, and a second configuration path that silently outranks the
+UI is exactly how someone edits a calendar in the app and cannot work out why nothing changed. One
+path, visible in the product.
+
+**This supersedes the wording of TASK-109 AC7**, which says the ICS URL is "stored only in the local
+.env". That phrasing describes the implementation this task replaces. It is recorded here rather than
+edited quietly in TASK-109, because TW-005 requires a criterion that no longer matches reality to be
+reworded through its own filed task with a paper trail — this is that trail. TASK-109 AC7's intent
+(calendar-aware quiet hours that fail open) is unchanged and still the thing being verified; only the
+storage location moves.
+
+**Consequence, stated so it is not a surprise:** TASK-109 AC7 cannot be closed by pasting a URL into
+`.env` any more. It closes when this task ships and a real calendar is configured through the app.
 <!-- SECTION:NOTES:END -->

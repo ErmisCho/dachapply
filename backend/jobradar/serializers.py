@@ -8,6 +8,7 @@ from .services.access import accessible_jobs
 from .services.demo_data import is_demo_job_payload, is_demo_user
 from .services.prompt_builder import decode_profile_value, encode_profile_value
 from .services.cleaning import clean_job_location
+from .services.calendar_ics import mask_calendar_ics_urls_text, merge_calendar_ics_urls
 
 
 def normalize_job_url(value):
@@ -78,14 +79,20 @@ def clean_job_title(value):
 class CandidateProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model=UserProfile
-        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_salary_floor_eur','mailbox_do_not_disclose','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
+        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ics_urls','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
     # The profile codec is a text codec: it JSON-wraps values for drifted SQLite schemas and
     # coerces falsy values to ''. Running a boolean through it would store '' in a
     # BooleanField and serialise False as ''. Booleans (and mailbox_check_cadence_minutes, an int
     # that is never 0 per the validator below) pass through untouched.
     def to_representation(self, instance):
         data=super().to_representation(instance)
-        return {k: (v if isinstance(v, (bool, int)) else decode_profile_value(v)) for k,v in data.items()}
+        data={k: (v if isinstance(v, (bool, int)) else decode_profile_value(v)) for k,v in data.items()}
+        # TASK-115 AC5/AC6: the one secret in this serializer -- a private ICS URL grants read
+        # access to a whole calendar with no authentication -- so unlike every other field here, a
+        # GET never returns it verbatim.
+        if 'mailbox_calendar_ics_urls' in data:
+            data['mailbox_calendar_ics_urls']=mask_calendar_ics_urls_text(data['mailbox_calendar_ics_urls'])
+        return data
     # No validate_candidate_profile: clearing the field used to store somebody else's bio instead,
     # so a user could never actually empty it. Empty now stays empty and prompt generation refuses.
     def validate_mailbox_check_cadence_minutes(self, v):
@@ -96,6 +103,15 @@ class CandidateProfileSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Mailbox check cadence must be between 5 and 1440 minutes.')
         return v
     def update(self, instance, validated_data):
+        # TASK-115: the settings page always GETs the masked text above into its textarea, so a save
+        # that leaves that field untouched PATCHes the masked placeholders straight back. Resolve
+        # those against what is already stored before anything gets encoded/saved, or the real
+        # secrets get overwritten with '••••••••' the moment the owner saves any other field.
+        if 'mailbox_calendar_ics_urls' in validated_data:
+            validated_data['mailbox_calendar_ics_urls']=merge_calendar_ics_urls(
+                decode_profile_value(instance.mailbox_calendar_ics_urls),
+                validated_data['mailbox_calendar_ics_urls'],
+            )
         for field, value in validated_data.items():
             setattr(instance, field, value if isinstance(value, (bool, int)) else encode_profile_value(field, value))
         instance.save(update_fields=list(validated_data.keys()))
