@@ -5,6 +5,24 @@ Backlog work in this repo is done with **session-orchestrator agents in waves** 
 because this session repeatedly found that unverified claims — from agents and from earlier passes —
 were wrong in ways only measurement caught.
 
+## TW-000: This applies to every request, not only to "backlog work"
+
+Owner instruction, 2026-08-18, stated after it had to be repeated: **whenever the owner asks for
+something to be done, use session-orchestrator agents and the asian-dad-eval skill.** Do not wait to
+be asked for them by name, and do not treat them as a heavyweight mode reserved for large features.
+
+The trigger is the owner asking for work, not the size of the work. In practice that means:
+
+1. File the request as a task in `backlog/tasks/` with acceptance criteria sharp enough to fail.
+2. Write the asian-dad rubric from those criteria **before** any implementation exists (TW-001).
+3. Dispatch session-orchestrator agents in waves, one agent per file territory (TW-002).
+4. Verify the agents' load-bearing claims yourself, in the real thing (TW-003, TW-004).
+5. Grade against the sealed rubric at the eval step and report the verdict.
+
+The only work exempt is a question that is answered rather than built, and a change so small that
+filing it would cost more than doing it — and even then, say which exemption was used rather than
+silently skipping the workflow.
+
 ## TW-001: Rubric before work, never after
 
 Write the asian-dad rubric **before** any implementation exists, derived from the task's acceptance

@@ -29,6 +29,7 @@ from jobradar.services.mailbox import (
     check_guardrails,
     classify_email,
     dismiss_suggestion,
+    gmail_conversation_url,
     is_busy_at,
     match_job,
     owned_job_domains,
@@ -36,6 +37,7 @@ from jobradar.services.mailbox import (
     run_check,
     sanitize_inbound_text,
     seed_fake_run,
+    update_draft_text,
 )
 from jobradar.services.prompt_builder import user_profile_settings
 
@@ -86,6 +88,7 @@ class FakeTransport:
 
     def append_draft(self, mime_message, thread_id=None):
         self.appended_drafts.append(mime_message)
+        return {}  # TASK-121 AC1: matches ImapTransport.append_draft's real return shape
 
 
 def raw(uid, sender='hr@acme.test', subject='', body='', received_at=None, message_id='', references='', **headers):
@@ -1100,13 +1103,21 @@ class _FakeGmailHttp:
         self.details = details  # {gmail_id: {'internalDate': ..., 'threadId': ..., 'raw': ...}}
         self.calls = []  # (method, url) in call order
         self.draft_payloads = []  # decoded JSON body of every POST to .../drafts
+        self.update_payloads = []  # decoded JSON body of every PUT to .../drafts/<id> (TASK-122)
 
     def __call__(self, method, url, access_token, data=None):
         self.calls.append((method, url))
         assert access_token == 'fake-access-token'
         if url.endswith('/drafts') and method == 'POST':
-            self.draft_payloads.append(json.loads(data.decode('utf-8')))
-            return {'id': 'draft-1'}
+            payload = json.loads(data.decode('utf-8'))
+            self.draft_payloads.append(payload)
+            # TASK-121 AC1: a real users.drafts.create response carries {id, message: {id, threadId}}
+            # -- echoed back here so tests can assert append_draft's caller actually persists them.
+            draft_id = f'draft-{len(self.draft_payloads)}'
+            return {'id': draft_id, 'message': {'id': f'msg-{draft_id}', 'threadId': payload['message'].get('threadId', '')}}
+        if '/drafts/' in url and method == 'PUT':
+            self.update_payloads.append(json.loads(data.decode('utf-8')))
+            return {'id': url.rsplit('/', 1)[-1]}
         if '/messages?' in url and method == 'GET':
             return {'messages': [{'id': mid} for mid in self.message_ids]}
         if '/messages/' in url and 'format=raw' in url and method == 'GET':
@@ -1280,6 +1291,43 @@ def test_gmail_api_transport_creates_draft_never_calls_send(not_cold_start, db, 
     assert not any(url.endswith('/send') for _method, url in fake_http.calls)
 
 
+def test_gmail_api_draft_response_ids_are_persisted_onto_message_and_draft(not_cold_start, db, owner, applied_job, monkeypatch):
+    """TASK-121 AC1/AC2: append_draft's response used to be discarded one frame later -- this is the
+    fake-transport-response coverage the task asks for. The inbound thread_id (a DIFFERENT id from
+    the draft's own) lands on MailboxMessage; the draft/message/thread ids from users.drafts.create's
+    response land on MailboxDraft.
+    """
+    details = {
+        'msg-1': {
+            'internalDate': '1000000', 'threadId': 'thread-abc',
+            'raw': _gmail_raw_b64('hr@acme.test', 'Interview invite', 'We would like to invite you to an interview on 03.03.2026 at 14:00.'),
+        },
+    }
+    fake_http = _FakeGmailHttp(['msg-1'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+        run_check(transport=transport)
+    message = MailboxMessage.objects.get(gmail_id='msg-1')
+    assert message.thread_id == 'thread-abc', "the inbound message's own thread_id was not persisted"
+    draft = MailboxDraft.objects.get(message=message)
+    assert draft.gmail_draft_id == 'draft-1'
+    assert draft.gmail_message_id == 'msg-draft-1'
+    assert draft.gmail_thread_id == 'thread-abc'
+
+
+def test_imap_drafted_reply_has_empty_gmail_ids(not_cold_start, db, owner, applied_job):
+    """TASK-121 AC1: ImapTransport.append_draft returns {} (see FakeTransport.append_draft) -- an
+    IMAP-written draft has no Gmail-assigned ids to persist, same empty shape as a pre-TASK-121 row,
+    so every downstream consumer (gmail_conversation_url, purge_app_drafts, update_draft_text) already
+    has to handle it.
+    """
+    transport = FakeTransport([raw(2, sender='hr@acme.test', subject='Interview invite', body='We would like to invite you to an interview on 03.03.2026 at 14:00.')])
+    run_check(transport=transport)
+    draft = MailboxDraft.objects.get(message__uid=2)
+    assert (draft.gmail_draft_id, draft.gmail_message_id, draft.gmail_thread_id) == ('', '', '')
+
+
 def test_gmail_api_transport_refresh_failure_surfaces_as_run_error(db, owner, monkeypatch):
     """AC7: a refresh-token failure (expired/revoked -- the normal shape of OAuth "testing" mode after
     ~7 days) must never fail silently -- it lands on MailboxRun.error, the same mechanism every other
@@ -1421,6 +1469,26 @@ def test_bulk_mail_reason_cases(headers, expected):
     assert (expected in reason) if expected else reason == ''
 
 
+# --- TASK-121 AC3/AC4/AC5: the one Gmail URL builder -----------------------------------------------
+
+def test_gmail_conversation_url_strips_angle_brackets_and_url_encodes():
+    url = gmail_conversation_url('<CAB+abc123@mail.gmail.com>')
+    assert url == 'https://mail.google.com/mail/u/0/#search/rfc822msgid:CAB%2Babc123%40mail.gmail.com'
+
+
+def test_gmail_conversation_url_includes_authuser_when_given():
+    url = gmail_conversation_url('<m@example.test>', authuser='owner@example.test')
+    assert url.startswith('https://mail.google.com/mail/u/0/?authuser=owner%40example.test#search/rfc822msgid:')
+
+
+@pytest.mark.parametrize('message_id', ['', None, '   ', '<>'])
+def test_gmail_conversation_url_returns_empty_string_for_no_usable_id(message_id):
+    """AC4/AC5: a row with no usable id (or one written before TASK-121) must yield no link, never a
+    URL that 404s into an empty Gmail search.
+    """
+    assert gmail_conversation_url(message_id) == ''
+
+
 class FakeDraftStore:
     """Stands in for GmailApiTransport's draft listing/deletion. Never touches a socket."""
 
@@ -1435,10 +1503,10 @@ class FakeDraftStore:
         self.deleted.append(draft_id)
 
 
-def _written_draft(body_text):
+def _written_draft(body_text, gmail_draft_id=''):
     run = MailboxRun.objects.create()
     message = MailboxMessage.objects.create(run=run, uid=MailboxMessage.objects.count() + 10, sender='hr@acme.test', subject='x', classification='recruiter_reply')
-    return MailboxDraft.objects.create(message=message, status='written', subject='Re: x', body_text=body_text)
+    return MailboxDraft.objects.create(message=message, status='written', subject='Re: x', body_text=body_text, gmail_draft_id=gmail_draft_id)
 
 
 def test_purge_deletes_only_drafts_this_app_recorded_writing(db, owner):
@@ -1467,3 +1535,132 @@ def test_purge_with_no_written_drafts_deletes_nothing(db, owner):
     store = FakeDraftStore([('d1', 'Re: X', 'anything at all')])
     assert purge_app_drafts(store, dry_run=False) == []
     assert store.deleted == []
+
+
+# --- TASK-121 AC6: purge prefers the stored draft id, body text is only the pre-TASK-121 fallback --
+
+def test_purge_prefers_stored_draft_id_even_when_gmail_body_no_longer_matches(db, owner):
+    """Once the id is known, matching is by id -- an owner-edited Gmail body (TASK-122) must not make
+    a stored-id draft become unpurgeable by falling out of a text comparison.
+    """
+    _written_draft('original body', gmail_draft_id='d1')
+    store = FakeDraftStore([('d1', 'Re: X', 'the owner edited this in Gmail by hand')])
+    removed = purge_app_drafts(store, dry_run=False)
+    assert [draft_id for draft_id, _ in removed] == ['d1']
+
+
+def test_purge_still_falls_back_to_body_text_for_rows_written_before_id_persistence(db, owner):
+    """Rows written before TASK-121 have no stored id -- body-text match is still the only way to
+    find them, and TASK-114's safety argument (a hand-written draft is unmatchable) is unchanged.
+    """
+    _written_draft('Thank you for the update on my application for X at Y.')  # gmail_draft_id='' (default)
+    store = FakeDraftStore([
+        ('d9', 'Re: X', 'Thank you for the update on my application for X at Y.'),
+        ('d10', 'Notes to self', 'buy milk'),  # a hand-written draft: still unmatchable
+    ])
+    removed = purge_app_drafts(store, dry_run=False)
+    assert [draft_id for draft_id, _ in removed] == ['d9']
+
+
+def test_purge_does_not_body_match_a_draft_under_a_different_id_than_the_stored_one(db, owner):
+    """An id-bearing row's recorded text is not a generic body matcher for OTHER Gmail drafts that
+    happen to share the wording (a clone, a coincidence) -- id-bearing rows are matched by id only.
+    """
+    _written_draft('shared wording', gmail_draft_id='d1')
+    store = FakeDraftStore([('some-other-draft-id', 'Re: X', 'shared wording')])
+    assert purge_app_drafts(store, dry_run=False) == []
+
+
+# ===================================================================================================
+# TASK-122 AC1: update_draft_text -- the owner's own edit to a written draft. Never sends; only ever
+# reaches Gmail via users.drafts.update (see GmailApiTransport.update_draft / _FakeGmailHttp's PUT
+# handling above).
+# ===================================================================================================
+
+def _draft_for_update(gmail_draft_id='d1', gmail_thread_id='thread-1'):
+    run = MailboxRun.objects.create()
+    message = MailboxMessage.objects.create(
+        run=run, uid=MailboxMessage.objects.count() + 100, sender='hr@acme.test', subject='Interview invite',
+        message_id='<orig@acme.test>', classification='interview_invitation',
+    )
+    return MailboxDraft.objects.create(
+        message=message, status='written', subject='Re: Interview invite', body_text='original text',
+        evaluator='template', gmail_draft_id=gmail_draft_id, gmail_thread_id=gmail_thread_id,
+    )
+
+
+def test_update_draft_text_refuses_on_guardrail_failure(db, owner, settings):
+    """A human edit must not get past the same guardrail generated text cannot get past."""
+    settings.MAILBOX_DO_NOT_DISCLOSE = ['internal roadmap']
+    draft = _draft_for_update()
+    reason = update_draft_text(draft, 'Sure, happy to share our internal roadmap for Q3.')
+    assert 'internal roadmap' in reason
+    draft.refresh_from_db()
+    assert draft.body_text == 'original text', 'refused edit was written anyway'
+    assert draft.evaluator == 'template'
+
+
+def test_update_draft_text_refuses_when_no_stored_draft_id(db, owner):
+    """A pre-TASK-121 (or IMAP-written) row has no gmail_draft_id -- updating only the database would
+    leave Gmail silently showing stale text, so this refuses rather than half-updating.
+    """
+    draft = _draft_for_update(gmail_draft_id='')
+    reason = update_draft_text(draft, 'Updated text.')
+    assert 'no stored Gmail draft id' in reason
+    draft.refresh_from_db()
+    assert draft.body_text == 'original text'
+
+
+def test_update_draft_text_updates_gmail_and_database_on_success(db, owner, monkeypatch):
+    draft = _draft_for_update(gmail_draft_id='d1', gmail_thread_id='thread-1')
+    fake_http = _FakeGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: transport)
+
+    reason = update_draft_text(draft, 'Updated reply text.', user=owner)
+
+    assert reason == ''
+    draft.refresh_from_db()
+    assert draft.body_text == 'Updated reply text.'
+    assert draft.evaluator == 'human', 'evaluator still claims a template/LLM wrote a human edit'
+    assert fake_http.update_payloads and fake_http.update_payloads[0]['message']['threadId'] == 'thread-1'
+    assert [call for call in fake_http.calls if call[0] == 'PUT' and call[1].endswith('/drafts/d1')]
+    assert not any(url.endswith('/send') for _method, url in fake_http.calls)
+
+
+def test_update_draft_text_refuses_on_imap_transport(db, owner, monkeypatch):
+    """IMAP is out of scope for editing -- same refusal shape purge_app_drafts' management command
+    uses (there is no IMAP equivalent of drafts.update).
+    """
+    draft = _draft_for_update()
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: mailbox.ImapTransport('imap.gmail.com', 'owner@example.test', 'fake-app-password'))
+    reason = update_draft_text(draft, 'Updated text.')
+    assert 'IMAP is not supported' in reason
+    draft.refresh_from_db()
+    assert draft.body_text == 'original text'
+
+
+def test_update_draft_text_returns_a_reason_when_gmail_rejects_the_update(db, owner, monkeypatch):
+    """TASK-122 AC7. Gmail refusing is ordinary, not exceptional: the owner deletes the draft in
+    Gmail, the refresh token expires, the network drops. Measured before this guard existed --
+    editing a draft whose Gmail id no longer exists raised out of the service and the endpoint
+    answered HTTP 500 with a traceback, so the owner saw 'Please try again' and nothing actionable.
+    The draft must survive intact and the caller must get a reason it can show.
+    """
+    draft = _draft_for_update(gmail_draft_id='gone-from-gmail')
+
+    class _Rejecting:
+        def update_draft(self, *_args, **_kwargs):
+            raise RuntimeError('Gmail API PUT .../drafts/gone-from-gmail failed with HTTP 404: Not Found')
+
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: _Rejecting())
+    monkeypatch.setattr(mailbox, 'GmailApiTransport', _Rejecting)
+
+    reason = update_draft_text(draft, 'Updated text the owner typed.')
+
+    assert reason, 'a Gmail failure must come back as a refusal reason, not an exception'
+    assert '404' in reason or 'would not accept' in reason
+    draft.refresh_from_db()
+    assert draft.body_text == 'original text', 'the stored draft must be untouched when Gmail refused'
+    assert draft.evaluator != 'human', 'a failed edit must not be recorded as a human edit'

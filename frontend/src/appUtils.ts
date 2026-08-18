@@ -126,6 +126,38 @@ export function initPanelOrder(saved:string[],allIds:string[]):string[]{
   return [...unknown,...known]
 }
 
+// TASK-119 AC2/AC6/AC7. build_suggestions (mailbox.py) can emit more than one MailboxSuggestion for
+// the same inbound email (e.g. a status_change alongside a feedback_clear whenever the job has a
+// feedback clock running), and MailboxSuggestion.message is a full nested copy per suggestion - so
+// grouping client-side by s.message.id turns N suggestion rows sharing one email into ONE card, with
+// no backend change. Order is first-seen message order (whatever order the flat list already arrived
+// in) and suggestions keep their own order within a group; nothing here re-sorts either.
+export type MailboxSuggestionGroup<S extends {message:{id:number}}>={message:S['message'];suggestions:S[]}
+export function groupMailboxSuggestions<S extends {message:{id:number}}>(suggestions:S[]):MailboxSuggestionGroup<S>[]{
+  const groups:MailboxSuggestionGroup<S>[]=[]
+  const byMessageId=new Map<number,MailboxSuggestionGroup<S>>()
+  for(const s of suggestions){
+    let group=byMessageId.get(s.message.id)
+    if(!group){group={message:s.message,suggestions:[]};byMessageId.set(s.message.id,group);groups.push(group)}
+    group.suggestions.push(s)
+  }
+  return groups
+}
+
+// TASK-123. The board's note button must only ever load/edit/delete a note it created itself - a
+// `general` note - never adopt a note of a different type (e.g. the `recruiter_message` audit note
+// apply_suggestion has written on every confirmed email suggestion since TASK-117) just because it
+// happens to be the newest note on the job (ApplicationNote.Meta.ordering is newest-first). Returns
+// null when there is no general note yet, so the modal starts a fresh one instead of silently
+// retyping - and, on an empty save, deleting - a note it never wrote.
+// `any` return rather than a generic: the one real caller passes an untyped API response
+// (App.tsx's `api()` has no typed return), and TypeScript substitutes a generic's constraint - not
+// `any` - for a type parameter it cannot infer, which would wrongly narrow the result to
+// {note_type:string} and reject reading `.note`/`.id` off it.
+export function selectGeneralNote(notes:{note_type:string}[]|null|undefined):any{
+  return (notes||[]).find(n=>n.note_type==='general')||null
+}
+
 const routeTitles:Record<string,string>={'/':'Board','/add':'Add job','/public-submit':submitDe.title,'/prompts':'Prompts','/import':'Import','/followups':'Follow-ups','/export':'Export','/bookmarklet':'Bookmarklet','/practice':'Practice','/mailbox':'Mailbox','/login':'Sign in','/onboarding':'Setup','/privacy':'Privacy','/terms':'Terms','/settings/profile':'Profile settings','/settings/account':'Account settings'};
 export function pathTitle(pathname:string){return routeTitles[pathname]||(pathname.startsWith('/jobs/')?'Job':pathname.startsWith('/reset-password/')?'Reset password':pathname.startsWith('/verify-email/')?'Confirm email':'')}
 
