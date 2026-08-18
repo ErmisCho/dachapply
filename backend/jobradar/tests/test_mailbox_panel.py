@@ -429,3 +429,234 @@ def test_raise_test_error_actually_raises_for_the_owner(client, owner, settings)
 
     with pytest.raises(RuntimeError, match='TASK-88 AC2'):
         client.post('/api/debug/raise-test-error/')
+
+
+# --- TASK-125 AC1/AC2: the settings surface round-trips through /api/profile/ ----------------------
+
+def test_mailbox_check_enabled_and_window_round_trip_through_profile_settings(client):
+    payload = {'mailbox_check_enabled': False, 'mailbox_check_window_start': '22:00:00', 'mailbox_check_window_end': '06:00:00'}
+
+    r = client.patch('/api/profile/', payload, format='json')
+    assert r.status_code == 200
+    assert r.data['mailbox_check_enabled'] is False
+    assert r.data['mailbox_check_window_start'] == '22:00:00'
+    assert r.data['mailbox_check_window_end'] == '06:00:00'
+
+    r = client.get('/api/profile/')
+    assert r.data['mailbox_check_enabled'] is False
+    assert r.data['mailbox_check_window_start'] == '22:00:00'
+    assert r.data['mailbox_check_window_end'] == '06:00:00'
+
+
+# --- TASK-124 AC1/AC2/AC9: the manual "run now" trigger --------------------------------------------
+
+def test_run_now_starts_a_background_run_and_returns_immediately(client, monkeypatch):
+    """AC1: verified against a run slower than a normal request timeout -- the HTTP response must
+    come back long before the (stubbed) run finishes, not after."""
+    import time
+
+    from jobradar.services import mailbox_tasks
+
+    def slow_run_check(force=False, transport=None):
+        time.sleep(0.5)
+        return None  # no DB write from the background thread -- see the test's own note below
+
+    monkeypatch.setattr(mailbox_tasks, 'run_check', slow_run_check)
+
+    started = time.monotonic()
+    r = client.post('/api/mailbox-runs/run-now/')
+    elapsed = time.monotonic() - started
+
+    assert r.status_code == 200
+    assert r.data['queued'] is False
+    assert 'task_id' in r.data
+    assert elapsed < 0.4, 'the request must return before the slow run finishes, not block on it'
+
+
+def test_run_now_queues_a_request_when_this_backend_has_no_credentials(client, owner, settings):
+    """AC2: the deployed-site path -- no GMAIL_* configured, so a request is recorded instead of a
+    run being started, and nothing is silently dropped."""
+    settings.GMAIL_IMAP_USER = ''
+    settings.GMAIL_IMAP_APP_PASSWORD = ''
+
+    r = client.post('/api/mailbox-runs/run-now/')
+
+    assert r.status_code == 200
+    assert r.data['queued'] is True
+    assert 'request_id' in r.data
+    from jobradar.models import MailboxCheckRequest
+    request = MailboxCheckRequest.objects.get(pk=r.data['request_id'])
+    assert request.requested_by_id == owner.id
+    assert request.handled_at is None
+
+
+def test_run_now_requires_cv_owner(db, applied_job):
+    other = User.objects.create_user('other11@example.test', email='other11@example.test', password='pw')
+    other_client = APIClient(); other_client.force_authenticate(other)
+
+    r = other_client.post('/api/mailbox-runs/run-now/')
+
+    assert r.status_code == 404
+
+
+# --- TASK-124 AC5/AC6/AC7/AC8: the pollable status + estimate endpoint -----------------------------
+
+def test_mailbox_run_status_endpoint_shape_with_no_history(client):
+    r = client.get('/api/mailbox-runs/status/')
+
+    assert r.status_code == 200
+    assert r.data['has_credentials'] is True  # fixture configures GMAIL_IMAP_USER/APP_PASSWORD
+    assert r.data['running'] is False
+    assert r.data['run'] is None
+    assert r.data['estimate'] == {'kind': 'cold', 'estimated_seconds': None}
+    assert r.data['elapsed_seconds'] is None
+    assert r.data['taking_longer_than_usual'] is False
+
+
+def test_mailbox_run_status_endpoint_reports_live_progress_while_running(client):
+    run = MailboxRun.objects.create(fetched_count=5)
+    MailboxRun.objects.filter(pk=run.pk).update(started_at=timezone.now() - timezone.timedelta(seconds=10))
+
+    r = client.get('/api/mailbox-runs/status/')
+
+    assert r.status_code == 200
+    assert r.data['running'] is True
+    assert r.data['run']['id'] == run.id
+    assert r.data['run']['fetched_count'] == 5
+    assert r.data['elapsed_seconds'] >= 10
+
+
+def test_mailbox_run_status_endpoint_says_taking_longer_than_usual_past_the_estimate(client, applied_job):
+    completed = MailboxRun.objects.create(drafting_skipped=False)
+    MailboxRun.objects.filter(pk=completed.pk).update(
+        started_at=timezone.now() - timezone.timedelta(seconds=10),
+        finished_at=timezone.now() - timezone.timedelta(seconds=5),
+    )
+    # A message exists (attached to the already-FINISHED run above), so the NEXT check is
+    # incremental, not cold -- attaching to `completed` rather than calling _log_message() avoids
+    # creating a second, un-backdated in-progress run that would outrank `in_progress` below by
+    # having a more recent started_at.
+    MailboxMessage.objects.create(run=completed, uid=1, sender='hr@acme.test', subject='x', matched_job=applied_job)
+    in_progress = MailboxRun.objects.create(fetched_count=1)
+    MailboxRun.objects.filter(pk=in_progress.pk).update(started_at=timezone.now() - timezone.timedelta(seconds=30))
+
+    r = client.get('/api/mailbox-runs/status/')
+
+    assert r.data['estimate']['kind'] == 'incremental'
+    assert r.data['estimate']['estimated_seconds'] == pytest.approx(5.0, abs=0.1)
+    assert r.data['elapsed_seconds'] >= 30
+    assert r.data['taking_longer_than_usual'] is True
+
+
+def test_mailbox_run_status_requires_cv_owner(db, applied_job):
+    other = User.objects.create_user('other12@example.test', email='other12@example.test', password='pw')
+    other_client = APIClient(); other_client.force_authenticate(other)
+
+    r = other_client.get('/api/mailbox-runs/status/')
+
+    assert r.status_code == 404
+
+
+# --- TASK-122 AC2/AC3/AC4/AC6/AC7: the draft-chat conversation -------------------------------------
+
+def test_chat_turn_persists_history_and_rebuilds_it_on_the_next_turn(client, owner, applied_job, monkeypatch):
+    """The genuine multi-turn proof: the second call's `history` argument must contain the first
+    turn's (instruction, revision) pair -- "kuerzer" then "actually keep the date I just added" only
+    makes sense if the first turn was remembered.
+    """
+    from jobradar.services.draft_chat import ChatTurnResult
+
+    message = _log_message(applied_job, 'interview_invitation')
+    draft = _written_draft(applied_job, message, body_text='Original draft text')
+    captured = []
+
+    def fake_run_chat_turn(original_draft_text, history, user_message, provider, model, effort, speed='normal', *, profile=None, timeout_seconds=None):
+        captured.append({'original': original_draft_text, 'history': list(history), 'message': user_message})
+        return ChatTurnResult(f'revision {len(captured)}', '')
+
+    monkeypatch.setattr('jobradar.views.run_chat_turn', fake_run_chat_turn)
+
+    r1 = client.post(f'/api/mailbox-drafts/{draft.id}/chat/', {'user_message': 'kuerzer', 'provider': 'anthropic', 'model': 'sonnet', 'effort': 'medium'}, format='json')
+    assert r1.status_code == 200
+    assert r1.data['chat_history'] == [{'user_message': 'kuerzer', 'revised_text': 'revision 1'}]
+    assert captured[0]['history'] == []
+    assert captured[0]['original'] == 'Original draft text'
+
+    r2 = client.post(f'/api/mailbox-drafts/{draft.id}/chat/', {'user_message': 'actually keep the date I just added', 'provider': 'anthropic', 'model': 'sonnet', 'effort': 'medium'}, format='json')
+    assert r2.status_code == 200
+    assert len(captured) == 2
+    assert captured[1]['history'][0].user_message == 'kuerzer'
+    assert captured[1]['history'][0].revised_text == 'revision 1'
+    assert captured[1]['original'] == 'Original draft text'  # the ORIGINAL, not the latest revision
+    draft.refresh_from_db()
+    assert [item['user_message'] for item in draft.chat_history] == ['kuerzer', 'actually keep the date I just added']
+
+    owner.jobradar_profile.refresh_from_db()
+    assert owner.jobradar_profile.mailbox_chat_provider == 'anthropic'
+    assert owner.jobradar_profile.mailbox_chat_model == 'sonnet'
+
+
+def test_chat_turn_for_a_job_the_user_cannot_see_is_404(client, applied_job):
+    message = _log_message(applied_job, 'interview_invitation')
+    draft = _written_draft(applied_job, message)
+    other = User.objects.create_user('other13@example.test', email='other13@example.test', password='pw')
+    other_client = APIClient(); other_client.force_authenticate(other)
+
+    r = other_client.post(f'/api/mailbox-drafts/{draft.id}/chat/', {'user_message': 'kuerzer', 'provider': 'anthropic', 'model': 'sonnet', 'effort': 'medium'}, format='json')
+
+    assert r.status_code == 404
+
+
+def test_chat_turn_refuses_with_4xx_for_an_unavailable_model_without_invoking_a_real_model(client, applied_job):
+    """AC7: an unavailable model is a refusal, not a 500 -- and validate_model_capability rejects a
+    model name that is not in available_model_options() before anything is ever shelled out to, so
+    this never launches a real model process."""
+    message = _log_message(applied_job, 'interview_invitation')
+    draft = _written_draft(applied_job, message, body_text='Original text')
+
+    r = client.post(f'/api/mailbox-drafts/{draft.id}/chat/', {'user_message': 'kuerzer', 'provider': 'anthropic', 'model': 'no-such-model-xyz', 'effort': 'medium'}, format='json')
+
+    assert r.status_code == 400
+    assert 'detail' in r.data
+    draft.refresh_from_db()
+    assert draft.chat_history == []  # a refused turn is never persisted
+
+
+def test_accepting_a_chat_revision_via_edit_writes_through_update_draft_text_and_resets_chat_history(client, applied_job, monkeypatch):
+    """AC5: accepting is the existing `edit` action -- no second writer of Gmail/body_text. Also
+    proves the conversation resets once its result is accepted, so a later chat turn starts fresh
+    from the now-current text rather than re-feeding a transcript that ends at stale text.
+    """
+    message = _log_message(applied_job, 'interview_invitation')
+    draft = _written_draft(applied_job, message, body_text='Original text')
+    draft.chat_history = [{'user_message': 'kuerzer', 'revised_text': 'Shorter text'}]
+    draft.save(update_fields=['chat_history'])
+    calls = []
+    _fake_gmail_transport(monkeypatch, calls)
+
+    r = client.post(f'/api/mailbox-drafts/{draft.id}/edit/', {'body_text': 'Shorter text'}, format='json')
+
+    assert r.status_code == 200
+    draft.refresh_from_db()
+    assert draft.body_text == 'Shorter text'
+    assert draft.evaluator == 'human'
+    assert calls == [('draft-1', 'thread-1')]  # went through update_draft_text's real Gmail write
+    assert draft.chat_history == []
+
+
+# --- TASK-122 AC3/AC4: the model picker, reused from CV generation's discovery ----------------------
+
+def test_draft_chat_model_options_exposes_available_models_and_the_saved_choice(client, owner):
+    from jobradar.services.prompt_builder import user_profile_settings as get_profile
+
+    profile = get_profile(owner)
+    profile.mailbox_chat_provider = 'anthropic'
+    profile.mailbox_chat_model = 'sonnet'
+    profile.save(update_fields=['mailbox_chat_provider', 'mailbox_chat_model'])
+
+    r = client.get('/api/mailbox-drafts/model-options/')
+
+    assert r.status_code == 200
+    assert isinstance(r.data['models'], list)
+    assert r.data['selected_provider'] == 'anthropic'
+    assert r.data['selected_model'] == 'sonnet'

@@ -64,6 +64,7 @@ from django.db.models import Max, Q
 from django.utils import timezone
 
 from jobradar.models import ApplicationNote, JobLead, MailboxCheckRequest, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun
+from jobradar.services.calendar_ics import mask_calendar_ics_url, parse_calendar_ics_urls
 from jobradar.services.followup_digest import owned_jobs
 from jobradar.services.prompt_builder import user_profile_settings
 # Reuse of interview_coach's local-LLM plumbing (TASK-104): same LLM_PROVIDER env gate, same
@@ -789,22 +790,34 @@ def _fetch_ics(url, timeout=10):
         return response.read().decode('utf-8', errors='replace')
 
 
-def calendar_busy_now(now, ics_url=None) -> bool:
-    """AC7: any fetch or parse failure fails OPEN (returns False, i.e. not busy) -- a broken
-    calendar URL must never silently stop mail checking.
+def calendar_busy_now(now, urls_raw='') -> tuple[bool, list[str]]:
+    """TASK-115 AC2/AC3/AC4: read every calendar the owner has configured on their profile
+    (`UserProfile.mailbox_calendar_ics_urls`, parsed by the platform's own parse_calendar_ics_urls --
+    it already tolerates a pasted `[a, b, c]` list, commas, newlines and stray quotes), not a single
+    env var. Any ONE calendar reporting busy makes the run busy (AC2). Each calendar is checked
+    independently -- one unreachable or unparseable URL is caught and does not stop the rest from
+    being checked, and if every calendar fails this still returns busy=False so mail checking
+    proceeds (AC3/TASK-109 AC7: fail-open, never fail-closed on a broken calendar).
+
+    Returns (busy, errors): errors is a list of human-readable per-calendar failures (URL masked --
+    the same secret an owner pastes here must not turn up unmasked in MailboxRun.error) so the caller
+    can record them where the owner can see them instead of only logging (AC4) -- a broken calendar
+    must no longer look identical to "no events right now".
     """
-    url = (ics_url if ics_url is not None else settings.GMAIL_CALENDAR_ICS_URL or '').strip()
-    if not url:
-        return False
-    try:
-        text = _fetch_ics(url)
-        return is_busy_at(text, now)
-    except (HTTPError, URLError, TimeoutError, ValueError):
-        logger.warning('Calendar quiet-hours check failed; failing open (mail check proceeds)', exc_info=True)
-        return False
-    except Exception:
-        logger.exception('Calendar quiet-hours check failed unexpectedly; failing open')
-        return False
+    busy = False
+    errors = []
+    for url in parse_calendar_ics_urls(urls_raw):
+        try:
+            text = _fetch_ics(url)
+            if is_busy_at(text, now):
+                busy = True
+        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+            logger.warning('Calendar quiet-hours check failed for %s; failing open (mail check proceeds)', mask_calendar_ics_url(url), exc_info=True)
+            errors.append(f'Calendar check failed for {mask_calendar_ics_url(url)}: {exc}')
+        except Exception as exc:
+            logger.exception('Calendar quiet-hours check failed unexpectedly for %s; failing open', mask_calendar_ics_url(url))
+            errors.append(f'Calendar check failed for {mask_calendar_ics_url(url)}: {exc}')
+    return busy, errors
 
 
 # --- Suggestions (AC3) --------------------------------------------------------------------------
@@ -1610,12 +1623,26 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             run.finished_at = timezone.now()
             run.save()
             return run
-        if profile.mailbox_check_calendar_aware and calendar_busy_now(now):
-            run.skipped = True
-            run.skip_reason = 'quiet_hours'
-            run.finished_at = timezone.now()
-            run.save()
-            return run
+        if profile.mailbox_check_calendar_aware:
+            busy, calendar_errors = calendar_busy_now(now, profile.mailbox_calendar_ics_urls)
+            # NOT reported here, deliberately: calendar-awareness ON with NO calendars configured.
+            # Measured against production 2026-08-18 -- every profile had calendar_aware=True (the
+            # model default) and zero configured calendars, because the owner's calendar only ever
+            # lived in a local .env this function no longer reads. Surfacing that per run was tried
+            # and reverted: the default is True, so it fires for every account that simply does not
+            # use quiet hours, and a warning that cries wolf on every run is the same disease AC4
+            # exists to cure. A configuration mismatch belongs on the settings page, once, next to
+            # the toggle that causes it -- not in the error field of a run that worked fine.
+            if calendar_errors:
+                # AC4: recorded even when fail-open leaves the run proceeding -- a broken calendar
+                # must never again look identical to "no events right now" (see task file history).
+                run.error = '; '.join(calendar_errors)[:2000]
+            if busy:
+                run.skipped = True
+                run.skip_reason = 'quiet_hours'
+                run.finished_at = timezone.now()
+                run.save()
+                return run
 
         active_transport = transport or _default_transport()
         # AC1: Gmail-API messages have no IMAP UID, so their resume marker is Gmail's own ascending

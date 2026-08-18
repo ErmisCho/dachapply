@@ -463,31 +463,101 @@ def test_is_busy_at_handles_all_day_events():
     assert is_busy_at(ics, when) is True
 
 
-def test_calendar_busy_now_returns_false_when_no_url_configured(settings):
-    settings.GMAIL_CALENDAR_ICS_URL = ''
-    assert calendar_busy_now(timezone.now()) is False
+def test_calendar_busy_now_returns_false_when_no_calendars_configured():
+    assert calendar_busy_now(timezone.now(), '') == (False, [])
 
 
-def test_calendar_busy_now_uses_fetched_text(settings, monkeypatch):
+def test_calendar_busy_now_uses_fetched_text(monkeypatch):
     from zoneinfo import ZoneInfo
-    settings.GMAIL_CALENDAR_ICS_URL = 'https://calendar.example.test/private.ics'
     monkeypatch.setattr(mailbox, '_fetch_ics', lambda url, timeout=10: ICS_WITH_BUSY_EVENT)
-    assert calendar_busy_now(datetime(2026, 8, 17, 9, 30, tzinfo=ZoneInfo('Europe/Vienna'))) is True
+    when = datetime(2026, 8, 17, 9, 30, tzinfo=ZoneInfo('Europe/Vienna'))
+    assert calendar_busy_now(when, 'https://calendar.example.test/private.ics') == (True, [])
 
 
-def test_calendar_busy_now_fails_open_on_fetch_error(settings, monkeypatch):
-    settings.GMAIL_CALENDAR_ICS_URL = 'https://calendar.example.test/private.ics'
-
+def test_calendar_busy_now_fails_open_on_fetch_error(monkeypatch):
     def _boom(url, timeout=10):
         raise TimeoutError('slow calendar host')
     monkeypatch.setattr(mailbox, '_fetch_ics', _boom)
-    assert calendar_busy_now(timezone.now()) is False
+    busy, errors = calendar_busy_now(timezone.now(), 'https://calendar.example.test/private.ics')
+    assert busy is False
+    assert len(errors) == 1 and 'slow calendar host' in errors[0]
 
 
-def test_calendar_busy_now_fails_open_on_unparseable_text(settings, monkeypatch):
-    settings.GMAIL_CALENDAR_ICS_URL = 'https://calendar.example.test/private.ics'
+def test_calendar_busy_now_fails_open_on_unparseable_text(monkeypatch):
     monkeypatch.setattr(mailbox, '_fetch_ics', lambda url, timeout=10: 'BEGIN:VEVENT\nDTSTART:not-a-date\nEND:VEVENT')
-    assert calendar_busy_now(timezone.now()) is False
+    busy, errors = calendar_busy_now(timezone.now(), 'https://calendar.example.test/private.ics')
+    assert busy is False
+    assert len(errors) == 1  # AC4: a value that fails to parse is recorded too, not only logged
+
+
+# --- TASK-115 (mailbox.py reading half): several configured calendars ----------------------------
+
+def test_calendar_busy_now_any_calendar_busy_wins(monkeypatch):
+    """AC2: two calendars configured, neither raises, only the second has a busy event right now --
+    the run must still come back busy."""
+    from zoneinfo import ZoneInfo
+    when = datetime(2026, 8, 17, 9, 30, tzinfo=ZoneInfo('Europe/Vienna'))
+    free_ics = 'BEGIN:VCALENDAR\nEND:VCALENDAR'
+
+    def _fetch(url, timeout=10):
+        return free_ics if url == 'https://cal.example.test/free.ics' else ICS_WITH_BUSY_EVENT
+    monkeypatch.setattr(mailbox, '_fetch_ics', _fetch)
+    urls_raw = 'https://cal.example.test/free.ics\nhttps://cal.example.test/busy.ics'
+    assert calendar_busy_now(when, urls_raw) == (True, [])
+
+
+def test_calendar_busy_now_one_good_one_broken_still_checks_the_good_one(monkeypatch):
+    """AC3: named test -- one unreachable/unparseable calendar must not prevent the other configured
+    calendar from being checked and counted."""
+    from zoneinfo import ZoneInfo
+    when = datetime(2026, 8, 17, 9, 30, tzinfo=ZoneInfo('Europe/Vienna'))
+
+    def _fetch(url, timeout=10):
+        if url == 'https://cal.example.test/broken.ics':
+            raise URLError('unknown url type')
+        return ICS_WITH_BUSY_EVENT
+    monkeypatch.setattr(mailbox, '_fetch_ics', _fetch)
+    urls_raw = 'https://cal.example.test/broken.ics\nhttps://cal.example.test/good.ics'
+    busy, errors = calendar_busy_now(when, urls_raw)
+    assert busy is True  # the good calendar was still checked and found busy
+    assert len(errors) == 1  # the broken one is recorded, not swallowed without a trace
+
+
+def test_calendar_busy_now_total_failure_still_fails_open(monkeypatch):
+    """AC3: every configured calendar unreachable -- the run must still proceed (busy=False), not
+    fail closed, exactly as TASK-109 AC7 requires."""
+    def _boom(url, timeout=10):
+        raise URLError('unknown url type')
+    monkeypatch.setattr(mailbox, '_fetch_ics', _boom)
+    urls_raw = 'https://cal.example.test/one.ics\nhttps://cal.example.test/two.ics'
+    busy, errors = calendar_busy_now(timezone.now(), urls_raw)
+    assert busy is False
+    assert len(errors) == 2
+
+
+def test_calendar_busy_now_masks_the_secret_in_error_messages(monkeypatch):
+    """A failed calendar is recorded where the owner can see it (AC4), but the private-<hash> secret
+    in that same URL must not be the thing that lands there -- masking is what mailbox_calendar_ics
+    already ships for API reads (TASK-115 AC5), reused here rather than leaking the secret a second way."""
+    def _boom(url, timeout=10):
+        raise URLError('unknown url type')
+    monkeypatch.setattr(mailbox, '_fetch_ics', _boom)
+    _busy, errors = calendar_busy_now(timezone.now(), 'https://calendar.google.com/ical/me%40gmail.com/private-abc123secret/basic.ics')
+    assert 'private-abc123secret' not in errors[0]
+
+
+def test_calendar_busy_now_parses_bracketed_list_literal(monkeypatch):
+    """AC8: the parser already tolerates a pasted `[a, b, c]` literal -- exercised here through
+    calendar_busy_now rather than re-tested against parse_calendar_ics_urls directly, since AC9 asks
+    for coverage of multi-calendar parsing at the point it is actually used."""
+    seen = []
+
+    def _fetch(url, timeout=10):
+        seen.append(url)
+        return 'BEGIN:VCALENDAR\nEND:VCALENDAR'
+    monkeypatch.setattr(mailbox, '_fetch_ics', _fetch)
+    calendar_busy_now(timezone.now(), "[https://cal.example.test/a.ics, 'https://cal.example.test/b.ics'")
+    assert seen == ['https://cal.example.test/a.ics', 'https://cal.example.test/b.ics']
 
 
 # --- run_check end-to-end (AC1, AC4, AC5, AC7, AC8) -----------------------------------------------
@@ -592,7 +662,7 @@ def test_run_after_cold_start_drafts_normally(db, owner):
 
 def test_run_check_skips_and_does_not_fetch_when_calendar_busy(db, owner, monkeypatch):
     JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
-    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now: True)
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, urls_raw='': (True, []))
     transport = FakeTransport([raw(1)])
     run = run_check(transport=transport)
     assert run.skipped is True and run.skip_reason == 'quiet_hours'
@@ -605,11 +675,37 @@ def test_run_check_skips_calendar_check_entirely_when_owner_opted_out(db, owner,
     profile.mailbox_check_calendar_aware = False
     profile.save(update_fields=['mailbox_check_calendar_aware'])
     calls = []
-    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now: calls.append(now) or True)
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, urls_raw='': calls.append(now) or (True, []))
     JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
     run = run_check(transport=FakeTransport([raw(1)]))
     assert calls == []  # never even asked
     assert run.skipped is False
+
+
+def test_run_check_reads_calendars_from_profile_not_env(settings, db, owner, monkeypatch):
+    """AC7: the profile field is the only path in -- an env var, even if set, must be ignored."""
+    settings.GMAIL_CALENDAR_ICS_URL = 'https://should-be-ignored.example.test/whatever.ics'
+    profile = user_profile_settings(owner)
+    profile.mailbox_calendar_ics_urls = 'https://cal.example.test/mine.ics'
+    profile.save(update_fields=['mailbox_calendar_ics_urls'])
+    seen = {}
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, urls_raw='': seen.setdefault('urls_raw', urls_raw) or (False, []))
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    run_check(transport=FakeTransport([raw(1)]))
+    assert seen['urls_raw'] == 'https://cal.example.test/mine.ics'
+
+
+def test_run_check_records_calendar_failure_on_run_error_without_skipping(db, owner, monkeypatch):
+    """AC4: a configured-but-unusable calendar is recorded on the run (not only logged); AC3: the
+    failure still fails open -- mail checking proceeds regardless."""
+    profile = user_profile_settings(owner)
+    profile.mailbox_calendar_ics_urls = 'https://cal.example.test/broken.ics'
+    profile.save(update_fields=['mailbox_calendar_ics_urls'])
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, urls_raw='': (False, ['Calendar check failed for https://cal.example.test/broken.ics: boom']))
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    run = run_check(transport=FakeTransport([raw(1)]))
+    assert run.skipped is False
+    assert 'Calendar check failed' in run.error
 
 
 def test_run_check_records_error_without_crashing(db, owner):
@@ -1768,14 +1864,14 @@ def test_run_check_gate_order_disabled_beats_outside_window_and_calendar_busy(db
     profile.mailbox_check_enabled = False
     profile.save(update_fields=['mailbox_check_enabled'])
     monkeypatch.setattr(mailbox, 'is_within_check_window', lambda *a, **k: False)
-    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now: True)
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, urls_raw='': (True, []))
     run = run_check(transport=FakeTransport([raw(1)]))
     assert run.skip_reason == 'disabled'
 
 
 def test_run_check_gate_order_outside_window_beats_calendar_busy(db, owner, monkeypatch):
     monkeypatch.setattr(mailbox, 'is_within_check_window', lambda *a, **k: False)
-    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now: True)
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, urls_raw='': (True, []))
     run = run_check(transport=FakeTransport([raw(1)]))
     assert run.skip_reason == 'outside_window'
 

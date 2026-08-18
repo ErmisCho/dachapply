@@ -30,10 +30,11 @@ from .services.cleaning import clean_job_location
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
 from .services.interview_coach import analyze_answer, suggest_questions
-from .services import mailbox
+from .services import mailbox, mailbox_tasks
 from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_suggestion
+from .services.draft_chat import ChatTurn, run_chat_turn
 from .services.analytics import record_demo_click
-from .services.cv_generator import ARTIFACT_KEYS, decode_correction_image, generation_preview, is_cv_owner, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
+from .services.cv_generator import ARTIFACT_KEYS, available_model_options, decode_correction_image, generation_preview, is_cv_owner, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
 from .services.cv_tasks import cancel_cv_task, get_cv_task, get_cv_task_download, start_cv_compile_task, start_cv_revision, start_cv_task
 from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
 from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
@@ -718,6 +719,50 @@ class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         if not is_cv_owner(self.request.user): return MailboxRun.objects.none()
         return MailboxRun.objects.all().prefetch_related('messages__matched_job','messages__draft')
+    @action(detail=False, methods=['post'], url_path='run-now')
+    def run_now(self, request):
+        """TASK-124 AC1/AC2/AC9: same owner gate as the rest of this viewset -- this triggers real
+        mailbox access, so it is never reachable by anyone else. Delegates entirely to
+        services.mailbox_tasks.start_mailbox_check, which already decides start-now-on-a-thread vs
+        queue-a-request from has_mailbox_credentials() (services.mailbox._default_transport()) --
+        this view adds no second capability check of its own. Returns immediately either way
+        (AC1): 'queued' tells the client which case it got, matching the {'queued', 'task_id'} /
+        {'queued', 'request_id'} shapes start_mailbox_check documents.
+        """
+        if not is_cv_owner(request.user):
+            return Response({'detail': 'Not found.'}, status=404)
+        return Response(mailbox_tasks.start_mailbox_check(request.user))
+    @action(detail=False, methods=['get'], url_path='status')
+    def status_view(self, request):
+        """TASK-124 AC5/AC6/AC7/AC8: one endpoint to poll regardless of how the run was triggered
+        (this app's own thread, a queued request picked up on the owner's machine, or a plain
+        `manage.py check_mailbox` on the command line) -- mailbox.current_mailbox_run() is the one
+        row AC4's concurrency guard allows to be "in progress" at a time, so there is nothing to
+        disambiguate between triggers here.
+
+        `run` is the in-progress run while one exists, otherwise the most recently attempted one
+        (AC6: the outcome -- counters or error -- must still be visible without a manual refresh).
+        `estimate` is mailbox.mailbox_check_estimate() verbatim (AC7: None with no history of that
+        kind, never an invented number). `taking_longer_than_usual` is computed here, not left for
+        the client to derive, so a missing estimate or an instant run can never read as a negative
+        countdown (AC8).
+        """
+        if not is_cv_owner(request.user):
+            return Response({'detail': 'Not found.'}, status=404)
+        run = mailbox.current_mailbox_run() or MailboxRun.objects.first()
+        running = bool(run and run.finished_at is None)
+        elapsed_seconds = (timezone.now() - run.started_at).total_seconds() if running else None
+        estimate = mailbox.mailbox_check_estimate()
+        estimated_seconds = estimate.get('estimated_seconds')
+        taking_longer_than_usual = bool(running and estimated_seconds is not None and elapsed_seconds > estimated_seconds)
+        return Response({
+            'has_credentials': mailbox.has_mailbox_credentials(),
+            'running': running,
+            'run': MailboxRunSerializer(run).data if run else None,
+            'elapsed_seconds': elapsed_seconds,
+            'estimate': estimate,
+            'taking_longer_than_usual': taking_longer_than_usual,
+        })
 
 class MailboxMessageViewSet(viewsets.GenericViewSet):
     """TASK-117 AC6/AC7. MailboxMessage.uid is globally unique with no user FK -- the mailbox
@@ -782,7 +827,60 @@ class MailboxDraftViewSet(viewsets.GenericViewSet):
         reason=mailbox.update_draft_text(draft, new_text, user=request.user)
         if reason:
             return Response({'detail': reason}, status=400)
+        # TASK-122 AC4/AC5: whatever conversation led here is spent the moment its result is
+        # accepted -- the accepted text is body_text's new baseline going forward, so a later chat
+        # turn must re-feed IT as the "original draft", not a transcript that ends at older text
+        # update_draft_text just overwrote. mailbox.py is out of this task's file scope, so the
+        # reset happens here rather than inside update_draft_text itself.
+        MailboxDraft.objects.filter(pk=draft.pk).update(chat_history=[])
         draft.refresh_from_db()
+        return Response(self.get_serializer(draft).data)
+    @action(detail=False, methods=['get'], url_path='model-options')
+    def model_options(self, request):
+        """TASK-122 AC3/AC4: the same machine-capability probe CV generation already uses (never a
+        second one), plus the owner's last-chosen (provider, model) so the picker does not reset on
+        every mount the way CV generation's does.
+        """
+        profile=user_profile_settings(request.user)
+        return Response({
+            'models': available_model_options(),
+            'selected_provider': profile.mailbox_chat_provider,
+            'selected_model': profile.mailbox_chat_model,
+        })
+    @action(detail=True, methods=['post'])
+    def chat(self, request, pk=None):
+        """TASK-122 AC2/AC3/AC4/AC6/AC7/AC8: one turn of the draft-revision conversation.
+        Rebuilds `history` from chat_history (never trusts the client to resend it -- the stored
+        JSON is the one source of truth), calls run_chat_turn, and returns the revision for the
+        owner to look at. NEVER writes to Gmail or to `body_text` here (AC5's write-through only
+        happens via `edit` above, on explicit accept) -- see draft_chat's module docstring.
+
+        The (provider, model) requested is persisted onto the user's profile immediately (AC4),
+        regardless of whether this particular turn succeeds -- it is what the owner picked in the
+        UI, and CV generation's picker resetting on every mount is exactly the annoyance this must
+        not repeat. Only a turn with reason == '' (AC7: no provider failure, AC6: no guardrail
+        block) is appended to chat_history; a refused turn changes nothing on record, so a later
+        turn still re-feeds the last text that was actually safe to show.
+        """
+        draft=self.get_object()
+        user_message=(request.data.get('user_message') or '').strip()
+        if not user_message:
+            return Response({'detail':'user_message is required.'}, status=400)
+        provider=request.data.get('provider') or ''
+        model=request.data.get('model') or ''
+        effort=request.data.get('effort') or ''
+        speed=request.data.get('speed') or 'normal'
+        profile=user_profile_settings(request.user)
+        if provider and model and (profile.mailbox_chat_provider != provider or profile.mailbox_chat_model != model):
+            profile.mailbox_chat_provider=provider
+            profile.mailbox_chat_model=model
+            profile.save(update_fields=['mailbox_chat_provider','mailbox_chat_model'])
+        history=[ChatTurn(**item) for item in draft.chat_history]
+        result=run_chat_turn(draft.body_text, history, user_message, provider, model, effort, speed, profile=profile)
+        if result.reason:
+            return Response({'detail': result.reason}, status=400)
+        draft.chat_history=draft.chat_history + [{'user_message': user_message, 'revised_text': result.revised_text}]
+        draft.save(update_fields=['chat_history'])
         return Response(self.get_serializer(draft).data)
 
 @api_view(['POST'])
@@ -1080,6 +1178,18 @@ def cv_generation_status(request, task_id):
     if not is_cv_owner(request.user):
         return Response({'detail':'Not found.'}, status=404)
     task=get_cv_task(task_id, request.user.id)
+    return Response(task) if task else Response({'detail':'Task not found.'}, status=404)
+
+
+@api_view(['GET'])
+def mailbox_check_task_status(request, task_id):
+    """TASK-124 AC1: polling for the specific in-thread task run-now just started -- same
+    shape/gate as cv_generation_status above. Only reachable when the run started on THIS
+    process's thread (see services.mailbox_tasks); a queued request (no credentials) has no task
+    to poll here at all -- the caller should watch /api/mailbox-runs/status/ instead."""
+    if not is_cv_owner(request.user):
+        return Response({'detail':'Not found.'}, status=404)
+    task=mailbox_tasks.get_mailbox_check_task(task_id, request.user.id)
     return Response(task) if task else Response({'detail':'Task not found.'}, status=404)
 
 

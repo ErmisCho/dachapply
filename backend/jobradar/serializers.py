@@ -79,7 +79,9 @@ def clean_job_title(value):
 class CandidateProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model=UserProfile
-        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ics_urls','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
+        # TASK-125 AC1/AC2: mailbox_check_enabled/window_start/window_end sit next to the existing
+        # cadence/calendar_aware fields, where the owner already looks for mailbox settings.
+        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_check_enabled','mailbox_check_window_start','mailbox_check_window_end','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ics_urls','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
     # The profile codec is a text codec: it JSON-wraps values for drifted SQLite schemas and
     # coerces falsy values to ''. Running a boolean through it would store '' in a
     # BooleanField and serialise False as ''. Booleans (and mailbox_check_cadence_minutes, an int
@@ -324,7 +326,10 @@ class MailboxDraftSerializer(serializers.ModelSerializer):
     gmail_url=serializers.SerializerMethodField()
     class Meta:
         model=MailboxDraft
-        fields=('id','status','block_reason','subject','body_text','evaluator','gmail_draft_id','gmail_message_id','gmail_thread_id','gmail_url','created_at')
+        # TASK-122 AC4/AC5: chat_history is read-only here too -- the only writer is
+        # MailboxDraftViewSet.chat (append on a successful turn) and .edit (reset on accept),
+        # never a generic field on this serializer.
+        fields=('id','status','block_reason','subject','body_text','evaluator','gmail_draft_id','gmail_message_id','gmail_thread_id','gmail_url','chat_history','created_at')
         read_only_fields=fields
     def get_gmail_url(self, obj):
         return _gmail_url(obj.message.message_id)

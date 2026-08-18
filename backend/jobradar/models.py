@@ -79,6 +79,13 @@ class UserProfile(models.Model):
     # web-only compromise can never raise the floor or shrink the blocklist below the machine's own.
     mailbox_salary_floor_eur=models.PositiveIntegerField(default=0)
     mailbox_do_not_disclose=models.TextField(blank=True, default='')
+    # TASK-122 AC4: the owner's last-chosen (provider, model) for the mailbox draft-chat
+    # conversation, so it survives a page reload instead of resetting like CV generation's
+    # React-state-only picker does. '' means "nothing chosen yet" -- services.draft_chat.
+    # available_model_options() is what the picker offers; these two fields only ever mirror one
+    # of those options back, never a second source of truth for what the machine can run.
+    mailbox_chat_provider=models.CharField(max_length=30, blank=True, default='')
+    mailbox_chat_model=models.CharField(max_length=120, blank=True, default='')
     # TASK-115: one or more quiet-hours ICS calendar URLs, same one-per-line idiom as
     # mailbox_do_not_disclose above (services.calendar_ics.parse_calendar_ics_urls also tolerates
     # comma-separated and a pasted `[a, b, c]` list literal -- AC8). This profile value is the only
@@ -466,6 +473,14 @@ class MailboxDraft(models.Model):
     gmail_draft_id=models.CharField(max_length=32, blank=True, default='')
     gmail_message_id=models.CharField(max_length=32, blank=True, default='')
     gmail_thread_id=models.CharField(max_length=32, blank=True, default='')
+    # TASK-122 AC4/AC5: the multi-turn draft-chat transcript, as a JSON list of
+    # {"user_message": ..., "revised_text": ...} -- one dict per services.draft_chat.ChatTurn,
+    # in order, so `[ChatTurn(**item) for item in chat_history]` reconstructs it exactly. Only a
+    # turn the model actually produced (ChatTurnResult.reason == '') is ever appended here -- a
+    # provider failure or a guardrail block never becomes part of the conversation a later turn
+    # re-feeds. Reset to [] whenever body_text changes through the `edit` action (see
+    # MailboxDraftViewSet.edit): once accepted, that text is the new baseline, not one more turn.
+    chat_history=models.JSONField(default=list, blank=True)
     created_at=models.DateTimeField(auto_now_add=True)
     class Meta: ordering=['-created_at']
     def __str__(self): return f'Draft for {self.message}: {self.get_status_display()}'
