@@ -5,6 +5,15 @@ and placed in Gmail's own Drafts folder for the owner to review and send from Gm
 never sends mail (no smtplib import, and no call to the Gmail API's users.messages.send, anywhere in
 it), and a draft that fails a guardrail is never written to Gmail at all, only logged.
 
+TASK-114 adds two things the first live runs proved were missing. A targeting check
+(bulk_mail_reason) refuses to draft at newsletters, blasts and robots, because the text guardrails
+read only the reply and a polite follow-up sent to a marketing list is textually perfect; and
+job-board hosts are excluded from domain matching (JOB_BOARD_DOMAINS), because a lead's URL is
+usually the board's listing page, so the board's own ads were matching tracked jobs. It also adds
+purge_app_drafts(), which deletes drafts this app itself wrote -- the no-send guarantee above is
+about users.messages.send, which still appears nowhere; removing an unsent draft is its undo, not a
+weakening of it.
+
 Two interchangeable transports read the mailbox, whichever is configured (IMAP wins if both are --
 see run_check()/_default_transport()): ImapTransport (app password, needs 2-Step Verification) and
 GmailApiTransport (OAuth, TASK-109 AC1 -- the route for an owner who has declined 2SV, since Google
@@ -74,6 +83,13 @@ class RawMessage:
     gmail_id: str = ''  # TASK-109 AC1: Gmail API's own opaque message id; '' for IMAP-sourced messages
     internal_date_ms: int | None = None  # Gmail's own ms-epoch resume marker; None for IMAP-sourced messages
     thread_id: str = ''  # TASK-110 AC1: Gmail's own thread id for explicit draft threading; transient, never persisted (like body_text)
+    # TASK-114 AC1: bulk/automated-mail markers, transient like body_text. Carried as the raw header
+    # values rather than a precomputed bool so bulk_mail_reason() below is the single place that
+    # decides, and so 'Auto-Submitted: no' stays distinguishable from the header being absent.
+    reply_to: str = ''
+    list_unsubscribe: str = ''
+    precedence: str = ''
+    auto_submitted: str = ''
 
 
 class ImapTransport:
@@ -102,7 +118,7 @@ class ImapTransport:
                     continue
                 # BODY.PEEK never sets \Seen, and HEADER.FIELDS + TEXT is the whole message a
                 # classifier (and TASK-110's reply drafter) needs -- nothing else is ever requested.
-                typ, msg_data = conn.uid('fetch', uid_bytes, '(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID REFERENCES)] BODY.PEEK[TEXT])')
+                typ, msg_data = conn.uid('fetch', uid_bytes, '(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID REFERENCES REPLY-TO LIST-UNSUBSCRIBE PRECEDENCE AUTO-SUBMITTED)] BODY.PEEK[TEXT])')
                 if typ != 'OK' or not msg_data:
                     continue
                 header_bytes = b''
@@ -123,6 +139,7 @@ class ImapTransport:
                     message_id=parsed.get('Message-ID', ''),
                     references=parsed.get('References', ''),
                     body_text=body_bytes.decode('utf-8', errors='replace')[:5000],
+                    **_bulk_headers(parsed),
                 ))
             return messages
         finally:
@@ -277,7 +294,9 @@ def _gmail_api_request(method: str, url: str, access_token: str, data: bytes | N
     request = Request(url, data=data, headers={'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'}, method=method)
     try:
         with urlopen(request, timeout=15) as response:
-            return json.loads(response.read().decode('utf-8'))
+            # drafts.delete answers 204 with an empty body -- json.loads('') would raise.
+            payload = response.read().decode('utf-8')
+            return json.loads(payload) if payload.strip() else {}
     except HTTPError as exc:
         details = exc.read().decode('utf-8', errors='replace')
         raise RuntimeError(f'Gmail API {method} {url} failed with HTTP {exc.code}: {details}') from exc
@@ -372,7 +391,7 @@ class GmailApiTransport:
                 uid=0, sender=parsed.get('From', ''), subject=parsed.get('Subject', ''),
                 received_at=_parse_email_date(parsed.get('Date', '')),
                 message_id=parsed.get('Message-ID', ''), references=parsed.get('References', ''),
-                body_text=_body_text(body)[:5000],
+                body_text=_body_text(body)[:5000], **_bulk_headers(parsed),
                 gmail_id=msg_id, internal_date_ms=internal_date_ms, thread_id=detail.get('threadId', ''),
             ))
         return messages
@@ -389,6 +408,40 @@ class GmailApiTransport:
             payload['message']['threadId'] = thread_id
         access_token = self._access_token()
         _gmail_api_request('POST', f'{GMAIL_API_BASE}/drafts', access_token, data=json.dumps(payload).encode('utf-8'))
+
+    # --- TASK-114 AC6: undo. Deleting drafts this app itself created does not weaken the module's
+    # standing no-send guarantee (see the module docstring) -- users.messages.send still appears
+    # nowhere -- but these are the first calls here that remove anything from the mailbox, so they
+    # are deliberately split: listing is read-only, deleting takes one explicit id at a time.
+
+    def list_drafts(self) -> list[tuple[str, str, str]]:
+        """[(draft_id, subject, body_text)] for every draft in the account."""
+        import email.policy
+
+        access_token = self._access_token()
+        draft_ids = []
+        page_token = None
+        while True:
+            params = {'maxResults': '500'}
+            if page_token:
+                params['pageToken'] = page_token
+            listing = _gmail_api_request('GET', f'{GMAIL_API_BASE}/drafts?{urlencode(params)}', access_token)
+            draft_ids.extend(d['id'] for d in listing.get('drafts') or [])
+            page_token = listing.get('nextPageToken')
+            if not page_token:
+                break
+
+        drafts = []
+        for draft_id in draft_ids:
+            detail = _gmail_api_request('GET', f'{GMAIL_API_BASE}/drafts/{draft_id}?format=raw', access_token)
+            encoded = (detail.get('message') or {}).get('raw', '')
+            raw_bytes = base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4))
+            parsed = email.message_from_bytes(raw_bytes, policy=email.policy.default)
+            drafts.append((draft_id, parsed.get('Subject', ''), _body_text(parsed.get_body(preferencelist=('plain',)))))
+        return drafts
+
+    def delete_draft(self, draft_id: str) -> None:
+        _gmail_api_request('DELETE', f'{GMAIL_API_BASE}/drafts/{draft_id}', self._access_token())
 
 
 def _parse_email_date(value):
@@ -451,6 +504,44 @@ def _extract_datetime(text):
         except ValueError:
             continue
     return None
+
+
+def _bulk_headers(parsed) -> dict:
+    """The RawMessage bulk-marker fields, read off a parsed email.Message (TASK-114 AC1)."""
+    return {
+        'reply_to': str(parsed.get('Reply-To', '') or ''),
+        'list_unsubscribe': str(parsed.get('List-Unsubscribe', '') or ''),
+        'precedence': str(parsed.get('Precedence', '') or ''),
+        'auto_submitted': str(parsed.get('Auto-Submitted', '') or ''),
+    }
+
+
+_NO_REPLY_RE = re.compile(r'(no[-_.]?reply|do[-_.]?not[-_.]?reply)', re.IGNORECASE)
+
+
+def bulk_mail_reason(raw: RawMessage) -> str:
+    """TASK-114 AC1: '' when `raw` is ordinary person-to-person mail, otherwise a short reason it is
+    a newsletter/blast/robot and must never be replied to.
+
+    This is a TARGETING check, and it is the only one in the pipeline. check_guardrails() reads the
+    generated text, which cannot help here: the drafts that went to a XING Premium ad and a
+    devjobs.at job alert were textually perfect polite German follow-ups -- addressed to a marketing
+    list. Placed here, in code, for the same reason the salary floor is: no wording in the inbound
+    mail can argue its way out of a header it is itself carrying.
+    """
+    if raw.list_unsubscribe.strip():
+        return 'sender offers an unsubscribe link (List-Unsubscribe)'
+    precedence = raw.precedence.strip().lower()
+    if precedence in ('bulk', 'list', 'junk'):
+        return f'Precedence: {precedence}'
+    auto_submitted = raw.auto_submitted.strip().lower()
+    # RFC 3834: 'no' is the explicit "a human wrote this" value; anything else is machine-generated.
+    if auto_submitted and auto_submitted != 'no':
+        return f'Auto-Submitted: {auto_submitted}'
+    for address in (raw.reply_to, raw.sender):
+        if _NO_REPLY_RE.search(address or ''):
+            return 'unattended sender address (no-reply)'
+    return ''
 
 
 def _sender_domain(sender):
@@ -541,6 +632,23 @@ def classify_email(raw: RawMessage, domain_known: bool):
 
 # --- JobLead matching ------------------------------------------------------------------------
 
+# TASK-114 AC2: a lead's URL is usually the JOB BOARD's listing page, not the employer's site, so
+# these hosts must never register as "a company I am in conversation with" -- otherwise every ad and
+# job alert the board sends matches an arbitrary tracked job and gets a reply drafted at it. Suffix
+# match, so xing.com covers e-mail.xing.com and indeed.com covers at.indeed.com.
+JOB_BOARD_DOMAINS = frozenset({
+    'xing.com', 'devjobs.at', 'linkedin.com', 'indeed.com', 'stepstone.de', 'stepstone.at',
+    'karriere.at', 'monster.de', 'monster.at', 'glassdoor.com', 'jobs.ch', 'willhaben.at',
+    'jobsuche.at', 'derstandard.at', 'metajob.at', 'talent.com', 'joblift.at', 'ams.at',
+    'greenhouse.io', 'lever.co', 'personio.de', 'workday.com', 'smartrecruiters.com',
+})
+
+
+def is_job_board(domain: str) -> bool:
+    domain = (domain or '').lower().lstrip('.')
+    return any(domain == board or domain.endswith('.' + board) for board in JOB_BOARD_DOMAINS)
+
+
 def _normalize_domain(domain):
     parts = domain.split('.')
     if len(parts) > 2 and parts[0] in ('www', 'jobs', 'careers', 'mail'):
@@ -559,7 +667,9 @@ def owned_job_domains(owner):
     domains = {}
     for job in owned_jobs(owner).exclude(url=''):
         domain = _normalize_domain(urlsplit(job.url).netloc.lower())
-        if domain and domain not in domains:
+        # TASK-114 AC2: a board host here would match the board's own marketing mail, not the
+        # employer's -- so the lead simply contributes no domain and its mail is judged on content.
+        if domain and domain not in domains and not is_job_board(domain):
             domains[domain] = job
     return domains
 
@@ -1032,6 +1142,16 @@ def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, cl
     """
     if classification not in _DRAFT_WORTHY_CLASSIFICATIONS:
         return None
+    # TASK-114 AC1/AC5: newsletters and robots get a logged, counted refusal rather than a silent
+    # skip -- a run reporting job-related mail and no drafts must be able to say why. Checked before
+    # generation because there is nothing worth generating: no text can make a blast repliable.
+    bulk_reason = bulk_mail_reason(raw)
+    if bulk_reason:
+        return MailboxDraft.objects.create(
+            message=message, job=job, status='blocked',
+            block_reason=f'not a reply-worthy message: {bulk_reason}'[:250],
+            subject=_reply_subject(raw.subject), body_text='', evaluator='guardrail',
+        )
     language = _detect_reply_language(raw.subject, raw.body_text)
     config = _load_llm_config()
     body_text, evaluator = _build_reply_body(raw, job, owner, classification, language, interview_at, config)
@@ -1046,6 +1166,36 @@ def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, cl
     return MailboxDraft.objects.create(
         message=message, job=job, status='written', subject=subject, body_text=body_text, evaluator=evaluator,
     )
+
+
+# --- TASK-114 AC6: remove drafts this app already wrote ------------------------------------------
+
+def _normalized_body(text: str) -> str:
+    """Whitespace-only normalization, so a Gmail round-trip (CRLF, quoted-printable, trailing
+    newline) still compares equal to the text MailboxDraft recorded.
+    """
+    return '\n'.join(line.rstrip() for line in (text or '').splitlines()).strip()
+
+
+def purge_app_drafts(transport, dry_run: bool = True) -> list[tuple[str, str]]:
+    """Delete every Gmail draft whose body matches a draft THIS APP recorded writing, and return
+    [(draft_id, subject)] for the ones matched. dry_run=True matches and reports without deleting.
+
+    Identification is by exact body text against the MailboxDraft log rather than by a template
+    signature: it covers LLM-drafted replies (which have no fixed wording) and, more importantly, it
+    cannot match a draft the owner wrote by hand -- which is the only failure mode that matters when
+    the API call involved is a permanent delete with no Trash to recover from.
+    """
+    written = {_normalized_body(text) for text in MailboxDraft.objects.filter(status='written').values_list('body_text', flat=True) if text.strip()}
+    if not written:
+        return []
+    removed = []
+    for draft_id, subject, body_text in transport.list_drafts():
+        if _normalized_body(body_text) in written:
+            if not dry_run:
+                transport.delete_draft(draft_id)
+            removed.append((draft_id, subject))
+    return removed
 
 
 # --- Owner + cadence gate (AC1, AC8) -------------------------------------------------------------

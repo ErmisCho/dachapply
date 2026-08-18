@@ -23,6 +23,7 @@ from jobradar.services.mailbox import (
     RawMessage,
     apply_suggestion,
     build_suggestions,
+    bulk_mail_reason,
     calendar_busy_now,
     check_guardrails,
     classify_email,
@@ -30,6 +31,7 @@ from jobradar.services.mailbox import (
     is_busy_at,
     match_job,
     owned_job_domains,
+    purge_app_drafts,
     run_check,
     sanitize_inbound_text,
     seed_fake_run,
@@ -85,8 +87,9 @@ class FakeTransport:
         self.appended_drafts.append(mime_message)
 
 
-def raw(uid, sender='hr@acme.test', subject='', body='', received_at=None, message_id='', references=''):
-    return RawMessage(uid=uid, sender=sender, subject=subject, received_at=received_at, body_text=body, message_id=message_id, references=references)
+def raw(uid, sender='hr@acme.test', subject='', body='', received_at=None, message_id='', references='', **headers):
+    # **headers carries TASK-114's bulk markers (reply_to / list_unsubscribe / precedence / auto_submitted).
+    return RawMessage(uid=uid, sender=sender, subject=subject, received_at=received_at, body_text=body, message_id=message_id, references=references, **headers)
 
 
 @pytest.fixture
@@ -1228,3 +1231,147 @@ def test_run_check_uses_oauth_transport_when_only_oauth_is_configured(db, owner,
         run = run_check(force=True)
     assert run is not None and not run.error
     assert MailboxMessage.objects.filter(gmail_id='msg-1').exists()
+
+
+# --- TASK-114: newsletters and job-board blasts are never replied to ---------------------------
+
+
+@pytest.fixture
+def board_job(db, owner):
+    """A lead saved straight off a job board -- its URL is the BOARD's listing page, not the
+    employer's site. This is the ordinary case, not an odd one, and it is what turned XING's and
+    devjobs.at's marketing mail into 'a company I am in conversation with'.
+    """
+    return JobLead.objects.create(company='Broadpin', title='ERP Consultant', url='https://www.xing.com/jobs/erp-consultant-123', status='applied', status_date=timezone.localdate(), created_by=owner)
+
+
+def test_job_board_url_never_becomes_a_tracked_domain(db, owner, board_job, applied_job):
+    """AC2: the board contributes nothing; a real employer domain still does."""
+    domains = owned_job_domains(owner)
+    assert 'xing.com' not in domains
+    assert domains == {'acme.test': applied_job}
+    assert match_job(raw(1, sender='XING <info@e-mail.xing.com>'), domains) is None
+
+
+def test_xing_promotion_matches_nothing_and_drafts_nothing(not_cold_start, db, owner, board_job):
+    """The real message: a XING Premium discount ad, with a xing.com lead tracked."""
+    transport = FakeTransport([raw(
+        2, sender='XING <info@e-mail.xing.com>', subject='Stay visible diesen Sommer!',
+        body='Lieber Ermis, Sommermodus an... Nur bis morgen: Sichere Dir bis zu 60 % Rabatt.',
+        reply_to='no-reply@e-mail.xing.com',
+        list_unsubscribe='<https://www.xing.com/settings/notifications>',
+    )])
+    run = run_check(transport=transport)
+    message = MailboxMessage.objects.get(uid=2)
+    assert message.matched_job is None
+    assert transport.appended_drafts == []
+    assert not MailboxDraft.objects.filter(message=message).exists()
+    assert run.draft_written_count == 0
+
+
+def test_devjobs_job_alert_matches_nothing_and_drafts_nothing(not_cold_start, db, owner):
+    JobLead.objects.create(company='Formunauts', title='Senior Back End Developer Python', url='https://devjobs.at/jobs/senior-backend-python', status='applied', status_date=timezone.localdate(), created_by=owner)
+    transport = FakeTransport([raw(
+        2, sender='devjobs.at Wunschjob <wunschjob@devjobs.at>', subject='Wir haben den perfekten Job für dich gefunden!',
+        body='Unsere AI hat sorgfältig deine Präferenzen berücksichtigt. Wunschjob Matching: Top Match.',
+        list_unsubscribe='<mailto:unsubscribe@devjobs.at>',
+    )])
+    run_check(transport=transport)
+    message = MailboxMessage.objects.get(uid=2)
+    assert message.matched_job is None
+    assert transport.appended_drafts == []
+    assert not MailboxDraft.objects.filter(message=message).exists()
+
+
+def test_bulk_marker_blocks_a_draft_even_from_a_tracked_employer_domain(not_cold_start, db, owner, applied_job):
+    """AC1 is the general fix, not a board blocklist: a marketing blast from the employer's own
+    domain, with wording that reads as a recruiter reply, still gets no draft -- and says so.
+    """
+    transport = FakeTransport([raw(
+        2, sender='newsletter@acme.test', subject='Application update',
+        body='Thank you for your application interest -- here is our monthly newsletter.',
+        list_unsubscribe='<https://acme.test/unsubscribe>',
+    )])
+    run = run_check(transport=transport)
+    message = MailboxMessage.objects.get(uid=2)
+    assert message.classification == 'recruiter_reply'  # unchanged: the message is still logged and classified
+    draft = MailboxDraft.objects.get(message=message)
+    assert draft.status == 'blocked' and 'List-Unsubscribe' in draft.block_reason
+    assert transport.appended_drafts == []
+    assert run.draft_blocked_count == 1 and run.draft_written_count == 0
+
+
+def test_genuine_recruiter_reply_still_drafts(not_cold_start, db, owner, applied_job):
+    """AC4: the fix must not become a silent off switch for drafting -- same guard rationale as
+    test_run_after_cold_start_drafts_normally.
+    """
+    transport = FakeTransport([raw(2, sender='hr@acme.test', subject='Ihre Bewerbung', body='Bewerbung erhalten, wir melden uns.')])
+    run = run_check(transport=transport)
+    draft = MailboxDraft.objects.get(message=MailboxMessage.objects.get(uid=2))
+    assert draft.status == 'written'
+    assert len(transport.appended_drafts) == 1
+    assert run.draft_written_count == 1
+
+
+@pytest.mark.parametrize('headers,expected', [
+    ({}, ''),
+    ({'list_unsubscribe': '<mailto:x@y.test>'}, 'List-Unsubscribe'),
+    ({'precedence': 'bulk'}, 'Precedence'),
+    ({'precedence': 'Normal'}, ''),
+    ({'auto_submitted': 'auto-generated'}, 'Auto-Submitted'),
+    ({'auto_submitted': 'no'}, ''),  # RFC 3834: the explicit "a human wrote this" value
+    ({'reply_to': 'no-reply@acme.test'}, 'no-reply'),
+    ({'sender': 'Acme <noreply@acme.test>'}, 'no-reply'),
+    ({'sender': 'Acme <donotreply@acme.test>'}, 'no-reply'),
+])
+def test_bulk_mail_reason_cases(headers, expected):
+    reason = bulk_mail_reason(raw(1, **headers))
+    assert (expected in reason) if expected else reason == ''
+
+
+class FakeDraftStore:
+    """Stands in for GmailApiTransport's draft listing/deletion. Never touches a socket."""
+
+    def __init__(self, drafts):
+        self.drafts = list(drafts)  # [(draft_id, subject, body_text)]
+        self.deleted = []
+
+    def list_drafts(self):
+        return list(self.drafts)
+
+    def delete_draft(self, draft_id):
+        self.deleted.append(draft_id)
+
+
+def _written_draft(body_text):
+    run = MailboxRun.objects.create()
+    message = MailboxMessage.objects.create(run=run, uid=MailboxMessage.objects.count() + 10, sender='hr@acme.test', subject='x', classification='recruiter_reply')
+    return MailboxDraft.objects.create(message=message, status='written', subject='Re: x', body_text=body_text)
+
+
+def test_purge_deletes_only_drafts_this_app_recorded_writing(db, owner):
+    """AC6: the owner's own drafts are untouchable -- Gmail draft deletion is permanent, so the
+    match is against the MailboxDraft log's exact text, not a template signature.
+    """
+    _written_draft('Vielen Dank für die Rückmeldung zu meiner Bewerbung für X bei Y.\n\nBeste Grüße,\nowner@example.test')
+    store = FakeDraftStore([
+        # the same text as Gmail hands it back: CRLF line endings and a trailing newline
+        ('d1', 'Re: Stay visible diesen Sommer!', 'Vielen Dank für die Rückmeldung zu meiner Bewerbung für X bei Y.\r\n\r\nBeste Grüße,\r\nowner@example.test\r\n'),
+        ('d2', 'Notes to self', 'buy milk'),
+    ])
+    removed = purge_app_drafts(store, dry_run=False)
+    assert [draft_id for draft_id, _ in removed] == ['d1']
+    assert store.deleted == ['d1']
+
+
+def test_purge_dry_run_reports_without_deleting(db, owner):
+    _written_draft('Thank you for the update on my application for X at Y.')
+    store = FakeDraftStore([('d1', 'Re: X', 'Thank you for the update on my application for X at Y.')])
+    removed = purge_app_drafts(store, dry_run=True)
+    assert len(removed) == 1 and store.deleted == []
+
+
+def test_purge_with_no_written_drafts_deletes_nothing(db, owner):
+    store = FakeDraftStore([('d1', 'Re: X', 'anything at all')])
+    assert purge_app_drafts(store, dry_run=False) == []
+    assert store.deleted == []
