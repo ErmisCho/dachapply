@@ -1,10 +1,10 @@
 ---
 id: TASK-1
 title: Production env and deployment checklist
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-06-20 09:50'
-updated_date: '2026-08-17 15:50'
+updated_date: '2026-08-18 11:00'
 labels:
   - P0
   - deployment
@@ -140,6 +140,20 @@ middleware, cookie flags) is correct in production; they do not prove a real log
 succeeds. BLOCKER: needs the owner to either run one manual login + one CSRF-protected POST in a
 browser against production and confirm it works, or hand the agent a disposable test account
 credential for a single scripted login+POST run.
+### 2026-08-18 — AC4 closed on owner confirmation; task Done
+
+The owner logged into production over HTTPS and performed a state-changing POST, and confirmed it
+worked (2026-08-18). Recorded as owner attestation rather than a captured transcript: AC4 requires a
+real authenticated session, the credential is the owner's, and an agent entering it was not on the
+table. That is the appropriate evidence for this AC, not a weaker substitute for something that
+could have been automated.
+
+The anonymous half was already measured on 2026-08-17 and stands unchanged: CSRF is genuinely
+enforced (`POST /admin/login/` with no token returns `403 CSRF verification failed`), and session
+cookies carry `Secure`, `HttpOnly` and `SameSite=Lax`. The DRF endpoints returning business-validation
+errors to a tokenless POST is expected `@api_view` behaviour, not a CSRF hole.
+
+All four ACs are met, so this task is **Done**.
 <!-- SECTION:NOTES:END -->
 
 ## Acceptance Criteria
@@ -147,7 +161,7 @@ credential for a single scripted login+POST run.
 - [x] #1 DEBUG=False is set in production
 - [x] #2 SECRET_KEY, ALLOWED_HOSTS, FRONTEND_URL, CSRF_TRUSTED_ORIGINS, DATABASE_URL, and secure cookie settings are documented and verified
 - [x] #3 Deployment startup runs migrations and serves the built frontend/static files
-- [ ] #4 Production login and CSRF-protected POST requests work over HTTPS
+- [x] #4 Production login and CSRF-protected POST requests work over HTTPS
 <!-- AC:END -->
 
 ## Comments
