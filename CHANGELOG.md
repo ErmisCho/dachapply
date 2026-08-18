@@ -52,6 +52,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The mailbox check no longer drafts replies to job-board newsletters and automated blasts. A
+  message carrying bulk markers (an unsubscribe link, `Precedence: bulk`, `Auto-Submitted`, or a
+  no-reply sender) is never replied to, and a job board's own domain no longer counts as a company
+  you are in conversation with. Refused drafts are counted and explained rather than skipped
+  silently, and `manage.py purge_app_drafts` removes drafts this app already wrote.
 - New accounts no longer inherit the previous owner's candidate profile, so evaluations are no
   longer scored against a stranger.
 - Someone who submits a job for a friend no longer keeps access to that friend's later evaluations,
