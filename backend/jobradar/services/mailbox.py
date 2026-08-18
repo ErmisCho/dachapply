@@ -55,7 +55,7 @@ from django.db import DatabaseError, IntegrityError, transaction
 from django.db.models import Max, Q
 from django.utils import timezone
 
-from jobradar.models import JobLead, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun
+from jobradar.models import ApplicationNote, JobLead, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun
 from jobradar.serializers import JobLeadSerializer
 from jobradar.services.followup_digest import owned_jobs
 from jobradar.services.prompt_builder import user_profile_settings
@@ -79,7 +79,7 @@ class RawMessage:
     received_at: datetime | None
     message_id: str = ''
     references: str = ''  # TASK-110 AC1: threading chain for build_reply_mime's References header
-    body_text: str = ''  # transient only -- never persisted, see MailboxMessage docstring
+    body_text: str = ''  # TASK-117 AC1: persisted onto MailboxMessage.body_text (capped at 5000 chars, same cap applied here), see MailboxMessage docstring
     gmail_id: str = ''  # TASK-109 AC1: Gmail API's own opaque message id; '' for IMAP-sourced messages
     internal_date_ms: int | None = None  # Gmail's own ms-epoch resume marker; None for IMAP-sourced messages
     thread_id: str = ''  # TASK-110 AC1: Gmail's own thread id for explicit draft threading; transient, never persisted (like body_text)
@@ -803,14 +803,27 @@ def build_suggestions(message: MailboxMessage, job: JobLead, classification: str
     return created
 
 
-def apply_suggestion(suggestion: MailboxSuggestion) -> MailboxSuggestion:
-    """AC3: applying happens only here, only on explicit owner confirmation, never automatically."""
+def apply_suggestion(suggestion: MailboxSuggestion, user=None) -> MailboxSuggestion:
+    """AC3: applying happens only here, only on explicit owner confirmation, never automatically.
+
+    TASK-117 AC4: confirming also leaves a trace on the job -- an ApplicationNote (note_type=
+    'recruiter_message') naming the sender, subject and received date of the mail that caused the
+    change, so the job's history says WHY it moved rather than just that it did. dismiss_suggestion
+    below deliberately writes nothing at all, mail that was not acted on leaves no note.
+    """
     with transaction.atomic():
         job = JobLead.objects.select_for_update().get(pk=suggestion.job_id)
         JobLeadSerializer().update(job, dict(suggestion.payload))
         suggestion.status = 'confirmed'
         suggestion.decided_at = timezone.now()
         suggestion.save(update_fields=['status', 'decided_at'])
+        message = suggestion.message
+        received = message.received_at or message.created_at
+        when = timezone.localtime(received).strftime('%d.%m.%Y %H:%M') if received else 'an unknown date'
+        ApplicationNote.objects.create(
+            job=job, note_type='recruiter_message', created_by=user,
+            note=f'Applied from an email from {message.sender}, subject "{message.subject}", received {when}.',
+        )
     return suggestion
 
 
@@ -819,6 +832,35 @@ def dismiss_suggestion(suggestion: MailboxSuggestion) -> MailboxSuggestion:
     suggestion.decided_at = timezone.now()
     suggestion.save(update_fields=['status', 'decided_at'])
     return suggestion
+
+
+def attach_message_to_job(message: MailboxMessage, job: JobLead, user=None) -> MailboxMessage:
+    """TASK-117 AC6: manual match for mail whose sender domain matched nothing at all -- an agency,
+    a personal address, or an employer mailing from a domain the tracked listing was never saved
+    from. match_job() only ever compares domains (by design, see owned_job_domains' docstring), so
+    this is the owner's own override rather than a second domain-matching path, and it is the one
+    deliberate exception to MailboxMessage's append-only guarantee (see the model docstring).
+
+    Runs the SAME suggestion generation a domain match gets in run_check(): build_suggestions() with
+    the message's already-stored classification and an interview_at re-derived from the now-
+    persisted body_text/subject via the existing _extract_datetime() heuristic, rather than a second
+    extraction path or a stored duplicate of what run_check already computed once.
+
+    Idempotent: attaching a message already attached to this same job does not create a second set
+    of suggestions -- build_suggestions() itself has no such guard (it is normally only ever called
+    once, from run_check), so the guard lives here instead. `user` is unused by this function today
+    (there is nothing to attribute yet -- see build_suggestions/apply_suggestion for where a
+    confirming user is actually recorded) and kept only so the call site symmetric with
+    apply_suggestion's user=... signature.
+    """
+    already_generated = MailboxSuggestion.objects.filter(message=message, job=job).exists()
+    if message.matched_job_id != job.id:
+        message.matched_job = job
+        message.save(update_fields=['matched_job'])
+    if not already_generated:
+        interview_at = _extract_datetime(f'{message.subject}\n{message.body_text}')
+        build_suggestions(message, job, message.classification, interview_at)
+    return message
 
 
 # --- Reply drafting into Gmail Drafts (TASK-110) -------------------------------------------------
@@ -1330,6 +1372,10 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             message = MailboxMessage.objects.create(
                 run=run, uid=assigned_uid, gmail_id=raw.gmail_id, internal_date_ms=raw.internal_date_ms,
                 message_id=raw.message_id[:250], sender=raw.sender[:254], subject=raw.subject[:500],
+                # TASK-117 AC1: both transports already cap body_text at 5000 chars off the wire; the
+                # cap is re-applied here too, so the column itself cannot exceed it even if a
+                # transport changes.
+                body_text=raw.body_text[:5000],
                 received_at=raw.received_at, classification=classification, evaluator=evaluator, matched_job=matched,
             )
             run.fetched_count += 1

@@ -313,9 +313,27 @@ class MailboxRun(models.Model):
 class MailboxMessage(models.Model):
     """TASK-109 AC5: the append-only log of every message check_mailbox read.
 
-    Rows are created once and never updated -- no view in this app exposes PATCH/DELETE for this
-    model. Only sender/subject/date/classification are stored, never the body (task's minimal-
-    metadata requirement); the body is read transiently off the wire to classify and then dropped.
+    Rows are created once and never updated by check_mailbox itself -- no view in this app exposes a
+    generic PATCH/DELETE for this model. The one deliberate exception is `matched_job`: TASK-117 AC6
+    lets the owner attach a message that matched no job to one by hand
+    (services.mailbox.attach_message_to_job), which is the only thing anywhere that mutates a row
+    after creation, and it only ever touches that one field.
+
+    TASK-117 AC1 (2026-08-18): the owner reversed this model's earlier minimal-metadata default.
+    `body_text` now stores the received body, capped at the 5000 chars the wire read already applies
+    (both transports truncate before this model ever sees the text -- see RawMessage.body_text -- and
+    the write below re-applies the same cap so the column cannot exceed it even if a transport
+    changes). Recorded here, not just in the commit, because the previous version of this docstring
+    said "never the body (task's minimal-metadata requirement)" and a test enforced it
+    (test_run_check_never_stores_the_message_body, now replaced by a test asserting the body IS
+    stored and IS capped) -- neither was ever an acceptance criterion of TASK-109; it was an
+    implementation default, not a spec requirement, and it did real harm: a classification the owner
+    cannot check is one they cannot trust, and TASK-114 shipped two reply drafts aimed at newsletters
+    that a visible body would have made obvious immediately instead of after the fact. What changes:
+    recruiter email bodies now live in the same database the deployed Azure app reads -- a real
+    widening of what that database holds, taken knowingly (see the task file for the full record). Do
+    not "fix" this back to dropping the body; that reopens the exact gap TASK-117 closed.
+
     `uid` is the mailbox's own IMAP UID and doubles as the last-seen marker: check_mailbox resumes
     from MAX(uid) instead of keeping a separate state row. TASK-109 AC1's Gmail-API OAuth transport has
     no IMAP UID (its message ids are hex strings) -- for a Gmail-API-sourced row, `uid` is instead a
@@ -332,6 +350,8 @@ class MailboxMessage(models.Model):
     message_id=models.CharField(max_length=250, blank=True, default='')
     sender=models.CharField(max_length=254, blank=True, default='')
     subject=models.CharField(max_length=500, blank=True, default='')
+    # TASK-117 AC1: capped to 5000 chars, the same cap RawMessage.body_text already applies off the wire.
+    body_text=models.TextField(blank=True, default='')
     received_at=models.DateTimeField(null=True, blank=True)
     classification=models.CharField(max_length=30, choices=CLASSIFICATIONS, default='uncertain')
     evaluator=models.CharField(max_length=30, default='heuristic')

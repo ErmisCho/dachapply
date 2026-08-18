@@ -344,3 +344,14 @@ input.row-select{width:1.05rem;height:1.05rem;min-width:0;min-height:0;flex:0 0 
 input.row-select:focus-visible{outline:2px solid #2563eb!important;outline-offset:2px}
 .dark input.row-select:focus-visible{outline-color:#67e8f9!important}
 @media (max-width: 1023px){input.row-select{width:1.35rem;height:1.35rem}}
+
+/* TASK-117: the email-decisions panel carries a whole received email, its classification, the
+   proposed change and a drafted reply. Every `wide` panel is still one of two columns below 768px
+   (.dashboard-panel-wide sets no grid-column, and md:col-span-5 does not apply there), which leaves
+   ~148px at 360px -- unreadable for a paragraph of German prose. Measured, not guessed: at a 356px
+   viewport the panel box was 148px while its own cards wanted 158px.
+   Scoped to this one panel by data-panel rather than to .dashboard-panel-wide, because widening the
+   other four wide panels is a visual change to shipped work that nobody asked for. */
+@media (max-width:767px){
+  .mb-4.grid>[data-panel="mailbox_review"]{grid-column:1 / -1}
+}

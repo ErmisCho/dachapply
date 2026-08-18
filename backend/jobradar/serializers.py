@@ -309,7 +309,9 @@ class MailboxMessageSerializer(serializers.ModelSerializer):
     draft=serializers.SerializerMethodField()
     class Meta:
         model=MailboxMessage
-        fields=('id','sender','subject','received_at','classification','matched_job','matched_job_company','matched_job_title','draft','created_at')
+        # TASK-117 AC1/AC2: body_text is the received body (5000-char cap applied at the wire read in
+        # services.mailbox), stored now instead of dropped -- see MailboxMessage's docstring for why.
+        fields=('id','sender','subject','body_text','received_at','classification','matched_job','matched_job_company','matched_job_title','draft','created_at')
     def get_draft(self, obj):
         draft=getattr(obj,'draft',None)
         return MailboxDraftSerializer(draft).data if draft else None
@@ -325,6 +327,19 @@ class MailboxSuggestionSerializer(serializers.ModelSerializer):
         model=MailboxSuggestion
         fields=('id','message','job','job_company','job_title','suggestion_type','payload','status','created_at','decided_at')
         read_only_fields=fields
+
+class MailboxMessageWithSuggestionsSerializer(MailboxMessageSerializer):
+    """TASK-117 AC2/AC6: the per-job mailbox panel (JobLeadViewSet.mailbox) and the manual-attach
+    response (MailboxMessageViewSet.attach) both need each message's still-pending suggestions
+    alongside its draft. Kept off the base MailboxMessageSerializer above on purpose -- that one is
+    nested inside MailboxSuggestionSerializer.message, and a `suggestions` field there would recurse
+    into itself (suggestion -> message -> suggestions -> message -> ...).
+    """
+    suggestions=serializers.SerializerMethodField()
+    class Meta(MailboxMessageSerializer.Meta):
+        fields=MailboxMessageSerializer.Meta.fields + ('suggestions',)
+    def get_suggestions(self, obj):
+        return MailboxSuggestionSerializer(obj.suggestions.filter(status='pending'), many=True).data
 
 class MailboxRunSerializer(serializers.ModelSerializer):
     """TASK-109 AC4: the per-run digest. digest_messages is every message this run classified as
