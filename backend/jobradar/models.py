@@ -68,7 +68,7 @@ class UserProfile(models.Model):
     # out to a model CLI and LaTeX on the server, so it is granted per account in the admin, never
     # by signing up. services.cv_generator.is_cv_owner still honours CODEX_CV_OWNER_EMAIL as a
     # fallback so the owner's access cannot be lost by a flag that was never set.
-    can_generate_cv=models.BooleanField(default=False)
+    can_generate_cv=models.BooleanField(default=False, help_text="Generates CVs and cover letters from the site owner's private LaTeX templates and the owner's own photograph, and writes them into a shared output directory on the server -- not this account's own templates or photo.")
     evaluation_prompt_template=models.TextField(blank=True, default='')
     combined_prompt_template=models.TextField(blank=True, default='')
     enrichment_prompt_template=models.TextField(blank=True, default='')
