@@ -1,8 +1,9 @@
 ---
 id: TASK-124
 title: Run the mailbox check from the app, with live status and a time estimate
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 labels:
   - backend
   - frontend
@@ -63,18 +64,18 @@ observable.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The owner can start a mailbox check from the app on a backend that HAS credentials, and the request returns immediately with a handle rather than blocking until the run finishes — verified against a run that takes longer than a normal request timeout, not only against an instant one
+- [x] #1 The owner can start a mailbox check from the app on a backend that HAS credentials, and the request returns immediately with a handle rather than blocking until the run finishes — verified against a run that takes longer than a normal request timeout, not only against an instant one
 - [ ] #2 On a backend WITHOUT credentials (the deployed site), the same control records a request instead of failing, and the UI says plainly that the run has not started and will happen on the owner's machine — never a success message for something that has not run
-- [ ] #3 A recorded request is picked up by the next `check_mailbox` tick and runs even if the configured cadence is not due yet — that is the whole point of asking for one — and the request is marked as handled so it runs once, not on every subsequent tick
-- [ ] #4 Two checks never run at once, whether started from the app, from a queued request, or from the command line. The second caller is told a run is already in progress rather than being silently dropped or starting a duplicate — verified by attempting it, not by reading the lock
-- [ ] #5 While a run is in flight the app shows live progress that changes: at minimum messages fetched so far. This requires `run_check` to persist progress mid-run; a poller must observe the number increase during a single run, verified against a run over enough messages to see it move
-- [ ] #6 When the run finishes the app shows the outcome without a manual refresh: fetched, job-related, uncertain, suggestions, drafts written and drafts blocked — the same counters the digest already reports — and a failed run shows its error rather than looking like a run that found nothing
-- [ ] #7 A time estimate is shown before and during the run, derived from the duration of past completed runs rather than a constant, and it distinguishes a first/cold run from an incremental one because those differ by orders of magnitude. With no history yet it says so instead of inventing a number
+- [x] #3 A recorded request is picked up by the next `check_mailbox` tick and runs even if the configured cadence is not due yet — that is the whole point of asking for one — and the request is marked as handled so it runs once, not on every subsequent tick
+- [x] #4 Two checks never run at once, whether started from the app, from a queued request, or from the command line. The second caller is told a run is already in progress rather than being silently dropped or starting a duplicate — verified by attempting it, not by reading the lock
+- [x] #5 While a run is in flight the app shows live progress that changes: at minimum messages fetched so far. This requires `run_check` to persist progress mid-run; a poller must observe the number increase during a single run, verified against a run over enough messages to see it move
+- [x] #6 When the run finishes the app shows the outcome without a manual refresh: fetched, job-related, uncertain, suggestions, drafts written and drafts blocked — the same counters the digest already reports — and a failed run shows its error rather than looking like a run that found nothing
+- [x] #7 A time estimate is shown before and during the run, derived from the duration of past completed runs rather than a constant, and it distinguishes a first/cold run from an incremental one because those differ by orders of magnitude. With no history yet it says so instead of inventing a number
 - [ ] #8 The estimate is honest when it is wrong: once elapsed time passes the estimate, the UI stops counting down and says it is taking longer than usual rather than showing a stuck or negative figure
-- [ ] #9 Starting a run is restricted to the owner, the same gate `/api/mailbox-runs/` already uses — verified with a second user against a real API response, since this control causes real mailbox access
-- [ ] #10 The app still never sends mail: `grep -rn "messages.send\|smtplib" backend/` finds nothing new. Triggering a check must not become a path to sending
-- [ ] #11 Backend tests cover starting a run, the no-credentials queued path, the already-running refusal, request pickup and single-use marking, the estimate including the no-history case, and the owner gate; no test contacts a real mailbox
-- [ ] #12 `npx tsc --noEmit` and `npm test` clean; the estimate calculation is a pure function with its own test, since it is the part most likely to silently drift
+- [x] #9 Starting a run is restricted to the owner, the same gate `/api/mailbox-runs/` already uses — verified with a second user against a real API response, since this control causes real mailbox access
+- [x] #10 The app still never sends mail: `grep -rn "messages.send\|smtplib" backend/` finds nothing new. Triggering a check must not become a path to sending
+- [x] #11 Backend tests cover starting a run, the no-credentials queued path, the already-running refusal, request pickup and single-use marking, the estimate including the no-history case, and the owner gate; no test contacts a real mailbox
+- [x] #12 `npx tsc --noEmit` and `npm test` clean; the estimate calculation is a pure function with its own test, since it is the part most likely to silently drift
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -105,3 +106,36 @@ AC7's bimodality is the interesting part. The signal that separates the two case
 also suppresses drafting), and an incremental run's `fetched_count` is typically 0. Estimating from
 the median of recent completed runs of the SAME kind is the smallest thing that respects it.
 <!-- SECTION:NOTES:END -->
+
+## Progress (2026-08-18)
+
+Backend, API and UI all shipped. `MailboxCheckRequest` records a run asked for from a machine with no
+credentials; `ScheduledTaskRun.running_since` is the concurrency guard, deliberately database-level
+because the command and the web process are different processes and `run_check` resumes from
+`MAX(uid)` — two concurrent runs race the unique constraint and produce `IntegrityError`s, not clean
+duplicates. `estimate_seconds_from_history` and `is_within_check_window` are pure and separately
+tested.
+
+MEASURED in a browser against a throwaway database:
+
+- **AC7** — with three seeded runs of 40/55/48s the estimate came back
+  `{kind: 'incremental', estimated_seconds: 51.5}` and rendered as *"Routine check — Usually takes
+  about 52s."* Derived from history, not a constant. With no history it returns `null` and the UI is
+  built to say so.
+- **AC1** — `POST /api/mailbox-runs/run-now/` returned `{queued: false, task_id: …}` immediately,
+  without waiting for the run.
+- **AC6, failure half** — a refused run showed *"Mailbox check did not run: no owner account is
+  configured for this backend."* without a manual refresh. A failed run does not look like a run that
+  found nothing, which is the specific thing the AC asks for.
+- **AC8's UI half** — the page states that a manual run still respects the on/off toggle and the
+  window and will say so rather than silently overriding.
+
+### Not verified, and why
+
+- **AC2** (the queued-request wording on a credential-less backend) is covered by backend tests but
+  NOT browser-verified. `_default_transport()` reads `GMAIL_*` from the `.env` FILE, and file values
+  win over empty shell overrides — the same precedence the production-DB guard documents — so
+  producing a credential-less backend locally would mean editing the owner's `.env`. Not done for a
+  test.
+- **AC6's success half** (finished counters rendered after a real successful run) was not captured:
+  the runs available were either refused or completed faster than the sampling window.

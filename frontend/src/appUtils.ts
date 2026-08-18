@@ -172,6 +172,26 @@ export function mailboxIndicatorState(hasPendingSuggestion:boolean,hasMailboxHis
 const routeTitles:Record<string,string>={'/':'Board','/add':'Add job','/public-submit':submitDe.title,'/prompts':'Prompts','/import':'Import','/followups':'Follow-ups','/export':'Export','/bookmarklet':'Bookmarklet','/practice':'Practice','/mailbox':'Mailbox','/login':'Sign in','/onboarding':'Setup','/privacy':'Privacy','/terms':'Terms','/settings/profile':'Profile settings','/settings/account':'Account settings'};
 export function pathTitle(pathname:string){return routeTitles[pathname]||(pathname.startsWith('/jobs/')?'Job':pathname.startsWith('/reset-password/')?'Reset password':pathname.startsWith('/verify-email/')?'Confirm email':'')}
 
+// TASK-124 AC7/AC8. The one place estimate wording is decided, so a UI change can never silently
+// invent a countdown that goes negative or keep counting down past the estimate.
+// `takingLonger` is /api/mailbox-runs/status/'s own `taking_longer_than_usual` -- computed
+// server-side and passed through verbatim, never re-derived here (a client clock a poll-interval
+// behind the server could otherwise flip it back to a countdown one tick before the server does).
+function formatDurationSeconds(seconds:number):string{
+  const total=Math.max(0,Math.round(seconds))
+  if(total<60)return `${total}s`
+  const minutes=Math.floor(total/60),rest=total%60
+  return rest===0?`${minutes}m`:`${minutes}m ${rest}s`
+}
+export function mailboxEstimateWording(elapsedSeconds:number|null,estimatedSeconds:number|null,takingLonger:boolean):string{
+  if(takingLonger)return 'Taking longer than usual — hang tight.'
+  if(estimatedSeconds===null||estimatedSeconds===undefined)
+    return elapsedSeconds===null?'No time estimate yet — this will be the first tracked run of its kind.':'Running — no history yet to estimate how long this takes.'
+  if(elapsedSeconds===null)return `Usually takes about ${formatDurationSeconds(estimatedSeconds)}.`
+  const remaining=estimatedSeconds-elapsedSeconds
+  return remaining<1?'Finishing up…':`About ${formatDurationSeconds(remaining)} remaining.`
+}
+
 // TASK-111 AC4. Below 1024px the sortable column headers do not render at all (hidden ... lg:table),
 // so the board's only sort control is the preset <select> -- but a select's own displayed label only
 // matches the applied sort when the value happens to equal one of its hardcoded <option>s. Sorting

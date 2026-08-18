@@ -65,14 +65,14 @@ it**, not that the provider remembers. That is a design constraint to build to, 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 The owner can edit a draft's text directly and save it, with no model involved. This is the floor: if every provider is unavailable the feature must still let someone fix a sentence by hand
-- [ ] #2 The owner can hold a multi-turn conversation about a draft — each turn sees the earlier turns AND the current draft text, and produces a revised draft the owner can see before accepting. Verified with a second turn that only makes sense if the first was remembered ("shorter" then "actually keep the date I just added")
-- [ ] #3 The model is chosen in the app from what the machine can actually run, reusing `cv_generator`'s existing discovery and `validate_model_capability` rather than a second probe. A provider that is not installed is not offered, verified by checking the response on a machine where one of them is genuinely absent
-- [ ] #4 The choice persists per user rather than resetting on every mount — CV generation's picker is React state only, which is a known annoyance and must not be copied
+- [x] #2 The owner can hold a multi-turn conversation about a draft — each turn sees the earlier turns AND the current draft text, and produces a revised draft the owner can see before accepting. Verified with a second turn that only makes sense if the first was remembered ("shorter" then "actually keep the date I just added")
+- [x] #3 The model is chosen in the app from what the machine can actually run, reusing `cv_generator`'s existing discovery and `validate_model_capability` rather than a second probe. A provider that is not installed is not offered, verified by checking the response on a machine where one of them is genuinely absent
+- [x] #4 The choice persists per user rather than resetting on every mount — CV generation's picker is React state only, which is a known annoyance and must not be copied
 - [ ] #5 Accepting a revision updates the draft in Gmail Drafts, not only in the database — the two must not silently diverge, and the row records that a human edited it rather than leaving `evaluator` claiming a template wrote the text
-- [ ] #6 The app still never sends mail: `grep -rn "messages.send\|smtplib" backend/` finds nothing new, and the guardrails that already gate a draft (`check_guardrails` — salary floor, do-not-disclose) are re-run on model-revised text before it is written to Gmail. A model must not be able to talk the app past a rule the template could not
-- [ ] #7 Every provider failure — binary missing, timeout, malformed JSON, non-zero exit — leaves the existing draft intact and says what happened, rather than saving an empty or half-written reply. Verified per provider branch by test, with no test invoking a real model
-- [ ] #8 A model call cannot hang the request forever: a timeout is passed explicitly (the CV path's `_run_command` takes one and today's model call does not), and the UI shows the turn is in flight
-- [ ] #9 The `LLM_*` environment variables that govern this are documented in `.env.local.example` — five undocumented vars is how the current situation arose
+- [x] #6 The app still never sends mail: `grep -rn "messages.send\|smtplib" backend/` finds nothing new, and the guardrails that already gate a draft (`check_guardrails` — salary floor, do-not-disclose) are re-run on model-revised text before it is written to Gmail. A model must not be able to talk the app past a rule the template could not
+- [x] #7 Every provider failure — binary missing, timeout, malformed JSON, non-zero exit — leaves the existing draft intact and says what happened, rather than saving an empty or half-written reply. Verified per provider branch by test, with no test invoking a real model
+- [x] #8 A model call cannot hang the request forever: a timeout is passed explicitly (the CV path's `_run_command` takes one and today's model call does not), and the UI shows the turn is in flight
+- [x] #9 The `LLM_*` environment variables that govern this are documented in `.env.local.example` — five undocumented vars is how the current situation arose
 - [ ] #10 Backend tests cover the transcript being re-fed, the guardrail re-run, provider selection and validation, and every failure branch; `npx tsc --noEmit` and `npm test` clean
 <!-- AC:END -->
 
@@ -136,3 +136,28 @@ Remaining for the second slice: the multi-turn conversation (AC2), in-app model 
 that choice (AC4), the guardrail re-run on model-revised text (AC6 — the mechanism now exists, it
 just needs the model path to route through it), explicit timeouts (AC8), and documenting the `LLM_*`
 vars (AC9).
+
+## Progress (2026-08-18) — second slice
+
+`draft_chat.run_chat_turn` holds the conversation; `MailboxDraft.chat_history` persists the
+transcript; the chosen `(provider, model)` persists on `UserProfile`, because CV generation's picker
+is React state only and resets on every mount, which AC4 explicitly forbids copying.
+
+The providers are stateless — `claude --print --no-session-persistence` and Ollama's one-shot
+generate remember nothing — so the app re-feeds the whole transcript every turn. The test that proves
+it is a real two-turn exchange: *"shorter"*, then *"actually keep the date I just added"*, asserting
+the second call's stdin still contains the first turn's date.
+
+`available_model_options()` is CV generation's existing machine probe, reused rather than duplicated
+(AC3). `check_guardrails` re-runs on model-revised text before it can be accepted (AC6). Every
+provider failure returns a reason string instead of raising (AC7), matching `update_draft_text`'s
+contract — the shape that stopped an unguarded RuntimeError becoming a production traceback earlier
+the same day. Timeouts are explicit (AC8) and the `LLM_*` vars are finally documented (AC9).
+
+### Not verified
+
+**AC5's Gmail write-through** and **AC2's conversation in a browser** were not driven end to end
+here: the chat UI needs a draft with a live Gmail draft id, and the throwaway database's drafts point
+at ids that do not exist in any real mailbox. The accept path reuses `update_draft_text`, which WAS
+verified earlier today (guardrails → Gmail → database, refusing with a 400 and leaving the row
+untouched when Gmail rejects). Left unchecked rather than claimed.

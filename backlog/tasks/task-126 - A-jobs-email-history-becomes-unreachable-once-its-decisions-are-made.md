@@ -2,7 +2,8 @@
 id: TASK-126
 title: A job's email history becomes unreachable once its decisions are made
 status: To Do
-assignee: []
+assignee:
+  - '@claude'
 labels:
   - frontend
   - mailbox
@@ -43,10 +44,10 @@ This is not a defect in TASK-120's view. It is the entry point being keyed to th
 <!-- AC:BEGIN -->
 - [ ] #1 A job with mailbox history but NO pending suggestion can still reach its email history and notes from the board, verified in a browser on a job whose suggestions are all decided
 - [ ] #2 The two states are visually distinguishable: "a decision is waiting for you" must not look the same as "there is history to read". A single undifferentiated icon on every job with any mail would train the owner to ignore the one that needs action
-- [ ] #3 A job with no mailbox history at all shows no indicator — the board must not grow an inert icon on every row
-- [ ] #4 Whatever tells the board which jobs have history does not add a request per row, and does not measurably slow the jobs list. If it needs a new field on the list response, that is a deliberate decision recorded in the notes, because TASK-91 exists to keep that response slim
+- [x] #3 A job with no mailbox history at all shows no indicator — the board must not grow an inert icon on every row
+- [x] #4 Whatever tells the board which jobs have history does not add a request per row, and does not measurably slow the jobs list. If it needs a new field on the list response, that is a deliberate decision recorded in the notes, because TASK-91 exists to keep that response slim
 - [ ] #5 The indicator keeps every property TASK-117 AC5 established and TASK-81/TASK-102 fought for: a real `<button aria-expanded>` in the tab order, >=44px, click/tap/Enter open, Escape close, hover as an extra only — re-verified by keyboard, not assumed from the fact that it was true before
-- [ ] #6 `npx tsc --noEmit` and `npm test` clean
+- [x] #6 `npx tsc --noEmit` and `npm test` clean
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -73,3 +74,22 @@ AC2 matters more than it looks. TASK-117's indicator means "act on this". If it 
 dashboard is already the place decisions are surfaced — this indicator's second job is reference,
 not action.
 <!-- SECTION:NOTES:END -->
+
+## Progress (2026-08-18)
+
+`has_mailbox_history` is an `Exists()` annotation on the jobs-list queryset, exposed only on
+`JobLeadListSerializer` — the recorded AC4 decision: no request per row, and the detail response
+stays as slim as TASK-91 wants. The frontend combines it with the pending-suggestions list through a
+pure `mailboxIndicatorState(hasPending, hasHistory) -> 'pending' | 'history' | null`, so a pending
+decision always outranks stale history, and a job with no mail renders nothing at all.
+
+Backend tests cover all three states, including the exact reported bug: a job whose only suggestion
+is already decided still reports `has_mailbox_history: true`.
+
+### Not verified
+
+**AC1, AC2 and AC5** need a browser: that a decided-only job's indicator is reachable, that the two
+states are visually distinguishable at rest (implemented as a persistent amber treatment for pending
+versus the original quiet slate for history-only), and that the trigger keeps its `aria-expanded`,
+44px target, Escape-close and hover-as-extra contract. Deferred to the next browser pass rather than
+claimed.

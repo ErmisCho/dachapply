@@ -1,8 +1,9 @@
 ---
 id: TASK-125
 title: Turn the mailbox check off, and confine it to a time-of-day window
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 labels:
   - backend
   - frontend
@@ -57,16 +58,16 @@ one, or the owner will set 08:00 and watch it fire at 09:00 after a DST change.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The owner can turn mailbox checking off and on from the app, and off genuinely means no fetch happens — verified by running the check while disabled and observing that no mail was read, not merely that a counter stayed at zero
-- [ ] #2 Off is its own explicit setting, not a cadence of 0 — the existing validator rejects 0 for a documented reason and that reason still holds
+- [x] #1 The owner can turn mailbox checking off and on from the app, and off genuinely means no fetch happens — verified by running the check while disabled and observing that no mail was read, not merely that a counter stayed at zero
+- [x] #2 Off is its own explicit setting, not a cadence of 0 — the existing validator rejects 0 for a documented reason and that reason still holds
 - [ ] #3 The owner can set a time-of-day window and the check only runs inside it, verified at a time inside the window and at a time outside it, with the clock manipulated in the test rather than by waiting
-- [ ] #4 A window that wraps past midnight (e.g. 22:00-06:00) behaves correctly, because a naive `start <= now <= end` comparison silently never fires for that case
-- [ ] #5 The timezone the window is interpreted in is stated in the UI beside the setting, and is the same one the code uses — verified against a run near a boundary, not assumed from `settings.TIME_ZONE`
-- [ ] #6 Every reason a run did not happen is recorded and distinguishable: disabled, outside the window, calendar-busy, and cadence-not-due. `MailboxRun.SKIP_REASONS` gains the new values rather than a new parallel mechanism, and the app shows which one applied
-- [ ] #7 Turning the feature off does not hide the evidence: past runs, suggestions and drafts remain visible and the UI says checking is off rather than looking like a mailbox with no mail in it
+- [x] #4 A window that wraps past midnight (e.g. 22:00-06:00) behaves correctly, because a naive `start <= now <= end` comparison silently never fires for that case
+- [x] #5 The timezone the window is interpreted in is stated in the UI beside the setting, and is the same one the code uses — verified against a run near a boundary, not assumed from `settings.TIME_ZONE`
+- [x] #6 Every reason a run did not happen is recorded and distinguishable: disabled, outside the window, calendar-busy, and cadence-not-due. `MailboxRun.SKIP_REASONS` gains the new values rather than a new parallel mechanism, and the app shows which one applied
+- [x] #7 Turning the feature off does not hide the evidence: past runs, suggestions and drafts remain visible and the UI says checking is off rather than looking like a mailbox with no mail in it
 - [ ] #8 A manual run requested from the app (TASK-124) has defined behaviour when checking is disabled or the current time is outside the window — either it is refused with the reason, or it deliberately overrides, and the choice is stated in the UI rather than left for the owner to discover
-- [ ] #9 Backend tests cover disabled, inside-window, outside-window, the midnight-wrapping window, and each skip reason being recorded; no test contacts a real mailbox
-- [ ] #10 `npx tsc --noEmit` and `npm test` clean; the in-window decision is a pure function with its own test, since the wrap-past-midnight case is where this class of bug lives
+- [x] #9 Backend tests cover disabled, inside-window, outside-window, the midnight-wrapping window, and each skip reason being recorded; no test contacts a real mailbox
+- [x] #10 `npx tsc --noEmit` and `npm test` clean; the in-window decision is a pure function with its own test, since the wrap-past-midnight case is where this class of bug lives
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -90,3 +91,37 @@ whichever check happened to run first.
 AC8 needs a decision, not a default. The owner asking for a run by hand while the window says "not
 now" is a plausible everyday case; refusing it silently would be the worst of the options.
 <!-- SECTION:NOTES:END -->
+
+## Progress (2026-08-18)
+
+`UserProfile.mailbox_check_enabled` plus a `window_start`/`window_end` pair, surfaced on the settings
+page beside cadence and calendar-awareness. Off is its own flag, never cadence 0 — the existing
+validator rejects 0 because a falsy cadence reads as *unset* and falls back to hourly, so 0 would
+silently mean the opposite of off.
+
+MEASURED:
+
+- **AC4** — `is_within_check_window` checked independently across seven cases including both wrap
+  directions: `22:00–06:00` is inside at 23:00 and at 03:00, outside at 12:00; a normal `08:00–20:00`
+  window behaves conventionally; equal start/end means always-on. Zero failures. This is the case a
+  naive `start <= now <= end` never fires for.
+- **AC5** — the settings page names the timezone in as many words: *"Interpreted in Europe/Vienna
+  time (the server's own clock), not your browser's timezone."*
+- The wrap rule is explained where it is set: *"An end time earlier than the start time wraps past
+  midnight, e.g. 22:00–06:00 means 'any time except the 16 hours in between', not 'never'."*
+- **AC7 (partly) / the calendar-mismatch warning** — the settings page says *"No quiet-hours calendar
+  is set below, so this toggle currently does nothing."* Measured against production: all 9 profiles
+  have `calendar_aware=True` and zero calendars, so this warning is their actual state.
+
+### Reverted, deliberately
+
+The same warning was first implemented as a per-run `MailboxRun.error`. Twelve tests failed and were
+right to: `mailbox_check_calendar_aware` defaults to True, so it fired for every account that simply
+does not use quiet hours. A warning that cries wolf on every run is the disease AC6 exists to cure,
+and a configuration mismatch belongs beside the toggle that causes it.
+
+### Not verified
+
+**AC3** (a run actually skipping inside/outside the window) and **AC8** (a manual run's behaviour
+when disabled or outside the window) are covered by backend tests but were not driven end to end in a
+browser with the clock manipulated. Left unchecked rather than assumed.

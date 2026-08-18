@@ -10,7 +10,11 @@ export type FunnelCounts={applications:number;interviews:number;offers:number;ap
 export type Funnel={recent_window_days:number;recent_window_start:string;all_time:FunnelCounts;recent:FunnelCounts;interviews_without_application:number}
 export type SourceEffectiveness={source:string;applications:number;interviews:number;interview_rate:number|null}
 export type Stats={funnel?:Funnel;source_effectiveness?:SourceEffectiveness[];[key:string]:any}
-export type CandidateProfile={candidate_profile:string;candidate_evidence:string;target_roles:string;preferred_locations:string;salary_expectations:string;language_levels:string;preferred_stack:string;red_flags:string;selling_points:string;learned_application_preferences:string;follow_up_digest_enabled:boolean;mailbox_check_cadence_minutes:number;mailbox_check_calendar_aware:boolean;mailbox_salary_floor_eur:number;mailbox_do_not_disclose:string;mailbox_calendar_ics_urls:string;evaluation_prompt_template:string;combined_prompt_template:string;enrichment_prompt_template:string;bulk_links_prompt_template:string}
+// TASK-125 AC1/AC2/AC5: mailbox_check_enabled is the explicit off switch (never a cadence of 0 --
+// see the model comment on UserProfile.mailbox_check_cadence_minutes for why). The window fields are
+// "HH:MM:SS" strings (DRF TimeField's default representation) interpreted in settings.TIME_ZONE,
+// Europe/Vienna - see services.mailbox.is_within_check_window. Equal start/end means no restriction.
+export type CandidateProfile={candidate_profile:string;candidate_evidence:string;target_roles:string;preferred_locations:string;salary_expectations:string;language_levels:string;preferred_stack:string;red_flags:string;selling_points:string;learned_application_preferences:string;follow_up_digest_enabled:boolean;mailbox_check_cadence_minutes:number;mailbox_check_calendar_aware:boolean;mailbox_check_enabled:boolean;mailbox_check_window_start:string;mailbox_check_window_end:string;mailbox_salary_floor_eur:number;mailbox_do_not_disclose:string;mailbox_calendar_ics_urls:string;evaluation_prompt_template:string;combined_prompt_template:string;enrichment_prompt_template:string;bulk_links_prompt_template:string}
 export type InviteCode={id:number;code:string;label:string;active:boolean;expires_at:string|null;created_at:string}
 export type PracticeSession={id:number;job:number|null;job_company:string;job_title:string;question:string;answer_text:string;language:'de'|'en';clarity_score:number;structure_score:number;confidence_score:number;overall_score:number;feedback:string[];stronger_answer:string;evaluator:string;model:string|null;fallback_used:boolean;created_at:string}
 // TASK-109: mailbox check ingest + review. classification is a MailboxMessage.CLASSIFICATIONS key.
@@ -20,7 +24,11 @@ export type PracticeSession={id:number;job:number|null;job_company:string;job_ti
 // gmail_url is the SAME builder as MailboxMessage.gmail_url below (both key off the underlying
 // inbound message's RFC822 Message-ID, not the draft's own gmail_message_id - see serializers.py),
 // null when that id is not usable.
-export type MailboxDraft={id:number;status:'written'|'blocked';block_reason:string;subject:string;body_text:string;evaluator:string;gmail_draft_id:string;gmail_message_id:string;gmail_thread_id:string;gmail_url:string|null;created_at:string}
+// TASK-122 AC2/AC4: chat_history is the app-owned transcript re-fed to the (stateless) model on
+// every turn - server-authoritative (never trust a client-resent copy), reset to [] the moment a
+// revision is accepted via /edit/ (see views.py's MailboxDraftViewSet.edit).
+export type MailboxChatTurn={user_message:string;revised_text:string}
+export type MailboxDraft={id:number;status:'written'|'blocked';block_reason:string;subject:string;body_text:string;evaluator:string;gmail_draft_id:string;gmail_message_id:string;gmail_thread_id:string;gmail_url:string|null;chat_history:MailboxChatTurn[];created_at:string}
 // TASK-117 AC1: body_text is the received email body (5000-char cap applied at the wire read),
 // stored now instead of dropped - see the model docstring for why the minimal-metadata default
 // was reversed 2026-08-18.
@@ -43,4 +51,10 @@ export type ApplicationNote={id:number;job:number;note:string;note_type:string;c
 // in one round trip. This is a flat per-job list, not a reconstructed thread (see that endpoint's
 // docstring) - messages arrive pre-sorted by received_at (nulls last), nothing here re-sorts them.
 export type JobMailboxPayload={messages:JobMailboxMessage[];notes:ApplicationNote[]}
-export type MailboxRun={id:number;started_at:string;finished_at:string|null;skipped:boolean;skip_reason:string;fetched_count:number;job_related_count:number;uncertain_count:number;suggestion_count:number;draft_written_count:number;draft_blocked_count:number;error:string;digest_messages:MailboxMessage[]}
+// TASK-125 AC6: skip_reason is now one of '' | 'quiet_hours' | 'disabled' | 'outside_window'
+// (MailboxRun.SKIP_REASONS) - kept as a bare string, not a union, so a server-added reason still
+// renders (falls back to the raw value) instead of failing a type check.
+// drafting_skipped: true on a cold-start run that deliberately suppressed reply drafting so it did
+// not draft replies to the whole mailbox history - see the model docstring for why this is recorded
+// per-run rather than only logged, and check_mailbox.py for the wording this UI mirrors.
+export type MailboxRun={id:number;started_at:string;finished_at:string|null;skipped:boolean;skip_reason:string;fetched_count:number;job_related_count:number;uncertain_count:number;suggestion_count:number;draft_written_count:number;draft_blocked_count:number;drafting_skipped:boolean;error:string;digest_messages:MailboxMessage[]}

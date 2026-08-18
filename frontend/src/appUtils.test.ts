@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {copyToClipboard,deadlineBadge,describeOrdering,fromDateTimeLocal,germanSubmitError,groupMailboxSuggestions,initPanelOrder,mailboxIndicatorState,nextSortKeys,pathTitle,ratePercent,selectGeneralNote,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {copyToClipboard,deadlineBadge,describeOrdering,fromDateTimeLocal,germanSubmitError,groupMailboxSuggestions,initPanelOrder,mailboxEstimateWording,mailboxIndicatorState,nextSortKeys,pathTitle,ratePercent,selectGeneralNote,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -219,6 +219,37 @@ describe('mailboxIndicatorState (TASK-126 AC1/AC2/AC3)',()=>{
   it('is null (no indicator) when the job has no mailbox history at all',()=>{
     expect(mailboxIndicatorState(false,false)).toBe(null)
     expect(mailboxIndicatorState(false,undefined)).toBe(null)
+  })
+})
+
+// TASK-124 AC7/AC8: the wording most likely to silently drift. taking_longer_than_usual comes from
+// the server and must win over every other case, including a race where elapsed has technically
+// passed the estimate but the server has not flipped the flag yet - never a negative countdown.
+describe('mailboxEstimateWording (TASK-124 AC7/AC8)',()=>{
+  it('says so instead of inventing a number when there is no history of this kind yet',()=>{
+    expect(mailboxEstimateWording(null,null,false)).toBe('No time estimate yet — this will be the first tracked run of its kind.')
+    expect(mailboxEstimateWording(12,null,false)).toBe('Running — no history yet to estimate how long this takes.')
+  })
+
+  it('shows the up-front estimate before the run starts',()=>{
+    expect(mailboxEstimateWording(null,245,false)).toBe('Usually takes about 4m 5s.')
+    expect(mailboxEstimateWording(null,10,false)).toBe('Usually takes about 10s.')
+  })
+
+  it('counts down a live estimate while running',()=>{
+    expect(mailboxEstimateWording(30,245,false)).toBe('About 3m 35s remaining.')
+    expect(mailboxEstimateWording(290,300,false)).toBe('About 10s remaining.')
+  })
+
+  it('stops counting down and says it is taking longer than usual once the server says so, never a negative figure',()=>{
+    expect(mailboxEstimateWording(600,245,true)).toBe('Taking longer than usual — hang tight.')
+    // takingLonger wins even with numbers that would otherwise still look "in progress"
+    expect(mailboxEstimateWording(1,245,true)).toBe('Taking longer than usual — hang tight.')
+  })
+
+  it('reads "finishing up" rather than a negative countdown for a close-but-not-yet-flagged race',()=>{
+    expect(mailboxEstimateWording(299.5,300,false)).toBe('Finishing up…')
+    expect(mailboxEstimateWording(305,300,false)).toBe('Finishing up…')
   })
 })
 
