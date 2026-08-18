@@ -60,6 +60,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The dashboard no longer scrolls sideways on a phone. Wide panels — the conversion funnel,
+  application pace, source effectiveness, upcoming interviews and email decisions — are now full
+  width below 768px instead of being squeezed into half a column, and the two tables that still
+  cannot fit scroll inside their own panel rather than dragging the whole page with them.
 - The mailbox check no longer drafts replies to job-board newsletters and automated blasts. A
   message carrying bulk markers (an unsubscribe link, `Precedence: bulk`, `Auto-Submitted`, or a
   no-reply sender) is never replied to, and a job board's own domain no longer counts as a company

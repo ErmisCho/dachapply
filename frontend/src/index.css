@@ -37,6 +37,16 @@ button{@apply rounded-lg px-3 py-2 bg-slate-900 text-white disabled:opacity-50 t
 .dashboard-panel-wide .h-20{height:3.25rem!important}
 .dashboard-panel-wide .min-h-8{min-height:1.55rem!important}
 .dashboard-panel-wide .text-2xl{font-size:1.125rem!important;line-height:1.45rem!important}
+/* TASK-118: wide panels were only wide at md: (md:col-span-5) and .dashboard-panel-wide itself set
+   no grid-column, so below 768px every "wide" panel was just one of the plain grid's two columns
+   (~148px at a 356px viewport) -- narrow enough that Source effectiveness's table ran off the
+   viewport edge depending on which column it landed in. General fix, on the class itself so any
+   panel added later inherits it without naming itself here (see TASK-117's now-deleted
+   data-panel escape hatch, which existed only because this rule didn't). Scoped to max-width so
+   the md: desktop layout (row of five) is untouched. */
+@media (max-width:767px){
+  .dashboard-panel-wide{grid-column:1 / -1}
+}
 @media (min-width:768px){
   .mb-4.grid.grid-cols-2.gap-3.md\:grid-cols-7{grid-auto-flow:row dense;grid-auto-rows:minmax(4.65rem,auto)}
 }
@@ -344,14 +354,3 @@ input.row-select{width:1.05rem;height:1.05rem;min-width:0;min-height:0;flex:0 0 
 input.row-select:focus-visible{outline:2px solid #2563eb!important;outline-offset:2px}
 .dark input.row-select:focus-visible{outline-color:#67e8f9!important}
 @media (max-width: 1023px){input.row-select{width:1.35rem;height:1.35rem}}
-
-/* TASK-117: the email-decisions panel carries a whole received email, its classification, the
-   proposed change and a drafted reply. Every `wide` panel is still one of two columns below 768px
-   (.dashboard-panel-wide sets no grid-column, and md:col-span-5 does not apply there), which leaves
-   ~148px at 360px -- unreadable for a paragraph of German prose. Measured, not guessed: at a 356px
-   viewport the panel box was 148px while its own cards wanted 158px.
-   Scoped to this one panel by data-panel rather than to .dashboard-panel-wide, because widening the
-   other four wide panels is a visual change to shipped work that nobody asked for. */
-@media (max-width:767px){
-  .mb-4.grid>[data-panel="mailbox_review"]{grid-column:1 / -1}
-}

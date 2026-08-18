@@ -1,8 +1,9 @@
 ---
 id: TASK-118
 title: Wide dashboard panels are half-width and overflow below 768px
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 labels:
   - frontend
   - responsive
@@ -46,10 +47,10 @@ conversion funnel and source effectiveness are all data-dense layouts rendered i
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 At a 360px viewport, `document.documentElement.scrollWidth` is not greater than the viewport width on the dashboard — measured in a same-origin iframe, with every panel visible, and re-measured after reordering panels so column parity changes
-- [ ] #2 No panel's content is wider than the panel that contains it: for each panel, the widest descendant's `getBoundingClientRect().width` is <= the panel's own width, or that descendant sits in its own `overflow-x:auto` container so it scrolls itself instead of the page
-- [ ] #3 Wide panels are full-width below 768px, or the reason they are not is written down in `index.css` beside the rule — the current state is neither, and reads as an oversight rather than a decision
-- [ ] #4 The fix is not per-panel: it holds for any panel added later without that panel having to know about it. TASK-117 shipped a `data-panel="mailbox_review"` escape hatch for exactly this reason; that rule is deleted when this task lands
+- [x] #1 At a 360px viewport, `document.documentElement.scrollWidth` is not greater than the viewport width on the dashboard — measured in a same-origin iframe, with every panel visible, and re-measured after reordering panels so column parity changes
+- [x] #2 No panel's content is wider than the panel that contains it: for each panel, the widest descendant's `getBoundingClientRect().width` is <= the panel's own width, or that descendant sits in its own `overflow-x:auto` container so it scrolls itself instead of the page
+- [x] #3 Wide panels are full-width below 768px, or the reason they are not is written down in `index.css` beside the rule — the current state is neither, and reads as an oversight rather than a decision
+- [x] #4 The fix is not per-panel: it holds for any panel added later without that panel having to know about it. TASK-117 shipped a `data-panel="mailbox_review"` escape hatch for exactly this reason; that rule is deleted when this task lands
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -64,3 +65,39 @@ Note also that `index.css:41-66` targets `.mb-4.grid.grid-cols-2.gap-3.md\:grid-
 dashboard grid in `App.tsx` renders `md:grid-cols-5`. Those selectors match nothing today. Not this
 task's job to fix, but worth confirming before adding more CSS that depends on the grid's class list.
 <!-- SECTION:NOTES:END -->
+
+## Outcome (2026-08-18)
+
+`.dashboard-panel-wide{grid-column:1 / -1}` inside `@media (max-width:767px)` — on the class itself,
+so a panel added later inherits it without naming itself in CSS, with the reason written beside the
+rule as AC3 requires. TASK-117's `[data-panel="mailbox_review"]` escape hatch is deleted; the
+`data-panel={id}` attribute stays on the wrapper (harmless, and useful for measuring).
+
+Two descendants with a hard intrinsic floor were wrapped in `overflow-x-auto` so they scroll
+themselves rather than the page: Source effectiveness's table, and Application pace's "Month by
+workday" grid (its `minmax(8px,1fr)` columns have an 8px floor per workday, unlike the "Weeks this
+month" grid above it, which uses `minmax(0,1fr)` and needed nothing). Upcoming interviews and the
+conversion funnel were left alone — their grids compile to `minmax(0,1fr)` tracks and were measured
+not to overflow.
+
+MEASURED in a same-origin iframe (window resizing does not change the page viewport on this display
+— CLAUDE.md TW-004), all ten panels visible:
+
+    viewport 360px    scrollWidth 345px    no overflow
+    wide panels  313px each   (were 148px)
+    small panels 150px each   (unchanged)
+
+Re-measured across five panel orders — default, mailbox_review moved last, fully reversed, and two
+orders placing source_effectiveness after an odd and an even number of small panels, which is what
+flips column parity. **All five: scrollWidth 345px, no overflow.** Before the fix the same page
+measured 443px against a 356px viewport.
+
+Per-panel containment: for every one of the ten panels, no descendant is wider than the panel itself
+at 360px.
+
+Desktop unregressed: at a 1200px viewport the grid is still five 221px columns with wide panels
+spanning all five (1153px). The media query cannot apply at >=768px. The horizontal scroll that does
+exist at desktop width comes from the jobs table's own cells, not the panel grid — pre-existing, and
+not this task's.
+
+`npx tsc --noEmit` clean, 46 frontend tests pass.
