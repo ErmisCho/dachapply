@@ -108,4 +108,33 @@ storage location moves.
 
 **Consequence, stated so it is not a surprise:** TASK-109 AC7 cannot be closed by pasting a URL into
 `.env` any more. It closes when this task ships and a real calendar is configured through the app.
+### 2026-08-18 — superseded in part by TASK-116 (Calendar OAuth)
+
+The platform half of this task shipped in PR #43 and is deployed: the per-user field, the masked
+read, the round-trip merge and the ICS parser all exist and are tested.
+
+Hours later the owner asked whether quiet hours could work by authorising the app against Google
+Calendar the way Gmail now does. It can, and it is better — so [[TASK-116]] replaces the stored-secret
+approach entirely, and **deletes most of what shipped here**.
+
+Recording that honestly rather than as an enhancement: the masking, the merge and the parser were
+competent answers to a question that should not have been asked. The ICS design was chosen when
+`settings.py` could truthfully say "No OAuth, no Calendar API" — and TASK-109 made that false the day
+before, by building an OAuth client to work around 2SV being declined. Nobody revisited the calendar
+decision in light of it. The owner did.
+
+**Status of this task's remaining ACs:**
+
+- AC1, AC5, AC6, AC8 — met and shipped, then removed again by TASK-116 AC6.
+- AC2, AC3, AC4, AC9 (the `mailbox.py` reading half) — **deliberately never built.** They specify
+  fetching and parsing ICS files, which TASK-116 removes. Building them first would mean writing code
+  to delete it in the same week. TASK-116 carries their intent forward: AC2's any-calendar-busy rule
+  becomes a `freeBusy.query` across selected calendars (TASK-116 AC3), AC3/AC4's fail-open-and-say-so
+  become TASK-116 AC4/AC5.
+- AC7 (platform is the only configuration source) — still correct and still required; TASK-116 AC6
+  strengthens it by deleting the ICS path as well as the env var.
+
+This task is therefore closed as **superseded**, not as done. Nothing in it is abandoned silently:
+every open criterion has a named successor in TASK-116, which is the paper trail TW-005 requires for
+a criterion that will not be satisfied as written.
 <!-- SECTION:NOTES:END -->
