@@ -199,4 +199,25 @@ record the first genuine alert when it arrives, subject prefix `[DACHApply] `. I
 after the next real error, check Brevo's sending log before suspecting the config: everything up to
 handing the message to Brevo is now proven.
 
+### 2026-08-18 — a DACHApply email did arrive, and it does NOT close AC2
+
+Searching the owner's inbox for `DACHApply` returned a delivered message:
+`"DACHApply reminders: 6 items need attention"`, 2026-08-18 04:00. It is tempting to read that as
+AC2 satisfied. It is not, and the distinction is worth writing down so it is not re-litigated.
+
+That email is the **follow-up digest**, whose subject is built at
+`backend/jobradar/services/followup_digest.py:67`. The error alert AC2 asks about is a different
+mechanism entirely: Django's `AdminEmailHandler`, fed by `ADMINS` (`settings.py:386`, populated from
+`ERROR_ALERT_EMAILS`), fired by an unhandled 500 and carrying the `[DACHApply] ` subject prefix.
+Different trigger, different sender, different subject shape.
+
+**What it does prove, and it is not nothing:** the Brevo SMTP path delivers to the owner's inbox and
+is not silently bouncing. Since `SERVER_EMAIL` falls back to `DEFAULT_FROM_EMAIL` (`settings.py:322`),
+the alert would go out over that same working sender. So every link in the chain except the trigger
+is now evidenced.
+
+**AC2 still requires an alert that actually fired.** It closes when a real production 500 delivers a
+`[DACHApply] `-prefixed mail — deliberately not manufactured, since 500-ing production to satisfy a
+checkbox is a worse trade than waiting. If nothing arrives after the next genuine error, check
+Brevo's sending log before suspecting the configuration.
 <!-- SECTION:NOTES:END -->
