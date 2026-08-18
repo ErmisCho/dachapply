@@ -846,6 +846,112 @@ def test_sanitize_inbound_text_leaves_ordinary_text_untouched():
     assert sanitize_inbound_text(text) == text
 
 
+def test_a_run_that_crashes_midway_loses_nothing_and_resumes(not_cold_start, db, owner, monkeypatch):
+    """The property that makes a partial run safe: messages are processed in ASCENDING marker order.
+
+    Nothing here is wrapped in transaction.atomic, so each row commits as it is created and the
+    marker ends at the last message that actually succeeded. A crash at message k therefore leaves
+    k..N to be re-fetched next run -- no loss, no duplication. That correctness rests entirely on the
+    ascending sort: flip it to newest-first (a tempting change for digest ordering) and every partial
+    run silently loses everything before the crash, with the whole suite still green. This test is
+    what makes that flip fail.
+    """
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    real_classify = mailbox.classify_email
+
+    def explode_on_the_third(raw_message, domain_known=False):
+        if raw_message.uid == 3:
+            raise RuntimeError('boom on message 3')
+        return real_classify(raw_message, domain_known=domain_known)
+
+    monkeypatch.setattr(mailbox, 'classify_email', explode_on_the_third)
+    first = run_check(transport=FakeTransport([raw(2), raw(3), raw(4)]), force=True)
+    assert first.error and 'boom on message 3' in first.error
+    assert MailboxMessage.objects.filter(uid=2).exists(), 'work done before the crash was lost'
+    assert not MailboxMessage.objects.filter(uid__in=[3, 4]).exists()
+
+    monkeypatch.setattr(mailbox, 'classify_email', real_classify)
+    second_transport = FakeTransport([raw(2), raw(3), raw(4)])
+    second = run_check(transport=second_transport, force=True)
+    assert second_transport.calls == [2], 'did not resume from the last message that succeeded'
+    assert set(MailboxMessage.objects.values_list('uid', flat=True)) == {1, 2, 3, 4}, 'a message was lost or duplicated'
+
+
+def test_gmail_pagination_is_followed_so_older_messages_are_not_silently_skipped(not_cold_start, db, owner, monkeypatch):
+    """Gmail's messages.list caps at 100 per page and returns newest-first. If the nextPageToken loop
+    ever regresses to a single page, the marker still advances to the newest message and everything
+    older is skipped PERMANENTLY and silently. No test executed that loop before this one.
+    """
+    details = {
+        'msg-new': {'internalDate': '9000000', 'threadId': 't1',
+                    'raw': _gmail_raw_b64('hr@acme.test', 'Newer', 'body newer')},
+        'msg-old': {'internalDate': '8000000', 'threadId': 't2',
+                    'raw': _gmail_raw_b64('hr@acme.test', 'Older', 'body older')},
+    }
+
+    class _PagingGmailHttp(_FakeGmailHttp):
+        """Page 1 returns only the newest id plus a token; page 2 returns the older one."""
+
+        def __call__(self, method, url, access_token, data=None):
+            if '/messages?' in url and method == 'GET':
+                self.calls.append((method, url))
+                if 'pageToken=' not in url:
+                    return {'messages': [{'id': 'msg-new'}], 'nextPageToken': 'page-2'}
+                return {'messages': [{'id': 'msg-old'}]}
+            return super().__call__(method, url, access_token, data)
+
+    fake_http = _PagingGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run = run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+
+    assert run is not None and not run.error
+    assert MailboxMessage.objects.filter(gmail_id='msg-old').exists(), 'page 2 never fetched; older mail silently skipped'
+    assert MailboxMessage.objects.filter(gmail_id='msg-new').exists()
+
+
+def test_do_not_disclose_typed_in_settings_actually_blocks_a_draft(not_cold_start, db, owner, applied_job, monkeypatch):
+    """The profile -> guardrail wiring, end to end. `check_guardrails` was unit-tested with a Python
+    list, and the serializer round-trip was tested separately, but nothing joined them: if a phrase
+    the owner typed into Settings never reached the guardrail (field rename, stray whitespace, a
+    serializer change), the list would silently be empty and the draft would be WRITTEN to Gmail with
+    status='written', no error and normal counters. That is the one guardrail whose failure emits no
+    signal at all -- and with no salary floor configured (owner decision, a varying range), it is the
+    only guardrail with teeth.
+    """
+    profile = user_profile_settings(owner)
+    profile.mailbox_do_not_disclose = '  \nmy current salary\n\n  other offers  \n'  # whitespace on purpose
+    profile.save()
+    monkeypatch.setattr(
+        mailbox, '_build_reply_body',
+        lambda *a, **k: ('Happy to share that my current salary is confidential.', 'template'),
+    )
+    transport = FakeTransport([raw(2, sender='hr@acme.test', subject='Interview invite',
+                                  body='We would like to invite you to an interview on 03.03.2026 at 14:00.')])
+    run = run_check(transport=transport)
+
+    draft = MailboxDraft.objects.get(message__uid=2)
+    assert draft.status == 'blocked', 'a phrase typed into Settings never reached the guardrail'
+    assert 'current salary' in draft.block_reason
+    assert transport.appended_drafts == [], 'blocked draft still written to Gmail'
+    assert run.draft_blocked_count == 1 and run.draft_written_count == 0
+
+
+def test_digest_reports_drafting_skipped_so_a_cold_start_is_not_mistaken_for_a_broken_path(client, owner, applied_job):
+    """A first run shows job-related messages and zero drafts. Without this field in the digest the
+    /mailbox UI cannot distinguish that from drafting being broken -- and check_mailbox's stdout
+    warning goes nowhere on an unattended Task Scheduler run.
+    """
+    transport = FakeTransport([raw(1, sender='hr@acme.test', subject='Interview invite',
+                                  body='We would like to invite you to an interview on 03.03.2026 at 14:00.')])
+    run = run_check(transport=transport)
+    assert run.drafting_skipped is True  # cold start
+
+    response = client.get(f'/api/mailbox-runs/{run.id}/')
+    assert response.status_code == 200
+    assert response.json()['drafting_skipped'] is True, 'the digest cannot explain why zero drafts were written'
+
+
 def test_mailbox_run_digest_serializes_draft_status(not_cold_start, client, owner, applied_job):
     transport = FakeTransport([raw(2, sender='hr@acme.test', subject='Interview invite', body='We would like to invite you to an interview on 03.03.2026 at 14:00.')])
     with override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test'):

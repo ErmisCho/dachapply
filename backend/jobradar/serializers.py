@@ -318,7 +318,11 @@ class MailboxRunSerializer(serializers.ModelSerializer):
     digest_messages=serializers.SerializerMethodField()
     class Meta:
         model=MailboxRun
-        fields=('id','started_at','finished_at','skipped','skip_reason','fetched_count','job_related_count','uncertain_count','suggestion_count','draft_written_count','draft_blocked_count','error','digest_messages')
+        # drafting_skipped belongs here, not only in check_mailbox's stdout: an unattended Task
+        # Scheduler run writes that stdout nowhere, so without this field a first run shows N
+        # job-related messages and zero drafts in /mailbox with no explanation -- which reads as a
+        # broken drafting path, the exact confusion the field was added to remove.
+        fields=('id','started_at','finished_at','skipped','skip_reason','fetched_count','job_related_count','uncertain_count','suggestion_count','draft_written_count','draft_blocked_count','drafting_skipped','error','digest_messages')
     def get_digest_messages(self, obj):
         rows=obj.messages.exclude(classification='not_job_related').order_by('-uid')
         return MailboxMessageSerializer(rows, many=True).data

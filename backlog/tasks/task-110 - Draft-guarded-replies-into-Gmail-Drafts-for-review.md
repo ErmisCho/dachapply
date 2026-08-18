@@ -179,3 +179,30 @@ not just to the mail.
 `MAILBOX_DO_NOT_DISCLOSE` are unset in the owner's `.env`, so no floor existed to enforce. AC2 is
 checked on test evidence and remains true, but no *live* draft has yet been blocked by a real floor.
 Set both before the next run that drafts against real recruiter mail.
+
+### 2026-08-18 — owner decision: no salary floor, and what that leaves standing
+
+**The salary floor stays unset, deliberately.** The owner's acceptable range varies by role, so a
+single machine-wide number would either block drafts that are fine or pass drafts that are not. This
+is a decision, not an omission — do not "fix" it by picking a number, and do not read a future
+`0 draft(s) blocked` as evidence the guardrails are broken.
+
+What that leaves is worth being precise about, because the two guardrails are independent.
+`check_guardrails` runs the do-not-disclose phrase loop **unconditionally**, before and regardless of
+the `if salary_floor_eur:` branch — so with no floor configured, the phrase list is the only
+guardrail with teeth, and every draft is written with no check on the numbers it contains.
+
+That made an untested wiring path the load-bearing one. `check_guardrails` was unit-tested against a
+Python list, and the profile serializer round-trip was tested separately, but **nothing joined them**:
+had a phrase typed into Settings failed to reach the guardrail — a field rename, stray whitespace, a
+serializer change — the list would have been silently empty and the draft written to Gmail with
+`status='written'`, no error, normal counters. The one guardrail failure that emits no signal at all.
+`test_do_not_disclose_typed_in_settings_actually_blocks_a_draft` now covers it end to end, with
+deliberately messy whitespace in the stored value.
+
+Also closed from the same review pass: `drafting_skipped` is now in the run digest
+(`MailboxRunSerializer`), so a cold-start run in `/mailbox` can explain its own zero drafts instead of
+looking like a broken drafting path; the ascending-sort property that makes a crashed run lose
+nothing is pinned by a test (verified to fail when the sort is flipped newest-first); and the Gmail
+`nextPageToken` loop is executed by a test, since a regression there would advance the marker past
+everything on page two and skip it permanently and silently.
