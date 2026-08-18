@@ -1,10 +1,10 @@
 ---
 id: TASK-90
 title: Rotate and remove the legacy publish profile and stray data files
-status: In Progress
+status: Done
 assignee:
   - '@claude'
-updated_date: '2026-08-17 15:50'
+updated_date: '2026-08-18 10:15'
 created_date: '2026-08-16 00:43'
 labels:
   - security
@@ -25,8 +25,8 @@ The root also collects untracked personal-data files: `db.sqlite3`, `azure-sqlit
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 The old App Service publish credential is rotated, or the App Service itself is retired
-- [ ] #2 dachapply.PublishSettings is deleted from disk
-- [ ] #3 The root-level personal exports and sqlite files are moved outside the synced repo folder or deleted — owner's choice, recorded in the closing notes
+- [x] #2 dachapply.PublishSettings is deleted from disk
+- [x] #3 The root-level personal exports and sqlite files are moved outside the synced repo folder or deleted — owner's choice, recorded in the closing notes
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -173,4 +173,36 @@ reason to stay.
 subset of it) from the repo root.** No agent action can close either box — that would require
 deleting files this session did not create, which PSA-003 forbids outright.
 
+### 2026-08-18 — AC2 and AC3 closed; all seven files deleted by the owner
+
+Deleted by the owner personally, as PSA-003 requires — an agent must not remove files it did not
+create, least of all someone's personal data. Verbatim:
+
+    removed 'dachapply.PublishSettings'
+    removed 'db.sqlite3'
+    removed 'azure-sqlite-data.json'
+    removed 'dachapply-full-2026-05-22 (1).json'
+    removed 'dachapply-full-2026-05-22 (2).json'
+    removed 'dachapply-full-2026-05-22 (3).json'
+    removed 'dachapply-full-2026-05-22.json'
+
+Verified after: zero of the seven remain, and the only `dachapply-*.json` left at the repo root is
+`dachapply-gmail-oauth-token.json`, which is the live OAuth refresh token from TASK-109 and was
+deliberately excluded from the glob. Widening the pattern to `dachapply-*.json` would have taken it
+and forced the whole Google consent flow to be repeated — worth knowing before anyone writes a
+tidier-looking cleanup command later.
+
+**Two attempts were needed, and the first one silently did nothing.** `rm -f <relative paths>` was
+run from a shell whose working directory was `backend/`, not the repo root. `-f` suppresses the
+"no such file" error, so it reported success and deleted nothing; the files were only found still
+present because the result was checked rather than assumed. The second attempt used absolute paths
+and `-v` instead of `-f`, so each deletion printed its own line — seven lines, one per file, which is
+what made the outcome verifiable rather than inferred.
+
+That is the generalisable bit: `rm -f` cannot distinguish "deleted it" from "there was nothing
+there", and neither can the person reading its output. For a deletion that matters, drop `-f`, add
+`-v`, and count the lines.
+
+AC1 was closed 2026-08-17 by retiring the App Service (`dachapply.azurewebsites.net` returns
+NXDOMAIN). All three ACs are now met, so this task is **Done**.
 <!-- SECTION:NOTES:END -->
