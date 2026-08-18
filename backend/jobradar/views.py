@@ -19,8 +19,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import api_view, permission_classes, action, throttle_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
-from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile, InviteCode
-from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, normalize_job_url
+from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, MailboxMessage, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile, InviteCode
+from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxMessageSerializer, MailboxMessageWithSuggestionsSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, normalize_job_url
 from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, has_candidate_profile, user_profile_settings
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
@@ -30,7 +30,7 @@ from .services.cleaning import clean_job_location
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
 from .services.interview_coach import analyze_answer, suggest_questions
-from .services.mailbox import apply_suggestion, dismiss_suggestion
+from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_suggestion
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, decode_correction_image, generation_preview, is_cv_owner, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
 from .services.cv_tasks import cancel_cv_task, get_cv_task, get_cv_task_download, start_cv_compile_task, start_cv_revision, start_cv_task
@@ -619,6 +619,15 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         job=self.get_object()
         if request.method=='GET': return Response(FollowUpSerializer(job.followups.all(), many=True).data)
         ser=FollowUpSerializer(data={**request.data,'job':job.id}, context={'request': request}); ser.is_valid(raise_exception=True); ser.save(); return Response(ser.data, status=201)
+    @action(detail=True, methods=['get'])
+    def mailbox(self, request, pk=None):
+        """TASK-117 AC2: this job's mailbox messages, newest first, each with its draft and pending
+        suggestions. self.get_object() runs against get_queryset() (accessible_jobs) exactly like
+        every other detail action above -- a job this user cannot see 404s before any message is read.
+        """
+        job=self.get_object()
+        messages=job.mailbox_messages.select_related('matched_job').prefetch_related('draft','suggestions').order_by('-uid')
+        return Response(MailboxMessageWithSuggestionsSerializer(messages, many=True).data)
 
 class EvaluationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class=JobEvaluationSerializer; queryset=JobEvaluation.objects.select_related('job').all()
@@ -661,7 +670,9 @@ class MailboxSuggestionViewSet(viewsets.GenericViewSet):
     def confirm(self, request, pk=None):
         suggestion=self.get_object()
         if suggestion.status != 'pending': return Response({'detail':'Suggestion already decided.'}, status=400)
-        apply_suggestion(suggestion)
+        # TASK-117 AC4: apply_suggestion writes the confirming user onto the ApplicationNote it
+        # creates, so the job's history says who agreed, not only that the app proposed it.
+        apply_suggestion(suggestion, user=request.user)
         return Response(self.get_serializer(suggestion).data)
     @action(detail=True, methods=['post'])
     def dismiss(self, request, pk=None):
@@ -679,6 +690,44 @@ class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         if not is_cv_owner(self.request.user): return MailboxRun.objects.none()
         return MailboxRun.objects.all().prefetch_related('messages__matched_job','messages__draft')
+
+class MailboxMessageViewSet(viewsets.GenericViewSet):
+    """TASK-117 AC6/AC7. MailboxMessage.uid is globally unique with no user FK -- the mailbox
+    subsystem is single-owner by construction, so this is gated on is_cv_owner exactly like
+    MailboxRunViewSet above, not on accessible_jobs. Exposes only what AC6 needs (the unmatched list
+    and the manual attach action) -- never a generic list/retrieve/PATCH/DELETE, keeping the model's
+    append-only guarantee true for everything except the one owner-initiated attach.
+    """
+    serializer_class=MailboxMessageSerializer
+    def get_queryset(self):
+        if not is_cv_owner(self.request.user): return MailboxMessage.objects.none()
+        return MailboxMessage.objects.all()
+    @action(detail=False, methods=['get'])
+    def unmatched(self, request):
+        qs=self.get_queryset().exclude(classification='not_job_related').filter(matched_job__isnull=True).order_by('-uid')
+        return Response(MailboxMessageSerializer(qs, many=True).data)
+    @action(detail=True, methods=['post'])
+    def attach(self, request, pk=None):
+        """TASK-117 AC6: the only writer of `matched_job` for a message that already ran through
+        check_mailbox -- everything else about MailboxMessage stays append-only. self.get_object()
+        already applies the is_cv_owner gate via get_queryset(); the target job additionally has to
+        be one this user can already see (accessible_jobs), or it 404s the same way reading that job
+        would. Re-attaching to the SAME job is a no-op (attach_message_to_job is idempotent);
+        attaching to a DIFFERENT job than the one already matched is refused rather than silently
+        re-pointing the message.
+        """
+        message=self.get_object()
+        job_id=request.data.get('job')
+        if not job_id:
+            return Response({'detail':'job is required.'}, status=400)
+        job=accessible_jobs(request.user).filter(pk=job_id).first()
+        if not job:
+            return Response({'detail':'Job not found.'}, status=404)
+        if message.matched_job_id and message.matched_job_id != job.id:
+            return Response({'detail':'This message is already attached to a different job.'}, status=400)
+        attach_message_to_job(message, job, user=request.user)
+        message.refresh_from_db()
+        return Response(MailboxMessageWithSuggestionsSerializer(message).data)
 
 @api_view(['POST'])
 def practice_evaluate(request):

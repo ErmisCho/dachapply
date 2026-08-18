@@ -14,6 +14,14 @@ export type PracticeSession={id:number;job:number|null;job_company:string;job_ti
 // TASK-109: mailbox check ingest + review. classification is a MailboxMessage.CLASSIFICATIONS key.
 // TASK-110: draft is null unless this message's classification wanted a reply and matched a job.
 export type MailboxDraft={id:number;status:'written'|'blocked';block_reason:string;subject:string;body_text:string;evaluator:string;created_at:string}
-export type MailboxMessage={id:number;sender:string;subject:string;received_at:string|null;classification:string;matched_job:number|null;matched_job_company:string;matched_job_title:string;draft:MailboxDraft|null;created_at:string}
+// TASK-117 AC1: body_text is the received email body (5000-char cap applied at the wire read),
+// stored now instead of dropped - see the model docstring for why the minimal-metadata default
+// was reversed 2026-08-18.
+export type MailboxMessage={id:number;sender:string;subject:string;body_text:string;received_at:string|null;classification:string;matched_job:number|null;matched_job_company:string;matched_job_title:string;draft:MailboxDraft|null;created_at:string}
 export type MailboxSuggestion={id:number;message:MailboxMessage;job:number;job_company:string;job_title:string;suggestion_type:'status_change'|'interview_date'|'feedback_clear';payload:Record<string,any>;status:'pending'|'confirmed'|'dismissed';created_at:string;decided_at:string|null}
+// TASK-117 AC2/AC6: GET /api/jobs/{id}/mailbox/ and POST /api/mailbox-messages/{id}/attach/ both
+// answer with this shape (MailboxMessageWithSuggestionsSerializer) - each suggestion nested here is
+// a complete MailboxSuggestion (server re-serializes message->suggestion, not the reverse), so the
+// same MailboxSuggestionCard renders one from the board panel or one from a job's own mail.
+export type JobMailboxMessage=MailboxMessage&{suggestions:MailboxSuggestion[]}
 export type MailboxRun={id:number;started_at:string;finished_at:string|null;skipped:boolean;skip_reason:string;fetched_count:number;job_related_count:number;uncertain_count:number;suggestion_count:number;draft_written_count:number;draft_blocked_count:number;error:string;digest_messages:MailboxMessage[]}

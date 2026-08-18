@@ -8,6 +8,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Email decisions on the dashboard. When a recruiter, a rejection or an interview invitation arrives,
+  the board shows it first: the email itself, what the app made of it, what would change on the job,
+  and the reply it drafted into Gmail Drafts. Agreeing applies the change and records on the job
+  which email caused it; declining changes nothing. The job's own row carries an indicator that
+  opens the same overview by click, tap, keyboard or hover.
+- Mail that matches no tracked job — an agency, a personal address, an employer writing from a
+  different domain than the listing — can be attached to a job by hand, and then behaves exactly as
+  a matched one.
 - Offer, accepted and withdrawn statuses, so the end of the funnel is representable.
 - Interview date and note per job, with an "Upcoming interviews" dashboard panel, soonest first.
 - Apply-by deadlines, with badges that distinguish a passed deadline from an approaching one.

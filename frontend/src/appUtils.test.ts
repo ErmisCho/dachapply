@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {copyToClipboard,deadlineBadge,describeOrdering,fromDateTimeLocal,germanSubmitError,nextSortKeys,pathTitle,ratePercent,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {copyToClipboard,deadlineBadge,describeOrdering,fromDateTimeLocal,germanSubmitError,initPanelOrder,nextSortKeys,pathTitle,ratePercent,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -127,6 +127,29 @@ describe('describeOrdering (TASK-111 small-screen sort readout)',()=>{
 
   it('falls back to the raw key for anything unmapped rather than dropping it silently',()=>{
     expect(describeOrdering('made_up_key')).toBe('Sorted by: made_up_key')
+  })
+})
+
+// TASK-117 AC3: a panel id added after a user already has a saved order (mailbox_review, here)
+// must render first, not last - measured against a pre-seeded localStorage value in a browser, but
+// this is the pure reducer behind that, so it gets a unit test here too.
+describe('dashboard panel order (TASK-117 AC3)',()=>{
+  it('splices an id unknown to an existing saved order to the front instead of appending it',()=>{
+    const saved=['total','new_high_priority','active_applied']
+    const allIds=['mailbox_review','total','new_high_priority','active_applied']
+    expect(initPanelOrder(saved,allIds)).toEqual(['mailbox_review','total','new_high_priority','active_applied'])
+  })
+
+  it('leaves a fully-known saved order untouched, in its saved order',()=>{
+    expect(initPanelOrder(['b','a'],['a','b'])).toEqual(['b','a'])
+  })
+
+  it('falls back to the natural id order when nothing is saved yet',()=>{
+    expect(initPanelOrder([],['a','b','c'])).toEqual(['a','b','c'])
+  })
+
+  it('drops a saved id no longer in the panel registry instead of keeping a dangling one',()=>{
+    expect(initPanelOrder(['gone','a'],['a','b'])).toEqual(['b','a'])
   })
 })
 
