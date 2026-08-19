@@ -56,7 +56,7 @@ The safety argument in TASK-114's notes is the thing to preserve, not the exact 
 - [x] #1 A draft this app wrote is matched by the body-text fallback despite transport-level dot escaping — asserted with the real observed shape (a body identical except for a leading `.`)
 - [x] #2 The safety property TASK-114 established is unchanged and re-asserted by test: a draft whose body the owner altered is NOT matched, and therefore never deleted
 - [x] #3 The fix is specific to the escaping artefact, not a general loosening of the comparison — a body differing by real content, however slightly, must still fail to match
-- [ ] #4 Verified against the owner's actual mailbox that the previously-unmatched draft is now recognised, reported as a count rather than acted on — no deletion is required to close this
+- [x] #4 Verified against the owner's actual mailbox that the previously-unmatched draft is now recognised, reported as a count rather than acted on — no deletion is required to close this
 - [x] #5 Backend tests cover the dot-escaped match, the edited-draft non-match, and the id-preferred path continuing to bypass body matching entirely
 <!-- AC:END -->
 
@@ -66,8 +66,10 @@ The safety argument in TASK-114's notes is the thing to preserve, not the exact 
 2026-08-19: implemented in _normalized_body (one leading '.' stripped per line, RFC 5321 cited in the
 docstring; comparison stays exact). Five tests cover the dot-escaped match, per-line unstuffing, the
 owner-edited non-match, real-content non-match, and the id-preferred bypass; suite 766 passed.
-AC4 blocker: needs `DACHAPPLY_ALLOW_PROD_DB=1 uv run python manage.py purge_app_drafts` (dry run)
-against the real mailbox — prod-DB opt-in, owner's call.
+AC4 verified 2026-08-19 with the owner's approval: `DACHAPPLY_ALLOW_PROD_DB=1 uv run python
+manage.py purge_app_drafts` (dry run) now reports 2 drafts as the app's own — including
+r1827526902737800498, the "Senior Software Engineer ... zooplus" draft this task documented as
+unmatched by its leading dot. Reported as a count; nothing was deleted.
 
 `_normalized_body` (`mailbox.py`) is the one place to change. It already normalises line endings and
 trailing whitespace; unescaping a leading `.` per line is the same class of transport-artefact

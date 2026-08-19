@@ -41,11 +41,11 @@ scoped to exactly the case where the domain is known to be useless.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The named case matches: the 3 June "We received your application for a position at PIDSO" message attaches to job 36 again, verified against the real mailbox and not only by test
+- [x] #1 The named case matches: the 3 June "We received your application for a position at PIDSO" message attaches to job 36 again, verified against the real mailbox and not only by test
 - [x] #2 Display-name matching applies ONLY where the sender domain is a known ATS host (`is_ats_host`, TASK-137). A message from a company's own domain keeps matching by domain, unchanged — this is a fallback for the case TASK-137 deliberately blinded, not a second general matching rule
 - [x] #3 A display name that mentions no tracked company still matches nothing: the 138 recovered confirmations include companies never applied to, and inventing a match for them would recreate TASK-137's bug from the other direction
 - [x] #4 An ambiguous display name matches nothing rather than guessing: if two tracked jobs' companies both plausibly match one display name, the message stays unmatched and that is reported. State the comparison rule (normalisation, minimum length, substring vs token) explicitly — "Deltia AI (Almetra)" vs "Almetra" is a real pair in this data and shows why bare substring matching is not obviously safe
-- [ ] #5 Before/after counts recorded here against the real mailbox: how many of the currently-unmatched messages this attaches, and to which jobs. 138 application confirmations and 763 unmatched messages are the numbers this is measured against
+- [x] #5 Before/after counts recorded here against the real mailbox: how many of the currently-unmatched messages this attaches, and to which jobs. 138 application confirmations and 763 unmatched messages are the numbers this is measured against
 - [ ] #6 Spot-check the result rather than trusting the count: list the messages newly attached to at least three jobs and confirm by reading sender and subject that each really is that company's mail. TASK-137 exists because a plausible-looking match was wrong for 73 messages
 - [x] #7 TASK-137's guarantees are untouched: `join.zooplus.com` still matches job 37 by domain, no ATS host regains domain-matching, and the full backend suite passes with no test contacting a real mailbox
 <!-- AC:END -->
@@ -60,9 +60,16 @@ excludes it). Comparison rule (AC4, in the docstring): lowercase, strip ATS role
 kg, co), collapse punctuation, then require the job's FULL token set to be a subset of the display
 name's tokens; zero matches or two distinct matching companies attach nothing. 'Deltia AI (Almetra)'
 vs 'Almetra' is encoded as a test. 13 tests; suite 766 passed, hermetic.
-AC1/AC5/AC6 blocker: needs `DACHAPPLY_ALLOW_PROD_DB=1 uv run python manage.py
-rematch_ats_display_name_messages` (dry run; --yes to write) against the real mailbox — prod-DB
-opt-in, owner's call. The command reports per-job, per-message detail for the spot-check.
+AC1/AC3/AC5 verified 2026-08-19 with the owner's approval, dry run against the real mailbox:
+`rematch_ats_display_name_messages` attaches exactly 1 message — uid 697, "PIDSO - Propagation
+Ideas & Solutions GmbH Recruiting Team <no-reply@msg.join.com>", "We received your application for
+a position at PIDSO ..." -> job 36, the named AC1 case. Before/after (AC5): 836 currently-unmatched
+messages (763 at task-writing time; mail arrived since), of which this rule attaches 1, to job 36
+only; nothing is invented for the never-applied companies in the back-catalogue (AC3's real-data
+half). Sender and subject of the one attached message were read and confirmed as PIDSO's own mail.
+AC6 stays unchecked: its wording demands newly-attached mail across "at least three jobs", and the
+correct rule yields exactly one job — unsatisfiable as written; reworded via TASK-148 per TW-005
+rather than silently relaxed. `--yes` not run; the owner can apply the single attachment any time.
 
 `parseSenderHeader` already exists on the frontend (TASK-134) for splitting a From header into name
 and address; the backend has `_sender_domain`. The display name is the other half of that same header
