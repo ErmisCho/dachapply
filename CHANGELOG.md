@@ -8,6 +8,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A conversation is now the whole thread, and it has both sides. The app fetches your own sent mail
+  alongside what arrives, so a conversation shows what you wrote as well as what the company wrote,
+  laid out as an email thread you can read top to bottom instead of a pile of separate messages. One
+  conversation carries one draft and one decision, not one per message.
+- Calendar invitations and attachments are shown inside the conversation: what the meeting is, when
+  it starts and ends, where, and who organised it, plus each attachment's name, type and size.
+- Replies and reply-all can be written from the app and are saved into Gmail Drafts, addressed the
+  way the message you are answering implies — for a message you sent yourself, "reply" follows its
+  To, and reply-all adds its Cc.
+- How far back the app keeps mail is yours to set: a lookback window in months on the settings page,
+  six by default. Mail is only tracked for jobs still worth acting on, so a job you have closed out
+  stops generating suggestions and drafts rather than only hiding them.
+- The board opens in attention order — New first, then the rest in pipeline order with closed
+  statuses last — and a multi-column sort you choose is remembered between sessions.
+- A feedback-deadline pane on the dashboard: the jobs you are waiting to hear back on, overdue ones
+  first, each with a way to jump to the job, record that you followed up, or move the date.
 - A job's email history and its notes are visible where the decision is made: every message matched
   to that job with its classification, a link that opens the conversation in Gmail, and every note
   with its type, so a note the app wrote to record why a job moved is distinguishable from one you
@@ -67,6 +83,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The dashboard no longer freezes the machine it is opened on. The mailbox panel fetched a
+  conversation for every card on mount; it now fetches once for the panel. Measured on the same
+  board: the unmatched endpoint 13,006 ms to 785 ms, the panel 22,543 DOM nodes to 237, requests on
+  load 11 to 3, slowest request 10,479 ms to 1,084 ms.
+- Mail that never reached the inbox — filed, archived or auto-sorted away by a Gmail rule — is no
+  longer invisible to the app, and `manage.py backfill_historical_mail` brings in what was missed
+  before the widened fetch existed.
+- The chat bubbles no longer push the page sideways, and text inside a conversation can be selected
+  and copied again — the panel's drag-to-reorder was swallowing the selection.
 - One email now shows as one entry in Email decisions. Previously an email that proposed two changes
   was printed twice, in full, with two identical-looking buttons that did different things. Each
   proposal keeps its own accept/decline, and there is a single action to accept them all.
