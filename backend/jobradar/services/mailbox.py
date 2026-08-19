@@ -843,6 +843,24 @@ def _sender_domain(sender):
     return m.group(1).lower().strip('>') if m else ''
 
 
+def _sender_display_name(sender: str) -> str:
+    """The other half of the same From header _sender_domain reads above -- 'Name <addr>' -> 'Name',
+    a bare 'addr' with no display name -> ''. Mirrors the frontend's parseSenderHeader (appUtils.ts,
+    TASK-134 AC13) in Python: anchor on the LAST '<...>' pair (a quoted name earlier in the string
+    cannot legally contain an unescaped '<'/'>' of its own per RFC 5322) and strip one layer of
+    surrounding quotes from whatever precedes it. TASK-140: this is what feeds the ATS display-name
+    matching fallback below -- see _match_by_ats_display_name.
+    """
+    s = (sender or '').strip()
+    m = re.match(r'^(.*)<([^<>]*)>\s*$', s)
+    if not m:
+        return ''
+    name = m.group(1).strip()
+    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+        name = name[1:-1]
+    return name
+
+
 def _hit(lower_text, keywords):
     return any(k in lower_text for k in keywords)
 
@@ -991,10 +1009,13 @@ def owned_job_domains(owner):
     """{normalized sender domain: JobLead} for every job this owner is tracking with a URL, for
     domains that identify exactly ONE tracked job.
 
-    Company-name matching is deliberately not attempted: plenty of companies reply through an
-    ATS/agency domain (greenhouse.io, personio.de, ...) that has nothing to do with the company
+    Company-name matching is deliberately not attempted in general: plenty of companies reply through
+    an ATS/agency domain (greenhouse.io, personio.de, ...) that has nothing to do with the company
     name, so a name-substring match would be noisier than useful. Domain match is honest about that
     ceiling -- a company replying from a brand-new domain is 'uncertain', never silently dropped.
+    TASK-140 carves out exactly one narrow exception to this, scoped to where the domain is already
+    known to be useless (is_ats_host()) -- see _match_by_ats_display_name below and match_job's use
+    of it; this docstring's argument still holds for every domain that is NOT a known ATS host.
 
     TASK-137 AC1: a host more than one tracked job's URL resolves to identifies no single company --
     the previous version kept whichever job happened to be first in iteration order, so job 760's
@@ -1018,7 +1039,80 @@ def owned_job_domains(owner):
     return {domain: jobs[0] for domain, jobs in domain_jobs.items() if len(jobs) == 1}
 
 
-def match_job(raw: RawMessage, job_domains: dict):
+# TASK-140: legal-form suffixes and ATS-side role phrases stripped before tokenizing a company/display
+# name, so 'PIDSO - Propagation Ideas & Solutions GmbH' and the ATS-sent
+# 'PIDSO - Propagation Ideas & Solutions GmbH Recruiting Team' tokenize to the exact same set. Not
+# exhaustive by design -- these are the forms actually observed in this data (see the task file); a
+# legal form or role phrase missing from these sets just means that job's tokens keep it and the
+# subset check below is stricter than it needs to be, which is the safe direction to be wrong in.
+_COMPANY_LEGAL_FORM_WORDS = frozenset({'gmbh', 'ag', 'se', 'ltd', 'inc', 'llc', 'kg', 'co'})
+_ATS_ROLE_PHRASES = ('hiring team', 'recruiting team', 'talent team', 'careers', 'jobs', 'team')
+
+
+def _company_name_tokens(name: str) -> frozenset:
+    """Normalizes a company name OR a From display name into a token set for AC4's comparison rule:
+    lowercase; every ATS role phrase ('Hiring Team', 'Recruiting Team', 'Talent Team', 'Careers',
+    'Jobs', 'Team' -- longest first, so 'Hiring Team' is removed as one unit rather than leaving a
+    dangling 'Hiring' once a bare 'Team' rule already ate the word 'Team') stripped as a substring;
+    remaining punctuation (including parentheses -- 'Deltia AI (Almetra)' becomes three plain word
+    tokens, never treated as a bracketed alias) collapsed to whitespace; single-word legal forms
+    (GmbH/AG/SE/Ltd/Inc/LLC/KG) dropped as their own tokens.
+    """
+    lower = (name or '').lower()
+    for phrase in _ATS_ROLE_PHRASES:
+        lower = lower.replace(phrase, ' ')
+    normalized = re.sub(r'[^a-z0-9]+', ' ', lower)
+    return frozenset(t for t in normalized.split() if t and t not in _COMPANY_LEGAL_FORM_WORDS)
+
+
+def _match_by_ats_display_name(sender: str, owner) -> JobLead | None:
+    """TASK-140: the fallback for exactly the case TASK-137 deliberately blinded -- a message whose
+    sender domain is a known multi-tenant ATS (is_ats_host()) identifies no single company by domain
+    (owned_job_domains() excludes ATS hosts entirely), but the ATS puts the real client company into
+    the From DISPLAY NAME, a short, structured field the ATS itself populates with exactly one
+    company -- unlike the body or subject, which owned_job_domains' docstring already argues against
+    matching on because they are free text full of OTHER companies' names.
+
+    Comparison rule (AC4), written down because a wrong guess here silently attaches someone else's
+    mail to a job: normalize the display name and each of the owner's tracked jobs' `company` to a
+    token set (_company_name_tokens -- lowercase, ATS role phrases and legal-form suffixes stripped,
+    punctuation incl. parentheses collapsed to whitespace) and require the JOB'S FULL token set to be
+    a SUBSET of the display name's token set. Never a bare substring check: 'Almetra' (bare) must NOT
+    match a job tracked as 'Deltia AI (Almetra)', because {deltia, ai, almetra} is not a subset of
+    {almetra} -- a substring check (`'almetra' in 'deltia ai (almetra)'`) would wrongly match this
+    real pair (see the task file); the token-subset check does not, because the reverse direction
+    (display tokens must contain ALL of the company's tokens, not just overlap with some of them) is
+    exactly what a bare fragment can never satisfy.
+
+    Zero jobs whose full token set is a subset of the display name -> None (AC3: a display name
+    mentioning no tracked company matches nothing -- this is what keeps this from recreating TASK-137's
+    bug from the other direction). More than one DISTINCT company token set is a subset -> also None
+    (AC4: genuine ambiguity is reported as unmatched, never guessed); two tracked JobLead rows that
+    normalize to the identical token set -- the same company tracked twice -- are not ambiguous with
+    each other and collapse to one match.
+    """
+    display_name = _sender_display_name(sender)
+    display_tokens = _company_name_tokens(display_name)
+    if not display_tokens:
+        return None
+    matches: dict[frozenset, JobLead] = {}
+    for job in owned_jobs(owner).exclude(company=''):
+        company_tokens = _company_name_tokens(job.company)
+        if company_tokens and company_tokens.issubset(display_tokens):
+            matches.setdefault(company_tokens, job)
+    return next(iter(matches.values())) if len(matches) == 1 else None
+
+
+def match_job(raw: RawMessage, job_domains: dict, owner=None) -> JobLead | None:
+    """Domain match first (job_domains, from owned_job_domains() -- see its docstring for why general
+    company-name matching is not attempted). TASK-140: owned_job_domains() has already excluded every
+    ATS host from job_domains entirely, so an ATS-host sender can never reach a domain match below --
+    when the sender domain IS a known ATS host (is_ats_host()), the only thing left to try is the
+    narrower display-name fallback (_match_by_ats_display_name). `owner` is optional and only needed
+    for that fallback (it reads the owner's full tracked-job list, not just job_domains' one-company-
+    per-domain map); omitting it simply means the ATS fallback never runs, so every existing pure-
+    domain caller is unaffected.
+    """
     domain = _normalize_domain(_sender_domain(raw.sender))
     if not domain:
         return None
@@ -1027,6 +1121,8 @@ def match_job(raw: RawMessage, job_domains: dict):
     for known_domain, job in job_domains.items():
         if domain.endswith('.' + known_domain) or known_domain.endswith('.' + domain):
             return job
+    if owner is not None and is_ats_host(domain):
+        return _match_by_ats_display_name(raw.sender, owner)
     return None
 
 
@@ -1487,6 +1583,53 @@ def detach_ats_host_messages(dry_run: bool = True):
     return results
 
 
+# --- TASK-140 AC5: attach already-stored ATS-host mail to a job via the From display-name fallback -
+
+def rematch_ats_display_name_messages(dry_run: bool = True) -> list[dict]:
+    """One-time (also safely re-runnable) back-catalogue pass for TASK-140's display-name fallback:
+    every already-stored MailboxMessage with `matched_job` still NULL, whose sender domain is a known
+    multi-tenant ATS (is_ats_host()), is run through the exact same _match_by_ats_display_name() the
+    live matching path (match_job(), TASK-140) now uses -- no second rule. Rows created before this
+    task shipped never got the chance to match this way; running this after a live run has already
+    tried every new row live is harmless -- there is nothing left with a NULL matched_job for it to
+    find that live matching did not already look at.
+
+    Never touches a row that already carries a matched_job, whether match_job() set it live or the
+    owner set it by hand (attach_message_to_job) -- this only ever fills in a currently-empty match,
+    the same one-directional safety shape detach_ats_host_messages/detach_job_board_messages use in
+    reverse (clearing a wrong match instead of filling a missing one).
+
+    Deliberately does NOT call build_suggestions() -- these are historical messages, not mail a live
+    run just fetched, and generating suggestions (or, further downstream, a reply draft) for old
+    threads is exactly the "112 drafts to dead threads" incident class run_check()'s cold-start guard
+    and ingest_threads() both already exist to avoid, in a new shape. The owner can always attach-and-
+    generate by hand afterward via attach_message_to_job() for anything this newly matches.
+
+    Returns one dict per job at least one message newly attaches to:
+        {'job': JobLead, 'message_count': int, 'messages': [MailboxMessage, ...]}
+    `[]` when there is nothing to do (no owner configured, or nothing NULL-matched from an ATS host
+    display-names to a tracked company). dry_run=True (the default) matches and reports without
+    writing anything.
+    """
+    owner = _owner_user()
+    if owner is None:
+        return []
+    candidates = MailboxMessage.objects.filter(matched_job__isnull=True).exclude(sender='').order_by('uid')
+    by_job: dict = {}
+    for message in candidates:
+        if not is_ats_host(_normalize_domain(_sender_domain(message.sender))):
+            continue
+        job = _match_by_ats_display_name(message.sender, owner)
+        if job is not None:
+            by_job.setdefault(job, []).append(message)
+
+    if not dry_run:
+        for job, messages in by_job.items():
+            MailboxMessage.objects.filter(pk__in=[m.pk for m in messages]).update(matched_job=job)
+
+    return [{'job': job, 'message_count': len(messages), 'messages': messages} for job, messages in by_job.items()]
+
+
 # --- Reply drafting into Gmail Drafts (TASK-110) -------------------------------------------------
 #
 # The pattern, in order, every time: template or (env-gated) LLM generates draft text -> the
@@ -1914,10 +2057,22 @@ def gmail_conversation_url(message_id: str, authuser: str = '') -> str:
 # --- TASK-114 AC6: remove drafts this app already wrote ------------------------------------------
 
 def _normalized_body(text: str) -> str:
-    """Whitespace-only normalization, so a Gmail round-trip (CRLF, quoted-printable, trailing
-    newline) still compares equal to the text MailboxDraft recorded.
+    """Whitespace normalization (so a Gmail round-trip -- CRLF, quoted-printable, trailing newline --
+    still compares equal to the text MailboxDraft recorded) plus one more transport artefact that is
+    not whitespace: RFC 5321 SS 4.5.2 dot-stuffing. Any line beginning with '.' gets ONE extra '.'
+    prepended before SMTP DATA transmission, so it is never mistaken for the lone-dot line that ends
+    the DATA section; the raw-message read this app uses does not undo that on the way back in, so a
+    stored draft's line beginning with '.' comes back from Gmail with the escape still attached
+    (TASK-131 -- observed on the app's own draft body, first line only, but the rule is per-line
+    since any line could start with '.').
+
+    Removing exactly ONE leading '.' per line -- never more, and never a prefix/length/similarity
+    comparison -- undoes only that escape. The comparison this feeds into purge_app_drafts is still an
+    EXACT string match afterward, so TASK-114's safety property is unchanged: a hand-edited draft
+    still cannot collide with the stored text.
     """
-    return '\n'.join(line.rstrip() for line in (text or '').splitlines()).strip()
+    unstuffed = (line[1:] if line.startswith('.') else line for line in (text or '').splitlines())
+    return '\n'.join(line.rstrip() for line in unstuffed).strip()
 
 
 def purge_app_drafts(transport, dry_run: bool = True) -> list[tuple[str, str]]:
@@ -2498,7 +2653,7 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
                 if matched is None:
                     continue
             else:
-                matched = match_job(raw, job_domains)
+                matched = match_job(raw, job_domains, owner=owner)
             classification, interview_at, evaluator = classify_email(raw, domain_known=matched is not None)
             if is_gmail_api:
                 next_uid += 1
@@ -3081,7 +3236,7 @@ def backfill_historical_mail(dry_run: bool = True, limit: int | None = None, flo
             if run is None:
                 run = MailboxRun.objects.create(finished_at=timezone.now())
                 next_uid = (MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0) + 1
-            matched = match_job(raw, job_domains)
+            matched = match_job(raw, job_domains, owner=owner)
             classification, interview_at, evaluator = classify_email(raw, domain_known=matched is not None)
             message = MailboxMessage.objects.create(
                 run=run, uid=next_uid, gmail_id=raw.gmail_id, internal_date_ms=None,

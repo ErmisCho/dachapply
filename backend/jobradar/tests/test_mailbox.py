@@ -59,6 +59,7 @@ from jobradar.services.mailbox import (
     pending_mailbox_check_request,
     purge_app_drafts,
     queue_mailbox_check_request,
+    rematch_ats_display_name_messages,
     run_check,
     sanitize_inbound_text,
     seed_fake_run,
@@ -362,6 +363,100 @@ def test_owned_job_domains_and_match_job_still_match_a_companys_own_ats_subdomai
     assert 'join.com' not in domains
     assert domains['zooplus.com'] == zooplus
     matched = match_job(raw(1, sender='zooplus SE <notifications@join.zooplus.com>'), domains)
+    assert matched == zooplus
+
+
+# --- TASK-140: match ATS mail by the company name in the From display name ------------------------
+
+def test_match_job_matches_ats_sender_by_display_name_company(db, owner):
+    """AC1: the named case -- PIDSO's own application confirmation, relayed through JOIN, carries
+    PIDSO's full name plus JOIN's own 'Recruiting Team' suffix in the display name; job 36's tracked
+    company is the plain name with its own GmbH suffix. Both normalize to the same token set.
+    """
+    job = JobLead.objects.create(company='PIDSO - Propagation Ideas & Solutions GmbH', title='Python Engineer', url='https://join.com/companies/pidso/1', created_by=owner)
+    domains = owned_job_domains(owner)
+    sender = 'PIDSO - Propagation Ideas & Solutions GmbH Recruiting Team <notifications@msg.join.com>'
+    assert match_job(raw(1, sender=sender), domains, owner=owner) == job
+
+
+def test_match_job_ats_display_name_fallback_never_fires_without_owner(db, owner):
+    """`owner` is optional and defaults to None -- omitting it (every pre-TASK-140 caller) must not
+    attempt the display-name fallback at all, even for an ATS-host sender that WOULD otherwise match.
+    """
+    JobLead.objects.create(company='PIDSO - Propagation Ideas & Solutions GmbH', title='Python Engineer', url='https://join.com/companies/pidso/1', created_by=owner)
+    domains = owned_job_domains(owner)
+    sender = 'PIDSO - Propagation Ideas & Solutions GmbH Recruiting Team <notifications@msg.join.com>'
+    assert match_job(raw(1, sender=sender), domains) is None
+
+
+def test_match_job_ats_display_name_matches_nothing_for_an_untracked_company(db, owner):
+    """AC3: a display name that mentions no tracked company matches nothing -- inventing a match here
+    would recreate TASK-137's bug from the other direction (one company absorbing everyone else's mail).
+    """
+    JobLead.objects.create(company='PIDSO - Propagation Ideas & Solutions GmbH', title='Python Engineer', url='https://join.com/companies/pidso/1', created_by=owner)
+    domains = owned_job_domains(owner)
+    sender = 'Some Unrelated Company Hiring Team <no-reply@ashbyhq.com>'
+    assert match_job(raw(1, sender=sender), domains, owner=owner) is None
+
+
+def test_match_job_ats_display_name_does_not_bare_substring_match(db, owner):
+    """AC4's named trap, encoded directly: 'Almetra' (bare) must NOT match a job tracked as
+    'Deltia AI (Almetra)'. A bare substring check ('almetra' in 'deltia ai (almetra)') would wrongly
+    match this real pair; the token-subset rule requires the JOB'S FULL token set ({deltia, ai,
+    almetra}) inside the display name's tokens ({almetra}), which it is not, so it does not match.
+    """
+    JobLead.objects.create(company='Deltia AI (Almetra)', title='Backend Engineer', url='https://jobs.ashbyhq.com/almetra/1', created_by=owner)
+    domains = owned_job_domains(owner)
+    sender = 'Almetra <no-reply@ashbyhq.com>'
+    assert match_job(raw(1, sender=sender), domains, owner=owner) is None
+
+
+def test_match_job_ats_display_name_is_ambiguous_when_two_jobs_plausibly_match(db, owner):
+    """AC4: if two tracked jobs' companies both plausibly match one display name, the message stays
+    unmatched -- ambiguity is reported, never guessed. 'Acme' and 'Robotics' are two DIFFERENT tracked
+    companies, each fully contained in one display name's token set.
+    """
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://jobs.ashbyhq.com/acme/1', created_by=owner)
+    JobLead.objects.create(company='Robotics', title='Engineer', url='https://jobs.ashbyhq.com/robotics/1', created_by=owner)
+    domains = owned_job_domains(owner)
+    sender = 'Acme Robotics Recruiting Team <no-reply@ashbyhq.com>'
+    assert match_job(raw(1, sender=sender), domains, owner=owner) is None
+
+
+def test_match_job_ats_display_name_collapses_two_rows_for_the_same_company(db, owner):
+    """Two tracked JobLead rows for the identical company are not ambiguous with EACH OTHER (same
+    normalized token set) -- one of them is returned rather than the pair being treated as a conflict.
+    """
+    job_a = JobLead.objects.create(company='Acme', title='Backend Engineer', url='https://jobs.ashbyhq.com/acme-1/1', created_by=owner)
+    JobLead.objects.create(company='Acme', title='Frontend Engineer', url='https://jobs.ashbyhq.com/acme-2/1', created_by=owner)
+    domains = owned_job_domains(owner)
+    sender = 'Acme Hiring Team <no-reply@ashbyhq.com>'
+    matched = match_job(raw(1, sender=sender), domains, owner=owner)
+    assert matched is not None and matched.company == 'Acme'
+    assert matched.id in (job_a.id, JobLead.objects.exclude(id=job_a.id).first().id)
+
+
+def test_match_job_ats_host_never_regains_domain_matching_with_owner_passed(db, owner):
+    """AC7 (TASK-137's guarantees untouched): passing `owner` (enabling the display-name fallback)
+    must never let is_ats_host domain matching itself reawaken. Job 760's real shape -- its own listing
+    lives on jobs.ashbyhq.com -- receiving mail from an unrelated Ashby-hosted company whose display
+    name says nothing about Deltia AI/Almetra must still fail to match, exactly as before TASK-140.
+    """
+    JobLead.objects.create(company='Deltia AI (Almetra)', title='Backend Engineer', url='https://jobs.ashbyhq.com/almetra/1', created_by=owner)
+    domains = owned_job_domains(owner)
+    assert 'ashbyhq.com' not in domains
+    sender = 'Taktile Hiring Team <no-reply@ashbyhq.com>'
+    assert match_job(raw(1, sender=sender), domains, owner=owner) is None
+
+
+def test_match_job_ats_display_name_still_matches_join_zooplus_by_domain(db, owner):
+    """AC7: join.zooplus.com is zooplus's OWN application domain (TASK-137 AC3), not an ATS host --
+    it must still match by DOMAIN, unaffected by TASK-140's fallback existing at all, whether or not
+    `owner` is passed.
+    """
+    zooplus = JobLead.objects.create(company='zooplus', title='Senior Software Engineer', url='https://careers.zooplus.com/jobs/1', created_by=owner)
+    domains = owned_job_domains(owner)
+    matched = match_job(raw(1, sender='zooplus SE <notifications@join.zooplus.com>'), domains, owner=owner)
     assert matched == zooplus
 
 
@@ -2398,6 +2493,63 @@ def test_detach_ats_host_messages_finds_nothing_when_no_ats_sender_is_matched(db
     assert detach_ats_host_messages(dry_run=False) == []
 
 
+# --- TASK-140 AC5: back-catalogue rematch of already-stored ATS-host messages ----------------------
+
+def _pidso_job(owner):
+    return JobLead.objects.create(company='PIDSO - Propagation Ideas & Solutions GmbH', title='Python Engineer', url='https://join.com/companies/pidso/1', created_by=owner)
+
+
+def test_rematch_ats_display_name_messages_attaches_matching_unmatched_rows(db, owner):
+    job = _pidso_job(owner)
+    message = _ats_message(None, 1, sender='PIDSO - Propagation Ideas & Solutions GmbH Recruiting Team <notifications@msg.join.com>')
+
+    results = rematch_ats_display_name_messages(dry_run=False)
+
+    assert results == [{'job': job, 'message_count': 1, 'messages': [message]}]
+    message.refresh_from_db()
+    assert message.matched_job_id == job.id
+
+
+def test_rematch_ats_display_name_messages_leaves_an_already_matched_row_untouched(db, owner):
+    """Never overwrites an existing match, whether TASK-140 would set it or the owner already did
+    (attach_message_to_job) -- this only ever fills in a currently-empty match.
+    """
+    _pidso_job(owner)
+    other_job = JobLead.objects.create(company='Someone Else', title='Role', url='https://someone.test/1', created_by=owner)
+    message = _ats_message(other_job, 1, sender='PIDSO - Propagation Ideas & Solutions GmbH Recruiting Team <notifications@msg.join.com>')
+
+    assert rematch_ats_display_name_messages(dry_run=False) == []
+    message.refresh_from_db()
+    assert message.matched_job_id == other_job.id
+
+
+def test_rematch_ats_display_name_messages_dry_run_changes_nothing(db, owner):
+    job = _pidso_job(owner)
+    message = _ats_message(None, 1, sender='PIDSO - Propagation Ideas & Solutions GmbH Recruiting Team <notifications@msg.join.com>')
+
+    results = rematch_ats_display_name_messages()  # dry_run=True is the default
+
+    assert results == [{'job': job, 'message_count': 1, 'messages': [message]}]
+    message.refresh_from_db()
+    assert message.matched_job is None
+
+
+def test_rematch_ats_display_name_messages_ignores_non_ats_unmatched_senders(db, owner):
+    _pidso_job(owner)
+    _ats_message(None, 1, sender='newsletter@somewhere.test')
+    assert rematch_ats_display_name_messages(dry_run=False) == []
+
+
+def test_rematch_ats_display_name_messages_finds_nothing_with_no_owner_configured(db, settings):
+    """_owner_user() returns None when CODEX_CV_OWNER_EMAIL matches no user -- refuses rather than
+    guessing which mailbox's tracked jobs to compare against.
+    """
+    settings.CODEX_CV_OWNER_EMAIL = 'nobody@example.test'
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(run=run, uid=1, sender='PIDSO GmbH Recruiting Team <notifications@msg.join.com>', subject='x', matched_job=None)
+    assert rematch_ats_display_name_messages(dry_run=False) == []
+
+
 # --- TASK-130 AC2: clean up the pending suggestion duplicates already in production ----------------
 
 def _pending_suggestion(job, suggestion_type='feedback_clear', payload=None, uid=1):
@@ -2620,6 +2772,59 @@ def test_purge_does_not_body_match_a_draft_under_a_different_id_than_the_stored_
     _written_draft('shared wording', gmail_draft_id='d1')
     store = FakeDraftStore([('some-other-draft-id', 'Re: X', 'shared wording')])
     assert purge_app_drafts(store, dry_run=False) == []
+
+
+# --- TASK-131: _normalized_body undoes RFC 5321 dot-stuffing, exact match only otherwise -----------
+
+def test_purge_matches_its_own_draft_despite_leading_dot_stuffing(db, owner):
+    """AC1: the real observed shape -- a body identical to what this app wrote except that Gmail's
+    raw-message read hands back the line with its RFC 5321 dot-stuffing escape still attached.
+    """
+    _written_draft('Thank you for the update on my application for Senior Software Engineer.')
+    store = FakeDraftStore([('d1', 'Re: X', '.Thank you for the update on my application for Senior Software Engineer.')])
+    removed = purge_app_drafts(store, dry_run=False)
+    assert [draft_id for draft_id, _ in removed] == ['d1']
+
+
+def test_purge_unstuffs_every_line_not_only_the_first(db, owner):
+    """The notes flagged this as worth confirming: dot-stuffing is a per-line escape, so a line
+    starting with '.' further down the body must be undone too, not only a leading first line. Neither
+    stored line starts with '.'; the Gmail round-trip adds the escape to the THIRD line this time
+    (same artefact shape as the observed first-line case, just relocated), and it must still normalize
+    away -- an implementation that only special-cased text.startswith('.') would miss this.
+    """
+    _written_draft('Dear team,\nThank you.\nBest regards,\nowner@example.test')
+    store = FakeDraftStore([('d1', 'Re: X', 'Dear team,\nThank you.\n.Best regards,\nowner@example.test')])
+    removed = purge_app_drafts(store, dry_run=False)
+    assert [draft_id for draft_id, _ in removed] == ['d1']
+
+
+def test_purge_still_refuses_an_owner_edited_draft(db, owner):
+    """AC2: the safety property TASK-114 established is unchanged -- a draft the owner altered by
+    hand must not match, dot-stuffing fix or not.
+    """
+    _written_draft('Thank you for the update on my application for Senior Software Engineer.')
+    store = FakeDraftStore([('d1', 'Re: X', 'Actually, please withdraw my application.')])
+    assert purge_app_drafts(store, dry_run=False) == []
+
+
+def test_purge_does_not_match_content_differing_by_more_than_the_dot_escape(db, owner):
+    """AC3: the fix is specific to the escaping artefact, not a general loosening -- a body differing
+    by real content, however slightly, must still fail to match even with a leading dot present.
+    """
+    _written_draft('Thank you for the update on my application for Senior Software Engineer.')
+    store = FakeDraftStore([('d1', 'Re: X', '.Thank you for the update on my application for Senior Software Engineer!')])
+    assert purge_app_drafts(store, dry_run=False) == []
+
+
+def test_purge_id_preferred_path_bypasses_body_matching_even_with_dot_stuffing(db, owner):
+    """AC5: a stored gmail_draft_id still matches by id alone, never by body text -- true whether or
+    not the Gmail body carries a dot-stuffing escape.
+    """
+    _written_draft('.original body', gmail_draft_id='d1')
+    store = FakeDraftStore([('d1', 'Re: X', 'the owner edited this in Gmail by hand')])
+    removed = purge_app_drafts(store, dry_run=False)
+    assert [draft_id for draft_id, _ in removed] == ['d1']
 
 
 # ===================================================================================================
