@@ -8,6 +8,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Mail sent through a multi-tenant ATS (Ashby, JOIN, ...) is matched to the right job by the company
+  name in the sender's display name — the one place the ATS names its client — with ambiguity never
+  guessed, and a dry-run-by-default `manage.py rematch_ats_display_name_messages` for mail stored
+  before the rule existed.
 - A conversation is now the whole thread, and it has both sides. The app fetches your own sent mail
   alongside what arrives, so a conversation shows what you wrote as well as what the company wrote,
   laid out as an email thread you can read top to bottom instead of a pile of separate messages. One
@@ -83,6 +87,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The board renders each job once instead of twice. The desktop table and the mobile cards were both
+  fully present in the DOM at every screen size with CSS hiding one — 84% of the page was the same
+  jobs twice; now only the rendering that fits the screen is mounted, and selection and sort survive
+  crossing the breakpoint.
+- The board table scrolls sideways inside its own card again instead of stretching the whole page —
+  a leftover style override was cancelling the card's scroll behaviour on both axes.
+- `manage.py purge_app_drafts` recognises its own drafts again despite the leading dot mail
+  transport adds to some lines (RFC 5321 dot-stuffing); a draft you edited by hand still never
+  matches and is never deleted.
 - The dashboard no longer freezes the machine it is opened on. The mailbox panel fetched a
   conversation for every card on mount; it now fetches once for the panel. Measured on the same
   board: the unmatched endpoint 13,006 ms to 785 ms, the panel 22,543 DOM nodes to 237, requests on
