@@ -1,7 +1,7 @@
 ---
 id: TASK-136
 title: Mail that never reached the inbox is invisible to the app
-status: To Do
+status: In Progress
 assignee: []
 labels:
   - backend

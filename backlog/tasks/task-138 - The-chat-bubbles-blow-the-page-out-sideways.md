@@ -1,7 +1,7 @@
 ---
 id: TASK-138
 title: The chat bubbles blow the page out sideways
-status: To Do
+status: In Progress
 assignee: []
 labels:
   - frontend

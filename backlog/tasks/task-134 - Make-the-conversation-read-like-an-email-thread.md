@@ -1,7 +1,7 @@
 ---
 id: TASK-134
 title: Make the conversation read like an email thread
-status: To Do
+status: In Progress
 assignee: []
 labels:
   - frontend

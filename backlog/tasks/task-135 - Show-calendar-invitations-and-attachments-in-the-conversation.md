@@ -1,7 +1,7 @@
 ---
 id: TASK-135
 title: Show calendar invitations and attachments in the conversation
-status: To Do
+status: In Progress
 assignee: []
 labels:
   - backend

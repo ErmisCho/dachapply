@@ -1,7 +1,7 @@
 ---
 id: TASK-143
 title: Only track conversations for jobs still worth acting on
-status: To Do
+status: In Progress
 assignee: []
 labels:
   - backend

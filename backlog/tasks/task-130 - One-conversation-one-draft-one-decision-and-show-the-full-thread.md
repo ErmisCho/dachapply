@@ -1,7 +1,7 @@
 ---
 id: TASK-130
 title: One conversation, one draft, one decision, and show the full thread
-status: To Do
+status: In Progress
 assignee: []
 labels:
   - backend

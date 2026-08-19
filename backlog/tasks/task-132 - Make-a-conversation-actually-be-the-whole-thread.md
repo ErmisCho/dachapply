@@ -1,7 +1,7 @@
 ---
 id: TASK-132
 title: Make a conversation actually be the whole thread
-status: To Do
+status: In Progress
 assignee: []
 labels:
   - backend

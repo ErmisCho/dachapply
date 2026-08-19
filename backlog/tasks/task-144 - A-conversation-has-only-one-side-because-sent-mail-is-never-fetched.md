@@ -1,7 +1,7 @@
 ---
 id: TASK-144
 title: A conversation has only one side because sent mail is never fetched
-status: To Do
+status: In Progress
 assignee: []
 labels:
   - backend

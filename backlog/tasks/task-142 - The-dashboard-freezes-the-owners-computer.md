@@ -1,7 +1,7 @@
 ---
 id: TASK-142
 title: The dashboard freezes the owner's computer
-status: To Do
+status: In Progress
 assignee: []
 labels:
   - backend

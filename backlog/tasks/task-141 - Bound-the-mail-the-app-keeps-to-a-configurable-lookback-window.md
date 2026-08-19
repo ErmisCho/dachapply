@@ -1,7 +1,7 @@
 ---
 id: TASK-141
 title: Bound the mail the app keeps to a configurable lookback window
-status: To Do
+status: In Progress
 assignee: []
 labels:
   - backend

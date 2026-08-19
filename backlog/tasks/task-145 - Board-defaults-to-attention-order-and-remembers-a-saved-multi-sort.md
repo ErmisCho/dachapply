@@ -1,7 +1,7 @@
 ---
 id: TASK-145
 title: Board defaults to attention order and remembers a saved multi-sort
-status: To Do
+status: In Progress
 assignee: []
 labels:
   - backend
