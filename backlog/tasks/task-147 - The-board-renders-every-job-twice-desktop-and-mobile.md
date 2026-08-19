@@ -1,7 +1,7 @@
 ---
 id: TASK-147
 title: The board renders every job twice, desktop and mobile
-status: To Do
+status: In Progress
 assignee: []
 labels:
   - frontend
@@ -46,18 +46,32 @@ a page that was always like this.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Only one of the two row renderings is in the DOM at a time: measured at 360px, 430px and desktop, the count of `[data-job-row]` elements equals the number of visible rows, not twice it. 148 for 74 jobs is the number to beat
-- [ ] #2 Total board DOM nodes drop below 10,000 with the mailbox panel present — TASK-142's original target, which this task is what actually reaches. 14,389 is the number to beat
-- [ ] #3 The board still works at every breakpoint after the change: the desktop table and the mobile cards each render and are interactive at their own widths, verified by measurement at 360px, 430px and desktop rather than by reading the CSS
-- [ ] #4 Switching breakpoint does not lose state that the owner can see — selection, expanded rows, and the saved sort survive a resize across the breakpoint, since a conditionally-mounted tree unmounts on the way through
-- [ ] #5 `[data-job-row]` keeps working for TASK-146's click-through-to-a-job navigation, which currently depends on picking the visible copy of a duplicated row (`offsetParent !== null`). If there is only one copy, that selector gets simpler, not broken — verified by actually navigating from the feedback pane
-- [ ] #6 No new dependency: a virtualisation library is not the answer to a duplicate render, and the shortest fix is not to render the invisible half
-- [ ] #7 `npx tsc --noEmit` and `npm test` clean; the existing suite passes unchanged
+- [x] #1 Only one of the two row renderings is in the DOM at a time: measured at 360px, 430px and desktop, the count of `[data-job-row]` elements equals the number of visible rows, not twice it. 148 for 74 jobs is the number to beat
+- [x] #2 Total board DOM nodes drop below 10,000 with the mailbox panel present — TASK-142's original target, which this task is what actually reaches. 14,389 is the number to beat
+- [x] #3 The board still works at every breakpoint after the change: the desktop table and the mobile cards each render and are interactive at their own widths, verified by measurement at 360px, 430px and desktop rather than by reading the CSS
+- [x] #4 Switching breakpoint does not lose state that the owner can see — selection, expanded rows, and the saved sort survive a resize across the breakpoint, since a conditionally-mounted tree unmounts on the way through
+- [x] #5 `[data-job-row]` keeps working for TASK-146's click-through-to-a-job navigation, which currently depends on picking the visible copy of a duplicated row (`offsetParent !== null`). If there is only one copy, that selector gets simpler, not broken — verified by actually navigating from the feedback pane
+- [x] #6 No new dependency: a virtualisation library is not the answer to a duplicate render, and the shortest fix is not to render the invisible half
+- [x] #7 `npx tsc --noEmit` and `npm test` clean; the existing suite passes unchanged
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-19, measured in Chrome against the built bundle at localhost:8000: the board now mounts ONE
+tree via useMatchMedia('(min-width: 1024px)') — the real breakpoint is lg:/1024px, not the md: this
+file guessed. AC1: [data-job-row] count == job count at every width (88 table rows desktop, 88 cards
+at 360/430 under the all-status filter; 74/74 under the default filter; never 2x — status selects
+88+0, was 74+74). AC2: 6,300 total nodes on desktop with the EMAIL DECISIONS panel present, against
+a board that has since grown to 88 jobs (target <10,000, was 14,389 at 74 jobs); 9,864 at 360/430.
+AC3/AC4: switching 1275->427->1275 unmounts/remounts the right tree with row selection intact both
+ways and the card status select interactive. Caveat worth recording: Chrome does not deliver resize
+or matchMedia-change events inside same-page iframes (matches flips, zero events), so the hook also
+re-checks on window resize, and the iframe measurement drove that handler explicitly; toplevel
+windows deliver both events normally. AC5: feedback-pane click-through scrolled 0->7161, the single
+row copy centered (top 786 of 1634), data-scrolled-to set, selection applied. AC6: package.json
+untouched. AC7: tsc clean, 104 tests (was 100).
+
 The likely current shape is two sibling trees with `hidden md:table` / `md:hidden` style classes. The
 smallest honest fix is to mount one of them, driven by a matchMedia hook, rather than to render both
 and hide one — and AC4 exists because that change introduces an unmount that a CSS-only approach never
