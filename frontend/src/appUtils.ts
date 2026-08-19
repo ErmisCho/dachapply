@@ -25,7 +25,13 @@ export function useMatchMedia(query:string):boolean{
     const onChange=()=>setMatches(mql.matches)
     onChange()
     mql.addEventListener('change',onChange)
-    return ()=>mql.removeEventListener('change',onChange)
+    // Measured 2026-08-19: Chrome evaluates mql.matches correctly on a viewport change but does not
+    // deliver the 'change' event inside an iframe (matches flipped true->false on an iframe resize
+    // across 1024px, zero events fired). A plain resize listener re-reading mql.matches covers that
+    // delivery gap; in a toplevel window it is redundant and setMatches with an unchanged value is a
+    // no-op re-render-wise.
+    window.addEventListener('resize',onChange)
+    return ()=>{mql.removeEventListener('change',onChange);window.removeEventListener('resize',onChange)}
   },[query])
   return matches
 }
