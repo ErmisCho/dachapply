@@ -265,7 +265,14 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
 .job-table th,.job-table td{max-width:12rem;overflow-wrap:anywhere;word-break:break-word;white-space:normal;vertical-align:top}
 .job-table a,.job-table pre,.job-table div,.job-table span{overflow-wrap:anywhere;word-break:break-word;max-width:100%}
 @media (min-width: 1024px){
-  .premium-card.relative.z-0.overflow-x-auto.overflow-y-visible{overflow:visible!important}
+  /* TASK-139. Used to carry `.premium-card.relative.z-0.overflow-x-auto.overflow-y-visible
+     {overflow:visible!important}` here - a shorthand override that beat the Tailwind
+     `.overflow-x-auto` utility (higher specificity + !important) and forced BOTH axes to
+     `visible` on the board's table wrapper, which is why it stopped scrolling horizontally
+     (task-139's bug) while still not clipping row popups vertically (why it was added). Fixed at
+     the source in App.tsx instead: the wrapper is now two elements (outer overflow-y-visible only,
+     never clips; inner overflow-x-auto, scrolls the table) so nothing here needs to fight a single
+     div's overflow-x/overflow-y both being non-default at once. See the comment on that div. */
   .job-table{min-width:1280px;table-layout:auto!important}
   .job-table th,.job-table td{max-width:none}
   .job-table th:nth-child(1),.job-table td:nth-child(1){width:2.25rem}

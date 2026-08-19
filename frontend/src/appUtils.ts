@@ -3,6 +3,33 @@
 // App.tsx is the whole app - measured: exporting copyToClipboard from it turned every
 // edit into a full page reload ("Could not Fast Refresh ... export is incompatible").
 
+import {useEffect,useState} from 'react'
+
+// TASK-147. The board mounts exactly one of its two row renderings (desktop <table> / mobile
+// <article> list) instead of both at once CSS-hidden - this is what drives the choice. 1024px
+// matches Tailwind's `lg:` prefix, which is what job-table's own `hidden ... lg:table` /
+// `lg:hidden` split already used before this task - the mount decision has to agree with the CSS
+// breakpoint or a resize could show neither (or both) briefly.
+export const BOARD_DESKTOP_QUERY='(min-width: 1024px)'
+// The pure half of the decision, tested directly with plain numbers - no DOM/jsdom matchMedia
+// shim needed for this part.
+export function isDesktopWidth(widthPx:number,breakpointPx=1024):boolean{return widthPx>=breakpointPx}
+// The thin DOM-dependent wrapper: reads window.matchMedia(query).matches on mount and on every
+// change (a resize across the breakpoint), unsubscribing on unmount/query change. Returns false
+// outside a browser (e.g. this project's node-environment vitest run) rather than throwing.
+export function useMatchMedia(query:string):boolean{
+  const[matches,setMatches]=useState(()=>typeof window!=='undefined'&&typeof window.matchMedia==='function'?window.matchMedia(query).matches:false)
+  useEffect(()=>{
+    if(typeof window==='undefined'||typeof window.matchMedia!=='function')return
+    const mql=window.matchMedia(query)
+    const onChange=()=>setMatches(mql.matches)
+    onChange()
+    mql.addEventListener('change',onChange)
+    return ()=>mql.removeEventListener('change',onChange)
+  },[query])
+  return matches
+}
+
 export async function copyToClipboard(text:string){try{if(!navigator.clipboard)return false;await navigator.clipboard.writeText(text);return true}catch{return false}}
 
 // <input type="datetime-local"> speaks local "YYYY-MM-DDTHH:mm"; the API speaks ISO-8601 UTC.

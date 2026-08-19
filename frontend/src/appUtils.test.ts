@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,nextSortKeys,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,nextSortKeys,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -604,5 +604,33 @@ describe('senderTone/senderInitial (TASK-144)',()=>{
     expect(senderInitial('jane doe')).toBe('J')
     expect(senderInitial('')).toBe('?')
     expect(senderInitial('   ')).toBe('?')
+  })
+})
+
+// TASK-147. isDesktopWidth is the pure half of useMatchMedia's board-breakpoint decision (the DOM
+// half - window.matchMedia + its change listener - needs a real browser, not this suite). The
+// default breakpoint has to stay 1024px: that is the Tailwind `lg:` prefix job-table's own
+// `hidden ... lg:table` / `lg:hidden` split already used, and BOARD_DESKTOP_QUERY (what App.tsx
+// actually calls useMatchMedia with) has to agree with it, or the JS mount decision and the CSS
+// would disagree mid-resize.
+describe('isDesktopWidth (TASK-147)',()=>{
+  it('treats exactly the breakpoint width as desktop, matching a min-width media query',()=>{
+    expect(isDesktopWidth(1024)).toBe(true)
+    expect(isDesktopWidth(1023)).toBe(false)
+  })
+
+  it('handles a narrow phone and a wide desktop viewport',()=>{
+    expect(isDesktopWidth(360)).toBe(false)
+    expect(isDesktopWidth(430)).toBe(false)
+    expect(isDesktopWidth(1280)).toBe(true)
+  })
+
+  it('honours a custom breakpoint instead of hardcoding 1024', ()=>{
+    expect(isDesktopWidth(800,768)).toBe(true)
+    expect(isDesktopWidth(767,768)).toBe(false)
+  })
+
+  it('ships the same 1024px breakpoint the CSS lg: prefix uses', ()=>{
+    expect(BOARD_DESKTOP_QUERY).toBe('(min-width: 1024px)')
   })
 })
