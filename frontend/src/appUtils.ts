@@ -98,6 +98,101 @@ const submitErrorsDe:[RegExp,string][]=[
 // never inside the text the way DRF's own default phrasing puts it.
 export function germanSubmitError(text:string,waitSeconds?:number|null){const t=String(text||'').trim();for(const[pattern,german] of submitErrorsDe){const m=t.match(pattern);if(m){const s=m[1]||(typeof waitSeconds==='number'&&waitSeconds>0?String(Math.ceil(waitSeconds)):'');return s?german.replace('Bitte versuche es später erneut.','Bitte versuche es in {s} Sekunden erneut.').replace('{s}',s):german.replace('{s}','')}}return 'Das Einreichen hat nicht geklappt. Bitte versuche es erneut.'}
 
+// TASK-134 AC2/AC3. 44 of 598 stored mailbox bodies contain raw HTML entities (measured) - e.g.
+// "the&nbsp;Senior Software Engineer" - because the source was an HTML email read as plain text.
+// This decodes the entity SHAPE ("&name;" / "&#NNN;" / "&#xHEX;") to the character it stands for and
+// nothing else - it is not an HTML parser, so a literal "<script>" or "<b>" (no "&...;" anywhere in
+// it) passes straight through untouched as visible text (AC3). That is what makes it safe to use on
+// mail from a stranger: the deliberately-NOT-supported alternative, `el.innerHTML=raw` then reading
+// `.textContent`, would parse and silently strip "<b>bold</b>" down to "bold" instead of showing it
+// literally, and needs `document` (fails outside a browser, e.g. this project's node-environment
+// vitest run) - a plain regex needs neither. Callers must render the result as a React text child
+// (the default - never dangerouslySetInnerHTML), which escapes it again on the way to the DOM.
+const ASCII_SPACE=String.fromCharCode(32)
+const namedHtmlEntities:Record<string,string>={
+  nbsp:ASCII_SPACE,amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",
+  mdash:'—',ndash:'–',hellip:'…',
+  lsquo:'‘',rsquo:'’',ldquo:'“',rdquo:'”',
+  copy:'©',reg:'®',trade:'™',euro:'€',
+  eacute:'é',egrave:'è',ecirc:'ê',uuml:'ü',ouml:'ö',auml:'ä',szlig:'ß',
+}
+export function decodeHtmlEntities(text:string|null|undefined):string{
+  return String(text||'').replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi,(match,body)=>{
+    if(body[0]==='#'){
+      const codePoint=body[1]==='x'||body[1]==='X'?parseInt(body.slice(2),16):parseInt(body.slice(1),10)
+      return Number.isFinite(codePoint)?String.fromCodePoint(codePoint):match
+    }
+    const decoded=namedHtmlEntities[body.toLowerCase()]
+    return decoded===undefined?match:decoded
+  })
+}
+
+// TASK-134 AC13. `sender` is the raw From header (services/mailbox.py: `parsed.get('From', '')`),
+// which shows up in three shapes on real mail: `Name <addr>`, a bare `addr` with no display name at
+// all, and `"Quoted, Name" <addr>` where a quoted name can itself contain commas or angle brackets.
+// The regex anchors on the LAST `<...>` pair at the end of the string as the address (a quoted name
+// earlier in the string is never allowed to contain an unescaped `<`/`>` of its own per RFC 5322, so
+// this cannot be fooled by one) and treats everything before it as the name, stripping one layer of
+// surrounding quotes. No trailing `<...>` at all -> the whole trimmed string is the address and there
+// is no display name. Pure and decode-free on purpose: callers already run every stranger-supplied
+// string through decodeHtmlEntities (this file) before rendering it as text, same as subject/body.
+export type ParsedSender={name:string;address:string}
+export function parseSenderHeader(raw:string|null|undefined):ParsedSender{
+  const s=String(raw||'').trim()
+  if(!s)return {name:'',address:''}
+  const m=s.match(/^(.*)<([^<>]*)>\s*$/)
+  if(!m)return {name:'',address:s}
+  const address=m[2].trim()
+  let name=m[1].trim()
+  if(name.length>=2&&name.startsWith('"')&&name.endsWith('"'))name=name.slice(1,-1)
+  return {name,address}
+}
+
+// TASK-134 AC9/AC14. A thread reads top-to-bottom oldest-to-newest, chat style. The API
+// (`GET /jobs/{id}/mailbox/`) deliberately keeps returning newest-first with nulls LAST (other
+// consumers - the board popup, the pending-decision card, the latest-run digest - rely on that
+// order, so the reversal for display belongs here, not on the endpoint). Blindly `.reverse()`-ing
+// that array would put the null-received_at messages (forced to the end regardless of their real
+// date) at the very TOP, mislabelling an undated message as the one that started the conversation.
+// Dated messages get reversed into true chronological order; a message with no known date has no
+// known chronological position, so it stays at the END (closest to "now") rather than jumping to the
+// START - the less misleading of the two guesses, and it keeps index 0 meaning "earliest known".
+export function chronologicalMessages<T extends {received_at:string|null}>(newestFirst:T[]):T[]{
+  const dated=newestFirst.filter(m=>m.received_at)
+  const undated=newestFirst.filter(m=>!m.received_at)
+  return [...dated].reverse().concat(undated)
+}
+
+// TASK-135 AC2: fixed to Europe/Vienna - the SAME clock the settings page already documents for
+// quiet hours ("Interpreted in Europe/Vienna time (the server's own clock)") - rather than the
+// browser's local timezone, and the name is always appended to the output because an unnamed local
+// time is exactly the "an hour out" trap this AC exists to avoid. `calendar_end` is optional (an
+// invitation can lack DTEND); when present and on the same Vienna calendar day as the start, only
+// its time is shown to keep a same-day meeting on one line.
+export function mailboxCalendarWhen(start:string|null|undefined,end:string|null|undefined):string{
+  if(!start)return ''
+  const s=new Date(start)
+  if(Number.isNaN(s.getTime()))return ''
+  const dtOpts:Intl.DateTimeFormatOptions={timeZone:'Europe/Vienna',dateStyle:'medium',timeStyle:'short'}
+  const startLabel=s.toLocaleString('en-GB',dtOpts)
+  const e=end?new Date(end):null
+  if(!e||Number.isNaN(e.getTime()))return `${startLabel} (Europe/Vienna)`
+  const dateOpts:Intl.DateTimeFormatOptions={timeZone:'Europe/Vienna'}
+  const sameDay=s.toLocaleDateString('en-GB',dateOpts)===e.toLocaleDateString('en-GB',dateOpts)
+  const endLabel=sameDay?e.toLocaleTimeString('en-GB',{timeZone:'Europe/Vienna',hour:'2-digit',minute:'2-digit'}):e.toLocaleString('en-GB',dtOpts)
+  return `${startLabel}–${endLabel} (Europe/Vienna)`
+}
+
+// TASK-135 AC3: metadata-only attachment size (bytes, from services.mailbox - see MailboxMessage's
+// docstring for why there is no file content behind it) formatted the way a file manager would.
+export function mailboxAttachmentSize(bytes:number|null|undefined):string{
+  if(!bytes||bytes<=0)return '0 B'
+  const units=['B','KB','MB','GB']
+  let n=bytes,i=0
+  while(n>=1024&&i<units.length-1){n/=1024;i++}
+  return `${i===0?n:n.toFixed(1)} ${units[i]}`
+}
+
 // TASK-108. Pure cycle for the board's sortable column headers: unsorted -> ascending ->
 // descending -> unsorted, appending a newly-activated column as the lowest-precedence key rather
 // than replacing what is already sorted (that append-not-replace behaviour is the one thing worth
@@ -114,6 +209,16 @@ export function nextSortKeys(current:SortKey[],key:string,max=3):SortKey[]{
   return next
 }
 export function sortOrderingString(keys:SortKey[]):string{return keys.map(k=>(k.dir==='desc'?'-':'')+k.key).join(',')}
+// TASK-145 AC6/AC9. Inverse of sortOrderingString: turns the wire string ("status,-fit_score") back
+// into SortKey[]. This is what lets the board's header arrows be DERIVED from `f.ordering` instead of
+// tracked in a second `useState` that can drift from it - today's bug is exactly that drift (sortKeys
+// resets to [] on reload while f.ordering survives via localStorage, so the two disagree). Extra keys
+// beyond `max` are dropped, the same 3-key cap nextSortKeys already enforces when building the string,
+// so a saved value with more keys (e.g. tampered or from an older cap) is truncated rather than honoured.
+export function parseSortKeys(ordering?:string|null,max=3):SortKey[]{
+  const keys=String(ordering||'').split(',').map(s=>s.trim()).filter(Boolean).map(k=>k.startsWith('-')?{key:k.slice(1),dir:'desc' as const}:{key:k,dir:'asc' as const})
+  return keys.slice(0,max)
+}
 
 // TASK-117 AC3. The dashboard's saved panel order puts known ids first and appends anything the
 // saved list does not know about at the END - so a panel id added after a user already has a saved
@@ -166,6 +271,28 @@ export function groupSuggestionsByConversation<S>(suggestions:S[],keyOf:(s:S)=>n
   return groups
 }
 
+// TASK-130 AC6/AC7. build_suggestions (backend) got a "does a pending one already exist for this
+// (job, type)" guard so it stops CREATING duplicates - but the conversation card still has to cope
+// with whatever is already in the database (the pre-cleanup rows AC2 removes) or any edge case that
+// slips past that guard, so the display side gets the same dedupe as a safety net: every pending
+// suggestion in a conversation with the same suggestion_type AND payload collapses into ONE group,
+// keyed on that pair (not on message, which is the whole point - three messages, one control).
+// AC7: this only groups for DISPLAY. Confirming/dismissing a group is the caller's job (not this
+// function's) - it must still fire one confirm/dismiss call per suggestion id in the group, never a
+// single batched call, so a partial failure never silently leaves some rows pending.
+export type MailboxSuggestionDedupGroup<S extends {suggestion_type:string;payload:Record<string,any>}>={key:string;suggestions:S[]}
+export function dedupeMailboxSuggestions<S extends {suggestion_type:string;payload:Record<string,any>}>(suggestions:S[]):MailboxSuggestionDedupGroup<S>[]{
+  const groups:MailboxSuggestionDedupGroup<S>[]=[]
+  const byKey=new Map<string,MailboxSuggestionDedupGroup<S>>()
+  for(const s of suggestions){
+    const key=s.suggestion_type+'|'+JSON.stringify(s.payload||{})
+    let group=byKey.get(key)
+    if(!group){group={key,suggestions:[]};byKey.set(key,group);groups.push(group)}
+    group.suggestions.push(s)
+  }
+  return groups
+}
+
 // TASK-123. The board's note button must only ever load/edit/delete a note it created itself - a
 // `general` note - never adopt a note of a different type (e.g. the `recruiter_message` audit note
 // apply_suggestion has written on every confirmed email suggestion since TASK-117) just because it
@@ -194,6 +321,44 @@ export function mailboxIndicatorState(hasPendingSuggestion:boolean,hasMailboxHis
 const routeTitles:Record<string,string>={'/':'Board','/add':'Add job','/public-submit':submitDe.title,'/prompts':'Prompts','/import':'Import','/followups':'Follow-ups','/export':'Export','/bookmarklet':'Bookmarklet','/practice':'Practice','/mailbox':'Mailbox','/login':'Sign in','/onboarding':'Setup','/privacy':'Privacy','/terms':'Terms','/settings/profile':'Profile settings','/settings/account':'Account settings'};
 export function pathTitle(pathname:string){return routeTitles[pathname]||(pathname.startsWith('/jobs/')?'Job':pathname.startsWith('/reset-password/')?'Reset password':pathname.startsWith('/verify-email/')?'Confirm email':'')}
 
+// TASK-143 AC1 (frontend mirror). JobLead.STATUSES (backend) splits into "still worth acting on"
+// and not; this is the single frontend copy of that split - the Dashboard panel and the /mailbox
+// page both import it rather than re-typing the list, so it can only be wrong in one place. Mirrors
+// the backend's own actionable-status constant (models.py); if that ever changes, this drifts until
+// someone updates it too, same as every other cross-language constant in this app (see
+// board_thresholds for the pattern of shipping such a value from the server instead, not done here
+// because this list is small and rarely-changing enough that TASK-143 chose not to wire a new field
+// for it - see that task for the reasoning).
+export const mailboxActionableJobStatuses=['new','reviewed','to_apply','applied','interview','offer','accepted']
+// TASK-143 AC1: the list has one home, JobLead.ACTIONABLE_STATUSES, and reaches the client through
+// /api/auth/me/'s board_thresholds like unapplied_statuses already does. `known` is that shipped
+// list; the export above stays only as the pre-auth fallback the threshold merge needs, never as a
+// second source of truth to drift from.
+export function isActionableJobStatus(status?:string|null,known:string[]=mailboxActionableJobStatuses):boolean{return known.includes(status||'')}
+
+// TASK-144. Nine of the twelve busiest conversations have zero owner-sent messages (see that task),
+// so the left/right alignment carries no information for them - everything is on the left. The
+// sender name text already disambiguates who wrote a given message; this adds a cheap, purely visual
+// second cue (a colored initial, Badge's own six tones, never a new color) so a column of same-side
+// bubbles from different correspondents (a recruiter, then an ATS no-reply, then a hiring manager)
+// still reads as more than one voice. Deterministic per address so it never flickers between renders
+// or reloads. 'blue' is reserved for the owner (matches their own bubble color) and 'slate' for a
+// blank/unknown sender; only four tones are hashed across everyone else, so an occasional collision
+// between two strangers is possible and harmless - it is a legibility aid, not an identity system.
+const senderToneOrder=['green','purple','yellow','red'] as const
+export function senderTone(senderKey:string,isOwner:boolean):string{
+  if(isOwner)return 'blue'
+  const key=(senderKey||'').trim().toLowerCase()
+  if(!key)return 'slate'
+  let hash=0
+  for(let i=0;i<key.length;i++)hash=(hash*31+key.charCodeAt(i))|0
+  return senderToneOrder[Math.abs(hash)%senderToneOrder.length]
+}
+export function senderInitial(displayName:string):string{
+  const t=(displayName||'').trim()
+  return t?t[0].toUpperCase():'?'
+}
+
 // TASK-124 AC7/AC8. The one place estimate wording is decided, so a UI change can never silently
 // invent a countdown that goes negative or keep counting down past the estimate.
 // `takingLonger` is /api/mailbox-runs/status/'s own `taking_longer_than_usual` -- computed
@@ -220,9 +385,27 @@ export function mailboxEstimateWording(elapsedSeconds:number|null,estimatedSecon
 // via the (desktop-only) headers and then narrowing the viewport can leave `f.ordering` on a
 // combination no preset spells out. This reads the same comma-separated `-key` wire string TASK-108
 // both writes and sends as `ordering`, so what is on screen cannot drift from what the request says.
-const orderingKeyLabels:Record<string,string>={status:'Status',fit_score:'Fit score',priority:'Priority',created_at:'Newest',applied_at:'Applied date',updated_at:'Last update',feedback_due_date:'Feedback due'}
+// Exported (not just used by describeOrdering below) so TASK-145 AC5's settings-menu sort editor can
+// build its own column buttons from this SAME key/label map instead of retyping the list a third time
+// (the board's own <select> options are the second, already-existing, copy).
+export const orderingKeyLabels:Record<string,string>={status:'Status',fit_score:'Fit score',priority:'Priority',created_at:'Newest',applied_at:'Applied date',updated_at:'Last update',feedback_due_date:'Feedback due'}
 export function describeOrdering(ordering?:string|null):string{
   const keys=String(ordering||'').split(',').map(s=>s.trim()).filter(Boolean)
   if(!keys.length)return 'Sorted by: recommended'
   return 'Sorted by: '+keys.map(k=>{const desc=k.startsWith('-');const key=desc?k.slice(1):k;return (orderingKeyLabels[key]||key)+(desc?' (desc)':'')}).join(', then ')
+}
+
+// TASK-146 AC1/AC2/AC3. Splits GET /jobs/feedback-due/'s rows into overdue (< today) and
+// today-or-later, in the two groups the pane renders - a pure function so the grouping has a test
+// independent of any browser measurement. Deliberately does NOT trust whatever marker key the backend
+// sends to distinguish the two (the exact field name is not nailed down in the contract) - comparing
+// feedback_due_date to todayIso is unambiguous and needs no coordination with the backend's naming.
+// Relative order within each group is preserved as returned (the endpoint is already sorted
+// overdue-group-first then soonest-first), so a job 23 days overdue never gets re-sorted as if it were
+// due soonest just because this function ran. `includeOverdue=false` (AC3's toggle) drops the group
+// entirely rather than only hiding it visually, so turning it off really means zero overdue rows shown.
+export function groupFeedbackDueRows<T extends {feedback_due_date:string}>(rows:T[],todayIso:string,includeOverdue=true):{overdue:T[];upcoming:T[]}{
+  const overdue=includeOverdue?rows.filter(r=>r.feedback_due_date<todayIso):[]
+  const upcoming=rows.filter(r=>r.feedback_due_date>=todayIso)
+  return {overdue,upcoming}
 }

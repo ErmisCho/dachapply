@@ -3,6 +3,12 @@ export type Evaluation={id:number;job:number;fit_score:number;priority:'high'|'m
 // undefined on a job fetched from /api/jobs/<id>/ (JobLeadSerializer, no such field on the wire).
 export type Job={id:number;company:string;title:string;location:string;url:string;source:string;raw_description:string;original_source_text?:string;submitted_by:string;submitter_reason:string;salary_info:string;language_requirements:string;work_mode:string;status:string;status_date?:string|null;interview_stage?:number|null;interview_total?:number|null;interview_at?:string|null;interview_note?:string;apply_by?:string|null;last_update_date?:string|null;feedback_due_date?:string|null;created_by_username?:string;created_by_email?:string;submitted_for_username?:string;submitted_for_email?:string;created_at:string;updated_at?:string;latest_evaluation?:Evaluation|null;has_mailbox_history?:boolean}
 export type FollowUp={id:number;job:number;company:string;title:string;follow_up_date:string;reason:string;completed:boolean}
+// TASK-146. GET /api/jobs/feedback-due/'s row shape - already sorted overdue-group-first then
+// soonest-first by the server. The exact key the backend uses to mark a row overdue-vs-upcoming is
+// deliberately not modeled here: the client recomputes that itself from feedback_due_date vs today
+// (groupFeedbackDueRows in appUtils.ts), so it never has to agree on a field name with the backend.
+// `[key:string]:any` absorbs whatever extra field the backend does send for that marker.
+export type FeedbackDueRow={id:number;company:string;title:string;status:string;feedback_due_date:string;[key:string]:any}
 // /api/stats/ funnel + source rows. Rates are number|null on purpose: null is "no denominator yet",
 // which must never render as 0% ("you convert nothing"). `offers` here is *reached* offer over the
 // application cohort - a different measure from the flat stats.offers, which is *currently* in offer.
@@ -14,7 +20,15 @@ export type Stats={funnel?:Funnel;source_effectiveness?:SourceEffectiveness[];[k
 // see the model comment on UserProfile.mailbox_check_cadence_minutes for why). The window fields are
 // "HH:MM:SS" strings (DRF TimeField's default representation) interpreted in settings.TIME_ZONE,
 // Europe/Vienna - see services.mailbox.is_within_check_window. Equal start/end means no restriction.
-export type CandidateProfile={candidate_profile:string;candidate_evidence:string;target_roles:string;preferred_locations:string;salary_expectations:string;language_levels:string;preferred_stack:string;red_flags:string;selling_points:string;learned_application_preferences:string;follow_up_digest_enabled:boolean;mailbox_check_cadence_minutes:number;mailbox_check_calendar_aware:boolean;mailbox_check_enabled:boolean;mailbox_check_window_start:string;mailbox_check_window_end:string;mailbox_salary_floor_eur:number;mailbox_do_not_disclose:string;mailbox_calendar_ics_urls:string;evaluation_prompt_template:string;combined_prompt_template:string;enrichment_prompt_template:string;bulk_links_prompt_template:string}
+// TASK-141 AC1/AC3: mailbox_lookback_months bounds how far back fetch_new/backfill_historical_mail
+// reach (default 6, the owner's own number) - same UserProfile family as the fields above, and the
+// same "0 is rejected, not unlimited" idiom as mailbox_check_cadence_minutes (see that field's own
+// comment) rather than the 0-means-unset idiom used elsewhere, because an unbounded lookback is the
+// one outcome AC3 forbids by accident.
+// TASK-145 AC4/AC5: board_sort_keys is UserProfile's saved multi-sort, wire-compatible with the board's
+// own `?ordering=` string (e.g. "status,-fit_score") - the owner chose this over localStorage so the
+// same sort follows the account across devices. '' means "no saved sort, use the server default".
+export type CandidateProfile={candidate_profile:string;candidate_evidence:string;target_roles:string;preferred_locations:string;salary_expectations:string;language_levels:string;preferred_stack:string;red_flags:string;selling_points:string;learned_application_preferences:string;follow_up_digest_enabled:boolean;mailbox_check_cadence_minutes:number;mailbox_check_calendar_aware:boolean;mailbox_check_enabled:boolean;mailbox_check_window_start:string;mailbox_check_window_end:string;mailbox_salary_floor_eur:number;mailbox_lookback_months:number;mailbox_do_not_disclose:string;mailbox_calendar_ics_urls:string;board_sort_keys:string;evaluation_prompt_template:string;combined_prompt_template:string;enrichment_prompt_template:string;bulk_links_prompt_template:string}
 export type InviteCode={id:number;code:string;label:string;active:boolean;expires_at:string|null;created_at:string}
 export type PracticeSession={id:number;job:number|null;job_company:string;job_title:string;question:string;answer_text:string;language:'de'|'en';clarity_score:number;structure_score:number;confidence_score:number;overall_score:number;feedback:string[];stronger_answer:string;evaluator:string;model:string|null;fallback_used:boolean;created_at:string}
 // TASK-109: mailbox check ingest + review. classification is a MailboxMessage.CLASSIFICATIONS key.
@@ -35,7 +49,16 @@ export type MailboxDraft={id:number;status:'written'|'blocked';block_reason:stri
 // TASK-121 AC2/AC4: thread_id is the inbound Gmail thread id (a different id from a draft's own
 // gmail_thread_id above). gmail_url is null when this message's RFC822 Message-ID is not usable -
 // render no link at all in that case, never a link that 404s into an empty Gmail search.
-export type MailboxMessage={id:number;sender:string;subject:string;body_text:string;received_at:string|null;classification:string;matched_job:number|null;matched_job_company:string;matched_job_title:string;draft:MailboxDraft|null;thread_id:string;gmail_url:string|null;created_at:string}
+// TASK-132/TASK-134 AC4: sent_by_owner is a STORED flag (MailboxMessageSerializer, never a
+// From-address comparison at render time) distinguishing the owner's own sent mail from what they
+// received - the one thing that makes a message list read as an exchange rather than a flat log.
+// TASK-135: MailboxMessage's own docstring is the source of truth. calendar_summary/location/
+// organizer/start/end are the what/where/with-whom/when of the FIRST iCalendar VEVENT found in a
+// text/calendar MIME part - blank string / null on every message with no invitation. attachments is
+// METADATA ONLY (filename, mime_type, size) for every OTHER MIME part carrying a filename - no file
+// content is ever stored or served, "Reply in Gmail" remains the only route to the actual file.
+export type MailboxAttachment={filename:string;mime_type:string;size:number}
+export type MailboxMessage={id:number;sender:string;subject:string;body_text:string;received_at:string|null;classification:string;matched_job:number|null;matched_job_company:string;matched_job_title:string;draft:MailboxDraft|null;thread_id:string;gmail_url:string|null;sent_by_owner:boolean;created_at:string;calendar_summary:string;calendar_location:string;calendar_organizer:string;calendar_start:string|null;calendar_end:string|null;attachments:MailboxAttachment[]}
 export type MailboxSuggestion={id:number;message:MailboxMessage;job:number;job_company:string;job_title:string;suggestion_type:'status_change'|'interview_date'|'feedback_clear';payload:Record<string,any>;status:'pending'|'confirmed'|'dismissed';created_at:string;decided_at:string|null}
 // TASK-117 AC2/AC6: GET /api/jobs/{id}/mailbox/ and POST /api/mailbox-messages/{id}/attach/ both
 // answer with this shape (MailboxMessageWithSuggestionsSerializer) - each suggestion nested here is

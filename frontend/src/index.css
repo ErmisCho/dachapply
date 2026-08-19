@@ -28,6 +28,15 @@ button{@apply rounded-lg px-3 py-2 bg-slate-900 text-white disabled:opacity-50 t
 .btn-muted{@apply inline-flex items-center gap-1 rounded-full border border-transparent bg-slate-100/70 px-3 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-200/80 hover:text-slate-800}
 .dark .btn{@apply border-slate-700 bg-slate-900/70 text-slate-200 hover:bg-slate-800}.dark .btn-primary{@apply border-blue-500/40 bg-blue-500/20 text-blue-100 hover:bg-blue-500/30}.dark .btn-danger{@apply border-red-500/30 bg-red-500/10 text-red-200 hover:bg-red-500/20}.dark .btn-muted{@apply bg-slate-800 text-slate-300 hover:bg-slate-700}
 .premium-card{@apply rounded-2xl border border-white/60 bg-white/75 shadow-xl shadow-slate-200/60 backdrop-blur-xl}.dark .premium-card{@apply border-slate-700/60 bg-slate-900/65 shadow-black/30}
+/* TASK-134 AC1. DashboardPanel (App.tsx) wraps every panel - including the "Email decisions" panel's
+   mailbox conversation cards - in `draggable` for panel reordering. In Chrome/Safari a draggable
+   ancestor hijacks a click-drag that starts on its text into a native element drag instead of a text
+   selection, which is exactly "an ancestor blocking selection" even though it is not select-none.
+   Opting the conversation card itself out as a drag SOURCE (it can still be reordered by dragging the
+   panel's own chrome elsewhere) restores normal text selection/copy inside it without touching
+   DashboardPanel's drag behaviour for the other four panel types. Firefox does not read
+   -webkit-user-drag and does not have this bug, so this is a no-op there rather than a fix needed. */
+.mailbox-selectable{-webkit-user-drag:none}
 .dashboard-panel-small{min-height:4.65rem}
 .dashboard-panel-wide>.premium-card{height:100%;box-shadow:none!important}
 .dashboard-panel-wide .premium-card{padding:.875rem!important}

@@ -12,10 +12,12 @@ import threading
 import time
 from datetime import datetime, time as dt_time, timedelta
 from email.message import EmailMessage
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from django.contrib.auth.models import User
 from django.core.management import call_command
+from django.db.models import Max
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -27,20 +29,30 @@ from jobradar.services.mailbox import (
     RawMessage,
     apply_suggestion,
     attach_message_to_job,
+    backfill_historical_mail,
+    backfill_message_bodies,
+    backfill_thread_ids,
     build_suggestions,
     bulk_mail_reason,
     calendar_busy_now,
     check_guardrails,
     classify_email,
+    compose_reply_draft,
     current_mailbox_run,
+    derive_reply_recipients,
+    detach_ats_host_messages,
     detach_job_board_messages,
+    dismiss_redundant_pending_suggestions,
     dismiss_suggestion,
     estimate_seconds_from_history,
     gmail_conversation_url,
     has_mailbox_credentials,
+    ingest_threads,
+    is_ats_host,
     is_busy_at,
     is_within_check_window,
     mailbox_check_estimate,
+    maybe_draft_reply,
     match_job,
     next_check_is_cold_start,
     owned_job_domains,
@@ -215,6 +227,47 @@ def test_classify_email_llm_rejects_unknown_classification_value(monkeypatch):
     assert classification == 'uncertain'
 
 
+# --- TASK-136 AC5: application_confirmed -- a category the classifier had no answer for at all ---
+
+def test_classify_email_detects_application_confirmation_from_an_unknown_domain():
+    """AC5, the exact motivating case: 'Thank you for applying to zooplus as Senior Software
+    Engineer' from a domain the app has never tracked a job at (domain_known=False) must not fall
+    through to not_job_related, which proposes nothing at all.
+    """
+    r = raw(1, subject='Thank you for applying to zooplus as Senior Software Engineer', sender='recruiting@zooplus.test')
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'application_confirmed'
+
+
+def test_classify_email_application_confirmation_wins_even_with_a_known_domain():
+    """A domain match alone used to be enough to win 'recruiter_reply' (see _classify_heuristic) --
+    the more specific application_confirmed phrase must still win over that fallback.
+    """
+    r = raw(1, subject='Thank you for applying to Acme as Engineer')
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=True)
+    assert classification == 'application_confirmed'
+
+
+def test_classify_email_existing_recruiter_reply_keyword_is_unaffected_by_the_new_category():
+    """Regression guard: RECRUITER_KEYWORDS' 'bewerbung erhalten' must still map to recruiter_reply --
+    test_genuine_recruiter_reply_still_drafts depends on exactly this classification to assert a
+    reply IS drafted, and application_confirmed is deliberately never reply-worthy (not in
+    _DRAFT_WORTHY_CLASSIFICATIONS), so re-routing that phrase here would silently stop drafting to it.
+    """
+    r = raw(1, body='Bewerbung erhalten, wir melden uns.')
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=True)
+    assert classification == 'recruiter_reply'
+
+
+def test_classify_email_llm_accepts_application_confirmed(monkeypatch):
+    monkeypatch.setenv('LLM_PROVIDER', 'openai-compatible')
+    monkeypatch.setattr(mailbox, '_post_json', lambda *a, **k: {
+        'choices': [{'message': {'content': '{"classification": "application_confirmed", "interview_at": null}'}}]
+    })
+    classification, _interview_at, evaluator = classify_email(raw(1), domain_known=False)
+    assert (classification, evaluator) == ('application_confirmed', 'openai-compatible')
+
+
 # --- JobLead domain matching -----------------------------------------------------------------
 
 def test_owned_job_domains_normalizes_www_prefix(db, owner):
@@ -246,6 +299,72 @@ def test_owned_job_domains_only_covers_this_owners_jobs(db, owner):
     assert owned_job_domains(owner) == {}
 
 
+# --- TASK-137: ATS sender domains must not attach mail to the wrong job --------------------------
+
+def test_owned_job_domains_excludes_a_host_shared_by_more_than_one_job(db, owner):
+    """AC1: a host more than one tracked job's own URL resolves to identifies no single company --
+    the rule, not a blocklist. Two DIFFERENT companies (job 760/job 36's real shape: an ATS neither
+    job's own url distinguishes) end up sharing one host today; before this fix, whichever job came
+    first silently "won" it and took the other's mail with it.
+    """
+    JobLead.objects.create(company='Taktile', title='Backend Engineer', url='https://jobs.example-ats.test/taktile/1', created_by=owner)
+    JobLead.objects.create(company='Glacis', title='ML Engineer', url='https://jobs.example-ats.test/glacis/1', created_by=owner)
+    assert 'example-ats.test' not in owned_job_domains(owner)
+
+
+def test_owned_job_domains_keeps_a_host_only_one_job_claims(db, owner):
+    """The AC1 rule's negative case: a host with exactly one claimant is untouched."""
+    job = JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    JobLead.objects.create(company='Other', title='Role', url='https://other.test/1', created_by=owner)
+    assert owned_job_domains(owner)['acme.test'] == job
+
+
+def test_is_ats_host_matches_the_ats_and_its_own_subdomains(db):
+    """AC2: ashbyhq.com/join.com/workable.com/personio.com, and an ATS's OWN bulk-mail/listing
+    subdomain (msg.join.com, jobs.ashbyhq.com), all identify the ATS, never a tracked company.
+    """
+    assert is_ats_host('ashbyhq.com') is True
+    assert is_ats_host('jobs.ashbyhq.com') is True
+    assert is_ats_host('join.com') is True
+    assert is_ats_host('msg.join.com') is True
+    assert is_ats_host('digitalsunray.msg.join.com') is True  # production shape: a per-company sub-subdomain of JOIN's own bulk mailer
+    assert is_ats_host('workable.com') is True
+    assert is_ats_host('personio.com') is True
+
+
+def test_is_ats_host_leaves_a_companys_own_subdomain_alone(db):
+    """AC3, the trap: join.zooplus.com is zooplus's OWN application domain (registrable domain
+    zooplus.com), not a claim on join.com -- 'join' here is a subdomain LABEL, not the ATS.
+    """
+    assert is_ats_host('join.zooplus.com') is False
+    assert is_ats_host('zooplus.com') is False
+
+
+def test_owned_job_domains_excludes_ats_domain_even_with_a_single_claimant(db, owner):
+    """AC2: ashbyhq.com/join.com are each used by exactly ONE tracked job today, so AC1's
+    shared-host rule alone would not catch them -- they need to be named explicitly.
+    """
+    JobLead.objects.create(company='Deltia AI', title='Backend Engineer', url='https://jobs.ashbyhq.com/almetra/1', created_by=owner)
+    JobLead.objects.create(company='PIDSO', title='Python Engineer', url='https://join.com/companies/pidso/1', created_by=owner)
+    domains = owned_job_domains(owner)
+    assert 'ashbyhq.com' not in domains
+    assert 'join.com' not in domains
+
+
+def test_owned_job_domains_and_match_job_still_match_a_companys_own_ats_subdomain(db, owner):
+    """AC3, proved end to end (not just at the predicate): zooplus's own JobLead URL
+    (careers.zooplus.com) keeps matching zooplus's real ATS-relayed mail (notifications@join.zooplus.com)
+    even with join.com excluded as an ATS host elsewhere in the same mailbox.
+    """
+    JobLead.objects.create(company='join.com ATS itself', title='n/a', url='https://join.com/companies/other/1', created_by=owner)
+    zooplus = JobLead.objects.create(company='zooplus', title='Senior Software Engineer', url='https://careers.zooplus.com/jobs/senior-software-engineer', created_by=owner)
+    domains = owned_job_domains(owner)
+    assert 'join.com' not in domains
+    assert domains['zooplus.com'] == zooplus
+    matched = match_job(raw(1, sender='zooplus SE <notifications@join.zooplus.com>'), domains)
+    assert matched == zooplus
+
+
 # --- Suggestion generation (AC3) -----------------------------------------------------------------
 
 @pytest.fixture
@@ -253,9 +372,9 @@ def applied_job(db, owner):
     return JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', status='applied', status_date=timezone.localdate(), created_by=owner)
 
 
-def _log_message(job, classification='uncertain'):
+def _log_message(job, classification='uncertain', uid=1):
     run = MailboxRun.objects.create()
-    return MailboxMessage.objects.create(run=run, uid=1, sender='hr@acme.test', subject='x', classification=classification, matched_job=job)
+    return MailboxMessage.objects.create(run=run, uid=uid, sender='hr@acme.test', subject='x', classification=classification, matched_job=job)
 
 
 def test_build_suggestions_rejection_creates_status_change(db, applied_job):
@@ -317,6 +436,90 @@ def test_build_suggestions_rejection_never_pairs_with_feedback_clear(db, applied
     created = build_suggestions(message, applied_job, 'rejection', None)
     assert created == 1
     assert MailboxSuggestion.objects.get(message=message).suggestion_type == 'status_change'
+
+
+# --- TASK-136 AC5: application_confirmed proposes 'applied', dated from the MESSAGE, not today -----
+
+def test_build_suggestions_application_confirmed_proposes_applied_dated_from_the_message(db, owner):
+    job = JobLead.objects.create(company='zooplus', title='Senior Software Engineer', url='https://zooplus.test/1', status='to_apply', created_by=owner)
+    received = timezone.make_aware(datetime(2026, 6, 3, 10, 0), timezone.get_current_timezone())
+    run = MailboxRun.objects.create()
+    message = MailboxMessage.objects.create(
+        run=run, uid=1, sender='recruiting@zooplus.test', subject='Thank you for applying to zooplus as Senior Software Engineer',
+        received_at=received, classification='application_confirmed', matched_job=job,
+    )
+    created = build_suggestions(message, job, 'application_confirmed', None)
+    assert created == 1
+    suggestion = MailboxSuggestion.objects.get(message=message)
+    assert suggestion.suggestion_type == 'status_change'
+    # AC5: dated from the CONFIRMATION EMAIL's own received date, not today -- this is the historical
+    # record TASK-136 exists for (a confirmation discovered months after it arrived).
+    assert suggestion.payload == {'status': 'applied', 'applied_at': '2026-06-03'}
+
+
+@pytest.mark.parametrize('status', ['new', 'reviewed', 'to_apply'])
+def test_build_suggestions_application_confirmed_proposes_applied_from_every_unapplied_status(db, owner, status):
+    job = JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', status=status, created_by=owner)
+    message = _log_message(job, 'application_confirmed')
+    assert build_suggestions(message, job, 'application_confirmed', None) == 1
+
+
+def test_build_suggestions_application_confirmed_is_noop_once_already_applied(db, applied_job):
+    """A job already 'applied' (or further along) needs no proposal -- there is nothing left for this
+    confirmation to confirm."""
+    message = _log_message(applied_job, 'application_confirmed')
+    assert build_suggestions(message, applied_job, 'application_confirmed', None) == 0
+
+
+def test_build_suggestions_application_confirmed_with_no_received_at_still_proposes_applied(db, owner):
+    """A message with no received_at (never happens off the real wire, but build_suggestions must not
+    crash on it) proposes 'applied' with no applied_at rather than guessing today's date."""
+    job = JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', status='new', created_by=owner)
+    message = _log_message(job, 'application_confirmed')
+    build_suggestions(message, job, 'application_confirmed', None)
+    assert MailboxSuggestion.objects.get(message=message).payload == {'status': 'applied'}
+
+
+# --- Suggestion dedupe (TASK-130 AC1) --------------------------------------------------------------
+
+def test_build_suggestions_does_not_duplicate_a_pending_proposal_across_two_messages(db, applied_job):
+    """The exact production shape: job 37 (zooplus) had three messages, each independently proposing
+    the same feedback_clear -- three identical pending rows. Running build_suggestions() over two
+    messages on the same job must leave exactly one pending row, not two.
+    """
+    applied_job.feedback_due_date = timezone.localdate() + timedelta(days=5); applied_job.save()
+    first_message = _log_message(applied_job, 'recruiter_reply', uid=1)
+    second_message = _log_message(applied_job, 'recruiter_reply', uid=2)
+
+    assert build_suggestions(first_message, applied_job, 'recruiter_reply', None) == 1
+    assert build_suggestions(second_message, applied_job, 'recruiter_reply', None) == 0
+
+    assert MailboxSuggestion.objects.filter(job=applied_job, suggestion_type='feedback_clear').count() == 1
+    assert MailboxSuggestion.objects.filter(job=applied_job, suggestion_type='feedback_clear', status='pending').first().message == first_message
+
+
+def test_build_suggestions_confirmed_prior_suggestion_does_not_block_a_new_one(db, applied_job):
+    """Only a PENDING duplicate is blocked -- a decided one must not stop a genuinely new proposal
+    later (interview_date is used here because its branch is unconditional, so this isolates the
+    dedupe rule from the job-status guards the other suggestion types also carry).
+    """
+    first_message = _log_message(applied_job, 'interview_invitation', uid=1)
+    assert build_suggestions(first_message, applied_job, 'interview_invitation', '2026-03-03T14:00:00+01:00') == 1
+    apply_suggestion(MailboxSuggestion.objects.get(message=first_message))
+
+    second_message = _log_message(applied_job, 'interview_invitation', uid=2)
+    assert build_suggestions(second_message, applied_job, 'interview_invitation', '2026-04-04T10:00:00+02:00') == 1
+    assert MailboxSuggestion.objects.filter(job=applied_job, suggestion_type='interview_date').count() == 2
+
+
+def test_build_suggestions_dismissed_prior_suggestion_does_not_block_a_new_one(db, applied_job):
+    first_message = _log_message(applied_job, 'interview_invitation', uid=1)
+    assert build_suggestions(first_message, applied_job, 'interview_invitation', '2026-03-03T14:00:00+01:00') == 1
+    dismiss_suggestion(MailboxSuggestion.objects.get(message=first_message))
+
+    second_message = _log_message(applied_job, 'interview_invitation', uid=2)
+    assert build_suggestions(second_message, applied_job, 'interview_invitation', '2026-04-04T10:00:00+02:00') == 1
+    assert MailboxSuggestion.objects.filter(job=applied_job, suggestion_type='interview_date').count() == 2
 
 
 # --- Confirm / dismiss lifecycle (AC3, TASK-117 AC4's note-on-confirm) -----------------------
@@ -400,10 +603,16 @@ def test_attach_message_to_job_produces_the_same_suggestions_a_domain_match_woul
     """The sender domain below matches no job -- match_job() would return None for it -- so this
     message only reaches the board via the manual attach path, and must produce exactly what
     build_suggestions() gives a domain-matched message with the same classification.
+
+    The "expected" shape is computed against a SEPARATE, identically-set-up job -- not applied_job
+    itself -- so TASK-130 AC1's own (job, suggestion_type) pending-dedupe guard (both calls below
+    propose the same 'status_change' rejection) never fires between this setup step and the actual
+    attach_message_to_job() call under test; the two are otherwise unrelated to each other.
     """
-    domain_matched_message = _log_message(applied_job, 'rejection')
-    expected_created = build_suggestions(domain_matched_message, applied_job, 'rejection', None)
-    expected = list(MailboxSuggestion.objects.filter(message=domain_matched_message, job=applied_job).values('suggestion_type', 'payload'))
+    comparison_job = JobLead.objects.create(company='Acme', title='Engineer', url='https://acme-comparison.test/1', status='applied', status_date=timezone.localdate(), created_by=applied_job.created_by)
+    domain_matched_message = _log_message(comparison_job, 'rejection')
+    expected_created = build_suggestions(domain_matched_message, comparison_job, 'rejection', None)
+    expected = list(MailboxSuggestion.objects.filter(message=domain_matched_message, job=comparison_job).values('suggestion_type', 'payload'))
     assert expected_created == 1
 
     domains = owned_job_domains(applied_job.created_by)
@@ -975,6 +1184,48 @@ def test_recruiter_reply_gets_a_written_follow_up_draft(not_cold_start, db, owne
     assert draft.status == 'written' and draft.evaluator == 'template'
 
 
+# --- Draft dedupe (TASK-130 AC3) -------------------------------------------------------------------
+
+def test_maybe_draft_reply_refuses_a_second_draft_while_the_first_is_undecided(not_cold_start, db, owner, applied_job):
+    """The exact production shape: job 37 (zooplus) had three messages in one conversation, each
+    independently getting a reply drafted and written into Gmail -- three identical drafts. The
+    second message on the same job must be refused, not written, while the first's proposal is still
+    pending; the refusal is recorded the same way every other maybe_draft_reply refusal is (a blocked
+    MailboxDraft row with a reason), so "why is there no draft" stays answerable.
+    """
+    applied_job.feedback_due_date = timezone.localdate() + timedelta(days=5); applied_job.save()
+    transport = FakeTransport([
+        raw(2, sender='hr@acme.test', subject='Following up', body='Thanks for your patience, still reviewing internally.'),
+        raw(3, sender='hr@acme.test', subject='Still reviewing', body='Thanks again for your patience, still reviewing internally.'),
+    ])
+    run = run_check(transport=transport)
+
+    first_draft = MailboxDraft.objects.get(message__uid=2)
+    second_draft = MailboxDraft.objects.get(message__uid=3)
+    assert first_draft.status == 'written'
+    assert second_draft.status == 'blocked'
+    assert 'already has a written draft' in second_draft.block_reason
+    assert len(transport.appended_drafts) == 1
+    assert run.draft_written_count == 1 and run.draft_blocked_count == 1
+
+
+def test_maybe_draft_reply_allows_a_new_draft_once_the_prior_one_is_decided(not_cold_start, db, owner, applied_job):
+    """AC3 must not permanently wedge a job's drafting: once the owner confirms the suggestion tied
+    to the earlier written draft, a genuinely new message can get its own new draft (symmetric to
+    AC1's confirmed-does-not-block-a-new-suggestion rule)."""
+    applied_job.feedback_due_date = timezone.localdate() + timedelta(days=5); applied_job.save()
+    run_check(transport=FakeTransport([raw(2, sender='hr@acme.test', body='Thanks for your patience, still reviewing internally.')]))
+    apply_suggestion(MailboxSuggestion.objects.get(message__uid=2))
+    applied_job.refresh_from_db()
+    applied_job.feedback_due_date = timezone.localdate() + timedelta(days=5); applied_job.save()  # re-arm for a genuinely new proposal
+
+    run = run_check(transport=FakeTransport([raw(3, sender='hr@acme.test', body='Thanks for your patience, still reviewing internally.')]), force=True)
+
+    second_draft = MailboxDraft.objects.get(message__uid=3)
+    assert second_draft.status == 'written'
+    assert run.draft_written_count == 1
+
+
 def test_rejection_and_not_job_related_get_no_draft(db, owner, applied_job):
     transport = FakeTransport([
         raw(1, sender='hr@acme.test', body='Unfortunately, we have decided to move forward with other candidates.'),
@@ -1207,9 +1458,10 @@ class _FakeGmailHttp:
     dedup guard) must handle correctly on its own, not by trusting the query.
     """
 
-    def __init__(self, message_ids, details):
+    def __init__(self, message_ids, details, threads=None):
         self.message_ids = message_ids
         self.details = details  # {gmail_id: {'internalDate': ..., 'threadId': ..., 'raw': ...}}
+        self.threads = threads or {}  # TASK-132: {thread_id: [gmail_id, ...]}
         self.calls = []  # (method, url) in call order
         self.draft_payloads = []  # decoded JSON body of every POST to .../drafts
         self.update_payloads = []  # decoded JSON body of every PUT to .../drafts/<id> (TASK-122)
@@ -1226,12 +1478,21 @@ class _FakeGmailHttp:
             return {'id': draft_id, 'message': {'id': f'msg-{draft_id}', 'threadId': payload['message'].get('threadId', '')}}
         if '/drafts/' in url and method == 'PUT':
             self.update_payloads.append(json.loads(data.decode('utf-8')))
-            return {'id': url.rsplit('/', 1)[-1]}
+            return {'id': url.rsplit('/', 1)[-1], 'message': {'id': f"msg-{url.rsplit('/', 1)[-1]}", 'threadId': json.loads(data.decode('utf-8'))['message'].get('threadId', '')}}
         if '/messages?' in url and method == 'GET':
             return {'messages': [{'id': mid} for mid in self.message_ids]}
         if '/messages/' in url and 'format=raw' in url and method == 'GET':
             msg_id = url.split('/messages/')[1].split('?')[0]
             return self.details[msg_id]
+        if '/threads/' in url and 'format=minimal' in url and method == 'GET':
+            thread_id = url.split('/threads/')[1].split('?')[0]
+            return {'messages': [{'id': mid} for mid in self.threads.get(thread_id, [])]}
+        # TASK-132 AC1: backfill_thread_ids asks for ONE field, so it uses format=minimal on a
+        # message (not a thread) rather than re-downloading every body to read an id that comes back
+        # either way. Served from the same `details` fixtures, threadId only.
+        if '/messages/' in url and 'format=minimal' in url and method == 'GET':
+            msg_id = url.split('/messages/')[1].split('?')[0]
+            return {'id': msg_id, 'threadId': self.details[msg_id].get('threadId', '')}
         raise AssertionError(f'Unexpected fake Gmail API call: {method} {url}')
 
 
@@ -1372,6 +1633,429 @@ def test_gmail_run_with_null_internal_dates_in_history_stays_a_cold_start(db, ow
     assert run.draft_written_count == 0
     assert fake_http.draft_payloads == [], 'drafted into the mailbox from a zero marker'
     assert MailboxMessage.objects.filter(gmail_id='msg-1').exists()  # still recorded, marker advances
+
+
+# ===================================================================================================
+# TASK-136: fetch_new() no longer restricts itself to labelIds=INBOX (AC1/AC2), bounded instead by a
+# date floor on a cold start (AC3); the resume marker (AC4) and TASK-114's guards (AC6) must both
+# survive the widening unchanged.
+# ===================================================================================================
+
+class _QueryCapturingGmailHttp(_FakeGmailHttp):
+    """Same fake as everywhere else, but also records the exact `messages?...` URL of every listing
+    call, so a test can assert on the query params fetch_new() actually sent -- not just on which
+    messages came back.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.list_urls = []
+
+    def __call__(self, method, url, access_token, data=None):
+        if '/messages?' in url and method == 'GET':
+            self.list_urls.append(url)
+        return super().__call__(method, url, access_token, data)
+
+
+def test_gmail_fetch_new_no_longer_restricts_to_labelids_inbox(db, owner, monkeypatch):
+    """AC1/AC2: the one-line cause TASK-136 exists to fix. Archived mail -- no Inbox label -- is
+    exactly what a labelIds=INBOX query can never return, however wide `q=` is made; this asserts the
+    parameter itself is gone from the call, not just that a message happens to come back.
+    """
+    details = {'msg-archived': {'internalDate': '5000000', 'threadId': 't1',
+                                 'raw': _gmail_raw_b64('recruiting@zooplus.test', 'Thank you for applying to zooplus as Senior Software Engineer', 'body')}}
+    fake_http = _QueryCapturingGmailHttp(['msg-archived'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run = run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+
+    assert run is not None and not run.error
+    assert fake_http.list_urls, 'the listing call never happened'
+    assert all('labelIds' not in url for url in fake_http.list_urls), 'still restricted to a Gmail label'
+    assert MailboxMessage.objects.filter(gmail_id='msg-archived').exists()
+
+
+def test_gmail_fetch_new_bounds_a_cold_start_to_the_history_floor(monkeypatch):
+    """AC3: a cold start (no resume marker yet, last_marker_ms=0) must not ask Gmail for the account's
+    entire history -- `after:` is set to FETCH_HISTORY_FLOOR_DAYS back from now, not left off (the
+    pre-TASK-136 behaviour, which relied on labelIds=INBOX to bound volume instead).
+
+    TASK-144 AC4: fetch_new() now issues a SECOND, `in:sent`-scoped listing pass alongside the
+    original -- both asserted here, and both bounded by the exact same floor (never a second,
+    unbounded fetch).
+    """
+    fake_http = _QueryCapturingGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    before = timezone.now() - timedelta(days=mailbox.FETCH_HISTORY_FLOOR_DAYS)
+    transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+    transport.fetch_new(0)
+    after = timezone.now() - timedelta(days=mailbox.FETCH_HISTORY_FLOOR_DAYS)
+
+    assert len(fake_http.list_urls) == 2, 'expected one bare listing pass plus one in:sent pass'
+    primary_query = parse_qs(urlsplit(fake_http.list_urls[0]).query)
+    assert 'labelIds' not in primary_query
+    after_seconds = int(primary_query['q'][0].split(':', 1)[1])
+    assert int(before.timestamp()) <= after_seconds <= int(after.timestamp())
+
+    sent_query = parse_qs(urlsplit(fake_http.list_urls[1]).query)
+    assert 'labelIds' not in sent_query
+    assert sent_query['q'][0] == f'in:sent after:{after_seconds}'
+
+
+def test_gmail_fetch_new_uses_the_real_marker_not_the_floor_once_one_exists(monkeypatch):
+    """AC4: the date floor is a COLD-START-ONLY bound. Once a resume marker exists, `after:` must
+    derive from it exactly as before TASK-136 -- never re-clip to the 2-year floor, which could skip
+    mail between the floor and the real (newer) marker.
+    """
+    fake_http = _QueryCapturingGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+    marker_ms = 5_000_000_000  # a real-looking marker, far more recent than the 2-year floor
+    transport.fetch_new(marker_ms)
+
+    query = parse_qs(urlsplit(fake_http.list_urls[0]).query)
+    after_seconds = int(query['q'][0].split(':', 1)[1])
+    assert after_seconds == marker_ms // 1000 - 1
+
+
+def test_gmail_api_transport_two_consecutive_runs_the_second_fetches_nothing_new_after_widening(db, owner, monkeypatch):
+    """AC4, end to end: run_check() twice against the widened (no labelIds) fetch -- the second run
+    must see nothing new, the same resume-marker contract TASK-109 AC1 already guarantees, now
+    verified with the label filter gone.
+    """
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    details = {
+        'msg-1': {'internalDate': '1000000', 'threadId': 'thread-1', 'raw': _gmail_raw_b64('hr@acme.test', 'First', 'body one')},
+    }
+    fake_http = _FakeGmailHttp(['msg-1'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+        first = run_check(transport=transport)
+        assert first is not None and not first.error
+        assert MailboxMessage.objects.count() == 1
+
+        second = run_check(transport=transport, force=True)
+        assert second is not None and not second.error
+        assert MailboxMessage.objects.count() == 1, 'the second run re-read mail it had already seen'
+
+
+def test_widened_fetch_still_refuses_a_board_style_newsletter_via_bulk_mail_reason(not_cold_start, db, owner, applied_job, monkeypatch):
+    """AC6: TASK-114's guard must still hold now that fetch_new() reads more than the inbox -- a
+    List-Unsubscribe-bearing message reaching classification via the WIDENED, Gmail-API-sourced path
+    (not FakeTransport's IMAP-shaped raw(), which is what every other bulk_mail_reason test uses) must
+    still be refused a draft, not just logged. This is exactly the kind of change the task notes warn
+    quietly reopens a closed incident.
+    """
+    msg = EmailMessage()
+    msg['From'] = 'newsletter@acme.test'
+    msg['Subject'] = 'Application update'
+    msg['Message-ID'] = '<newsletter@acme.test>'
+    msg['List-Unsubscribe'] = '<https://acme.test/unsubscribe>'
+    msg.set_content('Thank you for your application interest -- here is our monthly newsletter.')
+    details = {'msg-newsletter': {
+        'internalDate': '9000000', 'threadId': 't1',
+        'raw': base64.urlsafe_b64encode(msg.as_bytes()).decode('ascii').rstrip('='),
+    }}
+    fake_http = _FakeGmailHttp(['msg-newsletter'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run = run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+
+    assert run is not None and not run.error
+    message = MailboxMessage.objects.get(gmail_id='msg-newsletter')
+    draft = MailboxDraft.objects.get(message=message)
+    assert draft.status == 'blocked' and 'List-Unsubscribe' in draft.block_reason
+    assert fake_http.draft_payloads == [], 'a bulk message from the widened fetch still got a draft written to Gmail'
+    assert run.draft_blocked_count == 1 and run.draft_written_count == 0
+
+
+# ===================================================================================================
+# TASK-136 AC1 (coordinator follow-up, 2026-08-19): fetch_new()'s own `after:` always derives from
+# MAX(internal_date_ms) once a resume marker exists, so widening the label filter alone could never
+# reach a message OLDER than that marker -- verified against the owner's real mailbox after the
+# labelIds-only change shipped (5 fetched, subject-contains-"applying" still 0). backfill_historical_mail()
+# is the one-off, marker-IGNORING fix; these tests cover AC1-AC6 of that follow-up.
+# ===================================================================================================
+
+def test_backfill_historical_mail_reaches_a_message_older_than_the_resume_marker(db, owner, monkeypatch):
+    """AC1, the exact motivating case: the resume marker has already moved PAST the archived
+    confirmation (this mailbox has not been a cold start since 16 August) -- a normal
+    run_check()/fetch_new() can never reach it again, however wide the label filter is. Only this
+    explicit, marker-ignoring backfill can, and it must classify it application_confirmed (AC5) and
+    match it to the tracked job, not leave it as not_job_related.
+    """
+    JobLead.objects.create(company='zooplus', title='Senior Software Engineer', url='https://zooplus.test/1', status='to_apply', created_by=owner)
+    live_run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=live_run, uid=1, gmail_id='msg-live', internal_date_ms=9_000_000_000_000,
+        sender='hr@acme.test', subject='live mail after the archived confirmation',
+        classification='uncertain', evaluator='heuristic',
+    )
+    details = {'msg-zooplus': {
+        'internalDate': '1717000000000', 'threadId': 't1',
+        'raw': _gmail_raw_b64('recruiting@zooplus.test', 'Thank you for applying to zooplus as Senior Software Engineer', 'We have received your application.'),
+    }}
+    fake_http = _FakeGmailHttp(['msg-zooplus'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = backfill_historical_mail(dry_run=False)
+
+    assert result == {
+        'attempted': 1, 'created': 1, 'already_present': 0, 'skipped_by_bound': 0,
+        'matched_by_query': 1, 'batched': False, 'refused': '',
+    }
+    message = MailboxMessage.objects.get(gmail_id='msg-zooplus')
+    assert message.classification == 'application_confirmed'
+    assert message.matched_job is not None
+    assert MailboxSuggestion.objects.filter(message=message, job=message.matched_job).first().payload['status'] == 'applied'
+
+
+def test_backfill_historical_mail_never_moves_the_resume_marker(db, owner, monkeypatch):
+    """AC2, the failure mode that matters most: internal_date_ms stays NULL on the backfilled row, so
+    MAX(internal_date_ms) -- the resume marker fetch_new() reads -- is completely unaffected by
+    ingesting a message far older than it. Getting this wrong would make the NEXT live run_check()
+    re-read (and re-classify/re-suggest/re-draft into) everything since.
+    """
+    live_run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=live_run, uid=1, gmail_id='msg-live', internal_date_ms=9_000_000_000_000,
+        sender='hr@acme.test', subject='live', classification='uncertain', evaluator='heuristic',
+    )
+    details = {'msg-old': {'internalDate': '1000000', 'threadId': 't-old', 'raw': _gmail_raw_b64('hr@old-acme.test', 'Old mail', 'body')}}
+    fake_http = _FakeGmailHttp(['msg-old'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = backfill_historical_mail(dry_run=False)
+
+    assert result['created'] == 1
+    message = MailboxMessage.objects.get(gmail_id='msg-old')
+    assert message.internal_date_ms is None
+    marker = MailboxMessage.objects.aggregate(Max('internal_date_ms'))['internal_date_ms__max']
+    assert marker == 9_000_000_000_000, 'backfilling an old message moved the live resume marker'
+
+
+def test_backfill_historical_mail_dedupes_and_resumes_via_limit(db, owner, monkeypatch):
+    """AC3/AC4: dedupe on gmail_id across calls, `limit` bounds how many NEW messages one call fetches
+    in full, and a resumed call neither re-fetches an already-created row's full detail nor loses track
+    of what is left.
+    """
+    details = {f'g{i}': {'internalDate': str(i), 'threadId': f't{i}', 'raw': _gmail_raw_b64('hr@acme.test', f'S{i}', f'body {i}')} for i in range(1, 4)}
+    fake_http = _FakeGmailHttp(['g1', 'g2', 'g3'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        first = backfill_historical_mail(dry_run=False, limit=2)
+        second = backfill_historical_mail(dry_run=False, limit=2)
+        third = backfill_historical_mail(dry_run=False, limit=2)
+
+    assert first == {
+        'attempted': 2, 'created': 2, 'already_present': 0, 'skipped_by_bound': 1,
+        'matched_by_query': 3, 'batched': False, 'refused': '',
+    }
+    assert second == {
+        'attempted': 1, 'created': 1, 'already_present': 2, 'skipped_by_bound': 0,
+        'matched_by_query': 3, 'batched': False, 'refused': '',
+    }
+    assert third == {
+        'attempted': 0, 'created': 0, 'already_present': 3, 'skipped_by_bound': 0,
+        'matched_by_query': 3, 'batched': False, 'refused': '',
+    }
+    assert MailboxMessage.objects.count() == 3
+    detail_calls = [c for c in fake_http.calls if '/messages/' in c[1] and 'format=raw' in c[1]]
+    assert len(detail_calls) == 3, 'a message already created was re-fetched in full on a later call'
+
+
+def test_backfill_historical_mail_dry_run_writes_nothing(db, owner, monkeypatch):
+    details = {'g1': {'internalDate': '1', 'threadId': 't1', 'raw': _gmail_raw_b64('hr@acme.test', 'S', 'body')}}
+    fake_http = _FakeGmailHttp(['g1'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = backfill_historical_mail(dry_run=True)
+
+    assert result['created'] == 1  # what WOULD be created
+    assert MailboxMessage.objects.count() == 0
+
+
+def test_list_since_sends_the_given_query_unmodified(monkeypatch):
+    """list_since() is deliberately generic (owner follow-up, 2026-08-19) -- it builds nothing itself,
+    just pages through Gmail for whatever query string it is handed. `labelIds` must still never
+    appear (TASK-136 AC1/AC2)."""
+    fake_http = _QueryCapturingGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+    transport.list_since('after:12345 subject:(test)')
+
+    query = parse_qs(urlsplit(fake_http.list_urls[0]).query)
+    assert 'labelIds' not in query
+    assert query['q'][0] == 'after:12345 subject:(test)'
+
+
+# --- Owner decision 2026-08-19: TARGETED, not bare-floor -- from:(tracked domains) OR subject:(...) --
+
+def test_targeted_backfill_queries_uses_the_given_floor():
+    queries, batched = mailbox._targeted_backfill_queries(1717000000, ['acme.test'])
+    assert batched is False
+    assert len(queries) == 1
+    assert queries[0].startswith('after:1717000000 ')
+
+
+def test_targeted_backfill_queries_combines_domain_and_subject_clauses():
+    queries, _batched = mailbox._targeted_backfill_queries(1717000000, ['zooplus.test'])
+    query = queries[0]
+    assert 'from:(@zooplus.test)' in query
+    assert 'subject:(' in query
+    assert ' OR ' in query  # the two clauses are OR'd together, not AND'd
+
+
+def test_targeted_backfill_queries_subject_clause_covers_german_and_english():
+    """AC2 of the owner's follow-up: same vocabulary as the classifier's
+    APPLICATION_CONFIRMATION_KEYWORDS, and it must actually carry both languages -- the owner's mail is
+    both."""
+    queries, _batched = mailbox._targeted_backfill_queries(1717000000, [])
+    query = queries[0]
+    assert '"thank you for applying"' in query  # English
+    assert '"vielen dank für ihre bewerbung"' in query  # German
+    for phrase in mailbox.APPLICATION_CONFIRMATION_KEYWORDS:
+        assert mailbox._quote_for_gmail(phrase) in query, f'{phrase!r} missing from the subject clause'
+
+
+def test_targeted_backfill_queries_with_no_domains_omits_from_clause():
+    queries, batched = mailbox._targeted_backfill_queries(1717000000, [])
+    assert batched is False
+    assert len(queries) == 1
+    assert 'from:(' not in queries[0]
+    assert 'subject:(' in queries[0]
+
+
+def test_targeted_backfill_queries_batches_when_domains_would_make_one_query_too_long():
+    """AC3: Gmail query length is finite -- a small max_chars forces a domain list that would
+    otherwise fit into one query to split into several, each one still carrying the FULL subject
+    clause (so a subject-only match is never lost to whichever chunk runs)."""
+    domains = [f'company-{i}.example.test' for i in range(10)]
+    queries, batched = mailbox._targeted_backfill_queries(1717000000, domains, max_chars=500)
+    assert batched is True
+    assert len(queries) > 1
+    all_domains_covered = set()
+    for query in queries:
+        assert 'subject:(' in query, 'a chunk lost the subject clause'
+        assert len(query) <= 550  # some slack over max_chars for the one domain that tips a chunk over
+        all_domains_covered.update(d for d in domains if f'@{d}' in query)
+    assert all_domains_covered == set(domains), 'a domain was dropped while batching'
+
+
+def test_targeted_backfill_queries_single_domain_never_batches_even_if_it_alone_exceeds_max_chars():
+    """The one-chunk-minimum edge case: a single domain long enough to blow the budget on its own
+    still produces exactly one (long) query rather than an empty chunk."""
+    queries, batched = mailbox._targeted_backfill_queries(1717000000, ['a' * 2000 + '.test'], max_chars=50)
+    assert batched is False
+    assert len(queries) == 1
+
+
+def test_backfill_historical_mail_query_excludes_job_board_domains(db, owner, monkeypatch):
+    """AC6 of the owner's follow-up: owned_job_domains() is reused unchanged, so a job board's own
+    domain never enters the from:(...) clause -- including it would drag XING/devjobs-style
+    newsletters straight back in, the exact thing TASK-129's cleanup removed.
+    """
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    JobLead.objects.create(company='LinkedIn jobs', title='n/a', url='https://www.linkedin.com/jobs/view/123', created_by=owner)
+    fake_http = _QueryCapturingGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        backfill_historical_mail(dry_run=True)
+
+    queries_seen = [parse_qs(urlsplit(url).query)['q'][0] for url in fake_http.list_urls]
+    assert any('acme.test' in q for q in queries_seen)
+    assert not any('linkedin.com' in q for q in queries_seen), 'a job board domain leaked into the from: clause'
+
+
+def test_backfill_historical_mail_all_mail_flag_drops_the_targeting_filter(db, owner, monkeypatch):
+    """AC6/requirement-6: --all-mail (all_mail=True) restores the bare after:<floor> query with no
+    domain/subject restriction -- available, but opt-in, never the default (see the next test)."""
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    fake_http = _QueryCapturingGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        backfill_historical_mail(dry_run=True, all_mail=True)
+
+    assert len(fake_http.list_urls) == 1
+    query = parse_qs(urlsplit(fake_http.list_urls[0]).query)['q'][0]
+    assert 'from:' not in query and 'subject:' not in query
+    assert query.startswith('after:')
+
+
+def test_backfill_historical_mail_default_is_targeted_not_all_mail(db, owner, monkeypatch):
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    fake_http = _QueryCapturingGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        backfill_historical_mail(dry_run=True)
+
+    query = parse_qs(urlsplit(fake_http.list_urls[0]).query)['q'][0]
+    assert 'from:(@acme.test)' in query and 'subject:(' in query
+
+
+def test_backfill_historical_mail_reports_matched_by_query_as_zero_when_nothing_matches(db, owner, monkeypatch):
+    """AC4/requirement-4: a real zero-result search must be visible AS a zero, distinct from the
+    command never having run at all (which reports via `refused` instead)."""
+    fake_http = _FakeGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = backfill_historical_mail(dry_run=False)
+
+    assert result['matched_by_query'] == 0
+    assert result['refused'] == ''
+
+
+def test_backfill_historical_mail_refuses_on_imap_transport(db, owner):
+    result = backfill_historical_mail(dry_run=False)  # _isolated_mailbox_env configures IMAP by default
+    assert 'Gmail API' in result['refused']
+    assert result['created'] == 0
+
+
+def test_backfill_historical_mail_reuses_the_job_board_domain_exclusion(db, owner, monkeypatch):
+    """AC6: reuses owned_job_domains() unchanged -- a job board's own domain must not become a
+    tracked-job domain here either, the same exclusion TASK-114 already applies on the live path.
+    """
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://www.linkedin.com/jobs/view/123', created_by=owner)
+    details = {'msg-board': {'internalDate': '1', 'threadId': 't1', 'raw': _gmail_raw_b64('jobs-noreply@linkedin.com', 'New jobs for you', 'weekly digest')}}
+    fake_http = _FakeGmailHttp(['msg-board'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        backfill_historical_mail(dry_run=False)
+
+    assert MailboxMessage.objects.get(gmail_id='msg-board').matched_job is None
+
+
+def test_backfill_historical_mail_never_writes_a_draft_even_for_reply_worthy_bulk_mail(db, owner, applied_job, monkeypatch):
+    """AC5/AC6: a historical message that would be draft-worthy (recruiter_reply, matched job) AND
+    carries a bulk marker is ingested (stored, classified, suggested) but this function never calls
+    maybe_draft_reply -- no MailboxDraft row is ever created from a backfill, so there is nothing for
+    TASK-114's guard to even need to block here; bulk_mail_reason itself is asserted separately,
+    unaffected, so it is still ready for whenever something DOES try to draft at this row.
+    """
+    msg = EmailMessage()
+    msg['From'] = 'newsletter@acme.test'
+    msg['Subject'] = 'Application update'
+    msg['Message-ID'] = '<newsletter-old@acme.test>'
+    msg['List-Unsubscribe'] = '<https://acme.test/unsubscribe>'
+    msg.set_content('Thank you for your application interest -- here is our monthly newsletter.')
+    details = {'msg-newsletter-old': {
+        'internalDate': '1', 'threadId': 't1',
+        'raw': base64.urlsafe_b64encode(msg.as_bytes()).decode('ascii').rstrip('='),
+    }}
+    fake_http = _FakeGmailHttp(['msg-newsletter-old'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        backfill_historical_mail(dry_run=False)
+
+    message = MailboxMessage.objects.get(gmail_id='msg-newsletter-old')
+    assert message.classification == 'recruiter_reply'
+    assert message.matched_job is not None
+    assert not MailboxDraft.objects.filter(message=message).exists()
+    assert mailbox.bulk_mail_reason(RawMessage(
+        uid=0, sender=message.sender, subject=message.subject, received_at=message.received_at,
+        list_unsubscribe='<https://acme.test/unsubscribe>',
+    )), 'the guard itself must still recognise this as bulk mail whenever something DOES try to draft at it'
 
 
 def test_gmail_api_transport_creates_draft_never_calls_send(not_cold_start, db, owner, applied_job, monkeypatch):
@@ -1600,6 +2284,180 @@ def test_detach_job_board_messages_is_idempotent(db, board_job):
 def test_detach_job_board_messages_finds_nothing_when_no_board_sender_is_matched(db, applied_job):
     _board_message(applied_job, 1, sender='hr@acme.test', classification='recruiter_reply')
     assert detach_job_board_messages(dry_run=False) == []
+
+
+# --- TASK-137 AC4/AC5/AC6: detach ATS-host mail left matched to a job (historical cleanup) --------
+
+
+@pytest.fixture
+def ats_job(db, owner):
+    """The production shape this task exists for: job 760's own URL is the ATS's own listing page."""
+    return JobLead.objects.create(company='Deltia AI (Almetra)', title='Backend Engineer', url='https://jobs.ashbyhq.com/almetra/1', status='applied', status_date=timezone.localdate(), created_by=owner)
+
+
+def _ats_message(job, uid, sender='Taktile Hiring Team <no-reply@ashbyhq.com>', classification='recruiter_reply'):
+    run = MailboxRun.objects.create()
+    return MailboxMessage.objects.create(run=run, uid=uid, sender=sender, subject='Your Application at Taktile', classification=classification, matched_job=job)
+
+
+def test_detach_ats_host_messages_clears_matched_job_on_ats_sender(db, ats_job):
+    """job 760's exact shape: 17 unrelated companies' Ashby-sent mail, all wrongly matched to one job."""
+    _ats_message(ats_job, 1, sender='Taktile Hiring Team <no-reply@ashbyhq.com>')
+    _ats_message(ats_job, 2, sender='Glacis Hiring Team <no-reply@ashbyhq.com>')
+
+    results = detach_ats_host_messages(dry_run=False)
+
+    assert results == [{'job': ats_job, 'message_count': 2, 'dismissed_count': 0, 'confirmed_count': 0}]
+    assert list(MailboxMessage.objects.filter(matched_job=ats_job)) == []
+    # AC5/TASK-109 AC5: the rows survive -- only the false association is cleared, never the append-only log.
+    assert MailboxMessage.objects.filter(uid__in=[1, 2]).count() == 2
+
+
+def test_detach_ats_host_messages_leaves_employer_sender_attached(db, ats_job, applied_job):
+    """AC4/AC6, both kinds present in one run: the ATS sender is detached, the employer sender is not."""
+    ats_message = _ats_message(ats_job, 1)
+    employer_message = _ats_message(applied_job, 2, sender='hr@acme.test', classification='recruiter_reply')
+
+    results = detach_ats_host_messages(dry_run=False)
+
+    assert results == [{'job': ats_job, 'message_count': 1, 'dismissed_count': 0, 'confirmed_count': 0}]
+    ats_message.refresh_from_db(); employer_message.refresh_from_db()
+    assert ats_message.matched_job is None
+    assert employer_message.matched_job_id == applied_job.id
+
+
+def test_detach_ats_host_messages_leaves_a_companys_own_ats_subdomain_sender_attached(db, owner):
+    """AC3, exercised through the detach command too: zooplus's real ATS-relayed mail
+    (join.zooplus.com) must never be treated as an ashbyhq.com/join.com sender.
+    """
+    zooplus = JobLead.objects.create(company='zooplus', title='Senior Software Engineer', url='https://careers.zooplus.com/jobs/1', status='applied', status_date=timezone.localdate(), created_by=owner)
+    zooplus_message = _ats_message(zooplus, 1, sender='zooplus SE <notifications@join.zooplus.com>')
+
+    assert detach_ats_host_messages(dry_run=False) == []
+    zooplus_message.refresh_from_db()
+    assert zooplus_message.matched_job_id == zooplus.id
+
+
+def test_detach_ats_host_messages_dismisses_pending_suggestions(db, ats_job):
+    """AC5: a pending suggestion derived from an ATS-relayed newsletter must not keep proposing a
+    status change once its message is no longer "about" that job.
+    """
+    message = _ats_message(ats_job, 1, classification='rejection')
+    suggestion = MailboxSuggestion.objects.create(message=message, job=ats_job, suggestion_type='status_change', payload={'status': 'rejected'})
+
+    results = detach_ats_host_messages(dry_run=False)
+
+    assert results == [{'job': ats_job, 'message_count': 1, 'dismissed_count': 1, 'confirmed_count': 0}]
+    suggestion.refresh_from_db()
+    assert suggestion.status == 'dismissed'
+    assert suggestion.decided_at is not None
+
+
+def test_detach_ats_host_messages_preserves_and_reports_a_confirmed_suggestion(db, ats_job):
+    """AC5, the destructive-decision guard: a CONFIRMED suggestion (an owner decision already acted
+    on, with its own ApplicationNote already written -- see apply_suggestion()) is never dismissed or
+    otherwise touched, only counted separately so it is never silently swept.
+    """
+    message = _ats_message(ats_job, 1, classification='rejection')
+    confirmed = MailboxSuggestion.objects.create(message=message, job=ats_job, suggestion_type='status_change', payload={'status': 'rejected'}, status='confirmed', decided_at=timezone.now())
+
+    results = detach_ats_host_messages(dry_run=False)
+
+    assert results == [{'job': ats_job, 'message_count': 1, 'dismissed_count': 0, 'confirmed_count': 1}]
+    message.refresh_from_db()
+    assert message.matched_job is None  # still detached -- the false attachment is fixed either way
+    confirmed.refresh_from_db()
+    assert confirmed.status == 'confirmed'  # left exactly as decided, never re-dismissed
+
+
+def test_detach_ats_host_messages_dry_run_changes_nothing(db, ats_job):
+    """AC4: dry run is the default, and reports without writing."""
+    message = _ats_message(ats_job, 1)
+    suggestion = MailboxSuggestion.objects.create(message=message, job=ats_job, suggestion_type='status_change', payload={'status': 'rejected'})
+
+    results = detach_ats_host_messages()  # dry_run=True is the default
+
+    assert results == [{'job': ats_job, 'message_count': 1, 'dismissed_count': 1, 'confirmed_count': 0}]
+    message.refresh_from_db(); suggestion.refresh_from_db()
+    assert message.matched_job_id == ats_job.id
+    assert suggestion.status == 'pending'
+
+
+def test_detach_ats_host_messages_is_idempotent(db, ats_job):
+    """A second run finds nothing -- the query only looks at rows still carrying matched_job."""
+    _ats_message(ats_job, 1)
+    first = detach_ats_host_messages(dry_run=False)
+    assert len(first) == 1
+
+    second = detach_ats_host_messages(dry_run=False)
+    assert second == []
+
+
+def test_detach_ats_host_messages_finds_nothing_when_no_ats_sender_is_matched(db, applied_job):
+    _ats_message(applied_job, 1, sender='hr@acme.test', classification='recruiter_reply')
+    assert detach_ats_host_messages(dry_run=False) == []
+
+
+# --- TASK-130 AC2: clean up the pending suggestion duplicates already in production ----------------
+
+def _pending_suggestion(job, suggestion_type='feedback_clear', payload=None, uid=1):
+    message = _log_message(job, uid=uid)
+    return MailboxSuggestion.objects.create(message=message, job=job, suggestion_type=suggestion_type, payload=payload or {'feedback_due_date': None})
+
+
+def test_dismiss_redundant_pending_suggestions_keeps_the_oldest_and_dismisses_the_rest(db, applied_job):
+    """The exact production shape: job 37 (zooplus) had three identical pending feedback_clear rows."""
+    survivor = _pending_suggestion(applied_job, uid=1)
+    dupe_2 = _pending_suggestion(applied_job, uid=2)
+    dupe_3 = _pending_suggestion(applied_job, uid=3)
+
+    results = dismiss_redundant_pending_suggestions(dry_run=False)
+
+    assert results == [{'job': applied_job, 'suggestion_type': 'feedback_clear', 'kept_id': survivor.id, 'dismissed_count': 2}]
+    survivor.refresh_from_db(); dupe_2.refresh_from_db(); dupe_3.refresh_from_db()
+    assert survivor.status == 'pending'
+    assert dupe_2.status == 'dismissed' and dupe_2.decided_at is not None
+    assert dupe_3.status == 'dismissed' and dupe_3.decided_at is not None
+
+
+def test_dismiss_redundant_pending_suggestions_leaves_a_single_pending_row_alone(db, applied_job):
+    suggestion = _pending_suggestion(applied_job, uid=1)
+    assert dismiss_redundant_pending_suggestions(dry_run=False) == []
+    suggestion.refresh_from_db()
+    assert suggestion.status == 'pending'
+
+
+def test_dismiss_redundant_pending_suggestions_does_not_group_across_different_types_or_jobs(db, applied_job, owner):
+    """(job, type) is the grouping key -- a different suggestion_type on the same job, or the same
+    type on a different job, is not a duplicate of anything."""
+    other_job = JobLead.objects.create(company='Other', title='Role', url='https://other.test/1', status='applied', status_date=timezone.localdate(), created_by=owner)
+    _pending_suggestion(applied_job, suggestion_type='feedback_clear', uid=1)
+    _pending_suggestion(applied_job, suggestion_type='status_change', payload={'status': 'rejected'}, uid=2)
+    _pending_suggestion(other_job, suggestion_type='feedback_clear', uid=3)
+    assert dismiss_redundant_pending_suggestions(dry_run=False) == []
+
+
+def test_dismiss_redundant_pending_suggestions_dry_run_changes_nothing(db, applied_job):
+    """AC2: dry run is the default, and reports without writing."""
+    survivor = _pending_suggestion(applied_job, uid=1)
+    dupe = _pending_suggestion(applied_job, uid=2)
+
+    results = dismiss_redundant_pending_suggestions()  # dry_run=True is the default
+
+    assert results == [{'job': applied_job, 'suggestion_type': 'feedback_clear', 'kept_id': survivor.id, 'dismissed_count': 1}]
+    survivor.refresh_from_db(); dupe.refresh_from_db()
+    assert survivor.status == 'pending' and dupe.status == 'pending'
+
+
+def test_dismiss_redundant_pending_suggestions_is_idempotent(db, applied_job):
+    """AC5-equivalent: a second run finds nothing -- each group is left with only its survivor."""
+    _pending_suggestion(applied_job, uid=1)
+    _pending_suggestion(applied_job, uid=2)
+    first = dismiss_redundant_pending_suggestions(dry_run=False)
+    assert len(first) == 1
+
+    second = dismiss_redundant_pending_suggestions(dry_run=False)
+    assert second == []
 
 
 def test_devjobs_job_alert_matches_nothing_and_drafts_nothing(not_cold_start, db, owner):
@@ -2212,3 +3070,986 @@ def test_get_mailbox_check_task_is_scoped_to_the_starting_user(transactional_db,
     assert mailbox_tasks.get_mailbox_check_task(result['task_id'], other.id) is None
     assert mailbox_tasks.get_mailbox_check_task(result['task_id'], owner.id) is not None
     blocking.release()
+
+
+# ===================================================================================================
+# TASK-132: To/Cc/Reply-To persistence and the sent_by_owner stored flag (AC1/AC2)
+# ===================================================================================================
+
+def test_run_check_persists_to_cc_reply_to(db, owner):
+    transport = FakeTransport([raw(1, sender='hr@acme.test', to='owner@example.test', cc='colleague@acme.test', reply_to='jobs@acme.test')])
+    run_check(transport=transport)
+    message = MailboxMessage.objects.get(uid=1)
+    assert message.to_addrs == 'owner@example.test'
+    assert message.cc_addrs == 'colleague@acme.test'
+    assert message.reply_to == 'jobs@acme.test'
+
+
+def test_run_check_marks_received_mail_as_not_sent_by_owner(db, owner):
+    transport = FakeTransport([raw(1, sender='hr@acme.test')])
+    run_check(transport=transport)
+    assert MailboxMessage.objects.get(uid=1).sent_by_owner is False
+
+
+def test_is_owner_address_consults_every_configured_owner_address(settings):
+    """TASK-132 AC2/TASK-133 notes: GMAIL_IMAP_USER, CODEX_CV_OWNER_EMAIL and the DEFAULT_FROM_EMAIL
+    sender can legitimately differ -- all three must count, or a message sent from one of them reads
+    as received."""
+    settings.GMAIL_IMAP_USER = 'owner@example.test'
+    settings.CODEX_CV_OWNER_EMAIL = 'owner-alt@example.test'
+    settings.DEFAULT_FROM_EMAIL = 'DACHApply <sender@example.test>'
+    assert mailbox._is_owner_address('owner@example.test')
+    assert mailbox._is_owner_address('Owner Name <owner-alt@example.test>')
+    assert mailbox._is_owner_address('sender@example.test')
+    assert not mailbox._is_owner_address('hr@acme.test')
+
+
+# ===================================================================================================
+# TASK-132: ingest_threads() -- the whole Gmail thread of a matched message, including what the
+# owner sent, bounded (AC5) and resumable/append-only-safe (AC4/AC6).
+# ===================================================================================================
+
+def test_ingest_threads_pulls_in_the_owners_sent_reply(db, owner, applied_job, monkeypatch):
+    seed_run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=seed_run, uid=500, gmail_id='inbound-1', internal_date_ms=1000000, thread_id='thread-z',
+        sender='hr@acme.test', subject='Your application', received_at=timezone.now(),
+        classification='recruiter_reply', evaluator='heuristic', matched_job=applied_job,
+    )
+    details = {
+        'inbound-1': {'internalDate': '1000000', 'threadId': 'thread-z', 'raw': _gmail_raw_b64('hr@acme.test', 'Your application', 'body')},
+        'sent-1': {'internalDate': '2000000', 'threadId': 'thread-z', 'raw': _gmail_raw_b64('owner@example.test', 'Re: Your application', 'Thanks, looking forward to it.')},
+    }
+    fake_http = _FakeGmailHttp([], details, threads={'thread-z': ['inbound-1', 'sent-1']})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = ingest_threads(dry_run=False)
+
+    assert result['refused'] == ''
+    assert result['messages_created'] == 1  # inbound-1 already stored, only sent-1 is new
+    assert result['messages_skipped_existing'] == 1
+    sent_message = MailboxMessage.objects.get(gmail_id='sent-1')
+    assert sent_message.sent_by_owner is True, "the owner's own reply must be flagged, not read as received"
+    assert sent_message.matched_job_id == applied_job.id, 'a thread already matched to a job carries that match onto new rows'
+    assert sent_message.thread_id == 'thread-z'
+    assert sent_message.body_text.strip() == 'Thanks, looking forward to it.'
+
+
+def test_ingest_threads_dry_run_writes_nothing(db, owner, applied_job, monkeypatch):
+    seed_run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=seed_run, uid=500, gmail_id='inbound-1', internal_date_ms=1000000, thread_id='thread-z',
+        sender='hr@acme.test', subject='Your application', classification='recruiter_reply', evaluator='heuristic', matched_job=applied_job,
+    )
+    details = {
+        'inbound-1': {'internalDate': '1000000', 'threadId': 'thread-z', 'raw': _gmail_raw_b64('hr@acme.test', 'Your application', 'body')},
+        'sent-1': {'internalDate': '2000000', 'threadId': 'thread-z', 'raw': _gmail_raw_b64('owner@example.test', 'Re: Your application', 'Thanks!')},
+    }
+    fake_http = _FakeGmailHttp([], details, threads={'thread-z': ['inbound-1', 'sent-1']})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = ingest_threads(dry_run=True)
+
+    assert result['messages_created'] == 1  # what WOULD be created
+    assert MailboxMessage.objects.count() == 1, 'dry_run wrote a row'
+    assert not MailboxMessage.objects.filter(gmail_id='sent-1').exists()
+
+
+def test_ingest_threads_ignores_threads_never_matched_to_a_job(db, owner, monkeypatch):
+    """AC5's matched-jobs-only bound: a thread this app has never matched must never be swept in."""
+    seed_run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=seed_run, uid=500, gmail_id='unmatched-1', thread_id='thread-unmatched',
+        sender='newsletter@example.test', subject='Newsletter', classification='not_job_related', evaluator='heuristic',
+    )
+    fake_http = _FakeGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = ingest_threads(dry_run=False)
+
+    assert result == {
+        'threads_attempted': 0, 'threads_failed': 0, 'threads_skipped_capped': 0,
+        'messages_created': 0, 'messages_skipped_existing': 0, 'messages_skipped_thread_cap': 0, 'refused': '',
+    }
+    assert fake_http.calls == [], 'an unmatched thread must never trigger a Gmail read'
+
+
+def test_ingest_threads_caps_messages_per_thread(db, owner, applied_job, monkeypatch):
+    """AC5's per-thread cap: a long thread does not become an unbounded pull; the newest messages
+    (most likely still-live correspondence) are the ones kept."""
+    monkeypatch.setattr(mailbox, 'INGEST_THREAD_MESSAGE_CAP', 2)
+    seed_run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=seed_run, uid=500, gmail_id='seed', internal_date_ms=1000000, thread_id='thread-big',
+        sender='hr@acme.test', subject='Seed', classification='recruiter_reply', evaluator='heuristic', matched_job=applied_job,
+    )
+    details = {'seed': {'internalDate': '1000000', 'threadId': 'thread-big', 'raw': _gmail_raw_b64('hr@acme.test', 'Seed', 'body')}}
+    thread_gmail_ids = ['seed']
+    for i in range(2, 6):
+        gid = f'msg-{i}'
+        details[gid] = {'internalDate': str(1000000 + i), 'threadId': 'thread-big', 'raw': _gmail_raw_b64('hr@acme.test', f'Reply {i}', f'body {i}')}
+        thread_gmail_ids.append(gid)
+    fake_http = _FakeGmailHttp([], details, threads={'thread-big': thread_gmail_ids})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = ingest_threads(dry_run=False)
+
+    assert result['messages_skipped_thread_cap'] == 3  # 5 in the thread, cap 2 -> 3 dropped
+    assert result['messages_created'] == 2  # the newest 2 (msg-4, msg-5); 'seed' was already stored anyway
+    assert set(MailboxMessage.objects.exclude(gmail_id='seed').values_list('gmail_id', flat=True)) == {'msg-4', 'msg-5'}
+
+
+def test_ingest_threads_limit_bounds_how_many_threads_one_call_processes(db, owner, applied_job, monkeypatch):
+    """AC5's thread-count bound: a bare call over many matched threads is one finite batch, not an
+    hour of API calls -- re-running (not exercised here, see the resumable dry_run test above) picks
+    up whatever `limit` left behind."""
+    seed_run = MailboxRun.objects.create()
+    for i, tid in enumerate(['thread-a', 'thread-b'], start=1):
+        MailboxMessage.objects.create(
+            run=seed_run, uid=500 + i, gmail_id=f'seed-{tid}', internal_date_ms=1000000 + i, thread_id=tid,
+            sender='hr@acme.test', subject='Seed', classification='recruiter_reply', evaluator='heuristic', matched_job=applied_job,
+        )
+    details = {
+        'seed-thread-a': {'internalDate': '1000001', 'threadId': 'thread-a', 'raw': _gmail_raw_b64('hr@acme.test', 'A', 'body a')},
+        'seed-thread-b': {'internalDate': '1000002', 'threadId': 'thread-b', 'raw': _gmail_raw_b64('hr@acme.test', 'B', 'body b')},
+        'new-a': {'internalDate': '2000001', 'threadId': 'thread-a', 'raw': _gmail_raw_b64('owner@example.test', 'Re: A', 'reply a')},
+        'new-b': {'internalDate': '2000002', 'threadId': 'thread-b', 'raw': _gmail_raw_b64('owner@example.test', 'Re: B', 'reply b')},
+    }
+    fake_http = _FakeGmailHttp([], details, threads={'thread-a': ['seed-thread-a', 'new-a'], 'thread-b': ['seed-thread-b', 'new-b']})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = ingest_threads(dry_run=False, limit=1)
+
+    assert result['threads_attempted'] == 1
+    assert result['threads_skipped_capped'] == 1
+    assert result['messages_created'] == 1
+
+
+def test_ingest_threads_does_not_move_the_run_check_resume_marker(db, owner, applied_job, monkeypatch):
+    """AC6: a thread-ingested owner-sent reply can be NEWER than anything fetch_new() has actually
+    fetched. If ingest_threads() set internal_date_ms on that row, run_check()'s next resume (MAX of
+    that column) would silently skip a real inbound message that has not been fetched yet.
+    """
+    seed_run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=seed_run, uid=500, gmail_id='inbound-1', internal_date_ms=1000000, thread_id='thread-z',
+        sender='hr@acme.test', subject='Your application', classification='recruiter_reply', evaluator='heuristic', matched_job=applied_job,
+    )
+    before_marker = MailboxMessage.objects.exclude(internal_date_ms__isnull=True).order_by('-internal_date_ms').values_list('internal_date_ms', flat=True).first()
+
+    details = {
+        'inbound-1': {'internalDate': '1000000', 'threadId': 'thread-z', 'raw': _gmail_raw_b64('hr@acme.test', 'Your application', 'body')},
+        # The owner's reply is far NEWER than anything fetch_new() has fetched so far.
+        'sent-1': {'internalDate': '9999999999999', 'threadId': 'thread-z', 'raw': _gmail_raw_b64('owner@example.test', 'Re: Your application', 'Thanks!')},
+    }
+    fake_http = _FakeGmailHttp([], details, threads={'thread-z': ['inbound-1', 'sent-1']})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        ingest_threads(dry_run=False)
+
+    sent_message = MailboxMessage.objects.get(gmail_id='sent-1')
+    assert sent_message.internal_date_ms is None, 'a thread-ingested row must never carry a real internalDate'
+    after_marker = MailboxMessage.objects.exclude(internal_date_ms__isnull=True).order_by('-internal_date_ms').values_list('internal_date_ms', flat=True).first()
+    assert after_marker == before_marker, 'ingest_threads moved run_check()\'s resume marker'
+    all_uids = list(MailboxMessage.objects.values_list('uid', flat=True))
+    assert len(all_uids) == len(set(all_uids)), 'uid collided'
+    assert sent_message.uid > 500, 'uid must be freshly assigned above the existing high-water mark, not reused'
+
+
+def test_ingest_threads_refuses_on_imap_transport(db, owner):
+    """IMAP has no thread concept -- same refuse-rather-than-half-implement shape update_draft_text/
+    purge_app_drafts' command already use for the identical limitation."""
+    result = ingest_threads(dry_run=False)  # _isolated_mailbox_env configures IMAP by default
+    assert 'IMAP has no thread concept' in result['refused']
+    assert result['messages_created'] == 0
+
+
+# ===================================================================================================
+# TASK-132: backfill_message_bodies() -- fills the 648 pre-TASK-117 empty bodies via their own
+# gmail_id, resumable and idempotent (AC3/AC4).
+# ===================================================================================================
+
+def test_backfill_message_bodies_fills_only_empty_rows_and_reports_the_real_count(db, owner, monkeypatch):
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(run=run, uid=1, gmail_id='g1', sender='hr@acme.test', subject='A', body_text='', classification='uncertain', evaluator='heuristic')
+    MailboxMessage.objects.create(run=run, uid=2, gmail_id='g2', sender='hr@acme.test', subject='B', body_text='already here', classification='uncertain', evaluator='heuristic')
+    MailboxMessage.objects.create(run=run, uid=3, gmail_id='', sender='hr@acme.test', subject='C', body_text='', classification='uncertain', evaluator='heuristic')  # IMAP-era, no gmail_id
+
+    details = {'g1': {'internalDate': '1', 'threadId': 't1', 'raw': _gmail_raw_b64('hr@acme.test', 'A', 'fetched body one')}}
+    fake_http = _FakeGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = backfill_message_bodies(dry_run=False)
+
+    assert result == {'attempted': 1, 'filled': 1, 'failed': 0, 'skipped_no_gmail_id': 1, 'refused': ''}
+    assert MailboxMessage.objects.get(gmail_id='g1').body_text.strip() == 'fetched body one'
+    assert MailboxMessage.objects.get(gmail_id='g2').body_text == 'already here'  # untouched
+
+
+def test_backfill_message_bodies_dry_run_writes_nothing(db, owner, monkeypatch):
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(run=run, uid=1, gmail_id='g1', sender='hr@acme.test', subject='A', body_text='', classification='uncertain', evaluator='heuristic')
+    details = {'g1': {'internalDate': '1', 'threadId': 't1', 'raw': _gmail_raw_b64('hr@acme.test', 'A', 'fetched body one')}}
+    fake_http = _FakeGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = backfill_message_bodies(dry_run=True)
+
+    assert result['filled'] == 1  # what WOULD be filled
+    assert MailboxMessage.objects.get(gmail_id='g1').body_text == '', 'dry_run wrote body_text anyway'
+
+
+def test_backfill_message_bodies_is_idempotent_on_rerun(db, owner, monkeypatch):
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(run=run, uid=1, gmail_id='g1', sender='hr@acme.test', subject='A', body_text='', classification='uncertain', evaluator='heuristic')
+    details = {'g1': {'internalDate': '1', 'threadId': 't1', 'raw': _gmail_raw_b64('hr@acme.test', 'A', 'fetched body one')}}
+    fake_http = _FakeGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        first = backfill_message_bodies(dry_run=False)
+        second = backfill_message_bodies(dry_run=False)  # interrupted-and-re-run stand-in: nothing left to do
+
+    assert first['filled'] == 1
+    assert second == {'attempted': 0, 'filled': 0, 'failed': 0, 'skipped_no_gmail_id': 0, 'refused': ''}
+    assert fake_http.calls.count(('GET', f'{mailbox.GMAIL_API_BASE}/messages/g1?format=raw')) == 1, 're-fetched a row it had already filled'
+
+
+def test_backfill_message_bodies_limit_bounds_one_call_and_a_second_call_resumes(db, owner, monkeypatch):
+    run = MailboxRun.objects.create()
+    for i in range(1, 4):
+        MailboxMessage.objects.create(run=run, uid=i, gmail_id=f'g{i}', sender='hr@acme.test', subject=f'S{i}', body_text='', classification='uncertain', evaluator='heuristic')
+    details = {f'g{i}': {'internalDate': str(i), 'threadId': f't{i}', 'raw': _gmail_raw_b64('hr@acme.test', f'S{i}', f'body {i}')} for i in range(1, 4)}
+    fake_http = _FakeGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        first = backfill_message_bodies(dry_run=False, limit=1)
+        second = backfill_message_bodies(dry_run=False, limit=1)
+
+    assert first['attempted'] == 1 and first['filled'] == 1
+    assert second['attempted'] == 1 and second['filled'] == 1
+    assert MailboxMessage.objects.filter(body_text='').exclude(gmail_id='').count() == 1, 'one row should still be waiting for a third call'
+
+
+def test_backfill_message_bodies_refuses_on_imap_transport(db, owner):
+    result = backfill_message_bodies(dry_run=False)  # _isolated_mailbox_env configures IMAP by default
+    assert 'Gmail API' in result['refused']
+    assert result['filled'] == 0
+
+
+# ===================================================================================================
+# TASK-135: calendar invitations (AC1/AC2) and attachment metadata (AC3/AC4) in a message itself --
+# distinct from TASK-115's calendar QUIET HOURS above (a separate feed the owner configures), this is
+# what a message the mailbox check already fetched carries as its OWN text/calendar part.
+# ===================================================================================================
+
+# Real-shaped: a Teams "Einladung zum Kennenlernen" VEVENT, the exact case measured in production --
+# six ONTEC AG messages with no text/plain part at all, only this.
+ONTEC_STYLE_ICS = (
+    'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\n'
+    'DTSTART;TZID=Europe/Vienna:20260615T140000\r\n'
+    'DTEND;TZID=Europe/Vienna:20260615T143000\r\n'
+    'SUMMARY:Einladung zum Kennenlernen per Microsoft-Teams\r\n'
+    'LOCATION:Microsoft Teams Meeting\r\n'
+    'ORGANIZER;CN=Doris Liegenfeld:mailto:doris.liegenfeld@ontec.at\r\n'
+    'UID:abc123@ontec.at\r\n'
+    'END:VEVENT\r\nEND:VCALENDAR\r\n'
+)
+
+
+def _gmail_raw_b64_calendar_and_attachment(sender, subject, ics_text, message_id='<invite@example.test>', attachment_filename=None, attachment_bytes=b''):
+    """A raw RFC822 message whose body is ONLY a text/calendar part (no text/plain -- the exact real
+    shape measured in production) plus, optionally, one attached file. Same base64-of-.as_bytes()
+    shape _gmail_raw_b64 above builds for a plain-text message.
+    """
+    msg = EmailMessage()
+    msg['From'] = sender
+    msg['Subject'] = subject
+    msg['Message-ID'] = message_id
+    msg.make_mixed()
+    calendar_part = EmailMessage()
+    calendar_part.set_content(ics_text, subtype='calendar')
+    msg.attach(calendar_part)
+    if attachment_filename:
+        msg.add_attachment(attachment_bytes, maintype='application', subtype='pdf', filename=attachment_filename)
+    return base64.urlsafe_b64encode(msg.as_bytes()).decode('ascii').rstrip('=')
+
+
+# --- parse_calendar_invitation: AC1/AC2, unit-level, reusing TASK-115's VEVENT parsing -------------
+
+def test_parse_calendar_invitation_extracts_what_when_with_whom():
+    invitation = mailbox.parse_calendar_invitation(ONTEC_STYLE_ICS)
+    assert invitation['summary'] == 'Einladung zum Kennenlernen per Microsoft-Teams'
+    assert invitation['location'] == 'Microsoft Teams Meeting'
+    assert invitation['organizer'] == 'Doris Liegenfeld <doris.liegenfeld@ontec.at>'
+    assert invitation['start'] is not None and invitation['end'] is not None
+    assert invitation['end'] > invitation['start']
+
+
+def test_parse_calendar_invitation_renders_in_the_owners_timezone_regardless_of_the_invites_own_tzid():
+    """AC2: 09:00 America/New_York in June (both zones on DST) is 15:00 Europe/Vienna -- the owner
+    must see THEIR OWN configured timezone's wall-clock time, not whatever the sender's calendar used.
+    """
+    ics = 'BEGIN:VEVENT\r\nDTSTART;TZID=America/New_York:20260615T090000\r\nSUMMARY:Call\r\nEND:VEVENT\r\n'
+    invitation = mailbox.parse_calendar_invitation(ics)
+    localized = timezone.localtime(invitation['start'])
+    assert (localized.hour, localized.minute) == (15, 0)
+
+
+def test_parse_calendar_invitation_returns_none_with_no_vevent():
+    assert mailbox.parse_calendar_invitation('BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n') is None
+
+
+def test_parse_calendar_invitation_returns_none_on_unparseable_dtstart():
+    """Fail-open, same shape as is_busy_at -- an unparseable invitation costs that one field, never
+    the message it is attached to."""
+    assert mailbox.parse_calendar_invitation('BEGIN:VEVENT\r\nDTSTART:not-a-date\r\nEND:VEVENT\r\n') is None
+
+
+def test_parse_calendar_invitation_unescapes_rfc5545_text():
+    ics = 'BEGIN:VEVENT\r\nDTSTART:20260615T140000Z\r\nSUMMARY:Kickoff\\, part one\\; continued\r\nEND:VEVENT\r\n'
+    invitation = mailbox.parse_calendar_invitation(ics)
+    assert invitation['summary'] == 'Kickoff, part one; continued'
+
+
+# --- _parse_gmail_raw_message: AC1/AC3/AC5, the calendar-only-body real-world shape -----------------
+
+def test_parse_gmail_raw_message_fills_calendar_and_attachment_fields_when_body_is_calendar_only():
+    """AC1/AC3/AC5: the exact measured shape -- an invitation with NO text/plain part. body_text stays
+    '' (there is nothing else to extract it from), but calendar_summary/location/organizer/start and
+    the attachment manifest are populated -- what stops the message reading as empty.
+    """
+    dummy_pdf_bytes = b'%PDF-1.4 dummy content for size measurement'
+    raw_b64 = _gmail_raw_b64_calendar_and_attachment(
+        'doris.liegenfeld@ontec.at', 'Einladung zum Kennenlernen per Microsoft-Teams', ONTEC_STYLE_ICS,
+        attachment_filename='agenda.pdf', attachment_bytes=dummy_pdf_bytes,
+    )
+    parsed = mailbox._parse_gmail_raw_message('msg-1', {'internalDate': '1', 'threadId': 't1', 'raw': raw_b64})
+
+    assert parsed.body_text == ''
+    assert parsed.calendar_summary == 'Einladung zum Kennenlernen per Microsoft-Teams'
+    assert parsed.calendar_location == 'Microsoft Teams Meeting'
+    assert parsed.calendar_organizer == 'Doris Liegenfeld <doris.liegenfeld@ontec.at>'
+    assert parsed.calendar_start is not None
+
+    # AC3/AC4: metadata only -- filename, mime type, size, and NOTHING ELSE (no content/bytes key).
+    assert len(parsed.attachments) == 1
+    attachment = parsed.attachments[0]
+    assert attachment == {'filename': 'agenda.pdf', 'mime_type': 'application/pdf', 'size': len(dummy_pdf_bytes)}
+
+
+def test_parse_gmail_raw_message_with_no_calendar_part_leaves_calendar_fields_blank():
+    raw_b64 = _gmail_raw_b64('hr@acme.test', 'Ordinary message', 'Just a normal reply.')
+    parsed = mailbox._parse_gmail_raw_message('msg-1', {'internalDate': '1', 'threadId': 't1', 'raw': raw_b64})
+    assert parsed.calendar_summary == '' and parsed.calendar_start is None
+    assert parsed.attachments == []
+
+
+def test_attachment_filename_with_markup_like_content_is_stored_as_plain_text(db, owner):
+    """AC6: a filename is DATA from a stranger -- stored and returned as an ordinary string, never
+    interpreted. Asserted structurally: the value round-trips through the parser and the model exactly
+    as given, as a plain str, with no HTML/markup handling anywhere in this path to have mangled it.
+    """
+    malicious_filename = '<img src=x onerror=alert(1)>.pdf'
+    raw_b64 = _gmail_raw_b64_calendar_and_attachment(
+        'hr@acme.test', 'Interview docs', ONTEC_STYLE_ICS, attachment_filename=malicious_filename, attachment_bytes=b'x',
+    )
+    parsed = mailbox._parse_gmail_raw_message('msg-1', {'internalDate': '1', 'threadId': 't1', 'raw': raw_b64})
+    assert isinstance(parsed.attachments[0]['filename'], str)
+    assert parsed.attachments[0]['filename'] == malicious_filename
+
+
+# --- run_check() end to end: AC1/AC3/AC5 persisted onto the row ------------------------------------
+
+def test_run_check_persists_calendar_and_attachment_fields_onto_the_message(db, owner, monkeypatch):
+    details = {'msg-invite': {
+        'internalDate': '9000000', 'threadId': 't1',
+        'raw': _gmail_raw_b64_calendar_and_attachment('doris.liegenfeld@ontec.at', 'Einladung zum Kennenlernen per Microsoft-Teams', ONTEC_STYLE_ICS),
+    }}
+    fake_http = _FakeGmailHttp(['msg-invite'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run = run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+
+    assert run is not None and not run.error
+    message = MailboxMessage.objects.get(gmail_id='msg-invite')
+    assert message.body_text == ''
+    assert message.calendar_summary == 'Einladung zum Kennenlernen per Microsoft-Teams'
+    assert message.calendar_organizer == 'Doris Liegenfeld <doris.liegenfeld@ontec.at>'
+    assert message.calendar_start is not None
+
+
+# --- backfill_message_bodies: the six real rows this task exists for -------------------------------
+
+def test_backfill_message_bodies_fills_calendar_only_messages_without_marking_them_failed(db, owner, monkeypatch):
+    """The exact production bug this task fixes: a calendar-only message's body_text stays '' even
+    after a successful refetch (Gmail genuinely has no text/plain part for it) -- the old body-only
+    version of this function then counted it as 'failed' and threw its calendar data away with it.
+    """
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=run, uid=1, gmail_id='g1', sender='doris.liegenfeld@ontec.at',
+        subject='Einladung zum Kennenlernen per Microsoft-Teams', body_text='',
+        classification='uncertain', evaluator='heuristic',
+    )
+    details = {'g1': {'internalDate': '1', 'threadId': 't1', 'raw': _gmail_raw_b64_calendar_and_attachment('doris.liegenfeld@ontec.at', 'Einladung zum Kennenlernen per Microsoft-Teams', ONTEC_STYLE_ICS)}}
+    fake_http = _FakeGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = backfill_message_bodies(dry_run=False)
+
+    assert result == {'attempted': 1, 'filled': 1, 'failed': 0, 'skipped_no_gmail_id': 0, 'refused': ''}
+    message = MailboxMessage.objects.get(gmail_id='g1')
+    assert message.body_text == ''
+    assert message.calendar_summary == 'Einladung zum Kennenlernen per Microsoft-Teams'
+
+
+def test_backfill_message_bodies_calendar_only_row_is_not_reselected_on_rerun(db, owner, monkeypatch):
+    """Idempotency for the calendar-only case specifically: body_text=='' alone would keep matching
+    this row as a candidate forever (it never becomes non-empty), so the candidate query must also
+    check calendar_summary -- verified here by asserting Gmail is hit exactly once across two calls.
+    """
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=run, uid=1, gmail_id='g1', sender='doris.liegenfeld@ontec.at', subject='x', body_text='',
+        classification='uncertain', evaluator='heuristic',
+    )
+    details = {'g1': {'internalDate': '1', 'threadId': 't1', 'raw': _gmail_raw_b64_calendar_and_attachment('doris.liegenfeld@ontec.at', 'x', ONTEC_STYLE_ICS)}}
+    fake_http = _FakeGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        first = backfill_message_bodies(dry_run=False)
+        second = backfill_message_bodies(dry_run=False)
+
+    assert first['filled'] == 1
+    assert second == {'attempted': 0, 'filled': 0, 'failed': 0, 'skipped_no_gmail_id': 0, 'refused': ''}
+    assert fake_http.calls.count(('GET', f'{mailbox.GMAIL_API_BASE}/messages/g1?format=raw')) == 1, 're-fetched a row it had already filled'
+
+
+# ===================================================================================================
+# TASK-133: derive_reply_recipients() -- reply/reply-all recipient derivation from a message's own
+# stored headers (AC2/AC7).
+# ===================================================================================================
+
+def _thread_message(sender='hr@acme.test', reply_to='', to_addrs='owner@example.test', cc_addrs='', sent_by_owner=False, thread_id='thread-1', job=None):
+    run = MailboxRun.objects.create()
+    uid = MailboxMessage.objects.count() + 1000
+    return MailboxMessage.objects.create(
+        run=run, uid=uid, sender=sender, subject='Re: role', message_id=f'<msg-{uid}@acme.test>',
+        reply_to=reply_to, to_addrs=to_addrs, cc_addrs=cc_addrs, sent_by_owner=sent_by_owner,
+        thread_id=thread_id, classification='recruiter_reply', matched_job=job,
+    )
+
+
+def test_derive_reply_recipients_plain_reply_targets_the_sender(db):
+    message = _thread_message(sender='hr@acme.test', to_addrs='owner@example.test')
+    assert derive_reply_recipients(message, reply_all=False) == {'to': ['hr@acme.test'], 'cc': []}
+
+
+def test_derive_reply_recipients_reply_all_excludes_every_owner_address(db, settings):
+    settings.CODEX_CV_OWNER_EMAIL = 'owner@example.test'
+    settings.GMAIL_IMAP_USER = 'owner@example.test'
+    settings.DEFAULT_FROM_EMAIL = 'DACHApply <owner-alt@example.test>'
+    message = _thread_message(
+        sender='hr@acme.test', to_addrs='owner@example.test, jane@acme.test',
+        cc_addrs='team@acme.test, owner-alt@example.test',
+    )
+    assert derive_reply_recipients(message, reply_all=True) == {'to': ['hr@acme.test'], 'cc': ['jane@acme.test', 'team@acme.test']}
+
+
+def test_derive_reply_recipients_plain_reply_never_includes_to_or_cc(db):
+    message = _thread_message(sender='hr@acme.test', to_addrs='owner@example.test, jane@acme.test', cc_addrs='team@acme.test')
+    assert derive_reply_recipients(message, reply_all=False) == {'to': ['hr@acme.test'], 'cc': []}
+
+
+def test_derive_reply_recipients_prefers_reply_to_over_from(db):
+    """AC7: a Reply-To header is exactly what it is for."""
+    message = _thread_message(sender='hr@acme.test', reply_to='jobs-list@acme.test', to_addrs='owner@example.test')
+    assert derive_reply_recipients(message, reply_all=False) == {'to': ['jobs-list@acme.test'], 'cc': []}
+
+
+def test_derive_reply_recipients_reply_all_on_a_list_message_uses_the_lists_reply_to(db):
+    """AC7: reply-all on a mailing-list message folds down to the list's own reply address, not one
+    more copy of the sender -- while everyone ELSE on To/Cc still lands in cc."""
+    message = _thread_message(sender='jobs-list@acme.test', reply_to='jobs-list-reply@acme.test', to_addrs='owner@example.test, subscriber2@acme.test')
+    result = derive_reply_recipients(message, reply_all=True)
+    assert result['to'] == ['jobs-list-reply@acme.test']
+    assert result['cc'] == ['subscriber2@acme.test']
+
+
+def test_derive_reply_recipients_deduplicates_case_insensitively(db):
+    message = _thread_message(sender='hr@acme.test', to_addrs='owner@example.test, HR@Acme.test', cc_addrs='hr@acme.test')
+    result = derive_reply_recipients(message, reply_all=True)
+    assert result['cc'] == [], 'the sender repeated in To/Cc (any casing) must not also show up in cc'
+
+
+def test_derive_reply_recipients_on_the_owners_own_sent_message_targets_the_original_recipient(db):
+    """A message the OWNER sent is now part of the conversation (TASK-132). Applying the plain
+    'Reply-To or From' rule to it would derive a reply-to-self; a real mail client instead replies to
+    that sent message's own recipients, which is what this must do too.
+    """
+    message = _thread_message(sender='owner@example.test', to_addrs='hr@acme.test', cc_addrs='jane@acme.test', sent_by_owner=True)
+    assert derive_reply_recipients(message, reply_all=False) == {'to': ['hr@acme.test'], 'cc': []}
+    assert derive_reply_recipients(message, reply_all=True) == {'to': ['hr@acme.test'], 'cc': ['jane@acme.test']}
+
+
+# ===================================================================================================
+# TASK-133: compose_reply_draft() -- a hand-composed, recipient-edited reply saved into Gmail Drafts.
+# Same guardrail-then-Gmail-then-database ordering and refusal contract as update_draft_text (AC6/AC8).
+# ===================================================================================================
+
+def test_compose_reply_draft_refuses_on_guardrail_failure(db, owner, settings):
+    settings.MAILBOX_DO_NOT_DISCLOSE = ['internal roadmap']
+    message = _thread_message(sender='hr@acme.test', to_addrs='owner@example.test')
+    reason = compose_reply_draft(message, 'Sure, happy to share our internal roadmap for Q3.', to=['hr@acme.test'], cc=[])
+    assert 'internal roadmap' in reason
+    assert not MailboxDraft.objects.filter(message=message).exists(), 'a blocked draft must write nothing'
+
+
+def test_compose_reply_draft_refuses_with_no_recipient(db, owner):
+    message = _thread_message(sender='hr@acme.test')
+    assert compose_reply_draft(message, 'Hello there.', to=[], cc=[]) == 'no recipient selected'
+
+
+def test_compose_reply_draft_writes_to_gmail_on_the_correct_thread_with_the_shown_recipients(db, owner, applied_job, monkeypatch):
+    message = _thread_message(sender='hr@acme.test', to_addrs='owner@example.test', thread_id='thread-xyz', job=applied_job)
+    fake_http = _FakeGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: transport)
+
+    reason = compose_reply_draft(message, 'Thanks, happy to move forward.', to=['hr@acme.test'], cc=['jane@acme.test'], user=owner)
+
+    assert reason == ''
+    assert fake_http.draft_payloads[0]['message']['threadId'] == 'thread-xyz', 'must land in the SAME Gmail conversation (AC4)'
+    raw_mime = base64.urlsafe_b64decode(fake_http.draft_payloads[0]['message']['raw'] + '==')
+    parsed = email.message_from_bytes(raw_mime)
+    assert parsed['To'] == 'hr@acme.test'
+    assert parsed['Cc'] == 'jane@acme.test'
+    draft = MailboxDraft.objects.get(message=message)
+    assert draft.status == 'written'
+    assert draft.evaluator == 'human'
+    assert draft.gmail_draft_id == 'draft-1'
+    assert not any(url.endswith('/send') for _method, url in fake_http.calls), 'AC5: the send endpoint must never be called'
+
+
+def test_compose_reply_draft_never_calls_send(db, owner, applied_job, monkeypatch):
+    """AC5, its own explicit assertion: the send endpoint is never reachable from compose_reply_draft."""
+    message = _thread_message(sender='hr@acme.test', to_addrs='owner@example.test', thread_id='thread-1', job=applied_job)
+    fake_http = _FakeGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: transport)
+
+    compose_reply_draft(message, 'Reply text.', to=['hr@acme.test'], cc=[])
+
+    assert not any('send' in url for _method, url in fake_http.calls)
+
+
+def test_compose_reply_draft_updates_an_existing_written_draft_in_place(db, owner, applied_job, monkeypatch):
+    """MailboxDraft.message is a OneToOneField -- a message that already has a draft (an
+    auto-generated one here) must be UPDATED, not duplicated into a second row.
+    """
+    message = _thread_message(sender='hr@acme.test', to_addrs='owner@example.test', thread_id='thread-xyz', job=applied_job)
+    MailboxDraft.objects.create(
+        message=message, job=applied_job, status='written', subject='Re: role', body_text='auto text',
+        evaluator='template', gmail_draft_id='draft-auto', gmail_thread_id='thread-xyz',
+    )
+    fake_http = _FakeGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: transport)
+
+    reason = compose_reply_draft(message, 'A different, hand-written reply.', to=['hr@acme.test'], cc=[])
+
+    assert reason == ''
+    assert MailboxDraft.objects.filter(message=message).count() == 1, 'created a second row instead of updating in place'
+    draft = MailboxDraft.objects.get(message=message)
+    assert draft.body_text == 'A different, hand-written reply.'
+    assert draft.evaluator == 'human'
+    assert fake_http.update_payloads, 'must go through drafts.update, not drafts.create'
+    assert not fake_http.draft_payloads, 'must not also call drafts.create'
+    assert [call for call in fake_http.calls if call[0] == 'PUT' and call[1].endswith('/drafts/draft-auto')]
+
+
+def test_compose_reply_draft_works_over_imap_transport_for_a_fresh_draft(db, owner, applied_job, monkeypatch):
+    """A message with no existing draft can be composed over either transport -- append_draft is
+    supported by both (same as maybe_draft_reply()'s original TASK-110 behaviour)."""
+    message = _thread_message(sender='hr@acme.test', to_addrs='owner@example.test', job=applied_job)
+    fake_transport = FakeTransport([])
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: fake_transport)
+
+    reason = compose_reply_draft(message, 'Thanks for reaching out.', to=['hr@acme.test'], cc=[])
+
+    assert reason == ''
+    assert len(fake_transport.appended_drafts) == 1
+    draft = MailboxDraft.objects.get(message=message)
+    assert (draft.gmail_draft_id, draft.gmail_message_id, draft.gmail_thread_id) == ('', '', '')
+
+
+def test_compose_reply_draft_refuses_to_update_an_existing_draft_over_imap(db, owner, applied_job, monkeypatch):
+    """Updating an existing Gmail-API-written draft in place needs users.drafts.update, which IMAP has
+    no equivalent of -- same reason update_draft_text refuses IMAP for an edit."""
+    message = _thread_message(sender='hr@acme.test', to_addrs='owner@example.test', job=applied_job)
+    MailboxDraft.objects.create(
+        message=message, job=applied_job, status='written', subject='Re: role', body_text='auto text',
+        evaluator='template', gmail_draft_id='draft-auto', gmail_thread_id='thread-1',
+    )
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: FakeTransport([]))
+
+    reason = compose_reply_draft(message, 'A hand-written reply.', to=['hr@acme.test'], cc=[])
+
+    assert 'IMAP is not supported' in reason
+    draft = MailboxDraft.objects.get(message=message)
+    assert draft.body_text == 'auto text', 'refused edit was written anyway'
+
+
+def test_compose_reply_draft_returns_a_reason_when_gmail_rejects_the_draft(db, owner, applied_job, monkeypatch):
+    """AC8: a Gmail failure comes back as a reason, matching update_draft_text's contract, never a
+    500 -- and nothing is written when it does."""
+    message = _thread_message(sender='hr@acme.test', to_addrs='owner@example.test', job=applied_job)
+
+    class _Rejecting:
+        def append_draft(self, *_args, **_kwargs):
+            raise RuntimeError('Gmail API POST .../drafts failed with HTTP 400: Bad Request')
+
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: _Rejecting())
+
+    reason = compose_reply_draft(message, 'Reply text.', to=['hr@acme.test'], cc=[])
+
+    assert reason, 'a Gmail failure must come back as a refusal reason, not an exception'
+    assert not MailboxDraft.objects.filter(message=message).exists()
+
+
+# ===================================================================================================
+# TASK-132 AC1: backfill_thread_ids() -- without a thread_id, ingest_threads has nothing to expand.
+# The first backfill pass held the whole Gmail message response, took body_text out of it and dropped
+# threadId, so 648 of 653 rows still had none and thread ingestion could reach only 2 conversations.
+# ===================================================================================================
+
+def test_backfill_thread_ids_fills_only_rows_missing_one(db, owner, monkeypatch):
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(run=run, uid=1, gmail_id='g1', thread_id='', sender='hr@acme.test', subject='A', classification='uncertain', evaluator='heuristic')
+    MailboxMessage.objects.create(run=run, uid=2, gmail_id='g2', thread_id='already', sender='hr@acme.test', subject='B', classification='uncertain', evaluator='heuristic')
+    MailboxMessage.objects.create(run=run, uid=3, gmail_id='', thread_id='', sender='hr@acme.test', subject='C', classification='uncertain', evaluator='heuristic')
+
+    details = {'g1': {'internalDate': '1', 'threadId': 'thread-one', 'raw': _gmail_raw_b64('hr@acme.test', 'A', 'body')}}
+    fake_http = _FakeGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = backfill_thread_ids(dry_run=False)
+
+    assert result['attempted'] == 1 and result['filled'] == 1
+    assert result['skipped_no_gmail_id'] == 1, 'an IMAP-era row has no gmail_id and must be counted, not silently ignored'
+    assert MailboxMessage.objects.get(gmail_id='g1').thread_id == 'thread-one'
+    assert MailboxMessage.objects.get(gmail_id='g2').thread_id == 'already', 'a row that already had one must be untouched'
+
+
+def test_backfill_thread_ids_dry_run_writes_nothing_and_rerun_is_idempotent(db, owner, monkeypatch):
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(run=run, uid=1, gmail_id='g1', thread_id='', sender='hr@acme.test', subject='A', classification='uncertain', evaluator='heuristic')
+    details = {'g1': {'internalDate': '1', 'threadId': 'thread-one', 'raw': _gmail_raw_b64('hr@acme.test', 'A', 'body')}}
+    fake_http = _FakeGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        dry = backfill_thread_ids(dry_run=True)
+        assert dry['filled'] == 1
+        assert MailboxMessage.objects.get(gmail_id='g1').thread_id == '', 'dry run must write nothing'
+
+        backfill_thread_ids(dry_run=False)
+        again = backfill_thread_ids(dry_run=False)
+
+    assert again['attempted'] == 0, 'a filled row must never be selected again'
+
+
+# ===================================================================================================
+# TASK-141 AC4/AC5/AC6/AC7: the Gmail cold-start floor comes from the owner's configured
+# UserProfile.mailbox_lookback_months (default 6), not the fixed FETCH_HISTORY_FLOOR_DAYS constant --
+# re-read fresh on every run_check() call, so a settings-page edit needs no restart. AC7 (nothing
+# already stored is deleted) is proved by omission: no test below ever deletes a MailboxMessage row.
+# ===================================================================================================
+
+def test_run_check_derives_the_gmail_after_query_from_the_configured_lookback(db, owner, monkeypatch):
+    """AC4: the after: floor a cold-start run_check() actually sends to Gmail comes from the owner's
+    configured mailbox_lookback_months, verified on the query string itself, not by reasoning about
+    it."""
+    profile = user_profile_settings(owner)
+    profile.mailbox_lookback_months = 2
+    profile.save(update_fields=['mailbox_lookback_months'])
+    fake_http = _QueryCapturingGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    before = timezone.now() - timedelta(days=2 * 30)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+    after = timezone.now() - timedelta(days=2 * 30)
+
+    after_seconds = int(parse_qs(urlsplit(fake_http.list_urls[0]).query)['q'][0].split(':', 1)[1])
+    assert int(before.timestamp()) <= after_seconds <= int(after.timestamp())
+    # Sanity: distinctly narrower than the 730-day default -- not accidentally still using it.
+    default_before_seconds = int((timezone.now() - timedelta(days=mailbox.FETCH_HISTORY_FLOOR_DAYS)).timestamp())
+    assert after_seconds > default_before_seconds
+
+
+def test_run_check_default_lookback_is_six_months(db, owner, monkeypatch):
+    """The default (no change made on the settings page) -- UserProfile.mailbox_lookback_months
+    defaults to 6, so a fresh profile's cold start floor is ~180 days, not the 730-day constant."""
+    fake_http = _QueryCapturingGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    before = timezone.now() - timedelta(days=6 * 30)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+    after = timezone.now() - timedelta(days=6 * 30)
+
+    after_seconds = int(parse_qs(urlsplit(fake_http.list_urls[0]).query)['q'][0].split(':', 1)[1])
+    assert int(before.timestamp()) <= after_seconds <= int(after.timestamp())
+
+
+def test_run_check_resume_marker_still_works_with_the_lookback_bound(db, owner, monkeypatch):
+    """AC5: two consecutive runs with a configured (narrow) lookback -- the second must resume from
+    the real marker, not re-clip to the lookback floor, and fetch nothing new. This is TASK-136 AC4's
+    contract, re-proved with the configurable bound in place."""
+    profile = user_profile_settings(owner)
+    profile.mailbox_lookback_months = 1
+    profile.save(update_fields=['mailbox_lookback_months'])
+    JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
+    details = {'msg-1': {'internalDate': '1000000', 'threadId': 'thread-1', 'raw': _gmail_raw_b64('hr@acme.test', 'First', 'body one')}}
+    fake_http = _FakeGmailHttp(['msg-1'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+        first = run_check(transport=transport)
+        assert first is not None and not first.error
+        assert MailboxMessage.objects.count() == 1
+
+        second = run_check(transport=transport, force=True)
+        assert second is not None and not second.error
+        assert MailboxMessage.objects.count() == 1, 'the second run re-read mail it had already seen'
+
+
+def test_gmail_lookback_setting_change_takes_effect_on_the_next_run_without_restart(db, owner, monkeypatch):
+    """AC6: run_check() re-reads profile.mailbox_lookback_months fresh on every call (see
+    _lookback_days -- nothing about it is cached on the transport, the process, or anywhere else), so
+    a settings-page edit is visible on the very next run, same transport instance, same process."""
+    profile = user_profile_settings(owner)
+    profile.mailbox_lookback_months = 1
+    profile.save(update_fields=['mailbox_lookback_months'])
+    fake_http = _QueryCapturingGmailHttp([], {})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+    first_after_seconds = int(parse_qs(urlsplit(fake_http.list_urls[0]).query)['q'][0].split(':', 1)[1])
+
+    MailboxMessage.objects.all().delete()  # a fresh cold start again, isolating the second measurement
+    fake_http.list_urls.clear()
+    profile.mailbox_lookback_months = 12
+    profile.save(update_fields=['mailbox_lookback_months'])
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+    second_after_seconds = int(parse_qs(urlsplit(fake_http.list_urls[0]).query)['q'][0].split(':', 1)[1])
+
+    assert second_after_seconds < first_after_seconds, (
+        '12-month lookback must reach further back in time than 1-month -- same transport instance, '
+        'same process, only the profile field changed between the two calls'
+    )
+
+
+# ===================================================================================================
+# TASK-144: the owner's own SENT mail is fetched too, so a conversation finally has two sides. AC3 is
+# the dangerous one and is tested first: _classify_heuristic has no idea who sent a message, so a sent
+# reply must never be allowed to generate a suggestion or a Gmail-Drafts reply-to-self.
+# ===================================================================================================
+
+def test_run_check_never_drafts_a_reply_to_the_owners_own_sent_message(db, owner, applied_job, monkeypatch):
+    """AC3, the failure this task exists to prevent: a message the OWNER sent, in a thread already
+    matched to a tracked job, reads exactly like a recruiter's mail to the classifier ("thank you for
+    the invitation" hits INTERVIEW_KEYWORDS the same as a genuine invite would). Without the
+    sent_by_owner guard the app would draft a reply to its own email and write it to Gmail Drafts.
+    """
+    seed_run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=seed_run, uid=500, gmail_id='inbound-1', internal_date_ms=1000000, thread_id='thread-z',
+        sender='hr@acme.test', subject='Interview invite', classification='interview_invitation',
+        evaluator='heuristic', matched_job=applied_job,
+    )
+    details = {'sent-1': {
+        'internalDate': '2000000', 'threadId': 'thread-z',
+        'raw': _gmail_raw_b64('owner@example.test', 'Re: Interview invite', 'Thank you, I would like to invite you to confirm the time works.'),
+    }}
+    fake_http = _FakeGmailHttp(['sent-1'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run = run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+
+    assert run is not None and not run.error
+    message = MailboxMessage.objects.get(gmail_id='sent-1')
+    assert message.sent_by_owner is True
+    assert message.matched_job_id == applied_job.id
+    assert not MailboxSuggestion.objects.filter(message=message).exists(), 'a suggestion was generated from the owner\'s own words'
+    assert not MailboxDraft.objects.filter(message=message).exists(), 'a draft was generated from the owner\'s own words'
+    assert fake_http.draft_payloads == [], 'a reply to the owner\'s own email was written to Gmail Drafts'
+
+
+def test_run_check_fetches_the_owners_sent_reply_giving_the_conversation_a_second_side(db, owner, applied_job, monkeypatch):
+    """AC1/AC2: a job whose conversation had 0 owner messages before this run has the owner's own
+    reply after it, stored with sent_by_owner=True -- rendered by the existing left/right frontend
+    code path, which already keys on this same flag (nothing new to render)."""
+    before_count = MailboxMessage.objects.filter(matched_job=applied_job, sent_by_owner=True).count()
+    assert before_count == 0, 'before: 0 owner messages on this job'
+    seed_run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=seed_run, uid=500, gmail_id='inbound-1', internal_date_ms=1000000, thread_id='thread-z',
+        sender='hr@acme.test', subject='Your application', classification='recruiter_reply',
+        evaluator='heuristic', matched_job=applied_job,
+    )
+    details = {'sent-1': {
+        'internalDate': '2000000', 'threadId': 'thread-z',
+        'raw': _gmail_raw_b64('owner@example.test', 'Re: Your application', 'Thanks, looking forward to it.'),
+    }}
+    fake_http = _FakeGmailHttp(['sent-1'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run = run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+
+    assert run is not None and not run.error
+    after_count = MailboxMessage.objects.filter(matched_job=applied_job, sent_by_owner=True).count()
+    assert after_count == 1, f'after: {after_count} owner message(s) on job {applied_job.id} -- the reply was not fetched and matched'
+
+
+def test_run_check_skips_sent_mail_whose_thread_matches_no_tracked_job(db, owner, monkeypatch):
+    """AC5: sent mail is scoped by THREAD MEMBERSHIP -- a sent message in a thread this app has never
+    matched to a job is not stored at all, so personal correspondence never floods the review panel's
+    unmatched list."""
+    details = {'sent-personal': {
+        'internalDate': '1000000', 'threadId': 'thread-personal',
+        'raw': _gmail_raw_b64('owner@example.test', 'Dinner plans', 'See you at 8?'),
+    }}
+    fake_http = _FakeGmailHttp(['sent-personal'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run = run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+
+    assert run is not None and not run.error
+    assert not MailboxMessage.objects.filter(gmail_id='sent-personal').exists()
+
+
+def test_run_check_matches_sent_mail_by_thread_not_by_recipient_domain(db, owner, monkeypatch):
+    """AC6: the owner's sent reply is addressed to a tracked domain that belongs to a DIFFERENT job --
+    proving a recipient-domain match was never consulted. Only thread membership decides: the thread's
+    real job wins, never the recipient-domain lookalike.
+    """
+    job = JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', status='applied', created_by=owner)
+    decoy = JobLead.objects.create(company='Decoy', title='Other role', url='https://example-ats.test/decoy/1', status='applied', created_by=owner)
+    seed_run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=seed_run, uid=500, gmail_id='inbound-1', internal_date_ms=1000000, thread_id='thread-z',
+        sender='hr@acme.test', subject='Your application', classification='recruiter_reply',
+        evaluator='heuristic', matched_job=job,
+    )
+    msg = EmailMessage()
+    msg['From'] = 'owner@example.test'
+    msg['To'] = 'notifications@example-ats.test'  # the DECOY job's own tracked domain, deliberately
+    msg['Subject'] = 'Re: Your application'
+    msg['Message-ID'] = '<sent-1@example.test>'
+    msg.set_content('Thanks!')
+    details = {'sent-1': {
+        'internalDate': '2000000', 'threadId': 'thread-z',
+        'raw': base64.urlsafe_b64encode(msg.as_bytes()).decode('ascii').rstrip('='),
+    }}
+    fake_http = _FakeGmailHttp(['sent-1'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run = run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+
+    assert run is not None and not run.error
+    message = MailboxMessage.objects.get(gmail_id='sent-1')
+    assert message.matched_job_id == job.id, 'sent mail must follow its THREAD, not its own recipient domain'
+    assert message.matched_job_id != decoy.id
+
+
+def test_match_by_thread_finds_the_jobs_matched_message_in_the_same_thread(db, owner, applied_job):
+    MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=1, thread_id='thread-1', sender='hr@acme.test',
+        subject='x', classification='recruiter_reply', matched_job=applied_job,
+    )
+    assert mailbox._match_by_thread('thread-1') == applied_job
+
+
+def test_match_by_thread_returns_none_for_an_unknown_thread(db):
+    assert mailbox._match_by_thread('thread-nowhere') is None
+
+
+def test_run_check_two_consecutive_runs_fetch_nothing_new_with_sent_mail_in_play(db, owner, applied_job, monkeypatch):
+    """AC8: the resume marker and TASK-141's bound both still hold with the extra `in:sent` query in
+    place -- a second run must see nothing new, inbound or sent."""
+    seed_run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=seed_run, uid=500, gmail_id='inbound-1', internal_date_ms=1000000, thread_id='thread-z',
+        sender='hr@acme.test', subject='Your application', classification='recruiter_reply',
+        evaluator='heuristic', matched_job=applied_job,
+    )
+    details = {'sent-1': {
+        'internalDate': '2000000', 'threadId': 'thread-z',
+        'raw': _gmail_raw_b64('owner@example.test', 'Re: Your application', 'Thanks!'),
+    }}
+    fake_http = _FakeGmailHttp(['sent-1'], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+        first = run_check(transport=transport, force=True)
+        assert first is not None and not first.error
+        assert MailboxMessage.objects.filter(gmail_id='sent-1').exists()
+
+        second = run_check(transport=transport, force=True)
+        assert second is not None and not second.error
+        assert MailboxMessage.objects.count() == 2, 'the second run re-read mail it had already seen'
+
+
+# ===================================================================================================
+# TASK-143 AC3: no new suggestion or draft is generated for a message matched to a non-actionable job
+# -- the gate lives inside build_suggestions()/maybe_draft_reply() themselves, so every caller (run_
+# check(), attach_message_to_job()'s manual match) gets it for free, not only the review panel's query.
+# ===================================================================================================
+
+@pytest.mark.parametrize('status', ['rejected', 'withdrawn', 'skipped', 'archived'])
+def test_build_suggestions_proposes_nothing_for_a_job_the_owner_has_closed_out(db, owner, status):
+    """Without this gate, an interview_invitation always creates an interview_date suggestion
+    regardless of job status (see build_suggestions' own classification branch) -- proving the
+    ACTIONABLE_STATUSES gate, not some pre-existing per-classification check, is what closes this."""
+    job = JobLead.objects.create(company='Acme', title='Engineer', status=status, created_by=owner)
+    message = _log_message(job, 'interview_invitation')
+    assert build_suggestions(message, job, 'interview_invitation', '2026-03-03T14:00:00+01:00') == 0
+    assert not MailboxSuggestion.objects.filter(message=message).exists()
+
+
+@pytest.mark.parametrize('status', JobLead.ACTIONABLE_STATUSES)
+def test_build_suggestions_still_proposes_for_every_actionable_status(db, owner, status):
+    """The gate's negative case: a job still worth acting on is unaffected."""
+    job = JobLead.objects.create(company='Acme', title='Engineer', status=status, created_by=owner)
+    message = _log_message(job, 'interview_invitation')
+    created = build_suggestions(message, job, 'interview_invitation', '2026-03-03T14:00:00+01:00')
+    assert created == 1
+
+
+def test_maybe_draft_reply_generates_no_draft_for_a_non_actionable_job(db, owner, applied_job):
+    """AC3: a rejected job gets no more replies drafted at it, even though the classification alone is
+    normally draft-worthy -- no MailboxDraft row at all, the same 'nothing worth generating' shape the
+    classification guard right above it already uses."""
+    applied_job.status = 'rejected'; applied_job.save()
+    transport = FakeTransport([])
+    message = _log_message(applied_job, 'interview_invitation')
+    r = raw(1, subject='Interview invite', body='We would like to invite you to an interview on 03.03.2026 at 14:00.')
+    draft = maybe_draft_reply(message, r, applied_job, 'interview_invitation', None, owner, user_profile_settings(owner), transport)
+    assert draft is None
+    assert transport.appended_drafts == []
+
+
+def test_run_check_generates_no_suggestion_or_draft_for_a_message_matched_to_a_rejected_job(not_cold_start, db, owner):
+    """End to end: the message is still matched and stored (this hides a conversation from the review
+    panel; it does not erase the record -- TASK-143 AC4), only generation is gated."""
+    job = JobLead.objects.create(company='Deltia AI', title='Backend Engineer', url='https://deltia.test/1', status='rejected', created_by=owner)
+    transport = FakeTransport([raw(2, sender='hr@deltia.test', subject='Interview invite', body='We would like to invite you to an interview on 03.03.2026 at 14:00.')])
+    run = run_check(transport=transport)
+    message = MailboxMessage.objects.get(uid=2)
+    assert message.matched_job == job, 'the message must still be matched and stored -- only generation is gated'
+    assert not MailboxSuggestion.objects.filter(message=message).exists()
+    assert not MailboxDraft.objects.filter(message=message).exists()
+    assert run.suggestion_count == 0

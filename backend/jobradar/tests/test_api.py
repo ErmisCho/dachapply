@@ -352,15 +352,28 @@ def test_applied_at_survives_later_transitions_and_reentry(client, job):
     assert r.status_code==200 and r.data['applied_at']=='2025-12-01'
 
 
-def test_terminal_statuses_never_go_stale_but_an_old_offer_does(client):
+def test_stale_rank_breaks_ties_within_a_status_but_attention_rank_decides_across_statuses(client):
+    """TASK-145 AC1/AC3: attention_rank now groups by status FIRST (new, then interview, then
+    the rest in pipeline order, closed last) -- a stale 'offer' still outranks 'accepted' and
+    'withdrawn' (both closed, later in the group order) no matter how old its status_date is;
+    that reversal is the owner's explicit choice (declined keeping stale_rank on top, so a stale
+    lead no longer floats -- or sinks -- past everything regardless of status). stale_rank is
+    demoted, not deleted (AC3): it still decides between two jobs of the SAME status, exactly as
+    before this task -- this replaces test_terminal_statuses_never_go_stale_but_an_old_offer_does,
+    whose premise (staleness overriding status) is exactly what this task reverses.
+    """
     old=timezone.localdate()-timezone.timedelta(days=30)
-    stale_offer=make_job(client, company='StaleOffer', title='Old offer', status='offer', status_date=old)
-    accepted=make_job(client, company='Accepted', title='Old accepted', status='accepted', status_date=old)
-    withdrawn=make_job(client, company='Withdrawn', title='Old withdrawn', status='withdrawn', status_date=old)
+    fresh_offer=make_job(client, company='FreshOffer', title='a', status='offer', status_date=timezone.localdate())
+    stale_offer=make_job(client, company='StaleOffer', title='b', status='offer', status_date=old)
+    accepted=make_job(client, company='Accepted', title='c', status='accepted', status_date=old)
+    withdrawn=make_job(client, company='Withdrawn', title='d', status='withdrawn', status_date=old)
     ids=[row['id'] for row in client.get('/api/jobs/').data]
-    assert ids[-1]==stale_offer.id
-    assert ids.index(accepted.id) < ids.index(stale_offer.id)
-    assert ids.index(withdrawn.id) < ids.index(stale_offer.id)
+    # Same status ('offer'): stale_rank still decides -- the stale one sinks below the fresh one.
+    assert ids.index(fresh_offer.id) < ids.index(stale_offer.id)
+    # Different status: attention_rank decides first -- 'offer' (open, earlier in the group
+    # order) outranks 'accepted'/'withdrawn' (closed, last) even though it is the stale one.
+    assert ids.index(stale_offer.id) < ids.index(accepted.id)
+    assert ids.index(stale_offer.id) < ids.index(withdrawn.id)
 
 def test_generate_prompt(client, job):
     original='Original complete source ' + 'vollständig ' * 400
@@ -2741,19 +2754,31 @@ def test_stats_list_upcoming_interviews_soonest_first_and_drop_past_ones(client)
     assert r.data['jobs_needing_follow_up']==1 and r.data['interviews']==2
 
 
-def test_board_surfaces_approaching_deadlines_and_sinks_untouched_old_leads(client):
+def test_board_surfaces_approaching_deadlines_within_its_status_group_and_sinks_untouched_old_leads(client):
+    """TASK-145 AC1/AC3: attention_rank groups by status first now -- every 'new' job sorts ahead
+    of every 'to_apply' job regardless of urgency (both are in the same "everything else, pipeline
+    order" band, and 'new' is pulled to the very front). stale_rank (demoted, not deleted) still
+    decides which job leads WITHIN a status group -- this replaces
+    test_board_surfaces_approaching_deadlines_and_sinks_untouched_old_leads, whose top-two
+    assertion assumed urgency could win across different statuses, which this task's AC1/AC3
+    default no longer does.
+    """
     today=timezone.localdate()
     normal=make_job(client, company='Normal', title='Fresh lead', status='new')
-    due_soon=make_job(client, company='DueSoon', title='Closes this week', status='to_apply', apply_by=today+timezone.timedelta(days=JobLead.DEADLINE_SOON_DAYS-1))
     overdue=make_job(client, company='Overdue', title='Deadline passed', status='new', apply_by=today-timezone.timedelta(days=3))
     evergreen=make_job(client, company='Evergreen', title='Far off deadline', status='new', apply_by=today+timezone.timedelta(days=90))
+    due_soon=make_job(client, company='DueSoon', title='Closes this week', status='to_apply', apply_by=today+timezone.timedelta(days=JobLead.DEADLINE_SOON_DAYS-1))
     forgotten=make_job(client, company='Forgotten', title='Never touched', status='to_apply')
     JobLead.objects.filter(pk=forgotten.pk).update(created_at=timezone.now()-timezone.timedelta(days=JobLead.STALE_UNAPPLIED_DAYS+1))
     ids=[row['id'] for row in client.get('/api/jobs/').data]
-    assert set(ids[:2])=={due_soon.id, overdue.id}
+    # The whole 'new' trio precedes both 'to_apply' rows -- status group wins over urgency.
+    assert max(ids.index(j.id) for j in (normal, overdue, evergreen)) < min(ids.index(j.id) for j in (due_soon, forgotten))
+    # stale_rank still breaks ties within a status: an imminent apply_by surfaces a job above its
+    # same-status peers, exactly as before this task.
+    assert ids.index(overdue.id) < ids.index(normal.id)
+    assert ids.index(overdue.id) < ids.index(evergreen.id)
+    assert ids.index(due_soon.id) < ids.index(forgotten.id)
     assert ids[-1]==forgotten.id
-    assert ids.index(normal.id) < ids.index(forgotten.id)
-    assert ids.index(evergreen.id) < ids.index(forgotten.id)
     # one click archives a stale lead through the existing jobs endpoint -- no new route needed
     assert client.patch(f'/api/jobs/{forgotten.id}/', {'status':'archived'}, format='json').status_code==200
     assert forgotten.id not in [row['id'] for row in client.get('/api/jobs/').data]
@@ -2765,7 +2790,9 @@ def test_me_publishes_the_board_thresholds_the_ordering_uses(client):
     assert r.data['board_thresholds']=={
         'stale_applied_days':21, 'stale_unapplied_days':30, 'deadline_soon_days':7,
         'unapplied_statuses':['new','reviewed','to_apply'], 'dated_statuses':['applied','interview','offer'],
+        'actionable_statuses':['new','reviewed','to_apply','applied','interview','offer','accepted'],
     }
+    assert r.data['board_thresholds']['actionable_statuses']==JobLead.ACTIONABLE_STATUSES
     assert r.data['board_thresholds']['stale_unapplied_days']==JobLead.STALE_UNAPPLIED_DAYS
 
 
@@ -3127,3 +3154,95 @@ def test_profile_endpoint_exposes_and_updates_the_digest_toggle(client):
     assert r.status_code==200 and r.data['follow_up_digest_enabled'] is False
     assert client.get('/api/profile/').data['follow_up_digest_enabled'] is False
     assert UserProfile.objects.get(user=client.user).follow_up_digest_enabled is False
+
+
+# --- TASK-145 AC4/AC8: UserProfile.board_sort_keys -- the saved multi-sort, per account and
+# synced (the owner's explicit choice over localStorage) -----------------------------------------
+
+def test_profile_endpoint_exposes_and_updates_the_saved_board_sort(client):
+    assert client.get('/api/profile/').data['board_sort_keys']==''
+    r=client.patch('/api/profile/', {'board_sort_keys': 'status,-fit_score'}, format='json')
+    assert r.status_code==200 and r.data['board_sort_keys']=='status,-fit_score'
+    assert client.get('/api/profile/').data['board_sort_keys']=='status,-fit_score'
+    assert UserProfile.objects.get(user=client.user).board_sort_keys=='status,-fit_score'
+    # AC8: clearing the setting is possible without touching the database directly, and gets the
+    # user back to the AC1 default the next time /api/jobs/ is requested with no ordering= at all.
+    r=client.patch('/api/profile/', {'board_sort_keys': ''}, format='json')
+    assert r.status_code==200 and r.data['board_sort_keys']==''
+    assert UserProfile.objects.get(user=client.user).board_sort_keys==''
+
+
+def test_saving_a_hostile_board_sort_value_does_not_error(client):
+    """TASK-145 AC7: a saved value containing an unknown/hostile key must degrade when USED, not
+    error when SAVED -- board_sort_keys has no validator of its own precisely so this stays true;
+    parse_board_ordering (test_board_ordering.py) is the one enforcement point."""
+    r=client.patch('/api/profile/', {'board_sort_keys': '-created_by__password'}, format='json')
+    assert r.status_code==200
+    assert UserProfile.objects.get(user=client.user).board_sort_keys=='-created_by__password'
+
+
+# --- TASK-146 AC1/AC2/AC8/AC10: GET /api/jobs/feedback-due/ -- the feedback-deadline pane's query -
+
+@pytest.fixture
+def feedback_due_board(client):
+    """Mirrors the measured production shape (task notes): overdue rows mixed with upcoming
+    ones, plus a no-date row and a non-actionable row that must both be excluded."""
+    today=timezone.localdate()
+    overdue_old=make_job(client, company='EBCONT (BMJ)', title='ElasticSearch Consultant', status='interview', feedback_due_date=today-timezone.timedelta(days=23))
+    overdue_recent=make_job(client, company='DataScience Service GmbH', title='Data Engineer', status='interview', feedback_due_date=today-timezone.timedelta(days=1))
+    due_today=make_job(client, company='Takeda Pharmaceutical', title='Platform Security & Communication', status='interview', feedback_due_date=today)
+    due_soon=make_job(client, company='Swiss AI Systems', title='Applied AI Backend Engineer', status='interview', feedback_due_date=today+timezone.timedelta(days=1))
+    due_later=make_job(client, company='Dynatrace', title='Senior Python Backend Engineer', status='interview', feedback_due_date=today+timezone.timedelta(days=2))
+    make_job(client, company='NoDate', title='x', status='interview', feedback_due_date=None)
+    make_job(client, company='ClosedOut', title='x', status='rejected', feedback_due_date=today-timezone.timedelta(days=5))
+    return overdue_old, overdue_recent, due_today, due_soon, due_later
+
+
+def test_feedback_due_returns_actionable_dated_rows_overdue_first_then_soonest_first(client, feedback_due_board):
+    r=client.get('/api/jobs/feedback-due/')
+    assert r.status_code==200
+    companies=[row['company'] for row in r.data]
+    # Overdue-first-as-a-group (oldest overdue leads, not "as if it were due soonest"), then the
+    # upcoming group soonest first. NoDate and ClosedOut never appear.
+    assert companies==['EBCONT (BMJ)', 'DataScience Service GmbH', 'Takeda Pharmaceutical', 'Swiss AI Systems', 'Dynatrace']
+    overdue_flags={row['company']: row['overdue'] for row in r.data}
+    assert overdue_flags=={'EBCONT (BMJ)': True, 'DataScience Service GmbH': True, 'Takeda Pharmaceutical': False, 'Swiss AI Systems': False, 'Dynatrace': False}
+    row=r.data[0]
+    assert set(row.keys())=={'id', 'company', 'title', 'status', 'feedback_due_date', 'overdue'}
+    assert row['status']=='interview'
+    # ISO date string on the wire, same shape every other date field on this API already uses --
+    # r.data holds the pre-render date object, so read the actual rendered JSON like
+    # test_stats_list_upcoming_interviews_soonest_first_and_drop_past_ones does above.
+    wire_row=json.loads(r.content)[0]
+    assert wire_row['feedback_due_date']==(timezone.localdate()-timezone.timedelta(days=23)).isoformat()
+
+
+def test_feedback_due_excludes_non_actionable_statuses(client):
+    today=timezone.localdate()
+    for status in ('rejected', 'withdrawn', 'skipped', 'archived'):
+        make_job(client, company=status, title='x', status=status, feedback_due_date=today)
+    r=client.get('/api/jobs/feedback-due/')
+    assert r.status_code==200 and r.data==[]
+
+
+def test_feedback_due_query_count_does_not_scale_with_row_count(client):
+    """AC10: no per-row query. Same request-level query count (auth/visitor-tracking middleware
+    plus this endpoint's own one SELECT) whether 2 or 6 qualifying jobs exist -- if the endpoint
+    issued a query per row, tripling the row count would grow that count too. A warm-up call
+    first, same idiom test_email_verification.py uses: the visitor-tracking middleware INSERTs on
+    a request's first-ever hit and UPDATEs after, so an unwarmed first measurement always costs
+    more regardless of row count and would make this comparison meaningless."""
+    from django.test.utils import CaptureQueriesContext
+    today=timezone.localdate()
+    client.get('/api/jobs/feedback-due/')
+    make_job(client, company='A', title='x', status='interview', feedback_due_date=today)
+    make_job(client, company='B', title='x', status='interview', feedback_due_date=today+timezone.timedelta(days=1))
+    with CaptureQueriesContext(connection) as few:
+        r=client.get('/api/jobs/feedback-due/')
+    assert r.status_code==200 and len(r.data)==2
+    for i in range(4):
+        make_job(client, company=f'C{i}', title='x', status='interview', feedback_due_date=today+timezone.timedelta(days=2+i))
+    with CaptureQueriesContext(connection) as many:
+        r=client.get('/api/jobs/feedback-due/')
+    assert r.status_code==200 and len(r.data)==6
+    assert len(few)==len(many), (few.captured_queries, many.captured_queries)

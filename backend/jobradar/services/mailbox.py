@@ -40,6 +40,25 @@ Architecture note for testability: every IMAP/Gmail-API call is behind the `tran
 run_check() (ImapTransport/GmailApiTransport), so every test in tests/test_mailbox.py injects either a
 FakeTransport or a real GmailApiTransport with its module-level network calls monkeypatched, and never
 opens a socket.
+
+TASK-141 bounds how far back a Gmail-API cold start reads: GmailApiTransport.fetch_new() takes an
+optional `lookback_days`, and run_check() always passes the owner's configured
+UserProfile.mailbox_lookback_months (default 6) converted to days -- see _lookback_days(). Bounds
+what is FETCHED only; nothing already stored is ever deleted by it.
+
+TASK-144 fetches the owner's own SENT mail alongside inbound (a second, equally-bounded `in:sent`
+listing pass inside fetch_new()), so a conversation finally has two sides -- rendered by the existing
+sent_by_owner-keyed left/right frontend code, no second rendering path needed. A sent message is
+matched by which tracked-job THREAD it already belongs to (_match_by_thread), never by its own
+recipient's domain (the owner sends *to* no-reply@ashbyhq.com and friends); one with no such thread is
+skipped, not stored. And it is a hard guard, not a convention: run_check() never calls
+build_suggestions()/maybe_draft_reply() for a message the owner sent -- the classifier has no idea who
+wrote a message, so a sent "thank you for the invitation" reads exactly like a recruiter's mail to it.
+
+TASK-143 gates suggestion/draft generation a second way: build_suggestions()/maybe_draft_reply() both
+refuse a job whose status is outside JobLead.ACTIONABLE_STATUSES (rejected/withdrawn/skipped/archived)
+-- the owner closing out an application stops the app proposing anything more about it, though the
+message itself stays stored and visible on the job's own detail view (views.py, out of this module).
 """
 from __future__ import annotations
 
@@ -47,11 +66,11 @@ import base64
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time, timedelta
 from datetime import timezone as dt_timezone
 from email.message import EmailMessage
-from email.utils import format_datetime
+from email.utils import format_datetime, getaddresses, parseaddr
 from statistics import median
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
@@ -98,6 +117,23 @@ class RawMessage:
     list_unsubscribe: str = ''
     precedence: str = ''
     auto_submitted: str = ''
+    # TASK-132 AC1/TASK-133 AC2/AC7: the raw To/Cc header values -- TASK-114 read only the bulk
+    # markers off the wire; reply-all needs the actual recipient list, which nothing before this
+    # stored (see MailboxMessage.to_addrs/cc_addrs, what these two get persisted onto).
+    to: str = ''
+    cc: str = ''
+    # TASK-135 AC1/AC2/AC3: what/when/with-whom from the first text/calendar VEVENT this message
+    # carries (see parse_calendar_invitation below), and a metadata-only manifest of every OTHER part
+    # with a filename -- persisted onto the matching MailboxMessage fields (see that model's
+    # docstring). Gmail-API-only, like gmail_id/thread_id above: ImapTransport only ever fetches the
+    # TEXT part of a message (see its fetch_new), so these stay at their empty defaults for every
+    # IMAP-sourced row.
+    calendar_summary: str = ''
+    calendar_location: str = ''
+    calendar_organizer: str = ''
+    calendar_start: datetime | None = None
+    calendar_end: datetime | None = None
+    attachments: list = field(default_factory=list)  # [{'filename': str, 'mime_type': str, 'size': int}]
 
 
 class ImapTransport:
@@ -126,7 +162,8 @@ class ImapTransport:
                     continue
                 # BODY.PEEK never sets \Seen, and HEADER.FIELDS + TEXT is the whole message a
                 # classifier (and TASK-110's reply drafter) needs -- nothing else is ever requested.
-                typ, msg_data = conn.uid('fetch', uid_bytes, '(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID REFERENCES REPLY-TO LIST-UNSUBSCRIBE PRECEDENCE AUTO-SUBMITTED)] BODY.PEEK[TEXT])')
+                # TASK-132/TASK-133: TO/CC added so reply-all has a real recipient list to derive from.
+                typ, msg_data = conn.uid('fetch', uid_bytes, '(BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE MESSAGE-ID REFERENCES REPLY-TO LIST-UNSUBSCRIBE PRECEDENCE AUTO-SUBMITTED)] BODY.PEEK[TEXT])')
                 if typ != 'OK' or not msg_data:
                     continue
                 header_bytes = b''
@@ -147,6 +184,7 @@ class ImapTransport:
                     message_id=parsed.get('Message-ID', ''),
                     references=parsed.get('References', ''),
                     body_text=body_bytes.decode('utf-8', errors='replace')[:5000],
+                    to=parsed.get('To', ''), cc=parsed.get('Cc', ''),
                     **_bulk_headers(parsed),
                 ))
             return messages
@@ -208,6 +246,29 @@ GMAIL_OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 GMAIL_OAUTH_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 GMAIL_OAUTH_REDIRECT_URI = 'http://localhost'  # loopback, no server run -- see oauth_authorization_url()
 GMAIL_API_BASE = 'https://www.googleapis.com/gmail/v1/users/me'
+
+
+def _gmail_list_message_ids(access_token: str, q: str) -> list[str]:
+    """One paginated `messages.list` sweep for query string `q` (or every message, `q` omitted
+    entirely, when `q` is ''). Factored out of GmailApiTransport.fetch_new() (TASK-144 AC1) because
+    that method now runs this twice per call -- the original bare pass plus an `in:sent`-scoped one --
+    and duplicating the pageToken loop for the second pass would be the exact kind of copy this
+    module otherwise avoids (see _parse_gmail_raw_message's own docstring for the same reasoning).
+    """
+    message_ids = []
+    page_token = None
+    while True:
+        params = {}
+        if q:
+            params['q'] = q
+        if page_token:
+            params['pageToken'] = page_token
+        listing = _gmail_api_request('GET', f'{GMAIL_API_BASE}/messages?{urlencode(params)}', access_token)
+        message_ids.extend(m['id'] for m in listing.get('messages') or [])
+        page_token = listing.get('nextPageToken')
+        if not page_token:
+            break
+    return message_ids
 
 
 def oauth_authorization_url(client_id: str) -> str:
@@ -343,6 +404,96 @@ def _body_text(body) -> str:
         return ''
 
 
+def _extract_calendar_text_and_attachments(parsed) -> tuple[str, list[dict]]:
+    """TASK-135 AC1/AC3/AC4: one MIME walk over an already-decoded email.message.EmailMessage that
+    finds the first text/calendar part's raw ICS text (fed to parse_calendar_invitation below) AND
+    lists every OTHER part carrying a filename as {filename, mime_type, size}.
+
+    Metadata only, deliberately (AC4 -- an owner decision, recorded here and in the task file, not a
+    side effect): `format=raw`, which this module already reads for every other purpose, hands over
+    the full attachment bytes as an unavoidable consequence of decoding the whole RFC822 message --
+    `get_payload(decode=True)` is used here ONLY to measure `size` in bytes, and that value is
+    discarded the moment `len()` is taken. It is never assigned to anything this function returns, so
+    a CV or an offer letter attached to a message never lands in this database -- the same floor
+    TASK-117's body_text decision (see MailboxMessage's docstring) already drew, just for a second
+    kind of content.
+    """
+    ics_text = ''
+    attachments = []
+    for part in parsed.walk():
+        if part.is_multipart():
+            continue
+        content_type = part.get_content_type()
+        if content_type == 'text/calendar' and not ics_text:
+            ics_text = _body_text(part)
+        filename = part.get_filename()
+        if filename:
+            payload = part.get_payload(decode=True)
+            size = len(payload) if isinstance(payload, bytes) else 0
+            attachments.append({'filename': str(filename)[:255], 'mime_type': content_type, 'size': size})
+    return ics_text, attachments
+
+
+def _parse_gmail_raw_message(msg_id: str, detail: dict) -> RawMessage:
+    """Decodes one `users.messages.get?format=raw` response into a RawMessage -- the one decode shape
+    for the whole module. Originally inline in GmailApiTransport.fetch_new(); pulled out (TASK-132)
+    because get_thread() and fetch_message() below read the exact same response shape from
+    messages.get's per-message follow-up call and would otherwise duplicate the decode.
+    """
+    import email.policy
+
+    internal_date_ms = int(detail.get('internalDate') or 0)
+    encoded = detail.get('raw', '')
+    raw_bytes = base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4))
+    parsed = email.message_from_bytes(raw_bytes, policy=email.policy.default)
+    body = parsed.get_body(preferencelist=('plain',))
+    ics_text, attachments = _extract_calendar_text_and_attachments(parsed)
+    invitation = parse_calendar_invitation(ics_text) if ics_text else None
+    return RawMessage(
+        uid=0, sender=parsed.get('From', ''), subject=parsed.get('Subject', ''),
+        received_at=_parse_email_date(parsed.get('Date', '')),
+        message_id=parsed.get('Message-ID', ''), references=parsed.get('References', ''),
+        body_text=_body_text(body)[:5000], to=str(parsed.get('To', '') or ''), cc=str(parsed.get('Cc', '') or ''),
+        **_bulk_headers(parsed),
+        gmail_id=msg_id, internal_date_ms=internal_date_ms, thread_id=detail.get('threadId', ''),
+        attachments=attachments,
+        calendar_summary=(invitation or {}).get('summary', '')[:500],
+        calendar_location=(invitation or {}).get('location', '')[:500],
+        calendar_organizer=(invitation or {}).get('organizer', '')[:500],
+        calendar_start=(invitation or {}).get('start'),
+        calendar_end=(invitation or {}).get('end'),
+    )
+
+
+# TASK-136 AC2/AC3: the ONLY volume bound left on a cold start, now that fetch_new() below no longer
+# passes `labelIds: 'INBOX'` -- see the docstring on fetch_new for why the label filter had to go, and
+# MailboxMessage's own docstring for the full record of this decision. Gmail's own history reaches
+# back to account creation, so an unbounded cold start would try to read the ENTIRE account in one
+# run; two years is chosen wide enough to reach an application confirmation that is realistically
+# months old (the message that motivated this task was about 2.5 months old when the owner asked for
+# it), narrow enough that a bare cold start stays one bounded read. Only ever applied when there is NO
+# resume marker yet (last_marker_ms == 0) -- every later run derives `after:` from the real marker
+# instead (see fetch_new), so this can never re-clip an account that has already been read once.
+#
+# TASK-141 AC1/AC4: this is now only the FALLBACK when no lookback is passed to fetch_new() at all
+# (every direct test of fetch_new() below, and any caller that does not have a profile handy) -- a
+# real run_check() call always passes lookback_days=_lookback_days(profile) instead, so the owner's
+# configured mailbox_lookback_months (default 6, UserProfile) is what actually bounds a cold start on
+# the machine that runs check_mailbox, not this constant.
+FETCH_HISTORY_FLOOR_DAYS = 730
+
+
+def _lookback_days(profile) -> int:
+    """TASK-141 AC4/AC6: the Gmail cold-start floor as the owner has it configured RIGHT NOW -- read
+    fresh off `profile` on every run_check() call (never cached on the transport or anywhere else),
+    so an edit on the settings page takes effect on the very next run with no restart. `0` (should
+    never reach here -- the serializer validator rejects it, AC3) still falls back to the model
+    default rather than reading as "unlimited", the same falsy-is-unset defensiveness
+    mailbox_check_cadence_minutes's own consumer already uses.
+    """
+    return (profile.mailbox_lookback_months or 6) * 30
+
+
 class GmailApiTransport:
     """Gmail-API OAuth transport (TASK-109 AC1 alternative to ImapTransport, for an owner who has
     declined 2-Step Verification and so cannot get an IMAP app password). Resume marker is Gmail's own
@@ -356,36 +507,60 @@ class GmailApiTransport:
         refresh_token = _read_refresh_token(self.token_path)
         return _oauth_refresh_access_token(self.client_id, self.client_secret, refresh_token)
 
-    def fetch_new(self, last_marker_ms: int) -> list[RawMessage]:
+    def fetch_new(self, last_marker_ms: int, lookback_days: int | None = None) -> list[RawMessage]:
         """`after:` is Gmail search syntax and only second-granular, so it is queried with a 1s
         safety margin behind last_marker_ms and then every result is re-checked against the exact ms
         marker below -- that ms check, not the search query, is what actually decides skip-vs-not
         (AC1: a missed run must never skip a message). The same overlap is exactly why run_check()
         also dedups on gmail_id before creating a row: belt and braces against the identical message
         coming back on two consecutive runs (AC1: a missed run must also never duplicate a message).
-        """
-        import email.policy
 
+        TASK-136 AC1/AC2: no `labelIds` is passed at all -- Gmail's own default `messages.list` scope
+        with no labelIds given is every message the account holds EXCEPT Spam and Trash, not just
+        whatever is still sitting in the inbox. That is a deliberate, recorded widening (see
+        MailboxMessage's docstring for the full reasoning): an application confirmation is routinely
+        archived the moment it is read, so `labelIds: 'INBOX'` was quietly making that exact message
+        permanently unreachable -- not a volume bound so much as an accidental one, since it also
+        excluded every other archived or filed-away thread and every message the owner labelled and
+        moved out of the inbox on purpose. AC3's actual volume bound is FETCH_HISTORY_FLOOR_DAYS (or
+        `lookback_days` when the caller passes one -- see TASK-141), applied only when there is no
+        resume marker yet; once a marker exists, `after:` derives from it exactly as before and this
+        method reads forward from wherever it left off, same as pre-TASK-136 (AC4).
+
+        TASK-144 AC1/AC4/AC5/AC6: a SECOND listing pass, scoped `in:sent` and bounded by the exact
+        same `after:` computed below (AC4 -- never a second, unbounded fetch) -- measured against this
+        account's own real mailbox, the bare query above does not bring SENT-labelled mail back on its
+        own (10 of 940 stored rows were sent_by_owner, all of them via the unrelated get_thread() path,
+        never via this method). Ids from both passes are deduped before any per-message detail fetch,
+        so a message carrying both labels (a self-CC, for instance) is never fetched twice. This method
+        only FETCHES both kinds -- run_check() is what decides whether a fetched sent message is
+        actually stored at all (AC5: only when its thread already belongs to a tracked job -- see
+        _match_by_thread) and whether it may ever generate a suggestion or a draft (AC3: never).
+        """
         access_token = self._access_token()
-        after_seconds = max(last_marker_ms // 1000 - 1, 0)
+        if last_marker_ms:
+            after_seconds = max(last_marker_ms // 1000 - 1, 0)
+        else:
+            # AC3: a cold start (no resume marker recorded yet) is bounded to the last
+            # FETCH_HISTORY_FLOOR_DAYS (or the caller's own lookback_days -- TASK-141 AC4), not the
+            # account's entire history -- see that constant's docstring for why two years and why only
+            # here.
+            floor_days = FETCH_HISTORY_FLOOR_DAYS if lookback_days is None else lookback_days
+            floor = timezone.now() - timedelta(days=floor_days)
+            after_seconds = int(floor.timestamp())
+
+        after_clause = f'after:{after_seconds}' if after_seconds else ''
+        seen_ids = set()
         message_ids = []
-        page_token = None
-        while True:
-            params = {'labelIds': 'INBOX'}
-            if after_seconds:
-                params['q'] = f'after:{after_seconds}'
-            if page_token:
-                params['pageToken'] = page_token
-            listing = _gmail_api_request('GET', f'{GMAIL_API_BASE}/messages?{urlencode(params)}', access_token)
-            message_ids.extend(m['id'] for m in listing.get('messages') or [])
-            page_token = listing.get('nextPageToken')
-            if not page_token:
-                break
+        for q in (after_clause, f'in:sent {after_clause}'.strip()):
+            for msg_id in _gmail_list_message_ids(access_token, q):
+                if msg_id not in seen_ids:
+                    seen_ids.add(msg_id)
+                    message_ids.append(msg_id)
 
         messages = []
         for msg_id in message_ids:
             detail = _gmail_api_request('GET', f'{GMAIL_API_BASE}/messages/{msg_id}?format=raw', access_token)
-            internal_date_ms = int(detail.get('internalDate') or 0)
             # Deliberately NOT skipped on `internal_date_ms <= last_marker_ms`. That filter dropped a
             # message permanently and silently in three reachable cases, because run_check()'s
             # gmail_id dedup -- the check that is actually exact -- never got to run:
@@ -397,18 +572,90 @@ class GmailApiTransport:
             # Letting everything the query returned through costs one dedup lookup per overlapping
             # message and cannot duplicate anything: the gmail_id guard is an exact identity test,
             # where the timestamp was only ever a proxy for one.
-            encoded = detail.get('raw', '')
-            raw_bytes = base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4))
-            parsed = email.message_from_bytes(raw_bytes, policy=email.policy.default)
-            body = parsed.get_body(preferencelist=('plain',))
-            messages.append(RawMessage(
-                uid=0, sender=parsed.get('From', ''), subject=parsed.get('Subject', ''),
-                received_at=_parse_email_date(parsed.get('Date', '')),
-                message_id=parsed.get('Message-ID', ''), references=parsed.get('References', ''),
-                body_text=_body_text(body)[:5000], **_bulk_headers(parsed),
-                gmail_id=msg_id, internal_date_ms=internal_date_ms, thread_id=detail.get('threadId', ''),
-            ))
+            messages.append(_parse_gmail_raw_message(msg_id, detail))
         return messages
+
+    def list_since(self, q: str) -> list[str]:
+        """TASK-136 AC1: Gmail message ids matching the given search query `q`, paginated -- IGNORES
+        the resume marker entirely, unlike fetch_new() above. This exists because fetch_new() cannot
+        do this itself by design: once a resume marker exists, its `after:` always derives from
+        MAX(internal_date_ms) (see its own docstring), so a message OLDER than that marker -- an
+        application confirmation archived months before the mailbox check first ran, for instance --
+        is permanently unreachable by any number of normal runs, however wide fetch_new()'s label
+        filter is made. services.mailbox.backfill_historical_mail() is the one caller, a ONE-OFF,
+        explicitly-invoked command, never something run_check() calls itself.
+
+        Deliberately generic (takes a whole query string rather than building one itself): the owner's
+        2026-08-19 follow-up decision was that a bare date floor is too wide on its own (a dry run
+        against the real mailbox found ~3,411 new messages, almost all not_job_related) -- see
+        _targeted_backfill_queries() below for the actual query this is normally called with. Keeping
+        the query-building OUT of this transport method is what lets that decision live in one place,
+        testable without a fake HTTP layer, rather than duplicated across every caller.
+
+        Ids only, no full-body fetch -- backfill_historical_mail() fetches full detail (via
+        fetch_message() below) only for ids it does not already have stored, so a mailbox with years
+        of mostly-already-ingested mail does not pay a full re-download of everything on every call.
+        """
+        access_token = self._access_token()
+        message_ids = []
+        page_token = None
+        while True:
+            params = {'q': q}
+            if page_token:
+                params['pageToken'] = page_token
+            listing = _gmail_api_request('GET', f'{GMAIL_API_BASE}/messages?{urlencode(params)}', access_token)
+            message_ids.extend(m['id'] for m in listing.get('messages') or [])
+            page_token = listing.get('nextPageToken')
+            if not page_token:
+                break
+        return message_ids
+
+    def get_thread(self, thread_id: str) -> list[RawMessage]:
+        """TASK-132 AC1: every message in a Gmail thread, via `users.threads.get` -- the one read
+        that makes 'ingest the whole conversation, including what the owner sent' possible, since
+        fetch_new() above only ever reads forward from the resume marker and so never sees the
+        owner's own already-sent replies.
+
+        threads.get does not support format=raw (Gmail restricts raw to messages.get/drafts.get), so
+        this asks for format=minimal (just each message's id -- headers/body are not needed here) and
+        re-fetches each message individually via the SAME messages.get?format=raw +
+        _parse_gmail_raw_message() path fetch_new() already uses -- one decode shape for the whole
+        module, not a second one for threads.
+        """
+        access_token = self._access_token()
+        listing = _gmail_api_request('GET', f'{GMAIL_API_BASE}/threads/{thread_id}?format=minimal', access_token)
+        messages = []
+        for item in listing.get('messages') or []:
+            msg_id = item['id']
+            detail = _gmail_api_request('GET', f'{GMAIL_API_BASE}/messages/{msg_id}?format=raw', access_token)
+            messages.append(_parse_gmail_raw_message(msg_id, detail))
+        return messages
+
+    def fetch_message(self, gmail_id: str) -> RawMessage:
+        """TASK-132 AC3/TASK-135: re-fetch one already-logged message by its own stored gmail_id, for
+        backfill_message_bodies() -- same raw-format read and decode path as fetch_new()/get_thread()
+        above, for one message id instead of a list. Named `fetch_message`, not `fetch_body` (its
+        TASK-132 name): TASK-135 widened what backfill_message_bodies() writes from body_text alone to
+        also include the calendar/attachment fields _parse_gmail_raw_message now populates, so the
+        caller needs the whole RawMessage, not just its body_text.
+        """
+        access_token = self._access_token()
+        detail = _gmail_api_request('GET', f'{GMAIL_API_BASE}/messages/{gmail_id}?format=raw', access_token)
+        return _parse_gmail_raw_message(gmail_id, detail)
+
+    def fetch_thread_id(self, gmail_id: str) -> str:
+        """TASK-132 AC1: the thread a already-logged message belongs to, by its own stored gmail_id.
+
+        `format=minimal` on purpose -- this needs one field, and the rows that need it are the whole
+        back catalogue. Asking for `raw` would re-download every body to read an id that comes back
+        either way, which is what the first backfill pass accidentally did: it held the full message
+        response in its hand, took body_text out of it, and dropped threadId. Without threadId
+        ingest_threads has nothing to expand, so the conversation stays the handful of inbox
+        fragments TASK-132 exists to fix.
+        """
+        access_token = self._access_token()
+        detail = _gmail_api_request('GET', f'{GMAIL_API_BASE}/messages/{gmail_id}?format=minimal', access_token)
+        return detail.get('threadId', '') or ''
 
     def append_draft(self, mime_message: bytes, thread_id: str | None = None) -> dict:
         """TASK-110 AC1: users.drafts.create only -- no call to users.messages.send exists anywhere
@@ -507,6 +754,22 @@ RECRUITER_KEYWORDS = [
     'thank you for your application', 'application received', 'application update', 'reviewing your application',
     'bewerbung erhalten', 'bewerbungsstatus', 'ihre bewerbung',
 ]
+# TASK-136 AC5: the phrasing an AUTOMATED "your application arrived" acknowledgment actually uses --
+# "thank you for APPLYING to X as Y", not "thank you for your application" (already in
+# RECRUITER_KEYWORDS above, and left untouched here on purpose: it already has passing coverage
+# mapping it to recruiter_reply -- test_genuine_recruiter_reply_still_drafts -- and this category is
+# never reply-worthy, see _DRAFT_WORTHY_CLASSIFICATIONS, so re-routing that phrase here would also
+# silently stop drafting a reply to it). This is the ONE category the classifier had no answer for at
+# all (see the task notes): every measured case before this shipped a first-of-thread confirmation
+# either as 'not_job_related' (unknown domain, no keyword hit) or 'recruiter_reply' (domain already
+# known) -- neither proposes moving the job to 'applied', which is the whole point of this category.
+APPLICATION_CONFIRMATION_KEYWORDS = [
+    'thank you for applying', 'thanks for applying', 'we have received your application',
+    'your application has been received', 'application was successfully submitted',
+    'application submitted successfully', 'vielen dank für deine bewerbung',
+    'vielen dank für ihre bewerbung', 'ihre bewerbung ist bei uns eingegangen',
+    'wir haben deine bewerbung erhalten', 'bewerbung ist eingegangen',
+]
 
 _DATE_TIME_PATTERNS = [
     # 2026-03-03 14:00 or 2026-03-03T14:00
@@ -592,6 +855,12 @@ def _classify_heuristic(subject, body_text, domain_known):
         return 'rejection', None
     if _hit(lower, INTERVIEW_KEYWORDS):
         return 'interview_invitation', _extract_datetime(f'{subject}\n{body_text}')
+    # TASK-136 AC5: checked BEFORE the domain_known fallback below, and independently of it -- an
+    # explicit "thank you for applying" phrase is as strong and domain-independent a signal as
+    # rejection/offer/interview above, and this is exactly the message that most often arrives from a
+    # domain the app has never seen before (the FIRST message of a brand-new application).
+    if _hit(lower, APPLICATION_CONFIRMATION_KEYWORDS):
+        return 'application_confirmed', None
     if _hit(lower, RECRUITER_KEYWORDS) or domain_known:
         return ('recruiter_reply' if domain_known else 'uncertain'), None
     return 'not_job_related', None
@@ -605,7 +874,10 @@ def _build_classification_prompt(raw, domain_known):
         f'Sender: {raw.sender}\nSubject: {raw.subject}\n'
         f'Body:\n{sanitize_inbound_text(raw.body_text)}\n\n'
         f'The sender\'s domain {"matches" if domain_known else "does not match"} a job already tracked.\n'
-        'Classify into exactly one of: rejection, interview_invitation, offer, recruiter_reply, uncertain, not_job_related.\n'
+        'Classify into exactly one of: rejection, interview_invitation, offer, recruiter_reply, application_confirmed, uncertain, not_job_related.\n'
+        'Use application_confirmed for an automated "we received your application"/"thank you for applying" '
+        'acknowledgment -- one that only confirms receipt, proposes nothing else, and is not itself a rejection, '
+        'interview invitation or offer.\n'
         'If it is an interview_invitation and a specific date/time is proposed, extract it as an ISO 8601 '
         'datetime (assume Europe/Vienna if no timezone is given); otherwise use null.\n'
         'Return only valid JSON with this exact shape: {"classification": "...", "interview_at": "...or null"}'
@@ -680,6 +952,34 @@ def is_job_board(domain: str) -> bool:
     return any(domain == board or domain.endswith('.' + board) for board in JOB_BOARD_DOMAINS)
 
 
+# TASK-137 AC2/AC3: applicant-tracking-system hosts used by MANY unrelated companies (job 760/Deltia
+# AI took every one of 17 Ashby-sent messages; job 36/PIDSO took every one of 25 JOIN-sent messages --
+# neither company's own mail, all noise). Deliberately its OWN set, matched by REGISTRABLE domain
+# (see _registrable_domain below), not folded into JOB_BOARD_DOMAINS/is_job_board's suffix rule --
+# that rule is built for a BOARD's own subdomain (e-mail.xing.com IS xing.com), which is the OPPOSITE
+# of the ATS case: a COMPANY's own subdomain of an ATS (notifications@join.zooplus.com, zooplus's real
+# application mail for job 37) must keep matching, and adding 'join.com' to a suffix-matched set would
+# leave it alone anyway (join.zooplus.com does not end in '.join.com' -- it ends in '.zooplus.com'),
+# but registrable-domain matching states the rule directly instead of relying on that being true by
+# accident: join.zooplus.com's registrable domain is zooplus.com, never join.com.
+ATS_DOMAINS = frozenset({'ashbyhq.com', 'join.com', 'workable.com', 'personio.com'})
+
+
+def _registrable_domain(domain: str) -> str:
+    """Last two labels of `domain`. msg.join.com and jobs.ashbyhq.com (an ATS's own bulk-mail/listing
+    subdomains) collapse to join.com/ashbyhq.com; join.zooplus.com (a COMPANY's own subdomain, whose
+    label happens to read "join") collapses to zooplus.com instead -- proof this distinguishes exactly
+    the case AC3 names. Two labels is correct for every domain in this data (.com/.de/.at, all
+    single-part TLDs); no public-suffix-list dependency justified for four names.
+    """
+    parts = (domain or '').split('.')
+    return '.'.join(parts[-2:]) if len(parts) >= 2 else domain
+
+
+def is_ats_host(domain: str) -> bool:
+    return _registrable_domain((domain or '').lower().lstrip('.')) in ATS_DOMAINS
+
+
 def _normalize_domain(domain):
     parts = domain.split('.')
     if len(parts) > 2 and parts[0] in ('www', 'jobs', 'careers', 'mail'):
@@ -688,21 +988,34 @@ def _normalize_domain(domain):
 
 
 def owned_job_domains(owner):
-    """{normalized sender domain: JobLead} for every job this owner is tracking with a URL.
+    """{normalized sender domain: JobLead} for every job this owner is tracking with a URL, for
+    domains that identify exactly ONE tracked job.
 
     Company-name matching is deliberately not attempted: plenty of companies reply through an
     ATS/agency domain (greenhouse.io, personio.de, ...) that has nothing to do with the company
     name, so a name-substring match would be noisier than useful. Domain match is honest about that
     ceiling -- a company replying from a brand-new domain is 'uncertain', never silently dropped.
+
+    TASK-137 AC1: a host more than one tracked job's URL resolves to identifies no single company --
+    the previous version kept whichever job happened to be first in iteration order, so job 760's
+    jobs.ashbyhq.com listing silently became "the" Ashby domain and every OTHER company's Ashby-sent
+    mail (Taktile, Glacis, Sentry, ...) matched it instead. Counting claimants first and dropping any
+    host with more than one is the general rule and needs no list: 9 jobs share demo.dachapply.local,
+    6 share studentjob.at, in this same data, and this is what keeps the next ATS nobody has named yet
+    from repeating the exact same bug without a code change. AC2's ATS_DOMAINS/is_ats_host() below is
+    the SPECIFIC list this rule alone cannot yet catch -- ashbyhq.com and join.com are each used by
+    exactly one tracked job today, so nothing here disambiguates them from a genuine single-employer
+    domain until a second company also starts using the same ATS.
     """
-    domains = {}
+    domain_jobs: dict[str, list] = {}
     for job in owned_jobs(owner).exclude(url=''):
         domain = _normalize_domain(urlsplit(job.url).netloc.lower())
-        # TASK-114 AC2: a board host here would match the board's own marketing mail, not the
-        # employer's -- so the lead simply contributes no domain and its mail is judged on content.
-        if domain and domain not in domains and not is_job_board(domain):
-            domains[domain] = job
-    return domains
+        # TASK-114 AC2/TASK-137 AC2: a board or ATS host here would match the board's/ATS's own
+        # marketing or transactional mail, not the employer's -- so the lead simply contributes no
+        # domain and its mail is judged on content.
+        if domain and not is_job_board(domain) and not is_ats_host(domain):
+            domain_jobs.setdefault(domain, []).append(job)
+    return {domain: jobs[0] for domain, jobs in domain_jobs.items() if len(jobs) == 1}
 
 
 def match_job(raw: RawMessage, job_domains: dict):
@@ -715,6 +1028,19 @@ def match_job(raw: RawMessage, job_domains: dict):
         if domain.endswith('.' + known_domain) or known_domain.endswith('.' + domain):
             return job
     return None
+
+
+def _match_by_thread(thread_id: str) -> JobLead | None:
+    """TASK-144 AC6: the owner's own sent mail is matched by which TRACKED-JOB THREAD it already
+    belongs to -- never by the sent message's own recipient domain, which is the exact bug TASK-137
+    fixed pointed the other way round (the owner sends *to* no-reply@ashbyhq.com and friends; matching
+    on that would attach the reply to whichever job happens to share that ATS, or to none at all).
+    Any earlier message in the same thread that is already matched to a job carries that match onto
+    the sent one; `None` when the thread has no such message yet (a personal email, or the very first,
+    owner-authored message of a brand-new application -- out of this task's scope, see its notes).
+    """
+    row = MailboxMessage.objects.filter(thread_id=thread_id).exclude(matched_job__isnull=True).order_by('uid').first()
+    return row.matched_job if row else None
 
 
 # --- Calendar quiet hours (AC7): fail-open on any fetch/parse failure --------------------------
@@ -784,6 +1110,83 @@ def is_busy_at(ics_text: str, when) -> bool:
     return False
 
 
+# --- Calendar invitations in a message itself (TASK-135): reuses everything above, no second parser --
+
+_CN_RE = re.compile(r'CN=([^;]*)')
+
+
+def _unescape_ics_text(value: str) -> str:
+    """RFC5545 3.3.11 TEXT escaping, reversed. \\n/\\N become a space (never a literal newline -- the
+    values this feeds are single-line CharFields), \\, and \\; become their literal characters, and
+    \\\\ becomes a single backslash.
+    """
+    text = value or ''
+    text = text.replace('\\n', ' ').replace('\\N', ' ')
+    text = text.replace('\\,', ',').replace('\\;', ';')
+    text = text.replace('\\\\', '\\')
+    return text.strip()
+
+
+def _ics_organizer_display(value: str, params: str) -> str:
+    """'Doris Liegenfeld <doris.liegenfeld@ontec.at>' from an ORGANIZER line's raw value/params -- the
+    display name from CN= in the params, the address from the `mailto:` value. Falls back to
+    whichever half is present when the other is missing, and to '' when neither parses.
+    """
+    email_addr = value[7:] if value.lower().startswith('mailto:') else value
+    email_addr = _unescape_ics_text(email_addr)
+    cn_match = _CN_RE.search(params or '')
+    name = _unescape_ics_text(cn_match.group(1)).strip('"') if cn_match else ''
+    if name and email_addr:
+        return f'{name} <{email_addr}>'
+    return name or email_addr
+
+
+def parse_calendar_invitation(ics_text: str) -> dict | None:
+    """TASK-135 AC1/AC2: what/when/with-whom from the FIRST VEVENT in `ics_text` -- reuses the same
+    VEVENT block matcher, RFC5545 line-unfolding and DTSTART/DTEND parsing is_busy_at() already has
+    (TASK-115), rather than writing a second ICS parser (per the task notes: "a VEVENT from a Teams
+    invite is the same shape as one from a calendar feed").
+
+    Returns None when there is no VEVENT, or its DTSTART cannot be parsed -- same fail-open shape as
+    is_busy_at/calendar_busy_now: an unparseable invitation must cost that one field, never the
+    message it is attached to.
+
+    'start'/'end' come back as aware datetimes (via _parse_ics_datetime, so this is correct in
+    absolute time regardless of the invite's own TZID) -- a caller renders them in the OWNER's own
+    configured timezone (AC2) via timezone.localtime(), not whichever one the sender's calendar
+    happened to write the invite in.
+    """
+    match = _VEVENT_RE.search(ics_text or '')
+    if not match:
+        return None
+    summary = location = organizer = ''
+    start = end = None
+    for line in _unfold_ics_lines(match.group(1)):
+        line_match = _LINE_RE.match(line)
+        if not line_match:
+            continue
+        name, params, value = line_match.group(1), line_match.group(2) or '', line_match.group(3)
+        if name == 'SUMMARY':
+            summary = _unescape_ics_text(value)
+        elif name == 'LOCATION':
+            location = _unescape_ics_text(value)
+        elif name == 'ORGANIZER':
+            organizer = _ics_organizer_display(value, params)
+        elif name == 'DTSTART':
+            try:
+                start, _is_all_day = _parse_ics_datetime(value, params)
+            except ValueError:
+                start = None
+        elif name == 'DTEND':
+            try:
+                end, _unused = _parse_ics_datetime(value, params)
+            except ValueError:
+                end = None
+    if start is None:
+        return None
+    return {'summary': summary, 'location': location, 'organizer': organizer, 'start': start, 'end': end}
+
+
 def _fetch_ics(url, timeout=10):
     request = Request(url, headers={'User-Agent': 'dachapply-mailbox-check'})
     with urlopen(request, timeout=timeout) as response:
@@ -822,27 +1225,57 @@ def calendar_busy_now(now, urls_raw='') -> tuple[bool, list[str]]:
 
 # --- Suggestions (AC3) --------------------------------------------------------------------------
 
+def _create_pending_suggestion(message: MailboxMessage, job: JobLead, suggestion_type: str, payload: dict) -> int:
+    """TASK-130 AC1: at most one PENDING MailboxSuggestion per (job, suggestion_type) -- production
+    measured three identical pending feedback_clear rows on one job (three messages in one
+    conversation, each independently proposing the same clear; see build_suggestions callers). A
+    PENDING one already sitting there for this (job, type) blocks a second identical proposal; a
+    CONFIRMED or DISMISSED one does not -- the owner deciding one proposal must not stop a genuinely
+    new one later (e.g. the feedback clock re-arming and a later message proposing to clear it again).
+    """
+    if MailboxSuggestion.objects.filter(job=job, suggestion_type=suggestion_type, status='pending').exists():
+        return 0
+    MailboxSuggestion.objects.create(message=message, job=job, suggestion_type=suggestion_type, payload=payload)
+    return 1
+
+
 def build_suggestions(message: MailboxMessage, job: JobLead, classification: str, interview_at):
+    # TASK-143 AC3: "you no longer have to check" means the WORK stops, not just the display -- a
+    # message matched to a job the owner has already closed out (rejected/withdrawn/skipped/archived,
+    # i.e. not in JobLead.ACTIONABLE_STATUSES) proposes nothing, from every caller of this function
+    # (run_check(), attach_message_to_job()'s manual match included), not only on the read path the
+    # review panel already filters (views.MailboxSuggestionViewSet.list). Checked first, before any of
+    # the classification branches below, so nothing downstream needs its own copy of this gate.
+    if job.status not in JobLead.ACTIONABLE_STATUSES:
+        return 0
     created = 0
     if classification == 'rejection' and job.status != 'rejected':
-        MailboxSuggestion.objects.create(message=message, job=job, suggestion_type='status_change', payload={'status': 'rejected'})
-        created += 1
+        created += _create_pending_suggestion(message, job, 'status_change', {'status': 'rejected'})
     elif classification == 'offer' and job.status not in ('offer', 'accepted'):
-        MailboxSuggestion.objects.create(message=message, job=job, suggestion_type='status_change', payload={'status': 'offer'})
-        created += 1
+        created += _create_pending_suggestion(message, job, 'status_change', {'status': 'offer'})
     elif classification == 'interview_invitation':
         payload = {'interview_at': interview_at}
         if job.status not in ('interview', 'offer', 'accepted', 'rejected', 'withdrawn', 'skipped', 'archived'):
             payload['status'] = 'interview'
-        MailboxSuggestion.objects.create(message=message, job=job, suggestion_type='interview_date', payload=payload)
-        created += 1
+        created += _create_pending_suggestion(message, job, 'interview_date', payload)
+    # TASK-136 AC5: an application-confirmation email is the evidence an application exists, dated and
+    # named -- only proposed while the job is still in one of JobLead.UNAPPLIED_STATUSES (a job already
+    # 'applied' or further along needs no such proposal; there is nothing left to confirm). `applied_at`
+    # comes from the MESSAGE's own received date, not today's -- this is exactly the historical-record
+    # case TASK-136 exists for (a confirmation read months after it arrived, via a widened fetch or
+    # thread ingestion), so "today" would misdate the application by however late it was discovered.
+    elif classification == 'application_confirmed' and job.status in JobLead.UNAPPLIED_STATUSES:
+        payload = {'status': 'applied'}
+        received = message.received_at
+        if received:
+            payload['applied_at'] = timezone.localtime(received).date().isoformat()
+        created += _create_pending_suggestion(message, job, 'status_change', payload)
     # Rejection already clears feedback_due_date on confirm (JobLeadSerializer.update(): 'rejected'
     # is outside DATED_STATUSES, so its status-change branch clears it) -- the other job-related
     # classifications don't imply a status change, so a reply on them needs its own suggestion, and
     # only when a feedback clock is actually running.
     if classification in ('offer', 'interview_invitation', 'recruiter_reply') and job.feedback_due_date:
-        MailboxSuggestion.objects.create(message=message, job=job, suggestion_type='feedback_clear', payload={'feedback_due_date': None})
-        created += 1
+        created += _create_pending_suggestion(message, job, 'feedback_clear', {'feedback_due_date': None})
     return created
 
 
@@ -896,11 +1329,15 @@ def attach_message_to_job(message: MailboxMessage, job: JobLead, user=None) -> M
     extraction path or a stored duplicate of what run_check already computed once.
 
     Idempotent: attaching a message already attached to this same job does not create a second set
-    of suggestions -- build_suggestions() itself has no such guard (it is normally only ever called
-    once, from run_check), so the guard lives here instead. `user` is unused by this function today
-    (there is nothing to attribute yet -- see build_suggestions/apply_suggestion for where a
-    confirming user is actually recorded) and kept only so the call site symmetric with
-    apply_suggestion's user=... signature.
+    of suggestions. TASK-130 AC1 gave build_suggestions() its own (job, suggestion_type) dedupe guard
+    (_create_pending_suggestion), but that guard only excludes a duplicate while the earlier one is
+    still PENDING -- it does not know "this exact message already ran through build_suggestions once
+    before", so it would let a re-attach of the SAME message create a fresh duplicate the moment the
+    first suggestion is confirmed or dismissed. This guard is therefore not redundant with that one;
+    it is a stronger, message-scoped rule kept for exactly the case the job-scoped one does not cover.
+    `user` is unused by this function today (there is nothing to attribute yet -- see
+    build_suggestions/apply_suggestion for where a confirming user is actually recorded) and kept
+    only so the call site is symmetric with apply_suggestion's user=... signature.
     """
     already_generated = MailboxSuggestion.objects.filter(message=message, job=job).exists()
     if message.matched_job_id != job.id:
@@ -910,6 +1347,42 @@ def attach_message_to_job(message: MailboxMessage, job: JobLead, user=None) -> M
         interview_at = _extract_datetime(f'{message.subject}\n{message.body_text}')
         build_suggestions(message, job, message.classification, interview_at)
     return message
+
+
+# --- TASK-130 AC2: clean up the pending suggestion duplicates already in production ---------------
+
+def dismiss_redundant_pending_suggestions(dry_run: bool = True) -> list[dict]:
+    """One-time cleanup for the pending MailboxSuggestion duplicates build_suggestions() created
+    before it had its own (job, suggestion_type) dedupe guard (_create_pending_suggestion, TASK-130
+    AC1) -- three identical pending feedback_clear rows on one job (job 37/zooplus), measured in
+    production 2026-08-19.
+
+    Groups PENDING suggestions by (job, suggestion_type). A group of two or more keeps the OLDEST row
+    (the survivor -- it carries the same payload every duplicate in the group does, by construction:
+    build_suggestions() always writes the same payload for a given (job, type) at generation time, so
+    nothing is lost by dropping the rest) and dismisses the others via dismiss_suggestion() -- the
+    same call TASK-129's cleanup already goes through (writes no ApplicationNote; see its docstring),
+    so "why did this suggestion disappear" stays answerable the same way.
+
+    Returns one dict per (job, suggestion_type) group that HAD a duplicate:
+        {'job': JobLead, 'suggestion_type': str, 'kept_id': int, 'dismissed_count': int}
+    `[]` when there is nothing to do -- also true on a second run, since a group left with only its
+    survivor is never returned again. dry_run=True (the default) matches and reports without writing.
+    """
+    groups: dict[tuple[int, str], list[MailboxSuggestion]] = {}
+    for suggestion in MailboxSuggestion.objects.filter(status='pending').select_related('job').order_by('job_id', 'suggestion_type', 'created_at', 'id'):
+        groups.setdefault((suggestion.job_id, suggestion.suggestion_type), []).append(suggestion)
+
+    results = []
+    for (_job_id, suggestion_type), rows in groups.items():
+        if len(rows) < 2:
+            continue
+        survivor, *redundant = rows
+        if not dry_run:
+            for suggestion in redundant:
+                dismiss_suggestion(suggestion)
+        results.append({'job': survivor.job, 'suggestion_type': suggestion_type, 'kept_id': survivor.id, 'dismissed_count': len(redundant)})
+    return results
 
 
 # --- TASK-129: detach job-board newsletters TASK-114 left matched to a job ------------------------
@@ -962,6 +1435,58 @@ def detach_job_board_messages(dry_run: bool = True):
     return results
 
 
+# --- TASK-137 AC4: detach ATS-host mail left matched to a job (historical cleanup) -----------------
+
+def detach_ats_host_messages(dry_run: bool = True):
+    """Clear `matched_job` on every MailboxMessage whose SENDER is a known multi-tenant ATS
+    (is_ats_host() -- TASK-137 AC2, the same predicate owned_job_domains() now applies on the live
+    matching path; no second list here). Same shape, same one-directional safety argument, and same
+    "rows survive, only the false association is cleared" guarantee as detach_job_board_messages()
+    above -- this is that function's TASK-129 pattern applied to the ATS case AC2 describes instead of
+    the job-board one.
+
+    Before TASK-137, owned_job_domains() mapped a lead saved off an ATS's OWN listing page (e.g.
+    jobs.ashbyhq.com/almetra/...) to the ATS's domain, so every OTHER company's mail sent through that
+    same ATS matched that one job -- job 760/Deltia AI took all 17 Ashby-sent messages in the mailbox
+    (Taktile, Glacis, Sentry, none of them Deltia AI), job 36/PIDSO took all 56 JOIN-sent messages.
+    TASK-137 stops it going forward; this is the one-time cleanup for what it left behind.
+
+    AC5: never destroys an owner decision. A still-`pending` MailboxSuggestion derived from one of
+    these messages is dismissed with it (dismiss_suggestion() -- writes no ApplicationNote, see its
+    docstring). A `confirmed` one is left exactly as decided -- confirming already wrote its
+    ApplicationNote onto the job as free text (apply_suggestion()), which names the sender/subject/date
+    but carries no FK back to the MailboxMessage, so clearing matched_job cannot touch it -- and is
+    counted separately (`confirmed_count`) so a confirmed decision built on a since-detached message is
+    reported, never silently swept under an unrelated-looking total.
+
+    Returns one dict per affected job, `[]` when there is nothing to do (also true on a second run --
+    the query only ever looks at rows still carrying a `matched_job`, so nothing already cleared is
+    found again):
+        {'job': JobLead, 'message_count': int, 'dismissed_count': int, 'confirmed_count': int}
+    `confirmed_count` is informational only -- nothing about a confirmed suggestion is ever undone.
+    dry_run=True (the default) matches and reports without writing anything.
+    """
+    candidates = (
+        MailboxMessage.objects.filter(matched_job__isnull=False).exclude(sender='')
+        .select_related('matched_job').order_by('matched_job_id', 'uid')
+    )
+    by_job = {}
+    for message in candidates:
+        if is_ats_host(_normalize_domain(_sender_domain(message.sender))):
+            by_job.setdefault(message.matched_job, []).append(message)
+
+    results = []
+    for job, messages in by_job.items():
+        pending = list(MailboxSuggestion.objects.filter(message__in=messages, status='pending'))
+        confirmed_count = MailboxSuggestion.objects.filter(message__in=messages, status='confirmed').count()
+        if not dry_run:
+            for suggestion in pending:
+                dismiss_suggestion(suggestion)
+            MailboxMessage.objects.filter(pk__in=[m.pk for m in messages]).update(matched_job=None)
+        results.append({'job': job, 'message_count': len(messages), 'dismissed_count': len(pending), 'confirmed_count': confirmed_count})
+    return results
+
+
 # --- Reply drafting into Gmail Drafts (TASK-110) -------------------------------------------------
 #
 # The pattern, in order, every time: template or (env-gated) LLM generates draft text -> the
@@ -987,15 +1512,22 @@ def _reply_subject(original_subject: str) -> str:
     return f'Re: {subject}' if subject else 'Re:'
 
 
-def build_reply_mime(raw: RawMessage, from_addr: str, body_text: str) -> bytes:
+def build_reply_mime(raw: RawMessage, from_addr: str, body_text: str, to: list[str] | None = None, cc: list[str] | None = None) -> bytes:
     """AC1: a threaded MIME reply -- In-Reply-To/References set from the original message so Gmail
     (and every other client) renders it in the same conversation. The bytes this returns are only
-    ever handed to transport.append_draft() (IMAP APPEND); nothing in this module ever imports
-    smtplib or otherwise sends mail.
+    ever handed to transport.append_draft()/update_draft() (IMAP APPEND / Gmail drafts.create/
+    .update); nothing in this module ever imports smtplib or otherwise sends mail.
+
+    TASK-133 AC2/AC3: `to`/`cc`, when given, are the owner's own (derived-then-edited) recipient list
+    from compose_reply_draft() rather than the implied `raw.sender` -- omitting them (the default)
+    preserves maybe_draft_reply()'s/update_draft_text's original single-recipient-to-the-sender
+    behaviour exactly, so this is one function for both call shapes, not two.
     """
     msg = EmailMessage()
     msg['From'] = from_addr
-    msg['To'] = raw.sender
+    msg['To'] = ', '.join(to) if to else raw.sender
+    if cc:
+        msg['Cc'] = ', '.join(cc)
     msg['Subject'] = _reply_subject(raw.subject)
     if raw.message_id:
         msg['In-Reply-To'] = raw.message_id
@@ -1275,6 +1807,24 @@ def _effective_do_not_disclose(profile) -> list[str]:
 
 # --- Orchestration ----------------------------------------------------------------------------
 
+def _job_has_undecided_written_draft(job: JobLead) -> bool:
+    """TASK-130 AC3: True when `job` already has a MailboxDraft(status='written') whose own
+    message's suggestion(s) are still pending -- the owner has not confirmed or dismissed them yet.
+    Ties to the SAME message a written draft was generated from (MailboxDraft.message ==
+    MailboxSuggestion.message): run_check() calls build_suggestions() and maybe_draft_reply() against
+    the same message, so a message's own suggestion(s) are the natural stand-in for "has this
+    conversation's proposal been decided". A written draft whose suggestion(s) are all decided, or
+    that produced no suggestion at all (e.g. a plain recruiter_reply follow-up with no feedback clock
+    running), is no longer "undecided" and does not block a new one -- there would be nothing left
+    for the owner to ever decide, which would wedge that job's drafting forever.
+
+    Only ever sees OTHER messages' drafts: the message currently being drafted has no MailboxDraft
+    row yet at the point maybe_draft_reply() calls this (that row is what this function's caller is
+    about to create), so this can never block a message against its own not-yet-written draft.
+    """
+    return MailboxSuggestion.objects.filter(job=job, status='pending', message__draft__status='written').exists()
+
+
 def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, classification: str, interview_at, owner, profile, transport) -> MailboxDraft | None:
     """The one entry point run_check() calls per matched message. None when this classification
     never wants a reply (rejection, not_job_related, uncertain -- see _DRAFT_WORTHY_CLASSIFICATIONS);
@@ -1282,6 +1832,12 @@ def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, cl
     and the final text either way (AC5).
     """
     if classification not in _DRAFT_WORTHY_CLASSIFICATIONS:
+        return None
+    # TASK-143 AC3: same gate as build_suggestions() -- a job the owner has already closed out gets no
+    # more replies drafted at it either, or the app would keep drafting to rejections nobody will ever
+    # send and the owner would keep paying for the model call. No MailboxDraft row at all, the same
+    # "nothing worth generating" shape the classification check right above already uses.
+    if job.status not in JobLead.ACTIONABLE_STATUSES:
         return None
     # TASK-114 AC1/AC5: newsletters and robots get a logged, counted refusal rather than a silent
     # skip -- a run reporting job-related mail and no drafts must be able to say why. Checked before
@@ -1291,6 +1847,15 @@ def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, cl
         return MailboxDraft.objects.create(
             message=message, job=job, status='blocked',
             block_reason=f'not a reply-worthy message: {bulk_reason}'[:250],
+            subject=_reply_subject(raw.subject), body_text='', evaluator='guardrail',
+        )
+    # TASK-130 AC3: one drafted reply per conversation, not per message -- production wrote three
+    # identical drafts into Gmail Drafts for one three-message conversation (job 37/zooplus).
+    # Checked before generation for the same reason bulk_reason is: nothing is worth drafting twice.
+    if _job_has_undecided_written_draft(job):
+        return MailboxDraft.objects.create(
+            message=message, job=job, status='blocked',
+            block_reason='this job already has a written draft the owner has not decided on yet',
             subject=_reply_subject(raw.subject), body_text='', evaluator='guardrail',
         )
     language = _detect_reply_language(raw.subject, raw.body_text)
@@ -1442,6 +2007,162 @@ def update_draft_text(draft: MailboxDraft, new_text: str, user=None) -> str:
     return ''
 
 
+# --- Reply / reply-all recipient derivation, and a hand-composed reply (TASK-133) ----------------
+
+def _split_addresses(header_value: str) -> list[str]:
+    """A comma-separated address header (To/Cc/Reply-To/From, possibly carrying display names like
+    '"HR Team" <hr@acme.test>, jane@acme.test') into a flat list of bare email addresses.
+    `email.utils.getaddresses` (not parseaddr, which only reads the first address) is the stdlib tool
+    for exactly this; an entry with no usable address (an empty/malformed header, a bare display name
+    with no <addr>) is dropped rather than passed through as junk to Gmail Drafts.
+    """
+    if not header_value:
+        return []
+    return [addr for _name, addr in getaddresses([header_value]) if addr]
+
+
+def _dedupe_addresses(addresses) -> list[str]:
+    """Case-insensitive de-dupe that keeps the first-seen casing -- the same address quoted
+    differently across To/Cc/Reply-To (or appearing in both To and Cc) must not show up twice.
+    """
+    seen = set()
+    result = []
+    for addr in addresses:
+        key = addr.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(addr)
+    return result
+
+
+def derive_reply_recipients(message: MailboxMessage, reply_all: bool) -> dict:
+    """TASK-133 AC2/AC7: ONE tested pure function deriving who a reply/reply-all goes to, from the
+    message's OWN stored headers -- never guessed, never re-fetched from Gmail.
+
+    reply: the message's Reply-To if it set one, else its From -- the standard "where does a reply
+    actually go" precedence (AC7: this is exactly what a mailing list's Reply-To is for, so replying
+    to a list message correctly folds down to the list's own reply address rather than every
+    individual subscriber it was also addressed To/Cc).
+
+    reply-all: that address, PLUS every address in To and Cc, MINUS every address that is the OWNER's
+    own (see _is_owner_address -- GMAIL_IMAP_USER, CODEX_CV_OWNER_EMAIL and the DEFAULT_FROM_EMAIL
+    sender are all consulted, so the owner can never end up cc'ing themselves regardless of which of
+    their own addresses shows up in the thread).
+
+    TASK-132 put the owner's OWN sent messages into the same conversation this reads from. Replying
+    to one of THOSE the naive rule above ("Reply-To or From") would derive as replying to the owner's
+    own address -- a reply-to-self. A real mail client does not do that: reopening your own sent mail
+    and hitting Reply targets the ORIGINAL correspondent, i.e. that sent message's own recipients. So
+    for a `sent_by_owner` message, "reply" is derived from its To (and reply-all adds its Cc) instead.
+
+    Returns {'to': [...], 'cc': [...]} -- 'to' always carries the one primary reply address (even for
+    reply-all); the rest of reply-all's recipients land in 'cc', matching how a mail client presents a
+    reply-all (one primary recipient, everyone else cc'd) rather than one flat, unlabelled list.
+    """
+    if message.sent_by_owner:
+        primary_source = _split_addresses(message.to_addrs)
+        secondary_source = _split_addresses(message.cc_addrs)
+    else:
+        primary_source = _split_addresses(message.reply_to) or _split_addresses(message.sender)
+        secondary_source = _split_addresses(message.to_addrs) + _split_addresses(message.cc_addrs)
+
+    to = _dedupe_addresses(addr for addr in primary_source if not _is_owner_address(addr))
+    if not reply_all:
+        return {'to': to, 'cc': []}
+
+    seen = {addr.lower() for addr in to}
+    cc = []
+    for addr in secondary_source:
+        if _is_owner_address(addr):
+            continue
+        key = addr.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cc.append(addr)
+    return {'to': to, 'cc': cc}
+
+
+def compose_reply_draft(message: MailboxMessage, body_text: str, to: list[str], cc: list[str], user=None) -> str:
+    """TASK-133: a hand-composed reply with a recipient list the caller (the compose UI) already
+    derived-then-edited, rather than the single implied recipient maybe_draft_reply()/
+    update_draft_text() work with. Returns '' on success, otherwise a short human-readable refusal
+    reason -- same contract as update_draft_text: NOTHING is written anywhere (not Gmail, not the
+    database) when this refuses.
+
+    Ordering matches update_draft_text exactly (AC6/AC8): check_guardrails() runs on `body_text`
+    BEFORE anything is written -- a hand-composed reply must not get past the same salary floor and
+    do-not-disclose rules a template-generated one cannot -- and a Gmail failure comes back as a
+    reason instead of raising into a 500.
+
+    Threaded via build_reply_mime()'s In-Reply-To/References plus the message's own thread_id
+    (Gmail-native threading, the same two-signal approach maybe_draft_reply() uses), so the draft
+    lands in the SAME Gmail conversation rather than as a detached message (AC4).
+
+    MailboxDraft.message is a OneToOneField -- at most one draft row per message. A message that
+    already got an auto-generated draft (maybe_draft_reply(), for a classified+matched message) or an
+    earlier hand-composed one is UPDATED in place here rather than raising an IntegrityError trying
+    to insert a second row: if that existing row already has a stored Gmail draft id, this calls
+    users.drafts.update (needs the Gmail API transport -- IMAP has no equivalent, same reason
+    update_draft_text refuses IMAP for an edit); otherwise (no existing row, or one with no id -- e.g.
+    a previously blocked draft) this calls append_draft, which both transports support, same as
+    maybe_draft_reply()'s original TASK-110 behaviour.
+
+    Never sends: only append_draft()/update_draft() -- users.drafts.create/.update -- are ever called
+    here, the same no-send guarantee this module has held since TASK-110 (see module docstring);
+    users.messages.send still appears nowhere.
+    """
+    to = _dedupe_addresses(addr.strip() for addr in to if addr and addr.strip())
+    cc = [addr.strip() for addr in cc if addr and addr.strip()]
+    if not to:
+        return 'no recipient selected'
+
+    owner = _owner_user()
+    profile = user_profile_settings(owner) if owner else None
+    block_reason = check_guardrails(body_text, _effective_salary_floor_eur(profile), _effective_do_not_disclose(profile))
+    if block_reason:
+        return block_reason
+
+    existing = MailboxDraft.objects.filter(message=message).first()
+    transport = _default_transport()
+    raw = RawMessage(uid=message.uid, sender=message.sender, subject=message.subject, received_at=message.received_at, message_id=message.message_id)
+    mime_message = build_reply_mime(raw, _reply_from_address(), body_text, to=to, cc=cc)
+
+    updating_in_gmail = bool(existing and existing.gmail_draft_id)
+    if updating_in_gmail and not isinstance(transport, GmailApiTransport):
+        return 'updating an existing draft needs the Gmail API (OAuth) transport; IMAP is not supported'
+
+    try:
+        if updating_in_gmail:
+            response = transport.update_draft(existing.gmail_draft_id, mime_message, thread_id=message.thread_id or existing.gmail_thread_id or None)
+        else:
+            response = transport.append_draft(mime_message, thread_id=message.thread_id or None)
+    except (RuntimeError, URLError, OSError) as exc:
+        logger.warning('compose_reply_draft: Gmail rejected the draft for message %s: %s', message.pk, exc)
+        return f'Gmail would not accept the draft: {exc}'[:400]
+
+    response_message = response.get('message') or {}
+    subject = _reply_subject(message.subject)
+    if existing:
+        existing.status = 'written'
+        existing.block_reason = ''
+        existing.subject = subject
+        existing.body_text = body_text
+        existing.evaluator = 'human'
+        existing.gmail_draft_id = response.get('id') or existing.gmail_draft_id
+        existing.gmail_message_id = response_message.get('id') or existing.gmail_message_id
+        existing.gmail_thread_id = response_message.get('threadId') or existing.gmail_thread_id
+        existing.save(update_fields=['status', 'block_reason', 'subject', 'body_text', 'evaluator', 'gmail_draft_id', 'gmail_message_id', 'gmail_thread_id'])
+    else:
+        MailboxDraft.objects.create(
+            message=message, job=message.matched_job, status='written', subject=subject, body_text=body_text,
+            evaluator='human', gmail_draft_id=response.get('id', ''), gmail_message_id=response_message.get('id', ''),
+            gmail_thread_id=response_message.get('threadId', ''),
+        )
+    return ''
+
+
 # --- Owner + cadence gate (AC1, AC8) -------------------------------------------------------------
 
 def _owner_user():
@@ -1458,6 +2179,28 @@ def _reply_from_address() -> str:
     the same "the owner's own address" setting _owner_user() above already matches against.
     """
     return settings.GMAIL_IMAP_USER or settings.CODEX_CV_OWNER_EMAIL or ''
+
+
+def _owner_email_addresses() -> set[str]:
+    """TASK-132 AC2 / TASK-133 AC2/AC7: every address that counts as "the owner", consulted together
+    -- the owner has several (GMAIL_IMAP_USER, CODEX_CV_OWNER_EMAIL, and the DEFAULT_FROM_EMAIL
+    sender can legitimately differ: a mailbox login, a separate contact/fallback address, a
+    display-name'd transactional sender), so trusting only one of them would mismatch a message sent
+    from another and either mislabel it as received (sent_by_owner) or let it slip back in as a
+    reply-all recipient (derive_reply_recipients) -- both are "a guess that is right today breaks
+    quietly", the exact failure this stored-flag design exists to avoid.
+    """
+    addresses = {settings.GMAIL_IMAP_USER, settings.CODEX_CV_OWNER_EMAIL, parseaddr(settings.DEFAULT_FROM_EMAIL or '')[1]}
+    return {addr.strip().lower() for addr in addresses if addr and addr.strip()}
+
+
+def _is_owner_address(address: str) -> bool:
+    """True when `address` (a raw header value, possibly with a display name) resolves to one of the
+    owner's own addresses. Used both to set MailboxMessage.sent_by_owner at ingest time (a STORED
+    flag, never a From comparison done again at render time -- see the model docstring) and by
+    derive_reply_recipients() to keep the owner out of their own reply-all.
+    """
+    return parseaddr(address or '')[1].strip().lower() in _owner_email_addresses()
 
 
 def _default_transport():
@@ -1723,7 +2466,11 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         # mailbox again.
         is_cold_start = last_marker == 0
         run.drafting_skipped = is_cold_start
-        raw_messages = active_transport.fetch_new(last_marker)
+        # TASK-141 AC4/AC6: the Gmail-API path bounds a cold start to the owner's configured
+        # mailbox_lookback_months (re-read from `profile` on every call, so a settings-page edit
+        # takes effect on the very next run with no restart); the IMAP path has no such floor to pass
+        # (ImapTransport.fetch_new only ever reads the INBOX mailbox forward from last_uid).
+        raw_messages = active_transport.fetch_new(last_marker, lookback_days=_lookback_days(profile)) if is_gmail_api else active_transport.fetch_new(last_marker)
         job_domains = owned_job_domains(owner)
 
         # Gmail-sourced messages get a locally-assigned uid (MailboxMessage.uid is a required, unique,
@@ -1738,7 +2485,20 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             # guard is what actually makes that harmless instead of a duplicated log/suggestion/draft.
             if is_gmail_api and raw.gmail_id and MailboxMessage.objects.filter(gmail_id=raw.gmail_id).exists():
                 continue
-            matched = match_job(raw, job_domains)
+            # TASK-144 AC1/AC5/AC6: the owner's own sent mail (now part of what fetch_new() above
+            # returns) is matched by which tracked-job THREAD it already belongs to, never by its own
+            # recipient domain (see _match_by_thread's docstring for why). A sent message whose thread
+            # is not already linked to a tracked job is skipped here entirely -- not logged at all --
+            # so personal mail never floods the review panel's unmatched list (AC5); this is the one
+            # deliberate exception to "every message read is logged" (TASK-109 AC5), scoped to sent
+            # mail only.
+            sent_by_owner = _is_owner_address(raw.sender)
+            if sent_by_owner:
+                matched = _match_by_thread(raw.thread_id) if raw.thread_id else None
+                if matched is None:
+                    continue
+            else:
+                matched = match_job(raw, job_domains)
             classification, interview_at, evaluator = classify_email(raw, domain_known=matched is not None)
             if is_gmail_api:
                 next_uid += 1
@@ -1752,14 +2512,31 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
                 # cap is re-applied here too, so the column itself cannot exceed it even if a
                 # transport changes.
                 body_text=raw.body_text[:5000],
+                # TASK-132 AC1/AC2/TASK-144 AC2: sent_by_owner is now routinely True here too -- the
+                # Gmail-API transport's fetch_new() fetches the owner's SENT mail as well as inbound
+                # (TASK-144), on top of the widened, no-longer-INBOX-only read TASK-136 already gave
+                # it -- rendered by the SAME left/right frontend code path that already reads this
+                # stored flag, no second one.
+                reply_to=raw.reply_to[:2000], to_addrs=raw.to[:2000], cc_addrs=raw.cc[:2000],
+                sent_by_owner=sent_by_owner,
                 received_at=raw.received_at, classification=classification, evaluator=evaluator, matched_job=matched,
+                # TASK-135 AC1/AC3: metadata-only calendar-invitation/attachment fields -- blank/empty
+                # for every message that carries neither (see MailboxMessage's docstring).
+                calendar_summary=raw.calendar_summary[:500], calendar_location=raw.calendar_location[:500],
+                calendar_organizer=raw.calendar_organizer[:500], calendar_start=raw.calendar_start, calendar_end=raw.calendar_end,
+                attachments=raw.attachments,
             )
             run.fetched_count += 1
             if classification == 'uncertain':
                 run.uncertain_count += 1
             elif classification != 'not_job_related':
                 run.job_related_count += 1
-            if matched is not None:
+            # TASK-144 AC3: never generate a suggestion or a reply draft from the owner's OWN words --
+            # _classify_heuristic (and an LLM prompt built the same way) has no idea who sent a
+            # message, and a sent "thank you for the invitation" reads exactly like a recruiter's mail
+            # to it. Without this guard the app would draft a reply to the owner's own email and save
+            # it to Gmail Drafts.
+            if matched is not None and not sent_by_owner:
                 run.suggestion_count += build_suggestions(message, matched, classification, interview_at)
                 if not is_cold_start:
                     draft = maybe_draft_reply(message, raw, matched, classification, interview_at, owner, profile, active_transport)
@@ -1852,3 +2629,482 @@ def seed_fake_run() -> MailboxRun:
         subject=_reply_subject(negotiation_raw.subject), body_text=unsafe_body,
     )
     return run
+
+
+# ===================================================================================================
+# TASK-132: a matched conversation is the whole Gmail thread, not just the one message run_check()
+# happened to fetch off the INBOX -- and the 648 rows body_text has never had, backfilled from the
+# gmail_id every one of them already carries. Both are Gmail-API-only (see the isinstance guards
+# below): IMAP has no thread concept and update_draft_text()/purge_app_drafts' management command
+# already refuse it for the same reason, so this follows the same precedent rather than half
+# implementing a thread concept IMAP does not have.
+# ===================================================================================================
+
+# AC5: the bound, stated rather than left implicit. Two knobs:
+#   * matched-jobs-only -- a thread this app has never matched a message from to a tracked job is
+#     never swept in; only MailboxMessage rows with matched_job set contribute a thread_id to ingest.
+#   * a per-thread message cap (INGEST_THREAD_MESSAGE_CAP) -- a long-running thread does not become an
+#     unbounded pull, and the newest messages in a capped thread are kept (sorted oldest-first, then
+#     the cap keeps the LAST N -- see ingest_threads()), since the newest few are the ones most likely
+#     to be a reply the owner has not seen archived yet.
+# `limit` (threads-per-call, default INGEST_THREAD_LIMIT_DEFAULT) bounds how many threads any ONE
+# invocation reads, so a bare call over the owner's 653-message history is one finite batch of API
+# calls, not an hour of them -- re-running picks up threads not yet ingested (see 'resumable' below).
+INGEST_THREAD_LIMIT_DEFAULT = 25
+INGEST_THREAD_MESSAGE_CAP = 50
+
+# AC3/AC4: how many empty-body rows one backfill_message_bodies() call attempts -- generous for a
+# single run, finite so a bare call cannot become an unbounded sweep of the whole table. `limit`
+# overrides it for a smaller, more cautious first pass.
+BACKFILL_BATCH_LIMIT = 200
+
+
+def ingest_threads(dry_run: bool = True, limit: int | None = None) -> dict:
+    """TASK-132 AC1/AC3/AC5/AC6: ingest the WHOLE Gmail thread of every matched-job MailboxMessage
+    that has a stored thread_id -- including messages the OWNER sent, which run_check()'s fetch_new()
+    never reads (it only ever queries labelIds=INBOX; see GmailApiTransport.fetch_new). This is what
+    turns "some inbox fragments" into "Julia, me 5".
+
+    Resumable (AC4, same idiom as backfill_message_bodies below): "already ingested" is read fresh
+    from the database on every call -- every gmail_id already stored -- never a separate cursor, so an
+    interrupted run's partial progress is exactly what the next call picks up from; a thread already
+    fully ingested contributes zero new rows on a second run.
+
+    AC6: every inserted row gets a freshly assigned, ascending, globally unique `uid` (computed once
+    as MAX(uid) + 1, + 2, ... before the loop -- the same locally-assigned-sequence idiom run_check()
+    already uses for Gmail-API-sourced rows; see its comment above), so `uid` can never collide with,
+    or move backwards from, anything run_check() has assigned. Rows are only ever .create()d here,
+    never .update()d -- a message already stored (matched by gmail_id) is skipped entirely, not
+    re-written, so the append-only guarantee holds.
+
+    `internal_date_ms` is deliberately left NULL on every row this function creates -- never set from
+    the thread message's real Gmail internalDate. run_check()'s resume marker for the Gmail-API path
+    is MAX(internal_date_ms) (see run_check's own comment on it); a thread can contain the owner's OWN
+    sent replies that are NEWER than the newest inbound message fetch_new() has actually fetched so
+    far, and letting one of those set the marker would silently push it past a real inbound message
+    that has not been fetched yet -- the next run_check() would then skip it forever. NULL is exactly
+    the model's existing idiom for "not from a normal fetch_new() read" (see the MailboxMessage
+    docstring: "Both are blank/null for every IMAP-sourced row") -- MAX() ignores NULLs, so this can
+    only ever leave the resume marker exactly where fetch_new() already put it, never move it either
+    way.
+
+    Deliberately does NOT call build_suggestions()/maybe_draft_reply() for what it ingests: these are
+    historical thread messages, not new mail run_check() just fetched, and re-running suggestion/draft
+    generation over old conversations is the exact "112 drafts to dead threads" incident class
+    run_check()'s own cold-start guard exists to prevent, in a new shape. This function only stores
+    and links; suggestions and drafts stay run_check()'s job.
+
+    Returns {'threads_attempted': int, 'threads_failed': int, 'threads_skipped_capped': int,
+    'messages_created': int, 'messages_skipped_existing': int, 'messages_skipped_thread_cap': int,
+    'refused': str}. `refused` is the ONLY populated key (a short reason, everything else 0) when the
+    configured transport is not Gmail API -- the same refuse-rather-than-half-implement shape
+    update_draft_text/purge_app_drafts' command already use for the identical IMAP limitation.
+    dry_run=True (the default) reads Gmail and reports what WOULD be created without writing anything.
+    """
+    empty = {
+        'threads_attempted': 0, 'threads_failed': 0, 'threads_skipped_capped': 0,
+        'messages_created': 0, 'messages_skipped_existing': 0, 'messages_skipped_thread_cap': 0,
+    }
+    transport = _default_transport()
+    if not isinstance(transport, GmailApiTransport):
+        return {**empty, 'refused': 'thread ingestion needs the Gmail API (OAuth) transport; IMAP has no thread concept'}
+
+    # One job per thread_id (the first matched row that carries it) -- a freshly ingested thread
+    # message is attached to the same job the thread was already matched to, rather than left
+    # unmatched (AC1: it belongs to the same conversation, which is already "about" that job).
+    thread_job_ids: dict[str, int] = {}
+    for thread_id, job_id in (
+        MailboxMessage.objects.filter(matched_job__isnull=False).exclude(thread_id='')
+        .order_by('uid').values_list('thread_id', 'matched_job_id')
+    ):
+        thread_job_ids.setdefault(thread_id, job_id)
+
+    all_thread_ids = list(thread_job_ids.keys())
+    thread_limit = INGEST_THREAD_LIMIT_DEFAULT if limit is None else limit
+    to_process = all_thread_ids[:thread_limit]
+    threads_skipped_capped = max(len(all_thread_ids) - len(to_process), 0)
+
+    threads_failed = 0
+    messages_created = 0
+    messages_skipped_existing = 0
+    messages_skipped_thread_cap = 0
+    run = None  # created lazily, only once there is a real row to attach to it, and only if not dry_run
+    next_uid = None
+
+    for thread_id in to_process:
+        try:
+            thread_messages = transport.get_thread(thread_id)
+        except Exception as exc:
+            logger.warning('ingest_threads: could not read thread %s: %s', thread_id, exc)
+            threads_failed += 1
+            continue
+        thread_messages.sort(key=lambda m: m.internal_date_ms or 0)
+        capped_count = max(len(thread_messages) - INGEST_THREAD_MESSAGE_CAP, 0)
+        messages_skipped_thread_cap += capped_count
+        # Keep the newest INGEST_THREAD_MESSAGE_CAP messages when a thread is over the cap -- a
+        # long-dead thread's oldest history matters far less than whether the last few exchanges
+        # (most likely still live) are visible.
+        for raw in thread_messages[capped_count:]:
+            if not raw.gmail_id or MailboxMessage.objects.filter(gmail_id=raw.gmail_id).exists():
+                messages_skipped_existing += 1
+                continue
+            if not dry_run:
+                if run is None:
+                    run = MailboxRun.objects.create(finished_at=timezone.now())
+                    next_uid = (MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0) + 1
+                job_id = thread_job_ids.get(thread_id)
+                matched = JobLead.objects.filter(pk=job_id).first() if job_id else None
+                classification, interview_at, evaluator = classify_email(raw, domain_known=True)
+                MailboxMessage.objects.create(
+                    run=run, uid=next_uid, gmail_id=raw.gmail_id, internal_date_ms=None,
+                    message_id=raw.message_id[:250], thread_id=raw.thread_id[:32] or thread_id[:32],
+                    sender=raw.sender[:254], subject=raw.subject[:500], body_text=raw.body_text[:5000],
+                    reply_to=raw.reply_to[:2000], to_addrs=raw.to[:2000], cc_addrs=raw.cc[:2000],
+                    sent_by_owner=_is_owner_address(raw.sender), received_at=raw.received_at,
+                    classification=classification, evaluator=evaluator, matched_job=matched,
+                    # TASK-135 AC1/AC3: same metadata-only calendar/attachment fields run_check() writes.
+                    calendar_summary=raw.calendar_summary[:500], calendar_location=raw.calendar_location[:500],
+                    calendar_organizer=raw.calendar_organizer[:500], calendar_start=raw.calendar_start, calendar_end=raw.calendar_end,
+                    attachments=raw.attachments,
+                )
+                next_uid += 1
+            messages_created += 1
+
+    if run is not None:
+        run.fetched_count = messages_created
+        run.save(update_fields=['fetched_count'])
+
+    return {
+        'threads_attempted': len(to_process), 'threads_failed': threads_failed,
+        'threads_skipped_capped': threads_skipped_capped, 'messages_created': messages_created,
+        'messages_skipped_existing': messages_skipped_existing,
+        'messages_skipped_thread_cap': messages_skipped_thread_cap, 'refused': '',
+    }
+
+
+def backfill_thread_ids(dry_run: bool = True, limit: int | None = None) -> dict:
+    """TASK-132 AC1: fill MailboxMessage.thread_id for already-logged rows, so ingest_threads has
+    threads to expand at all.
+
+    Only rows written since TASK-121 carry a thread_id -- 5 of 653 on the owner's mailbox when this
+    was written -- so without this, "ingest the whole thread" can only ever reach the handful of
+    conversations the app happened to see yesterday, and the June exchanges the owner actually asked
+    about stay invisible.
+
+    Same resumable/idempotent shape as backfill_message_bodies (AC4): the candidate set is every row
+    still missing a thread_id, read fresh each call, so an interrupted run simply is not selected
+    again. Touches thread_id only -- the append-only guarantee holds (AC6).
+    """
+    empty = {'attempted': 0, 'filled': 0, 'failed': 0, 'skipped_no_gmail_id': 0}
+    transport = _default_transport()
+    if not isinstance(transport, GmailApiTransport):
+        return {**empty, 'refused': 'thread-id backfill needs the Gmail API (OAuth) transport; IMAP-sourced rows have no gmail_id to refetch by'}
+
+    batch_limit = BACKFILL_BATCH_LIMIT if limit is None else limit
+    candidates = list(
+        MailboxMessage.objects.filter(thread_id='').exclude(gmail_id='').order_by('uid').values_list('id', 'gmail_id')[:batch_limit]
+    )
+    filled = failed = 0
+    for message_id, gmail_id in candidates:
+        try:
+            thread_id = transport.fetch_thread_id(gmail_id)
+        except Exception as exc:
+            logger.warning('backfill_thread_ids: could not read threadId for gmail_id=%s: %s', gmail_id, exc)
+            failed += 1
+            continue
+        if not thread_id:
+            failed += 1
+            continue
+        if not dry_run:
+            MailboxMessage.objects.filter(pk=message_id, thread_id='').update(thread_id=thread_id[:32])
+        filled += 1
+
+    return {
+        'attempted': len(candidates), 'filled': filled, 'failed': failed,
+        'skipped_no_gmail_id': MailboxMessage.objects.filter(thread_id='', gmail_id='').count(), 'refused': '',
+    }
+
+
+def backfill_message_bodies(dry_run: bool = True, limit: int | None = None) -> dict:
+    """TASK-132 AC3/AC4: fills body_text for existing MailboxMessage rows via their OWN stored
+    gmail_id. Never creates a row, never touches uid/thread_id/received_at/classification/etc -- the
+    append-only guarantee holds, only body_text changes on an already-logged row (the one field
+    attach_message_to_job's docstring already establishes this app is willing to backfill after the
+    fact; see there for the precedent).
+
+    TASK-135: also fills calendar_summary/calendar_location/calendar_organizer/calendar_start/
+    calendar_end/attachments on the SAME already-selected rows, from the SAME re-fetch -- these are
+    exactly the six real messages that motivated this task (an invitation-only message with no
+    text/plain part, so body_text=='' selected it for backfill in the first place, and the old
+    body-only version of this function then marked it 'failed' and threw its calendar data away with
+    it, since Gmail genuinely returns no body for one of these). `has_content` below is what actually
+    decides fill-vs-fail now: a message is only 'failed' when the refetch produced NOTHING usable at
+    all -- no body, no calendar invitation, no attachment.
+
+    Resumable and idempotent (AC4): the candidate set -- every row still with body_text=='' AND
+    calendar_summary=='' -- is read fresh from the database on each call, not from a separate cursor,
+    so an interrupted run leaves whatever it already filled and simply is not selected again;
+    re-running picks up only the rows still empty of both, in the same oldest-uid-first order, without
+    ever re-fetching a row it already filled (calendar_summary is in that condition, not just
+    body_text, precisely so a calendar-only message -- filled body_text=='' by design -- is not
+    re-fetched forever; see the has_content note above). `limit` bounds how many rows THIS call
+    attempts (a batch size, not a resume cursor); the default (BACKFILL_BATCH_LIMIT) keeps a bare call
+    from becoming an unbounded sweep of the whole table -- 653 messages is exactly the kind of job AC4
+    says must survive being interrupted.
+
+    Only Gmail-API-sourced rows (gmail_id set) can be refetched this way -- an IMAP-sourced row has no
+    gmail_id and IMAP itself has no equivalent of "fetch this exact message by id" cheaply, so those
+    are counted separately (skipped_no_gmail_id) rather than silently ignored.
+
+    Returns {'attempted': int, 'filled': int, 'failed': int, 'skipped_no_gmail_id': int, 'refused':
+    str}. AC3: 'filled' is the count that matters -- attempted-but-not-actually-written (a fetch
+    failure, or Gmail genuinely returning an empty body) is counted in 'failed', not 'filled'.
+    dry_run=True (the default) fetches and reports without writing body_text anywhere.
+    """
+    empty = {'attempted': 0, 'filled': 0, 'failed': 0, 'skipped_no_gmail_id': 0}
+    transport = _default_transport()
+    if not isinstance(transport, GmailApiTransport):
+        return {**empty, 'refused': 'backfill needs the Gmail API (OAuth) transport; IMAP-sourced rows have no gmail_id to refetch by'}
+
+    batch_limit = BACKFILL_BATCH_LIMIT if limit is None else limit
+    # TASK-135: also gated on calendar_summary=='' -- a calendar-only message (one of the six real
+    # cases this task exists for) fills calendar_summary but NEVER body_text (Gmail has no text/plain
+    # part to give it), so body_text=='' alone would keep re-selecting it as a candidate forever,
+    # re-fetching it on every single call. ponytail: not also gated on attachments==[] -- a message
+    # whose ONLY new content is an attachment manifest (no body, no calendar) would still be
+    # re-selected on every call; not one of the six measured cases, so left as a known gap rather than
+    # a JSONField-empty-list filter whose exact-match behaviour can vary by DB backend. Upgrade path:
+    # add that condition if an attachment-only, body-less, calendar-less message is ever actually seen.
+    candidates = list(
+        MailboxMessage.objects.filter(body_text='', calendar_summary='').exclude(gmail_id='')
+        .order_by('uid').values_list('id', 'gmail_id')[:batch_limit]
+    )
+    filled = failed = 0
+    for message_id, gmail_id in candidates:
+        try:
+            fetched = transport.fetch_message(gmail_id)
+        except Exception as exc:
+            logger.warning('backfill_message_bodies: could not refetch gmail_id=%s: %s', gmail_id, exc)
+            failed += 1
+            continue
+        has_content = bool(fetched.body_text or fetched.calendar_summary or fetched.attachments)
+        if not has_content:
+            failed += 1  # genuinely nothing from Gmail -- nothing to write, not an error worth raising
+            continue
+        if not dry_run:
+            MailboxMessage.objects.filter(pk=message_id, body_text='', calendar_summary='').update(
+                body_text=fetched.body_text[:5000],
+                calendar_summary=fetched.calendar_summary[:500], calendar_location=fetched.calendar_location[:500],
+                calendar_organizer=fetched.calendar_organizer[:500], calendar_start=fetched.calendar_start,
+                calendar_end=fetched.calendar_end, attachments=fetched.attachments,
+            )
+        filled += 1
+
+    skipped_no_gmail_id = MailboxMessage.objects.filter(body_text='', gmail_id='').count()
+    return {
+        'attempted': len(candidates), 'filled': filled, 'failed': failed,
+        'skipped_no_gmail_id': skipped_no_gmail_id, 'refused': '',
+    }
+
+
+# ===================================================================================================
+# TASK-136 AC1: a ONE-OFF, explicit, marker-IGNORING historical re-fetch -- the gap widening
+# fetch_new() (dropping labelIds=INBOX) could not close by itself. `after:` inside fetch_new() always
+# derives from MAX(internal_date_ms) once a resume marker exists (see its docstring): a message OLDER
+# than that marker -- an application confirmation archived months before the mailbox check first ran
+# -- is permanently unreachable by any number of normal runs, however wide the label filter is.
+# Verified against the owner's real mailbox after the labelIds-only change shipped: 5 fetched, 0
+# job-related, subject-contains-"applying" still 0 -- the marker, not the label, was the rest of the
+# gap. Confirmed via management/commands/backfill_historical_mail.py, never called by run_check().
+# ===================================================================================================
+
+BACKFILL_HISTORICAL_LIMIT_DEFAULT = 200  # same batch-size idiom as BACKFILL_BATCH_LIMIT above
+
+# Owner decision 2026-08-19 (follow-up to the above): a bare date floor widened WHAT was eligible but
+# removed labelIds=INBOX's other job -- a volume/relevance bound -- at the same time. Dry-run against
+# the real mailbox found ~3,411 new messages (the owner's entire two-year mailbox, almost all
+# not_job_related) before this shipped. GMAIL_QUERY_MAX_CHARS bounds how long a single from:(...)
+# query is allowed to get before _targeted_backfill_queries() below splits it into more than one --
+# ponytail: a conservative guess (Gmail does not document an exact ceiling for the API; comfortably
+# under the ~2048 the search UI has historically tolerated). Upgrade path: measure the real ceiling
+# against a live account if this ever truncates a query wrongly, or chunk smaller.
+GMAIL_QUERY_MAX_CHARS = 1500
+
+
+def _quote_for_gmail(phrase: str) -> str:
+    return f'"{phrase}"' if ' ' in phrase else phrase
+
+
+def _application_confirmation_subject_clause() -> str:
+    """`subject:(...)` built from the SAME APPLICATION_CONFIRMATION_KEYWORDS the classifier uses --
+    one vocabulary, not two, per the owner's follow-up decision. Gmail's `subject:` operator does
+    exact-phrase, SUBJECT-ONLY matching -- a narrower net than the classifier's cross-subject-or-body
+    substring check, and that is deliberate: this builds a DISCOVERY filter for backfill_historical_mail()
+    below, not the classification decision -- classify_email() still runs on every message this
+    ingests and is the one place "is this actually an application confirmation" gets decided. The two
+    only need to agree on INTENT (surface likely confirmations), not on matching implementation.
+    """
+    return 'subject:(' + ' OR '.join(_quote_for_gmail(p) for p in APPLICATION_CONFIRMATION_KEYWORDS) + ')'
+
+
+def _targeted_backfill_queries(after_seconds: int, domains: list[str], max_chars: int = GMAIL_QUERY_MAX_CHARS) -> tuple[list[str], bool]:
+    """`after:<floor> (from:(<tracked-job domains>) OR subject:(<application-confirmation phrases>))`
+    -- the owner's 2026-08-19 targeting decision. `domains` should already be TASK-114-filtered (pass
+    owned_job_domains(owner).keys(), which already excludes job boards via is_job_board() -- reused
+    here so board newsletters (XING, devjobs, ...) do not come straight back the way TASK-129 just
+    cleaned up). `@domain` is Gmail's own from:-by-domain idiom (a sender address ENDING in that
+    domain), not a bare substring.
+
+    Returns (queries, batched). Normally exactly one query; more than one only when `domains` would
+    make a single query exceed `max_chars` (Gmail query length is finite) -- each extra query repeats
+    the FULL subject clause, so a subject-only match is never lost to whichever chunk happens to carry
+    it, and `batched` is True so the caller can report the split rather than it happening silently.
+    With no tracked-job domains at all, the domain half is simply omitted (subject:-only), never an
+    empty `from:()`, which would be a malformed query.
+    """
+    subject_clause = _application_confirmation_subject_clause()
+    if not domains:
+        return [f'after:{after_seconds} {subject_clause}'], False
+
+    chunks = []
+    chunk = []
+    for domain in domains:
+        candidate = chunk + [domain]
+        from_clause = 'from:(' + ' OR '.join(f'@{d}' for d in candidate) + ')'
+        query = f'after:{after_seconds} ({from_clause} OR {subject_clause})'
+        if chunk and len(query) > max_chars:
+            chunks.append(chunk)
+            chunk = [domain]
+        else:
+            chunk = candidate
+    chunks.append(chunk)
+
+    queries = [
+        f"after:{after_seconds} (from:({' OR '.join(f'@{d}' for d in chunk)}) OR {subject_clause})"
+        for chunk in chunks
+    ]
+    return queries, len(queries) > 1
+
+
+def backfill_historical_mail(dry_run: bool = True, limit: int | None = None, floor_days: int | None = None, all_mail: bool = False) -> dict:
+    """Lists Gmail by date floor (FETCH_HISTORY_FLOOR_DAYS by default; override via floor_days),
+    completely ignoring the resume marker, then creates whatever is not already stored (gmail_id
+    dedup). Targeted by default (see _targeted_backfill_queries() above) -- `all_mail=True` restores
+    the bare `after:<floor>` query with no relevance filter, for an explicit, opt-in full sweep; it is
+    NOT the default; see management/commands/backfill_historical_mail.py's --all-mail flag.
+
+    AC2, the failure mode that matters most here: `internal_date_ms` is left NULL on every row this
+    creates -- the SAME choice ingest_threads() already made, for the SAME reason (see its own
+    docstring). A message from two years ago legitimately carries an old internalDate; if that fed
+    MAX(internal_date_ms) -- the Gmail resume marker fetch_new() reads -- backfilling it would drag
+    that marker BACKWARDS, and the next live run_check() would re-read (and re-classify, re-suggest,
+    potentially re-draft into) everything since. MAX() ignores NULLs, so this can only ever leave the
+    marker exactly where fetch_new() already put it.
+
+    AC3/AC4: resumable, idempotent, and bounded in the two places that actually cost something.
+    Listing message ids (list_since -- cheap, no full-body fetch) is NOT capped by `limit`, so every
+    call sees the complete candidate set for the query and can report an honest already-vs-new split;
+    fetching full detail (fetch_message -- one Gmail call each) IS capped by `limit` (a batch size,
+    default BACKFILL_HISTORICAL_LIMIT_DEFAULT), and only for ids not already stored -- read fresh from
+    the database every call, so a mailbox with years of mostly-already-ingested mail does not pay a
+    full re-download of everything on every resumed call, and 653+ messages is exactly the kind of job
+    this must survive being interrupted partway through.
+
+    AC5/AC6: classifies what it ingests (classify_email() -- an application confirmation lands as
+    application_confirmed, not not_job_related, same as a live run) and matches it to a tracked job via
+    the SAME owned_job_domains()/match_job() a live run uses, so TASK-114's board-domain exclusion
+    applies unchanged. Deliberately does NOT call maybe_draft_reply() -- these are years-old messages,
+    not mail a live run just fetched, and drafting into them is exactly the "112 drafts to dead
+    threads" incident class run_check()'s own cold-start guard exists to prevent, in a new shape. That
+    also means TASK-114's bulk_mail_reason()/is_job_board() guards are never actually EXERCISED by this
+    function (there is nothing here for them to block), but they remain exactly what a LATER live draft
+    attempt against one of these rows would be checked against -- unchanged, since this function never
+    touches them.
+
+    Returns {'attempted': int, 'created': int, 'already_present': int, 'skipped_by_bound': int,
+    'matched_by_query': int, 'batched': bool, 'refused': str}. `matched_by_query` is the total distinct
+    ids the search itself returned, BEFORE the already-stored/new split -- reported so "the search
+    found nothing" (matched_by_query == 0) is distinguishable from "the search never ran" (a `refused`
+    value). `already_present` counts every listed id already stored, `attempted` is the ids THIS call
+    fetched full detail for (bounded by `limit`) and `created` is how many of those were new (or would
+    be, in dry_run) -- almost always equal to `attempted`, since the rare exception is a race against a
+    concurrent write between the id listing and the detail fetch. `skipped_by_bound` is candidates
+    `limit` left for a later call. `batched` is True when the tracked-job domain list was too long for
+    one query and had to be split (see _targeted_backfill_queries). `refused` is the only populated key
+    (others 0/False) when the configured transport is not Gmail API, or no owner account is configured.
+    dry_run=True (the default) reads Gmail and reports what WOULD be created without writing anything.
+    """
+    empty = {'attempted': 0, 'created': 0, 'already_present': 0, 'skipped_by_bound': 0, 'matched_by_query': 0, 'batched': False}
+    transport = _default_transport()
+    if not isinstance(transport, GmailApiTransport):
+        return {**empty, 'refused': 'historical backfill needs the Gmail API (OAuth) transport; IMAP has no equivalent bulk date-range listing'}
+    owner = _owner_user()
+    if owner is None:
+        return {**empty, 'refused': 'no owner account configured (CODEX_CV_OWNER_EMAIL matches no user)'}
+
+    job_domains = owned_job_domains(owner)
+    after_seconds = int((timezone.now() - timedelta(days=FETCH_HISTORY_FLOOR_DAYS if floor_days is None else floor_days)).timestamp())
+    if all_mail:
+        queries, batched = [f'after:{after_seconds}'], False
+    else:
+        queries, batched = _targeted_backfill_queries(after_seconds, list(job_domains.keys()))
+
+    message_ids = []
+    seen_ids = set()
+    for q in queries:
+        for msg_id in transport.list_since(q):
+            if msg_id not in seen_ids:
+                seen_ids.add(msg_id)
+                message_ids.append(msg_id)
+    matched_by_query = len(message_ids)
+
+    known_ids = set(MailboxMessage.objects.exclude(gmail_id='').values_list('gmail_id', flat=True))
+    new_ids = [mid for mid in message_ids if mid not in known_ids]
+    already_present = len(message_ids) - len(new_ids)
+
+    batch_limit = BACKFILL_HISTORICAL_LIMIT_DEFAULT if limit is None else limit
+    to_process = new_ids[:batch_limit]
+    skipped_by_bound = max(len(new_ids) - len(to_process), 0)
+
+    run = None
+    next_uid = None
+    created = 0
+    for msg_id in to_process:
+        raw = transport.fetch_message(msg_id)
+        if MailboxMessage.objects.filter(gmail_id=raw.gmail_id).exists():
+            # A concurrent write (a scheduled live run, or another backfill call) created this row
+            # between the id listing above and this fetch -- rare, but this is the one point this
+            # function actually writes, so it is checked again right before doing so.
+            already_present += 1
+            continue
+        if not dry_run:
+            if run is None:
+                run = MailboxRun.objects.create(finished_at=timezone.now())
+                next_uid = (MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0) + 1
+            matched = match_job(raw, job_domains)
+            classification, interview_at, evaluator = classify_email(raw, domain_known=matched is not None)
+            message = MailboxMessage.objects.create(
+                run=run, uid=next_uid, gmail_id=raw.gmail_id, internal_date_ms=None,
+                message_id=raw.message_id[:250], thread_id=raw.thread_id[:32], sender=raw.sender[:254],
+                subject=raw.subject[:500], body_text=raw.body_text[:5000],
+                reply_to=raw.reply_to[:2000], to_addrs=raw.to[:2000], cc_addrs=raw.cc[:2000],
+                sent_by_owner=_is_owner_address(raw.sender), received_at=raw.received_at,
+                classification=classification, evaluator=evaluator, matched_job=matched,
+                calendar_summary=raw.calendar_summary[:500], calendar_location=raw.calendar_location[:500],
+                calendar_organizer=raw.calendar_organizer[:500], calendar_start=raw.calendar_start, calendar_end=raw.calendar_end,
+                attachments=raw.attachments,
+            )
+            next_uid += 1
+            if matched is not None:
+                build_suggestions(message, matched, classification, interview_at)
+        created += 1
+
+    if run is not None:
+        run.fetched_count = created
+        run.save(update_fields=['fetched_count'])
+
+    return {
+        'attempted': len(to_process), 'created': created, 'already_present': already_present,
+        'skipped_by_bound': skipped_by_bound, 'matched_by_query': matched_by_query, 'batched': batched,
+        'refused': '',
+    }

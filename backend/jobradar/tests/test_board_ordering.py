@@ -55,6 +55,36 @@ def test_status_ordering_follows_the_pipeline_order_declared_on_the_model(client
     assert len(r.data) == len(ALL_STATUSES)
 
 
+# --- TASK-145 AC1/AC2/AC3: the DEFAULT order is attention order (new, then interview, then the
+# rest in pipeline order, closed last) -- a different permutation of the same eleven statuses
+# than the pipeline test above, which is the whole point: it proves the default groups 'new' and
+# 'interview' to the front instead of leaving them in their plain pipeline positions (2nd and 5th).
+
+def test_default_ordering_groups_new_then_interview_then_pipeline_order_then_closed_last(client, one_job_per_status):
+    r = client.get('/api/jobs/', {'status': ','.join(ALL_STATUSES)})  # no ordering= -> default
+    assert r.status_code == 200
+    assert [j['company'] for j in r.data] == [
+        'new', 'interview',                                       # groups 1 and 2 (the owner's ask)
+        'reviewed', 'to_apply', 'applied', 'offer', 'accepted',    # everything else, pipeline order
+        'rejected', 'withdrawn', 'skipped', 'archived',            # closed, last
+    ]
+    assert len(r.data) == len(ALL_STATUSES)
+
+
+# --- TASK-145 AC7: the allowlist still refuses the exact hostile key the task names -------------
+
+def test_created_by_password_ordering_degrades_to_default_rather_than_erroring(client):
+    """TASK-145 AC7 names this literal key. A separate, standalone test (not folded into the
+    hostile-values parametrize above, which deliberately avoids credential words) because the
+    task calls it out by name as the thing to prove."""
+    make_job(client, company='Low', status='new')
+    make_job(client, company='High', status='new')
+    default = [j['company'] for j in client.get('/api/jobs/').data]
+    r = client.get('/api/jobs/', {'ordering': '-created_by__password'})
+    assert r.status_code == 200
+    assert [j['company'] for j in r.data] == default
+
+
 # --- AC2/AC3: multi-key precedence, direction independence, second key only decides ties -------
 
 @pytest.fixture
@@ -118,6 +148,17 @@ def test_a_fourth_ordering_key_is_dropped_not_honoured(client, capped_tie_board)
     assert r.status_code == 200
     # -updated_at honoured would read J1, J3, J2. Capped at 3, the -created_at tiebreaker
     # (newest first) decides instead.
+    assert [j['company'] for j in r.data] == ['J3', 'J2', 'J1']
+
+
+# TASK-145 AC9: the cap holds for a value that came from UserProfile.board_sort_keys too, not
+# only one typed by a client -- same wire format, same parser, so nothing needs a second cap.
+def test_a_saved_board_sort_with_four_keys_is_capped_the_same_way_as_a_typed_one(client, capped_tie_board):
+    from jobradar.models import UserProfile
+    profile, _ = UserProfile.objects.update_or_create(user=client.user, defaults={'board_sort_keys': 'status,fit_score,priority,-updated_at'})
+    saved = profile.board_sort_keys
+    r = client.get('/api/jobs/', {'ordering': saved})
+    assert r.status_code == 200
     assert [j['company'] for j in r.data] == ['J3', 'J2', 'J1']
 
 

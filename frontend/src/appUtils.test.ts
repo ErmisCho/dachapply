@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {copyToClipboard,deadlineBadge,describeOrdering,fromDateTimeLocal,germanSubmitError,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,mailboxEstimateWording,mailboxIndicatorState,nextSortKeys,pathTitle,ratePercent,selectGeneralNote,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,nextSortKeys,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -67,6 +67,117 @@ describe('apply-by deadline badge',()=>{
   })
 })
 
+// TASK-134 AC2/AC3: 44 of 598 real stored mailbox bodies contain raw entities like this exact
+// snippet (quoted in the backlog task from the owner's real mail) - not a made-up string.
+describe('decodeHtmlEntities',()=>{
+  it('decodes a real recruiter-email fragment with &nbsp; to a space',()=>{
+    expect(decodeHtmlEntities('the&nbsp;Senior Software Engineer')).toBe('the Senior Software Engineer')
+  })
+
+  it('decodes &amp; and &#39; to an ampersand and an apostrophe',()=>{
+    expect(decodeHtmlEntities('Terms &amp; Conditions')).toBe('Terms & Conditions')
+    expect(decodeHtmlEntities('We&#39;re hiring')).toBe("We're hiring")
+    expect(decodeHtmlEntities('hex apostrophe: &#x27;')).toBe("hex apostrophe: '")
+  })
+
+  it('leaves undecorated text and null/undefined untouched',()=>{
+    expect(decodeHtmlEntities('plain text, no entities')).toBe('plain text, no entities')
+    expect(decodeHtmlEntities(null)).toBe('')
+    expect(decodeHtmlEntities(undefined)).toBe('')
+  })
+
+  // AC3: the one place "make it look like email" and "never execute what a stranger sent me" pull
+  // against each other. This is not an HTML parser - it only ever matches an "&...;" shape - so a
+  // literal tag with no entity in it is returned byte-for-byte, never interpreted or stripped.
+  it('never turns a literal tag into markup - the injection case',()=>{
+    expect(decodeHtmlEntities('<script>alert(1)</script>')).toBe('<script>alert(1)</script>')
+    expect(decodeHtmlEntities('<b>bold</b>')).toBe('<b>bold</b>')
+  })
+
+  it('decoding an escaped tag still yields plain text, never parsed markup',()=>{
+    // A sender who escaped their own tag (&lt;script&gt;) gets the literal characters back - a
+    // string, not DOM - so React renders it as visible text exactly like the unescaped case above.
+    expect(decodeHtmlEntities('&lt;script&gt;alert(1)&lt;/script&gt;')).toBe('<script>alert(1)</script>')
+  })
+})
+
+// TASK-134 AC13: real `From` headers come in several shapes - getting one wrong shows the owner a
+// mangled name instead of a hidden address.
+describe('parseSenderHeader',()=>{
+  it('splits a plain "Name <addr>" header',()=>{
+    expect(parseSenderHeader('Julia Barylak <notifications@join.zooplus.com>')).toEqual({name:'Julia Barylak',address:'notifications@join.zooplus.com'})
+  })
+
+  it('treats a bare address with no display name as address-only',()=>{
+    expect(parseSenderHeader('recruiting@example.com')).toEqual({name:'',address:'recruiting@example.com'})
+  })
+
+  it('strips one layer of quotes from a quoted name containing a comma',()=>{
+    expect(parseSenderHeader('"Barylak, Julia" <julia@example.com>')).toEqual({name:'Barylak, Julia',address:'julia@example.com'})
+  })
+
+  it('resolves the address from the LAST angle-bracket pair when a quoted name contains its own',()=>{
+    expect(parseSenderHeader('"Weird <Name>" <addr@example.com>')).toEqual({name:'Weird <Name>',address:'addr@example.com'})
+  })
+
+  it('treats empty, null and undefined input as no sender at all',()=>{
+    expect(parseSenderHeader('')).toEqual({name:'',address:''})
+    expect(parseSenderHeader(null)).toEqual({name:'',address:''})
+    expect(parseSenderHeader(undefined)).toEqual({name:'',address:''})
+  })
+})
+
+// TASK-134 AC9/AC14: within a thread, oldest at the top, newest at the bottom - and an
+// undated message must not be mistaken for the one that started the conversation.
+describe('chronologicalMessages',()=>{
+  it('reverses a newest-first, all-dated list into oldest-first',()=>{
+    const newestFirst=[{id:3,received_at:'2026-08-19T00:00:00Z'},{id:2,received_at:'2026-08-18T00:00:00Z'},{id:1,received_at:'2026-08-17T00:00:00Z'}]
+    expect(chronologicalMessages(newestFirst).map(m=>m.id)).toEqual([1,2,3])
+  })
+
+  it('keeps a null-received_at message at the end instead of letting it jump to the start',()=>{
+    // API order: newest-first with nulls last (id 1 has no received_at).
+    const newestFirst=[{id:3,received_at:'2026-08-19T00:00:00Z'},{id:2,received_at:'2026-08-18T00:00:00Z'},{id:1,received_at:null}]
+    expect(chronologicalMessages(newestFirst).map(m=>m.id)).toEqual([2,3,1])
+  })
+})
+
+// TASK-135 AC2: fixed to Europe/Vienna and always names it, regardless of the machine running the
+// test - the exact trap the AC exists to catch is a time that is right but unlabeled or wrong but
+// unnoticed.
+describe('mailboxCalendarWhen',()=>{
+  it('names Europe/Vienna even for a same-day range',()=>{
+    expect(mailboxCalendarWhen('2026-08-19T10:00:00Z','2026-08-19T11:00:00Z')).toBe('19 Aug 2026, 12:00–13:00 (Europe/Vienna)')
+  })
+
+  it('falls back to a full date+time for the end when it lands on a different Vienna day',()=>{
+    expect(mailboxCalendarWhen('2026-08-19T10:00:00Z','2026-08-20T11:00:00Z')).toBe('19 Aug 2026, 12:00–20 Aug 2026, 13:00 (Europe/Vienna)')
+  })
+
+  it('shows a start-only invitation without a dangling dash',()=>{
+    expect(mailboxCalendarWhen('2026-08-19T10:00:00Z',null)).toBe('19 Aug 2026, 12:00 (Europe/Vienna)')
+  })
+
+  it('is blank for a message with no invitation instead of "Invalid Date"',()=>{
+    expect(mailboxCalendarWhen(null,null)).toBe('')
+    expect(mailboxCalendarWhen('not a date',null)).toBe('')
+  })
+})
+
+describe('mailboxAttachmentSize',()=>{
+  it('formats bytes, KB and MB the way a file manager would',()=>{
+    expect(mailboxAttachmentSize(512)).toBe('512 B')
+    expect(mailboxAttachmentSize(2048)).toBe('2.0 KB')
+    expect(mailboxAttachmentSize(5*1024*1024)).toBe('5.0 MB')
+  })
+
+  it('treats missing or zero size as empty rather than "NaN B"',()=>{
+    expect(mailboxAttachmentSize(null)).toBe('0 B')
+    expect(mailboxAttachmentSize(undefined)).toBe('0 B')
+    expect(mailboxAttachmentSize(0)).toBe('0 B')
+  })
+})
+
 // TASK-108 AC2/AC3/AC6/AC7: the board's sortable column headers cycle unsorted -> ascending ->
 // descending -> unsorted, and a second header click appends a lower-precedence key instead of
 // replacing the first - that append-not-replace step is the one a shift-click implementation would
@@ -104,6 +215,54 @@ describe('board header sort cycle',()=>{
 
   it('renders an empty ordering string once every header is cycled back to unsorted',()=>{
     expect(sortOrderingString([])).toBe('')
+  })
+})
+
+// TASK-145 AC6/AC9: the round trip a saved sort must survive, plus the truncation a value with more
+// than 3 keys (e.g. a stale/tampered profile field) must get instead of silently being honoured.
+describe('parseSortKeys (TASK-145)',()=>{
+  it('round-trips through sortOrderingString',()=>{
+    expect(parseSortKeys('status,-fit_score')).toEqual([{key:'status',dir:'asc'},{key:'fit_score',dir:'desc'}])
+    expect(sortOrderingString(parseSortKeys('status,-fit_score'))).toBe('status,-fit_score')
+  })
+
+  it('treats empty, null and undefined as no sort at all',()=>{
+    expect(parseSortKeys('')).toEqual([])
+    expect(parseSortKeys(null)).toEqual([])
+    expect(parseSortKeys(undefined)).toEqual([])
+  })
+
+  it('truncates a saved value with more than the 3-key max instead of honouring every key',()=>{
+    expect(parseSortKeys('status,-fit_score,priority,-created_at')).toEqual([
+      {key:'status',dir:'asc'},{key:'fit_score',dir:'desc'},{key:'priority',dir:'asc'},
+    ])
+  })
+})
+
+// TASK-146 AC1/AC2/AC3: the pane's grouping, tested against the shape actually measured in the task
+// (an oldest-overdue job at -23d that must not sort as if it were due soonest) and the toggle that
+// drops the overdue group entirely rather than only hiding it.
+describe('groupFeedbackDueRows (TASK-146)',()=>{
+  const rows=[
+    {id:1,feedback_due_date:'2026-07-27'}, // -23d, overdue, listed first by the (already-sorted) API
+    {id:2,feedback_due_date:'2026-08-18'}, // -1d, overdue
+    {id:3,feedback_due_date:'2026-08-19'}, // today
+    {id:4,feedback_due_date:'2026-08-21'}, // +2d
+  ]
+
+  it('splits overdue from today-or-later without re-sorting either group',()=>{
+    expect(groupFeedbackDueRows(rows,'2026-08-19')).toEqual({
+      overdue:[rows[0],rows[1]],
+      upcoming:[rows[2],rows[3]],
+    })
+  })
+
+  it('drops the overdue group entirely when the toggle is off, rather than only hiding it',()=>{
+    expect(groupFeedbackDueRows(rows,'2026-08-19',false)).toEqual({overdue:[],upcoming:[rows[2],rows[3]]})
+  })
+
+  it('returns two empty groups for no rows',()=>{
+    expect(groupFeedbackDueRows([],'2026-08-19')).toEqual({overdue:[],upcoming:[]})
   })
 })
 
@@ -208,6 +367,42 @@ describe('groupSuggestionsByConversation (TASK-127)',()=>{
     const s0={id:1,job:10,threadId:'t1'}
     const s1={id:2,job:11,threadId:'t1'}
     expect(groupSuggestionsByConversation([s0,s1],s=>s.threadId)).toEqual([{key:'t1',suggestions:[s0,s1]}])
+  })
+})
+
+// TASK-130 AC6/AC7: job 37's real production shape - three identical feedback_clear rows (one per
+// message) that must collapse into one displayed control, without merging a genuinely different
+// proposal (a status_change alongside it) into that same control.
+describe('dedupeMailboxSuggestions (TASK-130)',()=>{
+  it('collapses duplicate (type, payload) rows from different messages into one group',()=>{
+    const s0={id:653,suggestion_type:'feedback_clear',payload:{}}
+    const s1={id:393,suggestion_type:'feedback_clear',payload:{}}
+    const s2={id:391,suggestion_type:'feedback_clear',payload:{}}
+    expect(dedupeMailboxSuggestions([s0,s1,s2])).toEqual([{key:'feedback_clear|{}',suggestions:[s0,s1,s2]}])
+  })
+
+  it('keeps a different suggestion_type as its own group even on the same job',()=>{
+    const clear={id:1,suggestion_type:'feedback_clear',payload:{}}
+    const status={id:2,suggestion_type:'status_change',payload:{status:'interview'}}
+    expect(dedupeMailboxSuggestions([clear,status])).toEqual([
+      {key:'feedback_clear|{}',suggestions:[clear]},
+      {key:'status_change|{"status":"interview"}',suggestions:[status]},
+    ])
+  })
+
+  it('keeps the same suggestion_type separate when the payload actually differs (two different interview dates)',()=>{
+    const a={id:1,suggestion_type:'interview_date',payload:{interview_at:'2026-08-20T10:00:00Z'}}
+    const b={id:2,suggestion_type:'interview_date',payload:{interview_at:'2026-08-21T10:00:00Z'}}
+    expect(dedupeMailboxSuggestions([a,b])).toEqual([
+      {key:'interview_date|{"interview_at":"2026-08-20T10:00:00Z"}',suggestions:[a]},
+      {key:'interview_date|{"interview_at":"2026-08-21T10:00:00Z"}',suggestions:[b]},
+    ])
+  })
+
+  it('keeps a single suggestion as its own one-item group, and returns an empty list for none',()=>{
+    const s={id:1,suggestion_type:'feedback_clear',payload:{}}
+    expect(dedupeMailboxSuggestions([s])).toEqual([{key:'feedback_clear|{}',suggestions:[s]}])
+    expect(dedupeMailboxSuggestions([])).toEqual([])
   })
 })
 
@@ -357,5 +552,57 @@ describe('German errors on the public submit page',()=>{
     expect(submitDe.duplicates(3)).toBe('3 doppelte Links gefunden.')
     expect(submitDe.sentToFriend('Ermis')).toBe('Ermis sieht den Link jetzt im Dashboard.')
     expect([submitDe.unknownCompany,submitDe.untitledRole]).toEqual(['Unbekannte Firma','Unbenannte Position'])
+  })
+})
+
+// TASK-143 AC1/AC2: job 760 (rejected) is the measured case this exists to hide from the mailbox
+// panel, and accepted is deliberately actionable (an accepted offer still produces mail worth
+// reading) - see the task's own implementation notes for why.
+describe('isActionableJobStatus (TASK-143)',()=>{
+  it('is actionable for every status the owner can still do something about',()=>{
+    for(const s of ['new','reviewed','to_apply','applied','interview','offer','accepted'])
+      expect(isActionableJobStatus(s)).toBe(true)
+  })
+
+  it('is not actionable once the application is over',()=>{
+    for(const s of ['rejected','withdrawn','skipped','archived'])
+      expect(isActionableJobStatus(s)).toBe(false)
+  })
+
+  it('treats an unknown or missing status as not actionable rather than guessing yes',()=>{
+    expect(isActionableJobStatus(undefined)).toBe(false)
+    expect(isActionableJobStatus(null)).toBe(false)
+    expect(isActionableJobStatus('')).toBe(false)
+  })
+})
+
+// TASK-144: a one-sided conversation needs a stable, non-owner-colliding cue per correspondent.
+describe('senderTone/senderInitial (TASK-144)',()=>{
+  it('always colors the owner blue, regardless of address',()=>{
+    expect(senderTone('owner@example.com',true)).toBe('blue')
+    expect(senderTone('',true)).toBe('blue')
+  })
+
+  it('is deterministic for the same address',()=>{
+    const a=senderTone('recruiter@ashbyhq.com',false)
+    const b=senderTone('recruiter@ashbyhq.com',false)
+    expect(a).toBe(b)
+  })
+
+  it('falls back to slate for a blank sender instead of hashing an empty string',()=>{
+    expect(senderTone('',false)).toBe('slate')
+    expect(senderTone('   ',false)).toBe('slate')
+  })
+
+  it('never picks blue or slate for a real non-owner sender, so it cannot be confused with the owner',()=>{
+    for(const addr of ['a@x.com','recruiter@ashbyhq.com','hiring.manager@company.io','no-reply@greenhouse.io'])
+      expect(['green','purple','yellow','red']).toContain(senderTone(addr,false))
+  })
+
+  it('takes the first letter, uppercased, or a fallback for a blank name',()=>{
+    expect(senderInitial('You')).toBe('Y')
+    expect(senderInitial('jane doe')).toBe('J')
+    expect(senderInitial('')).toBe('?')
+    expect(senderInitial('   ')).toBe('?')
   })
 })
