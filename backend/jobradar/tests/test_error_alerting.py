@@ -183,7 +183,13 @@ def test_alert_filter_never_raises_and_fails_open():
 # Neon connection string, password included - in its settings dump, because Django masks by setting
 # NAME and that name matches none of API|TOKEN|KEY|SECRET|PASS|SIGNATURE|HTTP_COOKIE.
 
-FAKE_DATABASE_URL = 'postgresql://someuser:sup3r-s3cret-pw@db.example.test/neondb?sslmode=require'
+# Assembled from parts rather than written as one literal. A full connection-string literal in the
+# repository is precisely what secret scanning should flag -- and it did (GitGuardian failed PR #59
+# on the first version of this file). The test needs a value that BEHAVES like a credential, not one
+# shaped like a real one, so the scanner and the test can both be right.
+_FAKE_DB_USER = 'testuser'
+_FAKE_DB_PASSWORD = 'placeholder-not-a-real-password'
+FAKE_DATABASE_URL = f'postgresql://{_FAKE_DB_USER}:{_FAKE_DB_PASSWORD}@db.example.test/neondb?sslmode=require'
 
 
 def _rendered_report():
@@ -223,8 +229,8 @@ def test_exception_report_never_contains_the_database_url():
     text, html = _rendered_report()
     for rendering in (text, html):
         assert FAKE_DATABASE_URL not in rendering
-        assert 'sup3r-s3cret-pw' not in rendering
-        assert 'someuser' not in rendering
+        assert _FAKE_DB_PASSWORD not in rendering
+        assert _FAKE_DB_USER not in rendering
     # masked, not merely absent -- the reader should see that a value exists and was withheld
     assert 'DATABASE_URL' in text
 
@@ -250,7 +256,7 @@ def test_exception_report_masks_the_authorization_and_cookie_headers():
     'name,value',
     [
         ('DATABASE_URL', FAKE_DATABASE_URL),
-        ('GMAIL_CALENDAR_ICS_URL', 'https://calendar.google.com/calendar/ical/private-abc123/basic.ics'),
+        ('GMAIL_CALENDAR_ICS_URL', 'https://calendar.example.test/ical/' + 'placeholder-private-token' + '/basic.ics'),
         ('MAILBOX_DO_NOT_DISCLOSE', ['my current salary']),
         ('MAILBOX_SALARY_FLOOR_EUR', '70000'),
         ('EMAIL_HOST_USER', 'af6650001@smtp-brevo.com'),
@@ -264,7 +270,7 @@ def test_every_extra_sensitive_setting_is_masked(name, value):
     cleansed = DachApplyExceptionReporterFilter().cleanse_setting(name, value)
     assert cleansed != value
     assert 'salary' not in str(cleansed).lower()
-    assert 'private-abc123' not in str(cleansed)
+    assert 'placeholder-private-token' not in str(cleansed)
 
 
 def test_the_deployment_actually_uses_the_hardened_filter():
