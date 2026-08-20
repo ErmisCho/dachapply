@@ -1,8 +1,11 @@
 """TASK-109: Gmail check + calendar quiet-hours + classification + JobLead matching + reviewable
 suggestions. TASK-110 (below the "Reply drafting" marker): guarded reply drafts into Gmail Drafts.
-Every test here is fixture-based -- FakeTransport for IMAP, a canned ICS string for the calendar,
-and a monkeypatched _post_json/_post_json_via_windows_curl for the optional local-LLM path. No test
-opens a socket; ImapTransport (the only class that does) is never imported by name.
+TASK-116: calendar quiet hours is OAuth (calendarList.list/freeBusy.query), not ICS -- fixtures for
+it monkeypatch _read_refresh_token/_oauth_refresh_access_token/_gmail_api_request, same idiom the
+Gmail-API OAuth transport suite further down uses.
+Every test here is fixture-based -- FakeTransport for IMAP, a monkeypatched _post_json/
+_post_json_via_windows_curl for the optional local-LLM path. No test opens a socket; ImapTransport
+(the only class that does) is never imported by name.
 """
 import base64
 import email
@@ -49,7 +52,6 @@ from jobradar.services.mailbox import (
     has_mailbox_credentials,
     ingest_threads,
     is_ats_host,
-    is_busy_at,
     is_within_check_window,
     mailbox_check_estimate,
     maybe_draft_reply,
@@ -79,7 +81,8 @@ def _isolated_mailbox_env(settings):
     settings.GMAIL_IMAP_HOST = 'imap.gmail.com'
     settings.GMAIL_IMAP_USER = 'owner@example.test'
     settings.GMAIL_IMAP_APP_PASSWORD = 'fake-app-password'
-    settings.GMAIL_CALENDAR_ICS_URL = ''
+    settings.GMAIL_OAUTH_CLIENT_ID = ''
+    settings.GMAIL_OAUTH_CLIENT_SECRET = ''
     settings.CODEX_CV_OWNER_EMAIL = 'owner@example.test'
     settings.MAILBOX_SALARY_FLOOR_EUR = ''
     settings.MAILBOX_DO_NOT_DISCLOSE = []
@@ -752,123 +755,158 @@ def test_attach_message_to_job_twice_does_not_double_the_suggestions(db, applied
     assert MailboxSuggestion.objects.filter(message=message, job=applied_job).count() == 1
 
 
-# --- Calendar quiet hours (AC7): fail open ----------------------------------------------------
+# --- TASK-116: calendar OAuth quiet hours -- one freeBusy.query, fail-open on any Google failure ---
+# Replaces TASK-115's ICS fetch/parse tests above (is_busy_at/_fetch_ics no longer exist -- see
+# services/mailbox.py). Same monkeypatch idiom the Gmail-API OAuth transport suite further down uses
+# (_read_refresh_token/_oauth_refresh_access_token/_gmail_api_request), applied directly here rather
+# than via _patch_gmail_oauth (defined later in this file, but usable anywhere since module-level
+# names resolve at call time, not definition order) since these tests want a plain fake callable, not
+# the full _FakeGmailHttp id/thread machinery that idiom is built for.
 
-ICS_WITH_BUSY_EVENT = (
-    'BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART;TZID=Europe/Vienna:20260817T090000\n'
-    'DTEND;TZID=Europe/Vienna:20260817T100000\nSUMMARY:Interview\nEND:VEVENT\nEND:VCALENDAR'
-)
-
-
-def test_is_busy_at_true_inside_event_false_outside():
-    from zoneinfo import ZoneInfo
-    inside = datetime(2026, 8, 17, 9, 30, tzinfo=ZoneInfo('Europe/Vienna'))
-    outside = datetime(2026, 8, 17, 11, 0, tzinfo=ZoneInfo('Europe/Vienna'))
-    assert is_busy_at(ICS_WITH_BUSY_EVENT, inside) is True
-    assert is_busy_at(ICS_WITH_BUSY_EVENT, outside) is False
+def test_calendar_busy_now_returns_false_when_no_calendars_selected():
+    """No calendars selected is not a failure and never calls Google."""
+    assert calendar_busy_now(timezone.now(), 'cid', 'secret', '/tmp/unused-token.json', []) == (False, [])
 
 
-def test_is_busy_at_handles_all_day_events():
-    ics = 'BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:20260818\nDTEND;VALUE=DATE:20260819\nEND:VEVENT\nEND:VCALENDAR'
-    when = timezone.make_aware(datetime(2026, 8, 18, 14, 0), timezone.get_current_timezone())
-    assert is_busy_at(ics, when) is True
+def test_calendar_busy_now_true_when_a_selected_calendar_is_busy(monkeypatch):
+    """AC2/AC3: one freeBusy.query across every selected calendar id; any ONE reporting busy wins."""
+    def fake_request(method, url, access_token, data=None):
+        assert method == 'POST' and url.endswith('/freeBusy')
+        payload = json.loads(data.decode('utf-8'))
+        assert payload['items'] == [{'id': 'primary'}, {'id': 'team@group.calendar.google.com'}]
+        return {'calendars': {
+            'primary': {'busy': []},
+            'team@group.calendar.google.com': {'busy': [{'start': '2026-08-17T09:00:00Z', 'end': '2026-08-17T10:00:00Z'}]},
+        }}
+    monkeypatch.setattr(mailbox, '_read_refresh_token', lambda token_path: 'fake-refresh-token')
+    monkeypatch.setattr(mailbox, '_oauth_refresh_access_token', lambda cid, secret, refresh: 'fake-access-token')
+    monkeypatch.setattr(mailbox, '_gmail_api_request', fake_request)
+    busy, errors = calendar_busy_now(timezone.now(), 'cid', 'secret', '/tmp/unused-token.json', ['primary', 'team@group.calendar.google.com'])
+    assert busy is True and errors == []
 
 
-def test_calendar_busy_now_returns_false_when_no_calendars_configured():
-    assert calendar_busy_now(timezone.now(), '') == (False, [])
+def test_calendar_busy_now_false_when_no_selected_calendar_is_busy(monkeypatch):
+    monkeypatch.setattr(mailbox, '_read_refresh_token', lambda token_path: 'fake-refresh-token')
+    monkeypatch.setattr(mailbox, '_oauth_refresh_access_token', lambda cid, secret, refresh: 'fake-access-token')
+    monkeypatch.setattr(mailbox, '_gmail_api_request', lambda method, url, access_token, data=None: {'calendars': {'primary': {'busy': []}}})
+    busy, errors = calendar_busy_now(timezone.now(), 'cid', 'secret', '/tmp/unused-token.json', ['primary'])
+    assert busy is False and errors == []
 
 
-def test_calendar_busy_now_uses_fetched_text(monkeypatch):
-    from zoneinfo import ZoneInfo
-    monkeypatch.setattr(mailbox, '_fetch_ics', lambda url, timeout=10: ICS_WITH_BUSY_EVENT)
-    when = datetime(2026, 8, 17, 9, 30, tzinfo=ZoneInfo('Europe/Vienna'))
-    assert calendar_busy_now(when, 'https://calendar.example.test/private.ics') == (True, [])
+# --- AC4: fail-open on every failure class reaching Google, verified by test ----------------------
 
-
-def test_calendar_busy_now_fails_open_on_fetch_error(monkeypatch):
-    def _boom(url, timeout=10):
-        raise TimeoutError('slow calendar host')
-    monkeypatch.setattr(mailbox, '_fetch_ics', _boom)
-    busy, errors = calendar_busy_now(timezone.now(), 'https://calendar.example.test/private.ics')
+def test_calendar_busy_now_fails_open_when_oauth_not_configured():
+    """Calendars selected but no OAuth client at all (e.g. an IMAP-only setup) -- never calls Google,
+    still fails open, and the reason is recorded (AC5), not only logged."""
+    busy, errors = calendar_busy_now(timezone.now(), '', '', '/tmp/unused-token.json', ['primary'])
     assert busy is False
-    assert len(errors) == 1 and 'slow calendar host' in errors[0]
+    assert len(errors) == 1 and 'not configured' in errors[0]
 
 
-def test_calendar_busy_now_fails_open_on_unparseable_text(monkeypatch):
-    monkeypatch.setattr(mailbox, '_fetch_ics', lambda url, timeout=10: 'BEGIN:VEVENT\nDTSTART:not-a-date\nEND:VEVENT')
-    busy, errors = calendar_busy_now(timezone.now(), 'https://calendar.example.test/private.ics')
+def test_calendar_busy_now_fails_open_on_expired_token(monkeypatch):
+    def boom(token_path):
+        raise RuntimeError('No usable Gmail OAuth refresh token at /tmp/unused-token.json.')
+    monkeypatch.setattr(mailbox, '_read_refresh_token', boom)
+    busy, errors = calendar_busy_now(timezone.now(), 'cid', 'secret', '/tmp/unused-token.json', ['primary'])
     assert busy is False
-    assert len(errors) == 1  # AC4: a value that fails to parse is recorded too, not only logged
+    assert len(errors) == 1 and 'Calendar check failed' in errors[0]
 
 
-# --- TASK-115 (mailbox.py reading half): several configured calendars ----------------------------
-
-def test_calendar_busy_now_any_calendar_busy_wins(monkeypatch):
-    """AC2: two calendars configured, neither raises, only the second has a busy event right now --
-    the run must still come back busy."""
-    from zoneinfo import ZoneInfo
-    when = datetime(2026, 8, 17, 9, 30, tzinfo=ZoneInfo('Europe/Vienna'))
-    free_ics = 'BEGIN:VCALENDAR\nEND:VCALENDAR'
-
-    def _fetch(url, timeout=10):
-        return free_ics if url == 'https://cal.example.test/free.ics' else ICS_WITH_BUSY_EVENT
-    monkeypatch.setattr(mailbox, '_fetch_ics', _fetch)
-    urls_raw = 'https://cal.example.test/free.ics\nhttps://cal.example.test/busy.ics'
-    assert calendar_busy_now(when, urls_raw) == (True, [])
-
-
-def test_calendar_busy_now_one_good_one_broken_still_checks_the_good_one(monkeypatch):
-    """AC3: named test -- one unreachable/unparseable calendar must not prevent the other configured
-    calendar from being checked and counted."""
-    from zoneinfo import ZoneInfo
-    when = datetime(2026, 8, 17, 9, 30, tzinfo=ZoneInfo('Europe/Vienna'))
-
-    def _fetch(url, timeout=10):
-        if url == 'https://cal.example.test/broken.ics':
-            raise URLError('unknown url type')
-        return ICS_WITH_BUSY_EVENT
-    monkeypatch.setattr(mailbox, '_fetch_ics', _fetch)
-    urls_raw = 'https://cal.example.test/broken.ics\nhttps://cal.example.test/good.ics'
-    busy, errors = calendar_busy_now(when, urls_raw)
-    assert busy is True  # the good calendar was still checked and found busy
-    assert len(errors) == 1  # the broken one is recorded, not swallowed without a trace
-
-
-def test_calendar_busy_now_total_failure_still_fails_open(monkeypatch):
-    """AC3: every configured calendar unreachable -- the run must still proceed (busy=False), not
-    fail closed, exactly as TASK-109 AC7 requires."""
-    def _boom(url, timeout=10):
-        raise URLError('unknown url type')
-    monkeypatch.setattr(mailbox, '_fetch_ics', _boom)
-    urls_raw = 'https://cal.example.test/one.ics\nhttps://cal.example.test/two.ics'
-    busy, errors = calendar_busy_now(timezone.now(), urls_raw)
+def test_calendar_busy_now_fails_open_on_revoked_scope(monkeypatch):
+    """A 403 from the freeBusy call itself -- what Google returns when calendar.readonly was never
+    granted or has since been revoked in the owner's Google account."""
+    def boom(method, url, access_token, data=None):
+        raise RuntimeError(f'Gmail API {method} {url} failed with HTTP 403: insufficient permission (calendar.readonly not granted)')
+    monkeypatch.setattr(mailbox, '_read_refresh_token', lambda token_path: 'fake-refresh-token')
+    monkeypatch.setattr(mailbox, '_oauth_refresh_access_token', lambda cid, secret, refresh: 'fake-access-token')
+    monkeypatch.setattr(mailbox, '_gmail_api_request', boom)
+    busy, errors = calendar_busy_now(timezone.now(), 'cid', 'secret', '/tmp/unused-token.json', ['primary'])
     assert busy is False
-    assert len(errors) == 2
+    assert len(errors) == 1
 
 
-def test_calendar_busy_now_masks_the_secret_in_error_messages(monkeypatch):
-    """A failed calendar is recorded where the owner can see it (AC4), but the private-<hash> secret
-    in that same URL must not be the thing that lands there -- masking is what mailbox_calendar_ics
-    already ships for API reads (TASK-115 AC5), reused here rather than leaking the secret a second way."""
-    def _boom(url, timeout=10):
-        raise URLError('unknown url type')
-    monkeypatch.setattr(mailbox, '_fetch_ics', _boom)
-    _busy, errors = calendar_busy_now(timezone.now(), 'https://calendar.google.com/ical/me%40gmail.com/private-abc123secret/basic.ics')
-    assert 'private-abc123secret' not in errors[0]
+def test_calendar_busy_now_fails_open_on_network_error(monkeypatch):
+    def boom(cid, secret, refresh):
+        raise RuntimeError('Could not reach https://oauth2.googleapis.com/token: <urlopen error timed out>')
+    monkeypatch.setattr(mailbox, '_read_refresh_token', lambda token_path: 'fake-refresh-token')
+    monkeypatch.setattr(mailbox, '_oauth_refresh_access_token', boom)
+    busy, errors = calendar_busy_now(timezone.now(), 'cid', 'secret', '/tmp/unused-token.json', ['primary'])
+    assert busy is False
+    assert len(errors) == 1
 
 
-def test_calendar_busy_now_parses_bracketed_list_literal(monkeypatch):
-    """AC8: the parser already tolerates a pasted `[a, b, c]` literal -- exercised here through
-    calendar_busy_now rather than re-tested against parse_calendar_ics_urls directly, since AC9 asks
-    for coverage of multi-calendar parsing at the point it is actually used."""
-    seen = []
+def test_calendar_busy_now_fails_open_on_api_error(monkeypatch):
+    """A non-auth API failure -- Google's freeBusy endpoint itself erroring (HTTP 500, say)."""
+    def boom(method, url, access_token, data=None):
+        raise RuntimeError(f'Gmail API {method} {url} failed with HTTP 500: internal error')
+    monkeypatch.setattr(mailbox, '_read_refresh_token', lambda token_path: 'fake-refresh-token')
+    monkeypatch.setattr(mailbox, '_oauth_refresh_access_token', lambda cid, secret, refresh: 'fake-access-token')
+    monkeypatch.setattr(mailbox, '_gmail_api_request', boom)
+    busy, errors = calendar_busy_now(timezone.now(), 'cid', 'secret', '/tmp/unused-token.json', ['primary'])
+    assert busy is False
+    assert len(errors) == 1
 
-    def _fetch(url, timeout=10):
-        seen.append(url)
-        return 'BEGIN:VCALENDAR\nEND:VCALENDAR'
-    monkeypatch.setattr(mailbox, '_fetch_ics', _fetch)
-    calendar_busy_now(timezone.now(), "[https://cal.example.test/a.ics, 'https://cal.example.test/b.ics'")
-    assert seen == ['https://cal.example.test/a.ics', 'https://cal.example.test/b.ics']
+
+def test_calendar_busy_now_fails_open_on_unexpected_error(monkeypatch):
+    """The defensive second except-branch: something other than the RuntimeError every helper above
+    raises for a normal OAuth/API failure -- must still fail open, not propagate."""
+    monkeypatch.setattr(mailbox, '_read_refresh_token', lambda token_path: 'fake-refresh-token')
+    monkeypatch.setattr(mailbox, '_oauth_refresh_access_token', lambda cid, secret, refresh: 'fake-access-token')
+    monkeypatch.setattr(mailbox, '_gmail_api_request', lambda method, url, access_token, data=None: 'not-a-dict')
+    busy, errors = calendar_busy_now(timezone.now(), 'cid', 'secret', '/tmp/unused-token.json', ['primary'])
+    assert busy is False
+    assert len(errors) == 1
+
+
+# --- AC2: calendar selection -- calendarList.list, for the settings-page picker --------------------
+
+def test_list_calendars_returns_id_and_summary(monkeypatch):
+    monkeypatch.setattr(mailbox, '_read_refresh_token', lambda token_path: 'fake-refresh-token')
+    monkeypatch.setattr(mailbox, '_oauth_refresh_access_token', lambda cid, secret, refresh: 'fake-access-token')
+
+    def fake_request(method, url, access_token, data=None):
+        assert method == 'GET' and '/users/me/calendarList' in url
+        return {'items': [
+            {'id': 'primary', 'summary': 'owner@example.test'},
+            {'id': 'team@group.calendar.google.com', 'summary': 'Interviews'},
+        ]}
+    monkeypatch.setattr(mailbox, '_gmail_api_request', fake_request)
+    calendars = mailbox.list_calendars('cid', 'secret', '/tmp/unused-token.json')
+    assert calendars == [
+        {'id': 'primary', 'summary': 'owner@example.test'},
+        {'id': 'team@group.calendar.google.com', 'summary': 'Interviews'},
+    ]
+
+
+def test_list_calendars_paginates(monkeypatch):
+    monkeypatch.setattr(mailbox, '_read_refresh_token', lambda token_path: 'fake-refresh-token')
+    monkeypatch.setattr(mailbox, '_oauth_refresh_access_token', lambda cid, secret, refresh: 'fake-access-token')
+
+    def fake_request(method, url, access_token, data=None):
+        if 'pageToken' not in url:
+            return {'items': [{'id': 'a', 'summary': 'A'}], 'nextPageToken': 'p2'}
+        return {'items': [{'id': 'b', 'summary': 'B'}]}
+    monkeypatch.setattr(mailbox, '_gmail_api_request', fake_request)
+    calendars = mailbox.list_calendars('cid', 'secret', '/tmp/unused-token.json')
+    assert [c['id'] for c in calendars] == ['a', 'b']
+
+
+def test_list_calendars_falls_back_to_id_when_summary_missing(monkeypatch):
+    monkeypatch.setattr(mailbox, '_read_refresh_token', lambda token_path: 'fake-refresh-token')
+    monkeypatch.setattr(mailbox, '_oauth_refresh_access_token', lambda cid, secret, refresh: 'fake-access-token')
+    monkeypatch.setattr(mailbox, '_gmail_api_request', lambda method, url, access_token, data=None: {'items': [{'id': 'xyz@group.calendar.google.com'}]})
+    calendars = mailbox.list_calendars('cid', 'secret', '/tmp/unused-token.json')
+    assert calendars == [{'id': 'xyz@group.calendar.google.com', 'summary': 'xyz@group.calendar.google.com'}]
+
+
+def test_list_calendars_raises_on_failure(monkeypatch):
+    """Deliberately NOT fail-open -- this is a one-shot UI read for the picker (views.py catches and
+    reports the error), not the automated quiet-hours path calendar_busy_now above must never block."""
+    def boom(token_path):
+        raise RuntimeError('No usable Gmail OAuth refresh token at /tmp/unused-token.json.')
+    monkeypatch.setattr(mailbox, '_read_refresh_token', boom)
+    with pytest.raises(RuntimeError):
+        mailbox.list_calendars('cid', 'secret', '/tmp/unused-token.json')
 
 
 # --- run_check end-to-end (AC1, AC4, AC5, AC7, AC8) -----------------------------------------------
@@ -973,7 +1011,7 @@ def test_run_after_cold_start_drafts_normally(db, owner):
 
 def test_run_check_skips_and_does_not_fetch_when_calendar_busy(db, owner, monkeypatch):
     JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
-    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, urls_raw='': (True, []))
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, client_id, client_secret, token_path, calendar_ids: (True, []))
     transport = FakeTransport([raw(1)])
     run = run_check(transport=transport)
     assert run.skipped is True and run.skip_reason == 'quiet_hours'
@@ -986,33 +1024,44 @@ def test_run_check_skips_calendar_check_entirely_when_owner_opted_out(db, owner,
     profile.mailbox_check_calendar_aware = False
     profile.save(update_fields=['mailbox_check_calendar_aware'])
     calls = []
-    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, urls_raw='': calls.append(now) or (True, []))
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, client_id, client_secret, token_path, calendar_ids: calls.append(now) or (True, []))
     JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
     run = run_check(transport=FakeTransport([raw(1)]))
     assert calls == []  # never even asked
     assert run.skipped is False
 
 
-def test_run_check_reads_calendars_from_profile_not_env(settings, db, owner, monkeypatch):
-    """AC7: the profile field is the only path in -- an env var, even if set, must be ignored."""
-    settings.GMAIL_CALENDAR_ICS_URL = 'https://should-be-ignored.example.test/whatever.ics'
+def test_run_check_reads_calendar_ids_from_profile_and_oauth_creds_from_settings(settings, db, owner, monkeypatch):
+    """AC2/AC7: the profile field is the only path IN for which calendars are selected; the OAuth
+    client/token path always comes from settings (the same credentials the mail transport itself
+    would use), never from the profile."""
+    settings.GMAIL_OAUTH_CLIENT_ID = 'cid-from-settings'
+    settings.GMAIL_OAUTH_CLIENT_SECRET = 'secret-from-settings'
+    settings.GMAIL_OAUTH_TOKEN_PATH = '/tmp/token-from-settings.json'
     profile = user_profile_settings(owner)
-    profile.mailbox_calendar_ics_urls = 'https://cal.example.test/mine.ics'
-    profile.save(update_fields=['mailbox_calendar_ics_urls'])
+    profile.mailbox_calendar_ids = 'primary\nteam@group.calendar.google.com'
+    profile.save(update_fields=['mailbox_calendar_ids'])
     seen = {}
-    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, urls_raw='': seen.setdefault('urls_raw', urls_raw) or (False, []))
+
+    def fake_calendar_busy_now(now, client_id, client_secret, token_path, calendar_ids):
+        seen.update(client_id=client_id, client_secret=client_secret, token_path=token_path, calendar_ids=calendar_ids)
+        return False, []
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', fake_calendar_busy_now)
     JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
     run_check(transport=FakeTransport([raw(1)]))
-    assert seen['urls_raw'] == 'https://cal.example.test/mine.ics'
+    assert seen == {
+        'client_id': 'cid-from-settings', 'client_secret': 'secret-from-settings',
+        'token_path': '/tmp/token-from-settings.json', 'calendar_ids': ['primary', 'team@group.calendar.google.com'],
+    }
 
 
 def test_run_check_records_calendar_failure_on_run_error_without_skipping(db, owner, monkeypatch):
     """AC4: a configured-but-unusable calendar is recorded on the run (not only logged); AC3: the
     failure still fails open -- mail checking proceeds regardless."""
     profile = user_profile_settings(owner)
-    profile.mailbox_calendar_ics_urls = 'https://cal.example.test/broken.ics'
-    profile.save(update_fields=['mailbox_calendar_ics_urls'])
-    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, urls_raw='': (False, ['Calendar check failed for https://cal.example.test/broken.ics: boom']))
+    profile.mailbox_calendar_ids = 'primary'
+    profile.save(update_fields=['mailbox_calendar_ids'])
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, client_id, client_secret, token_path, calendar_ids: (False, ['Calendar check failed: boom']))
     JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', created_by=owner)
     run = run_check(transport=FakeTransport([raw(1)]))
     assert run.skipped is False
@@ -1156,6 +1205,21 @@ def test_profile_settings_accepts_mailbox_cadence_and_calendar_flag(client):
     assert r.status_code == 200
     assert r.data['mailbox_check_cadence_minutes'] == 30
     assert r.data['mailbox_check_calendar_aware'] is False
+
+
+def test_profile_settings_calendar_ids_round_trip_unmasked_no_secret_stored(client, owner):
+    """TASK-116 AC2/AC6/AC7: replaces TASK-115's masked-ICS-URL round trip -- a calendar id is not a
+    secret, so it round-trips through the API exactly as typed/selected, with no masking marker
+    anywhere and no separate merge step. Verified against the actual response body and the actual DB
+    row (AC7), not by reading the serializer."""
+    r = client.patch('/api/profile/', {'mailbox_calendar_ids': 'primary\nteam@group.calendar.google.com'}, format='json')
+    assert r.status_code == 200
+    assert r.data['mailbox_calendar_ids'] == 'primary\nteam@group.calendar.google.com'
+    assert '••' not in r.content.decode('utf-8')  # never masked -- unlike TASK-115's ICS URL field
+
+    stored = UserProfile.objects.get(user=owner).mailbox_calendar_ids
+    from jobradar.services.prompt_builder import decode_profile_value
+    assert decode_profile_value(stored) == 'primary\nteam@group.calendar.google.com'
 
 
 @pytest.mark.parametrize('value', [0, 4, 1441])
@@ -1546,7 +1610,8 @@ def test_seed_fake_run_includes_a_written_and_a_blocked_draft(db, owner):
 # TASK-109 AC1: Gmail-API OAuth transport -- no IMAP UID exists, so resume is keyed off Gmail's own
 # internalDate (ms epoch) instead. Every test here fakes mailbox._gmail_api_request/
 # _oauth_refresh_access_token/_read_refresh_token (same module-level monkeypatch idiom already used
-# for _fetch_ics/_post_json above); GmailApiTransport itself is real, never opens a socket.
+# for calendar_busy_now/list_calendars/_post_json above); GmailApiTransport itself is real, never
+# opens a socket.
 # ===================================================================================================
 
 def _gmail_raw_b64(sender, subject, body, message_id='<m@example.test>'):
@@ -3024,14 +3089,14 @@ def test_run_check_gate_order_disabled_beats_outside_window_and_calendar_busy(db
     profile.mailbox_check_enabled = False
     profile.save(update_fields=['mailbox_check_enabled'])
     monkeypatch.setattr(mailbox, 'is_within_check_window', lambda *a, **k: False)
-    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, urls_raw='': (True, []))
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, client_id, client_secret, token_path, calendar_ids: (True, []))
     run = run_check(transport=FakeTransport([raw(1)]))
     assert run.skip_reason == 'disabled'
 
 
 def test_run_check_gate_order_outside_window_beats_calendar_busy(db, owner, monkeypatch):
     monkeypatch.setattr(mailbox, 'is_within_check_window', lambda *a, **k: False)
-    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, urls_raw='': (True, []))
+    monkeypatch.setattr(mailbox, 'calendar_busy_now', lambda now, client_id, client_secret, token_path, calendar_ids: (True, []))
     run = run_check(transport=FakeTransport([raw(1)]))
     assert run.skip_reason == 'outside_window'
 
@@ -3617,8 +3682,8 @@ def test_parse_calendar_invitation_returns_none_with_no_vevent():
 
 
 def test_parse_calendar_invitation_returns_none_on_unparseable_dtstart():
-    """Fail-open, same shape as is_busy_at -- an unparseable invitation costs that one field, never
-    the message it is attached to."""
+    """Fail-open, same shape as calendar_busy_now -- an unparseable invitation costs that one field,
+    never the message it is attached to."""
     assert mailbox.parse_calendar_invitation('BEGIN:VEVENT\r\nDTSTART:not-a-date\r\nEND:VEVENT\r\n') is None
 
 

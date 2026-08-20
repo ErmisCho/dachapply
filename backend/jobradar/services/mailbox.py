@@ -84,7 +84,6 @@ from django.db.models import Max, Q
 from django.utils import timezone
 
 from jobradar.models import ApplicationNote, JobLead, MailboxCheckRequest, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun
-from jobradar.services.calendar_ics import mask_calendar_ics_url, parse_calendar_ics_urls
 from jobradar.services.followup_digest import owned_jobs
 from jobradar.services.prompt_builder import user_profile_settings
 # Reuse of interview_coach's local-LLM plumbing (TASK-104): same LLM_PROVIDER env gate, same
@@ -237,16 +236,21 @@ from django.views.decorators.debug import sensitive_variables
 #
 # Stdlib urllib + email only, no google-api-python-client/google-auth/google-auth-oauthlib: the whole
 # surface this app needs is one refresh-token POST (RFC 6749 sec 6) and a handful of plain REST+JSON
-# Gmail API calls -- same "no third-party client" idiom ImapTransport documents above. Scope is
-# gmail.modify (narrower than mail.google.com -- Google's own scope table for users.drafts.create
-# lists gmail.modify as sufficient, alongside gmail.compose/mail.google.com), and nothing in this
-# class, or anywhere else in this module, ever calls users.messages.send.
+# Gmail/Calendar API calls -- same "no third-party client" idiom ImapTransport documents above. Scope
+# is gmail.modify (narrower than mail.google.com -- Google's own scope table for users.drafts.create
+# lists gmail.modify as sufficient, alongside gmail.compose/mail.google.com) PLUS calendar.readonly
+# (TASK-116 AC1: the one OAuth client now covers both Gmail and quiet-hours Calendar reads, no second
+# credential) -- nothing in this class, or anywhere else in this module, ever calls
+# users.messages.send, and nothing calling the Calendar API below ever writes to a calendar either.
 
-GMAIL_OAUTH_SCOPE = 'https://www.googleapis.com/auth/gmail.modify'
+GMAIL_OAUTH_SCOPE = 'https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.readonly'
 GMAIL_OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 GMAIL_OAUTH_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 GMAIL_OAUTH_REDIRECT_URI = 'http://localhost'  # loopback, no server run -- see oauth_authorization_url()
 GMAIL_API_BASE = 'https://www.googleapis.com/gmail/v1/users/me'
+# TASK-116 AC2/AC3: same OAuth client/token as GMAIL_API_BASE above, different Google API -- calendar
+# selection (calendarList.list) and quiet-hours busyness (freeBusy.query) both live here.
+GOOGLE_CALENDAR_API_BASE = 'https://www.googleapis.com/calendar/v3'
 
 
 def _gmail_list_message_ids(access_token: str, q: str) -> list[str]:
@@ -1249,7 +1253,11 @@ def _match_by_thread(thread_id: str) -> JobLead | None:
     return row.matched_job if row else None
 
 
-# --- Calendar quiet hours (AC7): fail-open on any fetch/parse failure --------------------------
+# --- RFC5545 ICS parsing primitives -------------------------------------------------------------
+# TASK-116 removed the quiet-hours ICS fetch/parse path (calendar_busy_now is now a freeBusy.query --
+# see below), but these primitives stay: TASK-135's parse_calendar_invitation (further down) reuses
+# them to read the VEVENT a message's OWN text/calendar MIME part carries, an unrelated feature (an
+# invitation IN a message, not a quiet-hours feed the owner configures).
 
 _VEVENT_RE = re.compile(r'BEGIN:VEVENT(.*?)END:VEVENT', re.DOTALL)
 _LINE_RE = re.compile(r'^([A-Z-]+)(;[^:]*)?:(.*)$')
@@ -1286,36 +1294,6 @@ def _parse_ics_datetime(value, params):
     return timezone.make_aware(naive, timezone.get_current_timezone()), False
 
 
-def is_busy_at(ics_text: str, when) -> bool:
-    """True if `when` falls inside any VEVENT in `ics_text`.
-
-    ponytail: RRULE (recurring events) is not expanded -- only literal VEVENT blocks are checked,
-    so a recurring standing meeting only blocks the one occurrence Google happens to have written
-    out (most calendar exports do include near-term recurrences as literal instances, but this is
-    not guaranteed). Upgrade path: the `recurring-ical-events` package if a recurring busy block is
-    ever actually missed in practice.
-    """
-    for block in _VEVENT_RE.findall(ics_text):
-        start = end = None
-        is_all_day = False
-        for line in _unfold_ics_lines(block):
-            m = _LINE_RE.match(line)
-            if not m:
-                continue
-            name, params, value = m.group(1), m.group(2) or '', m.group(3)
-            if name == 'DTSTART':
-                start, is_all_day = _parse_ics_datetime(value, params)
-            elif name == 'DTEND':
-                end, _unused = _parse_ics_datetime(value, params)
-        if start is None:
-            continue
-        if end is None:
-            end = start + (timedelta(days=1) if is_all_day else timedelta(hours=1))
-        if start <= when < end:
-            return True
-    return False
-
-
 # --- Calendar invitations in a message itself (TASK-135): reuses everything above, no second parser --
 
 _CN_RE = re.compile(r'CN=([^;]*)')
@@ -1349,13 +1327,13 @@ def _ics_organizer_display(value: str, params: str) -> str:
 
 def parse_calendar_invitation(ics_text: str) -> dict | None:
     """TASK-135 AC1/AC2: what/when/with-whom from the FIRST VEVENT in `ics_text` -- reuses the same
-    VEVENT block matcher, RFC5545 line-unfolding and DTSTART/DTEND parsing is_busy_at() already has
-    (TASK-115), rather than writing a second ICS parser (per the task notes: "a VEVENT from a Teams
-    invite is the same shape as one from a calendar feed").
+    VEVENT block matcher, RFC5545 line-unfolding and DTSTART/DTEND parsing TASK-115's (now-removed)
+    quiet-hours ICS parser used, rather than writing a second ICS parser (per the task notes: "a
+    VEVENT from a Teams invite is the same shape as one from a calendar feed").
 
     Returns None when there is no VEVENT, or its DTSTART cannot be parsed -- same fail-open shape as
-    is_busy_at/calendar_busy_now: an unparseable invitation must cost that one field, never the
-    message it is attached to.
+    calendar_busy_now: an unparseable invitation must cost that one field, never the message it is
+    attached to.
 
     'start'/'end' come back as aware datetimes (via _parse_ics_datetime, so this is correct in
     absolute time regardless of the invite's own TZID) -- a caller renders them in the OWNER's own
@@ -1393,40 +1371,76 @@ def parse_calendar_invitation(ics_text: str) -> dict | None:
     return {'summary': summary, 'location': location, 'organizer': organizer, 'start': start, 'end': end}
 
 
-def _fetch_ics(url, timeout=10):
-    request = Request(url, headers={'User-Agent': 'dachapply-mailbox-check'})
-    with urlopen(request, timeout=timeout) as response:
-        return response.read().decode('utf-8', errors='replace')
-
-
-def calendar_busy_now(now, urls_raw='') -> tuple[bool, list[str]]:
-    """TASK-115 AC2/AC3/AC4: read every calendar the owner has configured on their profile
-    (`UserProfile.mailbox_calendar_ics_urls`, parsed by the platform's own parse_calendar_ics_urls --
-    it already tolerates a pasted `[a, b, c]` list, commas, newlines and stray quotes), not a single
-    env var. Any ONE calendar reporting busy makes the run busy (AC2). Each calendar is checked
-    independently -- one unreachable or unparseable URL is caught and does not stop the rest from
-    being checked, and if every calendar fails this still returns busy=False so mail checking
-    proceeds (AC3/TASK-109 AC7: fail-open, never fail-closed on a broken calendar).
-
-    Returns (busy, errors): errors is a list of human-readable per-calendar failures (URL masked --
-    the same secret an owner pastes here must not turn up unmasked in MailboxRun.error) so the caller
-    can record them where the owner can see them instead of only logging (AC4) -- a broken calendar
-    must no longer look identical to "no events right now".
+@sensitive_variables('client_id', 'client_secret', 'refresh_token', 'access_token', 'code', 'body', 'token', 'payload')
+def list_calendars(client_id: str, client_secret: str, token_path: str) -> list[dict]:
+    """TASK-116 AC2: every calendar the OAuth token can see, via `calendarList.list` -- the settings
+    page picker lets the owner select FROM this list by name, so no URL is ever typed or pasted. Each
+    entry is {'id', 'summary'}; `calendar_busy_now` below takes the ids the owner selects, never a
+    URL. Raises (RuntimeError, same as every other _access_token-derived call in this module) on any
+    OAuth/API failure -- the caller (views.py) decides how to surface that to the picker; this is a
+    one-shot UI read, not the fail-open quiet-hours path below.
     """
-    busy = False
-    errors = []
-    for url in parse_calendar_ics_urls(urls_raw):
-        try:
-            text = _fetch_ics(url)
-            if is_busy_at(text, now):
-                busy = True
-        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
-            logger.warning('Calendar quiet-hours check failed for %s; failing open (mail check proceeds)', mask_calendar_ics_url(url), exc_info=True)
-            errors.append(f'Calendar check failed for {mask_calendar_ics_url(url)}: {exc}')
-        except Exception as exc:
-            logger.exception('Calendar quiet-hours check failed unexpectedly for %s; failing open', mask_calendar_ics_url(url))
-            errors.append(f'Calendar check failed for {mask_calendar_ics_url(url)}: {exc}')
-    return busy, errors
+    access_token = _oauth_refresh_access_token(client_id, client_secret, _read_refresh_token(token_path))
+    calendars = []
+    page_token = None
+    while True:
+        params = {'pageToken': page_token} if page_token else {}
+        listing = _gmail_api_request('GET', f'{GOOGLE_CALENDAR_API_BASE}/users/me/calendarList?{urlencode(params)}', access_token)
+        calendars.extend({'id': c['id'], 'summary': c.get('summary') or c['id']} for c in listing.get('items') or [])
+        page_token = listing.get('nextPageToken')
+        if not page_token:
+            break
+    return calendars
+
+
+def _effective_calendar_ids(profile) -> list[str]:
+    """TASK-116 AC2/AC7: the calendars the owner has selected for quiet hours, one Google Calendar id
+    per line -- same one-per-line idiom as _effective_do_not_disclose below. Calendar ids are not
+    secrets (unlike the ICS URLs this replaces), so this is a plain profile field: no masking, no
+    env-var fallback (AC7, carried over from TASK-115's 'only ever configured here' decision)."""
+    return [line.strip() for line in (getattr(profile, 'mailbox_calendar_ids', '') or '').splitlines() if line.strip()]
+
+
+@sensitive_variables('client_id', 'client_secret', 'refresh_token', 'access_token', 'code', 'body', 'token', 'payload')
+def calendar_busy_now(now, client_id: str, client_secret: str, token_path: str, calendar_ids: list[str]) -> tuple[bool, list[str]]:
+    """TASK-116 AC3/AC4/AC5: one `freeBusy.query` across every selected calendar id -- replaces
+    TASK-115's per-calendar ICS fetch/parse entirely (is_busy_at and _fetch_ics are gone). Any ONE
+    calendar reporting busy makes the run busy (AC2, carried over from TASK-115).
+
+    Fails open on ANY failure reaching Google -- expired/revoked token, network error, API error
+    (AC4, TASK-109 AC7) -- returning busy=False plus a human-readable error in `errors` for the
+    caller to record on the run (AC5) instead of only logging. No calendars configured is NOT a
+    failure and never calls Google at all (same short-circuit TASK-115's empty-URL-list case had):
+    returns (False, []).
+    """
+    if not calendar_ids:
+        return False, []
+    if not (client_id and client_secret):
+        return False, ['Calendar check failed: Gmail OAuth is not configured (GMAIL_OAUTH_CLIENT_ID/SECRET)']
+    try:
+        access_token = _oauth_refresh_access_token(client_id, client_secret, _read_refresh_token(token_path))
+        body = json.dumps({
+            'timeMin': now.astimezone(dt_timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'timeMax': (now + timedelta(minutes=1)).astimezone(dt_timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'items': [{'id': calendar_id} for calendar_id in calendar_ids],
+        }).encode('utf-8')
+        response = _gmail_api_request('POST', f'{GOOGLE_CALENDAR_API_BASE}/freeBusy', access_token, data=body)
+        # Reading the response shape is INSIDE the try too -- a malformed/unexpected response (not
+        # just a raised exception) must fail open exactly the same way (see
+        # test_calendar_busy_now_fails_open_on_unexpected_error).
+        calendars = response.get('calendars') or {}
+        busy = any((calendars.get(calendar_id) or {}).get('busy') for calendar_id in calendar_ids)
+    except RuntimeError as exc:
+        # RuntimeError is what every helper above raises for an expired/revoked token, a network
+        # error, or an API error alike (_read_refresh_token/_oauth_refresh_access_token/
+        # _gmail_api_request all wrap urllib's HTTPError/URLError into this one type) -- AC4's four
+        # failure classes all land here.
+        logger.warning('Calendar quiet-hours check failed; failing open (mail check proceeds)', exc_info=True)
+        return False, [f'Calendar check failed: {exc}']
+    except Exception as exc:
+        logger.exception('Calendar quiet-hours check failed unexpectedly; failing open')
+        return False, [f'Calendar check failed: {exc}']
+    return busy, []
 
 
 # --- Suggestions (AC3) --------------------------------------------------------------------------
@@ -2682,7 +2696,15 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             run.save()
             return run
         if profile.mailbox_check_calendar_aware:
-            busy, calendar_errors = calendar_busy_now(now, profile.mailbox_calendar_ics_urls)
+            # TASK-116 AC3: one OAuth freeBusy.query across the owner's selected calendars, not a
+            # per-calendar ICS fetch -- same OAuth client/token the mail transport itself uses
+            # (settings.GMAIL_OAUTH_CLIENT_ID/SECRET/TOKEN_PATH), independently of which mail
+            # transport is actually configured (an IMAP-configured account can still have Calendar
+            # OAuth set up for quiet hours alone).
+            busy, calendar_errors = calendar_busy_now(
+                now, settings.GMAIL_OAUTH_CLIENT_ID, settings.GMAIL_OAUTH_CLIENT_SECRET,
+                settings.GMAIL_OAUTH_TOKEN_PATH, _effective_calendar_ids(profile),
+            )
             # NOT reported here, deliberately: calendar-awareness ON with NO calendars configured.
             # Measured against production 2026-08-18 -- every profile had calendar_aware=True (the
             # model default) and zero configured calendars, because the owner's calendar only ever
@@ -2691,6 +2713,8 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             # use quiet hours, and a warning that cries wolf on every run is the same disease AC4
             # exists to cure. A configuration mismatch belongs on the settings page, once, next to
             # the toggle that causes it -- not in the error field of a run that worked fine.
+            # calendar_busy_now's own empty-calendar_ids short-circuit is what keeps this silent in
+            # that case (it returns (False, []) without ever calling Google).
             if calendar_errors:
                 # AC4: recorded even when fail-open leaves the run proceeding -- a broken calendar
                 # must never again look identical to "no events right now" (see task file history).

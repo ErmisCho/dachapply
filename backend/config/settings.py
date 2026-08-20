@@ -144,9 +144,6 @@ CODEX_CV_OPEN_OUTPUT_FOLDER = env_bool('CODEX_CV_OPEN_OUTPUT_FOLDER', DEBUG)
 GMAIL_IMAP_HOST = os.getenv('GMAIL_IMAP_HOST', 'imap.gmail.com')
 GMAIL_IMAP_USER = os.getenv('GMAIL_IMAP_USER', '')
 GMAIL_IMAP_APP_PASSWORD = ''.join((os.getenv('GMAIL_IMAP_APP_PASSWORD') or '').split())
-# Private ICS "secret address" URL for the owner's Google Calendar (Settings -> Integrate calendar).
-# No OAuth, no Calendar API -- a plain HTTPS GET the calendar-quiet-hours check fails open on.
-GMAIL_CALENDAR_ICS_URL = os.getenv('GMAIL_CALENDAR_ICS_URL', '')
 # TASK-110: IMAP name of the Drafts special-use mailbox that reply drafts get APPENDed to. Correct
 # for an English-locale Gmail account; a differently-localized account names it differently, hence
 # the override instead of a hardcoded constant in services/mailbox.py.
@@ -156,7 +153,7 @@ GMAIL_DRAFTS_FOLDER = os.getenv('GMAIL_DRAFTS_FOLDER', '[Gmail]/Drafts')
 # when set here, the env value wins over that profile value -- an operator-set floor/blocklist on the
 # machine actually running check_mailbox can never be relaxed through the website alone. Left unset,
 # neither guardrail restricts anything (falls through to whatever the profile has, itself defaulting
-# to "no floor, no blocklist"), same opt-in shape as GMAIL_CALENDAR_ICS_URL above.
+# to "no floor, no blocklist"), same opt-in shape as every other unset-means-absent var in this block.
 MAILBOX_SALARY_FLOOR_EUR = os.getenv('MAILBOX_SALARY_FLOOR_EUR', '').strip()
 MAILBOX_DO_NOT_DISCLOSE = env_list('MAILBOX_DO_NOT_DISCLOSE', '')
 
@@ -168,6 +165,11 @@ MAILBOX_DO_NOT_DISCLOSE = env_list('MAILBOX_DO_NOT_DISCLOSE', '')
 # `manage.py gmail_oauth_setup` (see docs/email-setup.md) -- that command writes the refresh token to
 # GMAIL_OAUTH_TOKEN_PATH, never here; the client id/secret are the only OAuth values that belong in
 # .env, same treatment as every other credential in this block.
+# TASK-116: this one OAuth client now also carries calendar.readonly (see
+# services.mailbox.GMAIL_OAUTH_SCOPE) alongside gmail.modify -- quiet hours reads the owner's
+# selected Google Calendars via this same client id/secret/token, never a second credential. Replaces
+# GMAIL_CALENDAR_ICS_URL (a private "secret address" URL, deleted along with the ICS fetch/parse path
+# it fed -- see UserProfile.mailbox_calendar_ids for where calendars are configured now).
 GMAIL_OAUTH_CLIENT_ID = os.getenv('GMAIL_OAUTH_CLIENT_ID', '')
 GMAIL_OAUTH_CLIENT_SECRET = os.getenv('GMAIL_OAUTH_CLIENT_SECRET', '')
 # Local file the refresh token is written to and read from. Defaults to a `dachapply-*.json` name at

@@ -40,18 +40,43 @@ console) and stopping the next email from carrying it (code).
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A custom `DEFAULT_EXCEPTION_REPORTER_FILTER` masks `DATABASE_URL`, and the masking is driven by an explicit list of extra names rather than by hoping the default regex covers them
-- [ ] #2 Every other setting whose VALUE is a secret but whose NAME dodges the default regex is enumerated and masked too — audit the settings module rather than fixing only the one that was caught; name in the notes each setting checked and why it is or is not sensitive
-- [ ] #3 Proven by test: rendering the exception report with a populated `DATABASE_URL` produces no substring of that value anywhere in the output, asserted against the real reporter (not by inspecting the filter's config)
-- [ ] #4 The request-data half is checked in the same pass: `HTTP_AUTHORIZATION` and `HTTP_COOKIE` were already masked in the observed email, but confirm by test rather than by that one sample
-- [ ] #5 Verified in production after deploy: trigger one more harmless 500 the same way, and confirm from the delivered email that the connection string is masked and the traceback is still useful
+- [x] #1 A custom `DEFAULT_EXCEPTION_REPORTER_FILTER` masks `DATABASE_URL`, and the masking is driven by an explicit list of extra names rather than by hoping the default regex covers them
+- [x] #2 Every other setting whose VALUE is a secret but whose NAME dodges the default regex is enumerated and masked too — audit the settings module rather than fixing only the one that was caught; name in the notes each setting checked and why it is or is not sensitive
+- [x] #3 Proven by test: rendering the exception report with a populated `DATABASE_URL` produces no substring of that value anywhere in the output, asserted against the real reporter (not by inspecting the filter's config)
+- [x] #4 The request-data half is checked in the same pass: `HTTP_AUTHORIZATION` and `HTTP_COOKIE` were already masked in the observed email, but confirm by test rather than by that one sample
+- [x] #5 Verified in production after deploy: trigger one more harmless 500 the same way, and confirm from the delivered email that the connection string is masked and the traceback is still useful
 - [ ] #6 The exposed Neon credential is rotated (owner action, Neon console) and the new value set on the Container App; recorded here once done
-- [ ] #7 Backend suite green
+- [x] #7 Backend suite green
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out. Fixed in PR #60 (merge 29e1ce0), deployed, and PROVEN in production by
+raising a second harmless 500 the same way and comparing the two delivered emails side by side:
+
+    setting                            21:28 (rev ...0089)      22:12 (rev ...0090)
+    DATABASE_URL                       full connection string   ********************
+    EMAIL_HOST_USER                    visible                  ********************
+    GMAIL_IMAP_USER                    visible                  ********************
+    GMAIL_CALENDAR_ICS_URL             visible                  ********************
+    MAILBOX_DO_NOT_DISCLOSE            visible                  ********************
+    MAILBOX_SALARY_FLOOR_EUR           visible                  ********************
+    DEFAULT_EXCEPTION_REPORTER_FILTER  Django's default         config.error_filters.DachApply...
+
+AC5's second half holds too - the alert stayed useful: the 22:12 email still carries the full
+traceback, "Exception Value: Field 'id' expected a number but got 'still-not-a-number'", and
+"Raised during: jobradar.views.generate_prompt". AC4 confirmed in both emails: HTTP_AUTHORIZATION,
+HTTP_COOKIE and X_CSRFTOKEN were masked before and after.
+
+Worth recording for whoever reads this next: the leak was found by DOING the verification rather
+than by reading the code. TASK-88 AC2 sat unchecked for days as "wait for a real 500"; one
+deliberate, harmless 500 both closed it and exposed an active credential leak in the same email.
+
+AC6 (rotating the exposed credential) is the owner's, in the Neon console plus the Container App's
+DATABASE_URL and the local .env - the owner stated on 2026-08-20 they would rotate immediately.
+Left unchecked here until they confirm it is done, rather than assumed.
+
 The fix is small and lives in `backend/config/`: subclass `SafeExceptionReporterFilter`, extend
 `hidden_settings` with a compiled pattern that also covers `DATABASE_URL` (and anything AC2 turns
 up), and point `DEFAULT_EXCEPTION_REPORTER_FILTER` at it.

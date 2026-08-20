@@ -99,16 +99,19 @@ class UserProfile(models.Model):
     # of those options back, never a second source of truth for what the machine can run.
     mailbox_chat_provider=models.CharField(max_length=30, blank=True, default='')
     mailbox_chat_model=models.CharField(max_length=120, blank=True, default='')
-    # TASK-115: one or more quiet-hours ICS calendar URLs, same one-per-line idiom as
-    # mailbox_do_not_disclose above (services.calendar_ics.parse_calendar_ics_urls also tolerates
-    # comma-separated and a pasted `[a, b, c]` list literal -- AC8). This profile value is the only
-    # place these are configured (AC7, reversed 2026-08-18): no environment-variable fallback and
-    # nothing in the UI or docs points anywhere else, so the app is never silently overridden by a
-    # value the owner cannot see or change here.
-    # Unlike every other field in this serializer, this one is a secret: an ICS "private" URL grants
-    # read access to the whole calendar with no authentication. CandidateProfileSerializer masks it
-    # on every read (owner decision 2026-08-18) and never lets a masked value overwrite a real one.
-    mailbox_calendar_ics_urls=models.TextField(blank=True, default='')
+    # TASK-116: one or more Google Calendar ids the owner has selected for quiet hours, one per line
+    # (same one-per-line idiom as mailbox_do_not_disclose above -- see
+    # services.mailbox._effective_calendar_ids). Replaces TASK-115's mailbox_calendar_ics_urls: the
+    # picker (services.mailbox.list_calendars, via calendarList.list on the same Gmail OAuth client)
+    # lets the owner select calendars BY NAME, so a calendar id ('primary',
+    # 'xxx@group.calendar.google.com') is what gets stored here, never a URL. This profile value is
+    # the only place these are configured (AC7, carried over from TASK-115): no environment-variable
+    # fallback and nothing in the UI or docs points anywhere else.
+    # Unlike TASK-115's field, a calendar id is NOT a secret -- it grants no access on its own (the
+    # OAuth refresh token is what does that, and it lives only in the local, gitignored token file --
+    # see GMAIL_OAUTH_TOKEN_PATH). So, unlike that field, this one is never masked on read and needs
+    # no masked-round-trip merge on write.
+    mailbox_calendar_ids=models.TextField(blank=True, default='')
     # TASK-145 AC4/AC8: the board's saved multi-sort, per account and synced (the owner's explicit
     # choice over localStorage) -- same wire format `?ordering=` already accepts and
     # views.parse_board_ordering already parses (e.g. 'status,-fit_score'), so no second parser or

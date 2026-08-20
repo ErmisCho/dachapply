@@ -23,7 +23,8 @@ def _isolated_mailbox_env(settings):
     settings.GMAIL_IMAP_HOST = 'imap.gmail.com'
     settings.GMAIL_IMAP_USER = 'owner@example.test'
     settings.GMAIL_IMAP_APP_PASSWORD = 'fake-app-password'
-    settings.GMAIL_CALENDAR_ICS_URL = ''
+    settings.GMAIL_OAUTH_CLIENT_ID = ''
+    settings.GMAIL_OAUTH_CLIENT_SECRET = ''
     settings.CODEX_CV_ENABLED = True
     settings.CODEX_CV_OWNER_EMAIL = 'owner@example.test'
     settings.MAILBOX_SALARY_FLOOR_EUR = ''
@@ -597,6 +598,61 @@ def test_mailbox_run_status_requires_cv_owner(db, applied_job):
     other_client = APIClient(); other_client.force_authenticate(other)
 
     r = other_client.get('/api/mailbox-runs/status/')
+
+    assert r.status_code == 404
+
+
+# --- TASK-116 AC2: the calendar picker endpoint -----------------------------------------------------
+
+def test_calendars_endpoint_returns_the_service_list(client, monkeypatch, settings):
+    settings.GMAIL_OAUTH_CLIENT_ID = 'cid'
+    settings.GMAIL_OAUTH_CLIENT_SECRET = 'secret'
+    monkeypatch.setattr(mailbox, 'list_calendars', lambda cid, secret, token_path: [
+        {'id': 'primary', 'summary': 'owner@example.test'},
+        {'id': 'team@group.calendar.google.com', 'summary': 'Interviews'},
+    ])
+
+    r = client.get('/api/mailbox-runs/calendars/')
+
+    assert r.status_code == 200
+    assert r.data == {'calendars': [
+        {'id': 'primary', 'summary': 'owner@example.test'},
+        {'id': 'team@group.calendar.google.com', 'summary': 'Interviews'},
+    ], 'error': ''}
+
+
+def test_calendars_endpoint_reports_error_without_raising_when_oauth_not_configured(client, settings):
+    settings.GMAIL_OAUTH_CLIENT_ID = ''
+    settings.GMAIL_OAUTH_CLIENT_SECRET = ''
+
+    r = client.get('/api/mailbox-runs/calendars/')
+
+    assert r.status_code == 200
+    assert r.data['calendars'] == []
+    assert 'not configured' in r.data['error']
+
+
+def test_calendars_endpoint_reports_error_without_raising_on_a_failed_lookup(client, monkeypatch, settings):
+    """AC4/AC5 in spirit: an expired/revoked token here must report the failure in the response body,
+    not 500 -- this is the picker the owner uses to notice and fix that, so it must render, not crash."""
+    settings.GMAIL_OAUTH_CLIENT_ID = 'cid'
+    settings.GMAIL_OAUTH_CLIENT_SECRET = 'secret'
+
+    def boom(cid, secret, token_path):
+        raise RuntimeError('token expired')
+    monkeypatch.setattr(mailbox, 'list_calendars', boom)
+
+    r = client.get('/api/mailbox-runs/calendars/')
+
+    assert r.status_code == 200
+    assert r.data == {'calendars': [], 'error': 'token expired'}
+
+
+def test_calendars_endpoint_requires_cv_owner(db, applied_job):
+    other = User.objects.create_user('other-calendars@example.test', email='other-calendars@example.test', password='pw')
+    other_client = APIClient(); other_client.force_authenticate(other)
+
+    r = other_client.get('/api/mailbox-runs/calendars/')
 
     assert r.status_code == 404
 
