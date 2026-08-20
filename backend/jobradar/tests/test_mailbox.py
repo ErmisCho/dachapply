@@ -87,7 +87,13 @@ def _isolated_mailbox_env(settings):
 
 @pytest.fixture
 def owner(db):
-    user = User.objects.create_user('owner@example.test', email='owner@example.test', password='pw')
+    # TASK-151: mailbox endpoints are gated on is_mailbox_owner (is_staff), not on is_cv_owner --
+    # is_cv_owner is switched off wherever CODEX_CV_ENABLED is (the deployed container), which is a
+    # property of the SERVER, not of the account. This fixture is the app's owner, and the real
+    # owner account is staff (1 of 9 accounts in production), so it is staff here too.
+    user = User.objects.create_user(
+        'owner@example.test', email='owner@example.test', password='pw', is_staff=True
+    )
     user_profile_settings(user)  # creates the UserProfile row with real model defaults
     return user
 
@@ -1113,8 +1119,14 @@ def test_mailbox_suggestions_are_scoped_to_accessible_jobs(db, applied_job):
 
 
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
-def test_mailbox_runs_are_gated_to_the_cv_owner(db):
-    owner_user = User.objects.create_user('owner@example.test', email='owner@example.test', password='pw')
+def test_mailbox_runs_are_gated_to_the_mailbox_owner(db):
+    # TASK-151: the gate is is_mailbox_owner (is_staff) now. Same intent as before -- the owner sees
+    # the runs, anybody else sees nothing -- but the owner is identified by an account property that
+    # reads the same on every deployment of this database, instead of by a CV kill switch that is
+    # off in the container. `other` stays non-staff, so the refusal it asserts is unchanged.
+    owner_user = User.objects.create_user(
+        'owner@example.test', email='owner@example.test', password='pw', is_staff=True
+    )
     other = User.objects.create_user('other3@example.test', password='pw')
     MailboxRun.objects.create(fetched_count=1)
     owner_client = APIClient(); owner_client.force_authenticate(owner_user)
@@ -3661,6 +3673,135 @@ def test_attachment_filename_with_markup_like_content_is_stored_as_plain_text(db
     parsed = mailbox._parse_gmail_raw_message('msg-1', {'internalDate': '1', 'threadId': 't1', 'raw': raw_b64})
     assert isinstance(parsed.attachments[0]['filename'], str)
     assert parsed.attachments[0]['filename'] == malicious_filename
+
+
+# ===================================================================================================
+# TASK-152: a message whose only textual part is text/html was stored with body_text='' forever --
+# not a fetch failure, just the wrong part read (get_body(preferencelist=('plain',)) alone). AC1:
+# html is now converted to readable plain text as a FALLBACK. AC3: a real text/plain part still wins
+# unchanged. AC4: a text/plain part that decodes to nothing usable (uid 934's measured shape) also
+# now falls back to html. AC2 is the sharp edge -- the conversion must never turn a human-typed
+# literal tag into markup, and must never leave real markup in body_text (no dangerouslySetInnerHTML
+# anywhere on the frontend -- body_text always renders as plain text, TASK-134 #3).
+# ===================================================================================================
+
+def _gmail_raw_b64_html(sender, subject, html_body, message_id='<m@example.test>'):
+    """A raw RFC822 message whose only textual part is text/html -- the exact real shape TASK-152
+    measured (11 of the 12 sampled empty-body rows: no text/plain part at all, html only).
+    """
+    msg = EmailMessage()
+    msg['From'] = sender
+    msg['Subject'] = subject
+    msg['Message-ID'] = message_id
+    msg.set_content(html_body, subtype='html')
+    return base64.urlsafe_b64encode(msg.as_bytes()).decode('ascii').rstrip('=')
+
+
+def _gmail_raw_b64_plain_and_html(sender, subject, plain_body, html_body, message_id='<m@example.test>'):
+    """A raw RFC822 multipart/alternative message carrying BOTH a text/plain and a text/html part --
+    the shape most real mail clients (including Gmail's own composer) actually send.
+    """
+    msg = EmailMessage()
+    msg['From'] = sender
+    msg['Subject'] = subject
+    msg['Message-ID'] = message_id
+    msg.set_content(plain_body)
+    msg.add_alternative(html_body, subtype='html')
+    return base64.urlsafe_b64encode(msg.as_bytes()).decode('ascii').rstrip('=')
+
+
+# --- _html_to_text: unit-level conversion behaviour -------------------------------------------------
+
+def test_html_to_text_strips_tags_and_decodes_entities():
+    html = '<p>Hi Jane,</p><p>Thanks &amp; congrats on the role at Acme &mdash; call us.</p>'
+    assert mailbox._html_to_text(html) == 'Hi Jane,\n\nThanks & congrats on the role at Acme — call us.'
+
+
+def test_html_to_text_turns_block_structure_into_readable_paragraphs():
+    """AC1: block-level structure (paragraphs, list items, <br>) becomes newlines so the result reads
+    as prose, not the raw markup dumped into one run-on line.
+    """
+    html = '<div>Next steps:</div><ul><li>Call</li><li>Onsite</li></ul><p>Best,<br>Jane</p>'
+    text = mailbox._html_to_text(html)
+    assert 'Call' in text.splitlines() and 'Onsite' in text.splitlines()
+    assert text.count('\n') >= 3
+
+
+def test_html_to_text_never_leaks_script_or_style_content():
+    """AC1: 'Style/script content must never leak into the text' -- the whole CONTENT is dropped,
+    not just the tag itself.
+    """
+    html = '<style>.x{color:red}</style><script>alert(1)</script><p>Real message text.</p>'
+    text = mailbox._html_to_text(html)
+    assert text == 'Real message text.'
+    assert 'color:red' not in text and 'alert(1)' not in text
+
+
+def test_html_to_text_empty_or_whitespace_only_input_returns_empty_string():
+    assert mailbox._html_to_text('') == ''
+    assert mailbox._html_to_text('   \r\n  ') == ''
+
+
+# --- _parse_gmail_raw_message: the four AC-required fixture scenarios -------------------------------
+
+def test_parse_gmail_raw_message_falls_back_to_html_when_no_plain_part_exists():
+    """AC1: the measured majority shape (11 of 12 sampled empty-body rows) -- no text/plain part at
+    all, only text/html. body_text is no longer '' for this shape.
+    """
+    html = '<p>Hi,</p><p>We would like to invite you to an interview.</p>'
+    raw_b64 = _gmail_raw_b64_html('hr@acme.test', 'Interview', html)
+    parsed = mailbox._parse_gmail_raw_message('msg-1', {'internalDate': '1', 'threadId': 't1', 'raw': raw_b64})
+    assert parsed.body_text == 'Hi,\n\nWe would like to invite you to an interview.'
+
+
+def test_parse_gmail_raw_message_prefers_plain_part_when_present():
+    """AC3: a real text/plain part keeps winning, unchanged -- html is a fallback, never the new
+    preference, even on a message that also carries an html alternative.
+    """
+    raw_b64 = _gmail_raw_b64_plain_and_html(
+        'hr@acme.test', 'Interview',
+        plain_body='Plain-text version: please call us.',
+        html_body='<p>HTML version -- should never be used here.</p>',
+    )
+    parsed = mailbox._parse_gmail_raw_message('msg-1', {'internalDate': '1', 'threadId': 't1', 'raw': raw_b64})
+    # "unchanged" (AC3) includes the trailing newline email.message.EmailMessage.set_content() itself
+    # appends to a text/plain part -- _extract_body_text must not touch it, so the html alternative
+    # was never even read.
+    assert parsed.body_text == 'Plain-text version: please call us.\n'
+
+
+def test_parse_gmail_raw_message_falls_back_to_html_when_plain_part_is_whitespace_only():
+    """AC4 (uid 934): a message CAN carry a text/plain part and still read as empty off it alone --
+    a whitespace-only text/plain alternative next to the real text/html content (some HTML-composing
+    clients send exactly this as a courtesy stub, never meant to be read). Before this task,
+    get_body(preferencelist=('plain',)) found that part, decoded it to whitespace, and body_text
+    stayed '' even though the message was fully readable in Gmail. This is the shape the code can
+    confirm and fix without a live refetch -- see this task's report for the AC4 verdict.
+    """
+    raw_b64 = _gmail_raw_b64_plain_and_html(
+        'hr@acme.test', 'Interview',
+        plain_body='   \r\n   \r\n',
+        html_body='<p>Please call us to schedule the interview.</p>',
+    )
+    parsed = mailbox._parse_gmail_raw_message('msg-1', {'internalDate': '1', 'threadId': 't1', 'raw': raw_b64})
+    assert parsed.body_text == 'Please call us to schedule the interview.'
+
+
+def test_parse_gmail_raw_message_html_fallback_keeps_a_literal_typed_tag_literal_and_never_leaks_real_markup():
+    """AC2, the sharp edge: a human who typed a literal '<b>' into an HTML-composed message has it
+    encoded as '&lt;b&gt;' in the HTML source -- decoding that entity must produce the literal text
+    '<b>' as DATA (what the reader actually typed), never re-interpreted as a real tag and eaten by
+    the tag stripper (the trap a naive unescape-then-regex-strip approach would fall into). And the
+    message's REAL markup (the actual <p>/<i> tags) must be stripped, not carried into body_text --
+    the frontend renders body_text as plain React text with no dangerouslySetInnerHTML anywhere
+    (TASK-134 #3), so anything left over here would show up on screen as literal angle brackets, not
+    get interpreted, but must still not be there.
+    """
+    html = '<p>Please wrap the class name in <i>&lt;b&gt;...&lt;/b&gt;</i> tags in your reply.</p>'
+    raw_b64 = _gmail_raw_b64_html('hr@acme.test', 'Formatting note', html)
+    parsed = mailbox._parse_gmail_raw_message('msg-1', {'internalDate': '1', 'threadId': 't1', 'raw': raw_b64})
+    assert parsed.body_text == 'Please wrap the class name in <b>...</b> tags in your reply.'
+    assert '<p>' not in parsed.body_text and '<i>' not in parsed.body_text
 
 
 # --- run_check() end to end: AC1/AC3/AC5 persisted onto the row ------------------------------------

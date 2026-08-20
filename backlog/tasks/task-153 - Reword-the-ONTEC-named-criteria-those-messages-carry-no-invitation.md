@@ -1,7 +1,7 @@
 ---
 id: TASK-153
 title: Reword the ONTEC-named criteria — those messages carry no invitation
-status: To Do
+status: Done
 assignee: []
 labels:
   - process
@@ -36,10 +36,16 @@ implementation can satisfy gets reworded through its own filed task, never silen
 is this task.
 <!-- SECTION:DESCRIPTION:END -->
 
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-08-20: both criteria reworded in place, each carrying the disqualification reason so it is not re-litigated, and both ticked against the Hays invitation on job 34. Observed 2026-08-20 on the DEPLOYED site (bundle index-C3q-G_yt.js, after PR #55), job 34's flat email-history popup: "CAL Hays - Austausch Jobmoeglichkeit | 1 Jun 2026, 13:00-13:30 (Europe/Vienna) | Microsoft Teams-Besprechung | With David Jin <david.jin@hays.at>" - what, when, where and with whom, from a real job-matched message (ids 701/702). Two invite blocks rendered and the popup stayed at 376/376 clientWidth/scrollWidth, so TASK-138 AC7's no-sideways-scroll guarantee is intact.
+<!-- SECTION:NOTES:END -->
+
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 TASK-135 AC1 is reworded to name "one real, job-matched message that carries a `text/calendar` invitation" instead of the ONTEC messages, keeping the what/when/with-whom requirement unchanged
-- [ ] #2 TASK-150 AC4 is reworded the same way, keeping "observed in the browser" unchanged
-- [ ] #3 Both task files record why the ONTEC messages were disqualified (no calendar part in Gmail; unmatched to any job), so the next reader does not re-litigate it
-- [ ] #4 With the new wording, the Hays invitation on job 34 is used as the proof and both criteria are ticked only after it is actually observed rendering in the browser
+- [x] #1 TASK-135 AC1 is reworded to name "one real, job-matched message that carries a `text/calendar` invitation" instead of the ONTEC messages, keeping the what/when/with-whom requirement unchanged
+- [x] #2 TASK-150 AC4 is reworded the same way, keeping "observed in the browser" unchanged
+- [x] #3 Both task files record why the ONTEC messages were disqualified (no calendar part in Gmail; unmatched to any job), so the next reader does not re-litigate it
+- [x] #4 With the new wording, the Hays invitation on job 34 is used as the proof and both criteria are ticked only after it is actually observed rendering in the browser
 <!-- AC:END -->

@@ -71,6 +71,7 @@ from datetime import datetime, time as dt_time, timedelta
 from datetime import timezone as dt_timezone
 from email.message import EmailMessage
 from email.utils import format_datetime, getaddresses, parseaddr
+from html.parser import HTMLParser
 from statistics import median
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
@@ -404,6 +405,116 @@ def _body_text(body) -> str:
         return ''
 
 
+# --- TASK-152: text/html fallback body extraction -------------------------------------------------
+#
+# get_body(preferencelist=('plain',)) alone left a message with only a text/html part (most
+# recruiter/ATS mail, measured: 11 of 12 sampled empty-body rows) permanently body_text='' -- not a
+# fetch failure, the part the app needed just was not text/plain. This section converts text/html to
+# readable plain text as a FALLBACK, never a replacement for a usable text/plain part (AC3).
+#
+# Stdlib html.parser.HTMLParser only, no new dependency: the whole surface needed is "walk tags,
+# collect text nodes, decode entities", which HTMLParser already does for free via
+# convert_charrefs=True. That default is also what keeps AC2's "a literal tag stays literal"
+# guarantee intact -- HTMLParser decodes an entity ONLY inside a text node it has already tokenized
+# as data, so a human-typed '&lt;b&gt;' in an HTML-composed message comes out as the literal string
+# '<b>' as DATA, never re-parsed as an actual tag. A naive `html.unescape(source)` followed by a
+# regex tag-strip would get this backwards -- unescaping BEFORE stripping turns that same literal
+# '&lt;b&gt;' into '<b>' first, and the regex then mistakes it for real markup and eats it. That
+# ordering trap is exactly what routing everything through one real parser avoids.
+
+class _HTMLTextExtractor(HTMLParser):
+    """Collects the readable text of an HTML document: block-level tags become line breaks so
+    paragraphs/list items/table rows read as prose rather than one run-on line (AC1), and the entire
+    CONTENT of script/style/head/title is dropped, not just their tags, so CSS/JS text can never leak
+    into a message body.
+    """
+
+    _SKIP_TAGS = frozenset({'script', 'style', 'head', 'title'})
+    _BLOCK_TAGS = frozenset({
+        'p', 'div', 'br', 'tr', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'blockquote', 'hr', 'table',
+    })
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._chunks: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+        elif tag in self._BLOCK_TAGS:
+            self._chunks.append('\n')
+
+    def handle_startendtag(self, tag, attrs):
+        # A self-closed tag (<br/>) never opens a skip region -- there is no content to skip.
+        if tag in self._BLOCK_TAGS:
+            self._chunks.append('\n')
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+        elif tag in self._BLOCK_TAGS:
+            self._chunks.append('\n')
+
+    def handle_data(self, data):
+        if self._skip_depth:
+            return
+        # HTML source whitespace/line-wrapping carries no visual meaning (browsers collapse it) --
+        # only the explicit '\n' markers this class inserts at block-tag boundaries do. Collapsing
+        # here keeps that distinction: raw.split('\n') downstream can trust every remaining '\n' is
+        # a real block boundary, never incidental source formatting.
+        collapsed = re.sub(r'\s+', ' ', data)
+        if collapsed:
+            self._chunks.append(collapsed)
+
+    def text(self) -> str:
+        raw = ''.join(self._chunks)
+        lines = [line.strip() for line in raw.split('\n')]
+        result_lines = []
+        blank_run = False
+        for line in lines:
+            if line:
+                result_lines.append(line)
+                blank_run = False
+            elif not blank_run:
+                result_lines.append('')
+                blank_run = True
+        return '\n'.join(result_lines).strip()
+
+
+def _html_to_text(html_source: str) -> str:
+    """HTML -> readable plain text (tags stripped, entities decoded, block structure kept as
+    newlines). '' in, or unparseable, both return ''  -- fail-open, same shape as `_body_text` above:
+    one unreadable message costs that message's body, never the whole ingestion run.
+    """
+    if not html_source or not html_source.strip():
+        return ''
+    extractor = _HTMLTextExtractor()
+    try:
+        extractor.feed(html_source)
+        extractor.close()
+    except Exception:
+        logger.warning('HTML-to-text body conversion failed; storing an empty body', exc_info=True)
+        return ''
+    return extractor.text()
+
+
+def _extract_body_text(parsed) -> str:
+    """AC1/AC3/AC4: text/plain is still preferred and used UNCHANGED whenever it exists and decodes
+    to something usable (AC3 -- HTML is a fallback, never the new preference). Falls back to the
+    message's text/html part, converted via _html_to_text, in both measured empty-body shapes: no
+    text/plain part at all, and a text/plain part that exists but decodes to nothing usable (AC4,
+    uid 934 -- get_body(preferencelist=('plain',)) returned a part, but its content was
+    empty/whitespace-only).
+    """
+    plain_text = _body_text(parsed.get_body(preferencelist=('plain',)))
+    if plain_text.strip():
+        return plain_text
+    html_text = _html_to_text(_body_text(parsed.get_body(preferencelist=('html',))))
+    return html_text or plain_text
+
+
 def _extract_calendar_text_and_attachments(parsed) -> tuple[str, list[dict]]:
     """TASK-135 AC1/AC3/AC4: one MIME walk over an already-decoded email.message.EmailMessage that
     finds the first text/calendar part's raw ICS text (fed to parse_calendar_invitation below) AND
@@ -446,14 +557,13 @@ def _parse_gmail_raw_message(msg_id: str, detail: dict) -> RawMessage:
     encoded = detail.get('raw', '')
     raw_bytes = base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4))
     parsed = email.message_from_bytes(raw_bytes, policy=email.policy.default)
-    body = parsed.get_body(preferencelist=('plain',))
     ics_text, attachments = _extract_calendar_text_and_attachments(parsed)
     invitation = parse_calendar_invitation(ics_text) if ics_text else None
     return RawMessage(
         uid=0, sender=parsed.get('From', ''), subject=parsed.get('Subject', ''),
         received_at=_parse_email_date(parsed.get('Date', '')),
         message_id=parsed.get('Message-ID', ''), references=parsed.get('References', ''),
-        body_text=_body_text(body)[:5000], to=str(parsed.get('To', '') or ''), cc=str(parsed.get('Cc', '') or ''),
+        body_text=_extract_body_text(parsed)[:5000], to=str(parsed.get('To', '') or ''), cc=str(parsed.get('Cc', '') or ''),
         **_bulk_headers(parsed),
         gmail_id=msg_id, internal_date_ms=internal_date_ms, thread_id=detail.get('threadId', ''),
         attachments=attachments,

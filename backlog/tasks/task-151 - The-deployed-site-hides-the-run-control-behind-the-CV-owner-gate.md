@@ -40,3 +40,32 @@ use.
 - [ ] #3 A non-owner account (a friend-submitter) still does not see the run section — asserted by whatever test or measurement fits the chosen gate
 - [ ] #4 `can_generate_cv` keeps meaning exactly what its model help_text says; CV generation gating is untouched
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-08-20, measured. The description above named the mechanism imprecisely; the real one, proven
+live, is worth stating exactly because it has TWO halves:
+
+`can_generate_cv` in the API payload is `is_cv_owner(user)`, whose FIRST line is
+`if not (settings.CODEX_CV_ENABLED and user.is_authenticated): return False`, and
+`CODEX_CV_ENABLED = env_bool('CODEX_CV_ENABLED', DEBUG)` — so it is True on the owner's machine
+(DEBUG=True) and False in the deployed container. Proof by elimination: the deployed
+`/api/auth/me/` returns `can_generate_cv:false` (HTTP 200) for the owner's account while the same
+shared database holds `UserProfile.can_generate_cv = True` and `is_cv_owner()` returns True locally
+— and the deployment reads the SAME database (the live site returns the very rows ingested from
+this machine: job 37 with 10 messages, 5 owner-sent). So the flag gates "is the CV subsystem
+switched on for this server", never "is this the owner".
+
+FRONTEND half (shipped, PR #55): the run section is now gated on `is_staff` — a plain column,
+already in `/auth/me/`, cached by RequireAuth on every route change, 1 of 9 accounts. Verified on
+the deployed site: the control renders with `is_staff:true, can_generate_cv:false`.
+
+BACKEND half (found by pressing the button after the deploy, still open at time of writing): the
+control's POST to `/api/mailbox-runs/run-now/` returns **404 `{"detail":"Not found."}`**, because
+`run_now` (views.py) carries the same `is_cv_owner` gate, as do `MailboxRunViewSet.get_queryset`
+(returns `.none()`), `status_view`, the mailbox-messages queryset, and the owner-gated POST near
+line 1107. Every mailbox endpoint is therefore dead on the deployed site. The fix is a dedicated
+`is_mailbox_owner` predicate for the MAILBOX endpoints only; CV endpoints keep `is_cv_owner`,
+because the kill switch is correct for them (AC4).
+<!-- SECTION:NOTES:END -->
