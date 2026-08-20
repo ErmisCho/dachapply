@@ -1,7 +1,7 @@
 ---
 id: TASK-133
 title: Reply and reply-all from the app, saved into Gmail Drafts
-status: In Progress
+status: Done
 assignee: []
 labels:
   - backend
@@ -40,7 +40,7 @@ send is not.
 - [x] #1 The owner can compose a reply to any message in a conversation, not only the one that produced a suggestion
 - [x] #2 Reply and reply-all are distinct and correct: reply goes to the sender, reply-all preserves the other recipients, and which one is selected is visible before saving — derived from the message's own headers, not guessed
 - [x] #3 Recipients are editable before saving: the owner can add or remove a To or Cc, and what will be saved is shown verbatim rather than described
-- [ ] #4 The result is written to Gmail Drafts on the correct thread, verified by the draft appearing in that Gmail conversation rather than as a detached message
+- [x] #4 The result is written to Gmail Drafts on the correct thread, verified by the draft appearing in that Gmail conversation rather than as a detached message
 - [x] #5 The app still never sends: `grep -rn "messages.send\|smtplib" backend/` finds nothing new, no `gmail.send` scope is requested, and a test asserts the send endpoint is never called
 - [x] #6 `check_guardrails` runs on the composed text before it is written, exactly as it does for a generated draft — a hand-composed reply must not get past the salary floor or do-not-disclose rules that a template cannot
 - [x] #7 A recipient the owner did not intend cannot be introduced silently: reply-all on a message with a `Reply-To` or a mailing-list header behaves predictably and the final recipient list is what was shown
@@ -51,6 +51,8 @@ send is not.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out, AC4 verified from Gmail itself (not from the app's own copy): the compose dialog wrote draft r-6967159284704388853 for message 789; GET /drafts/{id} returns message id 1a01ed7c116579c0 with threadId 19951922295af158, which equals the answered message's thread_id, and GET /threads/19951922295af158 lists that draft message among its 5 - so it sits inside the conversation rather than detached, which is exactly what the criterion asks.
+
 2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): Compose UI shipped in #52 and driven live: Reply control on every message opens a dialog labelled with the real message; mode radios visible; derived To prefilled; Cc edited to a new address and the POST carried exactly the shown lists verbatim; 200 -> 'Saved to Gmail Drafts - Nothing was sent'. AC4 stays unchecked for one glance: open Gmail and confirm the new draft sits inside the ISG conversation (threadId is test-asserted; only the Gmail-UI placement is unobserved).
 
 `build_reply_mime` already builds a threaded reply (In-Reply-To/References) and `append_draft` writes
