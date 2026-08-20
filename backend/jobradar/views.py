@@ -794,14 +794,33 @@ class MailboxSuggestionViewSet(viewsets.GenericViewSet):
         dismiss_suggestion(suggestion)
         return Response(self.get_serializer(suggestion).data)
 
+def is_mailbox_owner(user):
+    """TASK-151 AC1: the gate every MAILBOX endpoint below uses -- deliberately NOT is_cv_owner.
+
+    is_cv_owner is gated on settings.CODEX_CV_ENABLED, a deployment-time kill switch for whether
+    the CV subsystem can run on THIS server (env_bool('CODEX_CV_ENABLED', DEBUG), False whenever
+    DEBUG is False). That is correct for CV generation, which genuinely cannot run in the deployed
+    container -- but it made is_cv_owner return False for the owner's own account on the deployed
+    site even though the account itself never changed, hiding mailbox endpoints that have nothing
+    to do with the CV subsystem and work fine there. Mailbox ownership is a property of the
+    ACCOUNT in the shared database, not of the server answering the request, so it needs a
+    predicate that reads the same on every deployment of that one database: `is_staff` is a plain
+    boolean column on auth_user, not an env var, so it cannot diverge between deployments the way
+    CODEX_CV_ENABLED does. On the production database exactly 1 of 9 accounts is staff (the
+    owner).
+    """
+    return bool(user and user.is_authenticated and user.is_staff)
+
+
 class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
     """TASK-109 AC4. Runs are not per-job, so accessible_jobs scoping does not apply -- gated on
-    is_cv_owner instead, the same single-owner gate CV generation uses, since this is inherently a
-    personal-mailbox audit trail rather than shared board data.
+    is_mailbox_owner instead (TASK-151: switched from is_cv_owner, which was unreachable on the
+    deployed site -- see is_mailbox_owner's docstring), since this is inherently a personal-mailbox
+    audit trail rather than shared board data.
     """
     serializer_class=MailboxRunSerializer
     def get_queryset(self):
-        if not is_cv_owner(self.request.user): return MailboxRun.objects.none()
+        if not is_mailbox_owner(self.request.user): return MailboxRun.objects.none()
         return MailboxRun.objects.all().prefetch_related('messages__matched_job','messages__draft')
     @action(detail=False, methods=['post'], url_path='run-now')
     def run_now(self, request):
@@ -813,7 +832,7 @@ class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
         (AC1): 'queued' tells the client which case it got, matching the {'queued', 'task_id'} /
         {'queued', 'request_id'} shapes start_mailbox_check documents.
         """
-        if not is_cv_owner(request.user):
+        if not is_mailbox_owner(request.user):
             return Response({'detail': 'Not found.'}, status=404)
         return Response(mailbox_tasks.start_mailbox_check(request.user))
     @action(detail=False, methods=['get'], url_path='status')
@@ -831,7 +850,7 @@ class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
         the client to derive, so a missing estimate or an instant run can never read as a negative
         countdown (AC8).
         """
-        if not is_cv_owner(request.user):
+        if not is_mailbox_owner(request.user):
             return Response({'detail': 'Not found.'}, status=404)
         run = mailbox.current_mailbox_run() or MailboxRun.objects.first()
         running = bool(run and run.finished_at is None)
@@ -850,8 +869,9 @@ class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
 
 class MailboxMessageViewSet(viewsets.GenericViewSet):
     """TASK-117 AC6/AC7. MailboxMessage.uid is globally unique with no user FK -- the mailbox
-    subsystem is single-owner by construction, so this is gated on is_cv_owner exactly like
-    MailboxRunViewSet above, not on accessible_jobs. Exposes only what AC6 needs (the unmatched list
+    subsystem is single-owner by construction, so this is gated on is_mailbox_owner exactly like
+    MailboxRunViewSet above (TASK-151: switched from is_cv_owner -- see is_mailbox_owner's
+    docstring), not on accessible_jobs. Exposes only what AC6 needs (the unmatched list
     and the manual attach action), TASK-142's `retrieve` (the full-body counterpart to unmatched's
     truncated preview -- see MailboxMessageListSerializer), plus TASK-133's reply-recipients preview
     and reply-compose actions below -- still never list/PATCH/DELETE, keeping the model's append-only
@@ -861,18 +881,20 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
     shape attach already holds.
 
     reply_recipients/reply are deliberately scoped through accessible_jobs (like MailboxDraftViewSet
-    below), not the is_cv_owner gate the rest of this viewset uses -- see each action's own docstring.
+    below), not the is_mailbox_owner gate the rest of this viewset uses -- see each action's own
+    docstring.
     """
     serializer_class=MailboxMessageSerializer
     def get_queryset(self):
-        if not is_cv_owner(self.request.user): return MailboxMessage.objects.none()
+        if not is_mailbox_owner(self.request.user): return MailboxMessage.objects.none()
         return MailboxMessage.objects.all()
     def retrieve(self, request, pk=None):
         """TASK-142 AC1/AC5/AC7 support: `unmatched` below truncates body_text to a preview
         (MailboxMessageListSerializer) so the list itself stays bounded -- this is where the owner
         gets the FULL message, including its complete body and any pending suggestions, when a row
-        is actually opened. Same is_cv_owner gate as the rest of this viewset (an unmatched message
-        has no matched_job to scope through accessible_jobs the way _accessible_message below does).
+        is actually opened. Same is_mailbox_owner gate as the rest of this viewset (an unmatched
+        message has no matched_job to scope through accessible_jobs the way _accessible_message
+        below does).
         Nothing is deleted or unreachable by bounding the list (AC7): every message still has exactly
         one extra request between it and being fully readable.
         """
@@ -929,11 +951,11 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
     def attach(self, request, pk=None):
         """TASK-117 AC6: the only writer of `matched_job` for a message that already ran through
         check_mailbox -- everything else about MailboxMessage stays append-only. self.get_object()
-        already applies the is_cv_owner gate via get_queryset(); the target job additionally has to
-        be one this user can already see (accessible_jobs), or it 404s the same way reading that job
-        would. Re-attaching to the SAME job is a no-op (attach_message_to_job is idempotent);
-        attaching to a DIFFERENT job than the one already matched is refused rather than silently
-        re-pointing the message.
+        already applies the is_mailbox_owner gate via get_queryset(); the target job additionally
+        has to be one this user can already see (accessible_jobs), or it 404s the same way reading
+        that job would. Re-attaching to the SAME job is a no-op (attach_message_to_job is
+        idempotent); attaching to a DIFFERENT job than the one already matched is refused rather
+        than silently re-pointing the message.
         """
         message=self.get_object()
         job_id=request.data.get('job')
@@ -951,11 +973,11 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
     def _accessible_message(self, request, pk):
         """TASK-133: reply-recipients/reply write into and read from the OWNER's real mailbox, so
         this is deliberately not self.get_object() (which routes through get_queryset()'s
-        is_cv_owner gate above) -- it is scoped through the message's own matched_job via
+        is_mailbox_owner gate above) -- it is scoped through the message's own matched_job via
         accessible_jobs, the same rule every other job-linked resource in this app already uses
         (MailboxDraftViewSet.get_queryset(), JobLeadViewSet, ...). A second user who cannot see the
         matched job gets 404 here exactly as they would reading that job's own mailbox panel,
-        regardless of whether they are the mailbox's is_cv_owner.
+        regardless of whether they are the mailbox owner (is_mailbox_owner).
         """
         return MailboxMessage.objects.filter(pk=pk, matched_job__in=accessible_jobs(request.user)).first()
 
@@ -1104,8 +1126,11 @@ def raise_test_error(request):
     against production -- ERROR_ALERT_EMAILS, the Brevo relay, SERVER_EMAIL being a verified sender,
     and the cooldown all had to be right simultaneously, untested.
 
-    Owner-gated (is_cv_owner, the same gate /api/mailbox-runs/ uses) and POST-only, so it cannot be
-    reached by a stray GET, a crawler, or another account. Kept rather than deleted after the first
+    Owner-gated (is_cv_owner -- unlike /api/mailbox-runs/, which switched to is_mailbox_owner in
+    TASK-151, this stays on is_cv_owner: it is not a mailbox endpoint, and CODEX_CV_ENABLED being
+    off wherever DEBUG is off is an acceptable reason for the alerting self-test to be unreachable
+    too) and POST-only, so it cannot be reached by a stray GET, a crawler, or another account.
+    Kept rather than deleted after the first
     successful alert: the same three things can silently rot -- a Brevo key rotates, a sender
     verification lapses, a recipient changes -- and this is how you find out before an outage does
     rather than after.

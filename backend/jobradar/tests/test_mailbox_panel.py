@@ -32,7 +32,9 @@ def _isolated_mailbox_env(settings):
 
 @pytest.fixture
 def owner(db):
-    user = User.objects.create_user('owner@example.test', email='owner@example.test', password='pw')
+    # TASK-151: is_staff=True, not just a UserProfile/env match -- mailbox endpoints are gated on
+    # is_mailbox_owner (is_staff) now, and this fixture stands in for the one is_staff account.
+    user = User.objects.create_user('owner@example.test', email='owner@example.test', password='pw', is_staff=True)
     user_profile_settings(user)  # creates the UserProfile row with real model defaults
     return user
 
@@ -292,12 +294,21 @@ def test_attach_sets_matched_job_and_produces_same_suggestions_as_domain_match(c
     assert domain_matched_suggestion.id in suggestion_ids
 
 
-def test_attach_to_a_job_the_user_cannot_see_is_404(client):
+def test_attach_by_a_non_mailbox_owner_is_404(db):
+    """TASK-151: this used to authenticate as `client` (the mailbox owner) and attach to a job
+    outside the CALLER's own board, exercising attach()'s own accessible_jobs check. That branch is
+    no longer reachable: mailbox ownership now requires is_staff (is_mailbox_owner), and
+    accessible_jobs() already grants any is_staff account full visibility into every job (see its
+    own docstring) -- so the one account that can call attach at all can never be refused there for
+    job-inaccessibility. The refusal this endpoint can still produce is get_queryset()'s
+    is_mailbox_owner gate, for a non-staff authenticated user, exercised here instead.
+    """
     other = User.objects.create_user('other5@example.test', email='other5@example.test', password='pw')
-    someone_elses_job = JobLead.objects.create(company='Other Co', title='Role', created_by=other)
+    job = JobLead.objects.create(company='Other Co', title='Role', created_by=other)
     message = _log_message(None, 'uncertain', sender='someone@agency.test')
+    other_client = APIClient(); other_client.force_authenticate(other)
 
-    r = client.post(f'/api/mailbox-messages/{message.id}/attach/', {'job': someone_elses_job.id}, format='json')
+    r = other_client.post(f'/api/mailbox-messages/{message.id}/attach/', {'job': job.id}, format='json')
 
     assert r.status_code == 404
     message.refresh_from_db()
@@ -1120,3 +1131,88 @@ def test_job_mailbox_endpoint_still_shows_messages_for_a_non_actionable_job(clie
     # confirms is still actionable from here.
     suggestion_ids = [s['id'] for s in r.data['messages'][0]['suggestions']]
     assert suggestion.id in suggestion_ids
+
+
+# --- TASK-151 AC1/AC2/AC3/AC4: mailbox endpoints gated on is_mailbox_owner (is_staff), not
+# is_cv_owner --------------------------------------------------------------------------------------
+#
+# is_cv_owner needs settings.CODEX_CV_ENABLED, a deployment-time kill switch that is False on the
+# deployed container (env_bool('CODEX_CV_ENABLED', DEBUG), DEBUG False there) -- so it silently
+# returned False for the owner's own account there even though the account itself never changed.
+# is_mailbox_owner reads user.is_staff instead, a plain database column that cannot diverge between
+# deployments of the same database. Each test below turns CODEX_CV_ENABLED off to prove the mailbox
+# endpoint no longer depends on it, while a non-staff account still gets the same refusal as before.
+
+def test_run_now_reaches_an_is_staff_user_even_with_cv_owner_disabled(client, settings, monkeypatch):
+    """AC1/AC2: the owner fixture's is_staff=True, not is_cv_owner, must be what lets this through --
+    proven by disabling CODEX_CV_ENABLED (which is_cv_owner requires) and confirming run-now still
+    works. run_check is patched (not start_mailbox_check itself) so this stays hermetic, the same
+    idiom test_run_now_starts_a_background_run_and_returns_immediately above already uses."""
+    from jobradar.services import mailbox_tasks
+
+    def fast_run_check(force=False, transport=None):
+        return None
+
+    monkeypatch.setattr(mailbox_tasks, 'run_check', fast_run_check)
+    settings.CODEX_CV_ENABLED = False  # is_cv_owner would now return False for every account
+
+    r = client.post('/api/mailbox-runs/run-now/')
+
+    assert r.status_code != 404
+    assert r.data['queued'] is False
+
+
+def test_run_now_still_404_for_a_non_staff_authenticated_user(db):
+    """AC3: a friend-submitter (authenticated, not staff) must not see this unlock just because the
+    owner's did -- same refusal as before the gate switched."""
+    other = User.objects.create_user('other17@example.test', email='other17@example.test', password='pw')
+    other_client = APIClient(); other_client.force_authenticate(other)
+
+    r = other_client.post('/api/mailbox-runs/run-now/')
+
+    assert r.status_code == 404
+
+
+def test_mailbox_runs_queryset_still_empty_for_a_non_staff_authenticated_user(db):
+    MailboxRun.objects.create(fetched_count=1)
+    other = User.objects.create_user('other18@example.test', email='other18@example.test', password='pw')
+    other_client = APIClient(); other_client.force_authenticate(other)
+
+    r = other_client.get('/api/mailbox-runs/')
+
+    assert r.data == []
+
+
+def test_unmatched_messages_reaches_an_is_staff_user_even_with_cv_owner_disabled(client, settings):
+    """Same proof as run_now above, for a second switched endpoint: MailboxMessageViewSet.get_queryset."""
+    settings.CODEX_CV_ENABLED = False
+    _log_message(None, 'uncertain', sender='hr@agency.test')
+
+    r = client.get('/api/mailbox-messages/unmatched/')
+
+    assert r.status_code == 200
+    assert len(r.data) == 1
+
+
+def test_unmatched_messages_still_empty_for_a_non_staff_authenticated_user(db):
+    _log_message(None, 'uncertain', sender='hr@agency.test')
+    other = User.objects.create_user('other19@example.test', email='other19@example.test', password='pw')
+    other_client = APIClient(); other_client.force_authenticate(other)
+
+    r = other_client.get('/api/mailbox-messages/unmatched/')
+
+    assert r.data == []
+
+
+def test_cv_generation_still_refuses_an_is_staff_user_when_codex_cv_disabled(client, applied_job):
+    """AC4: CV generation gating is untouched by TASK-151 -- it keeps is_cv_owner exactly as-is, so
+    the kill switch still applies even to the is_staff/is_mailbox_owner account. Uses
+    override_settings (rather than the `settings` fixture the rest of this file uses) because the
+    task specifically calls for pinning this via override_settings.
+    """
+    from django.test import override_settings
+
+    with override_settings(CODEX_CV_ENABLED=False):
+        r = client.get(f'/api/jobs/{applied_job.id}/cv-generation/')
+
+    assert r.status_code == 404
