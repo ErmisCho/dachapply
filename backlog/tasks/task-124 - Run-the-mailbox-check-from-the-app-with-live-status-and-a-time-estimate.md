@@ -1,7 +1,7 @@
 ---
 id: TASK-124
 title: Run the mailbox check from the app, with live status and a time estimate
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 labels:
@@ -65,7 +65,7 @@ observable.
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 The owner can start a mailbox check from the app on a backend that HAS credentials, and the request returns immediately with a handle rather than blocking until the run finishes — verified against a run that takes longer than a normal request timeout, not only against an instant one
-- [ ] #2 On a backend WITHOUT credentials (the deployed site), the same control records a request instead of failing, and the UI says plainly that the run has not started and will happen on the owner's machine — never a success message for something that has not run
+- [x] #2 On a backend WITHOUT credentials (the deployed site), the same control records a request instead of failing, and the UI says plainly that the run has not started and will happen on the owner's machine — never a success message for something that has not run
 - [x] #3 A recorded request is picked up by the next `check_mailbox` tick and runs even if the configured cadence is not due yet — that is the whole point of asking for one — and the request is marked as handled so it runs once, not on every subsequent tick
 - [x] #4 Two checks never run at once, whether started from the app, from a queued request, or from the command line. The second caller is told a run is already in progress rather than being silently dropped or starting a duplicate — verified by attempting it, not by reading the lock
 - [x] #5 While a run is in flight the app shows live progress that changes: at minimum messages fetched so far. This requires `run_check` to persist progress mid-run; a poller must observe the number increase during a single run, verified against a run over enough messages to see it move
@@ -81,6 +81,8 @@ observable.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out, AC2 closed with TASK-151. Verified on the DEPLOYED site 2026-08-20 after PR #56 (merge edeb82f, deploy green, live HTTP 200): the run control renders for the owner (is_staff true, can_generate_cv false - the two are now correctly independent), GET /api/mailbox-runs/status/ returns 200 where it returned 404 before, and pressing Run POSTs /api/mailbox-runs/run-now/ -> 200 {"queued":true,"request_id":1} with the UI stating: "This backend has no mail credentials. The request has been recorded for the owner's machine to pick up on its next check - it has NOT started yet." The MailboxCheckRequest row is confirmed in the production database (1 row, requested_by the owner). The blocker was never this task's own plumbing - the queue path was test-proven all along - it was that every mailbox endpoint was gated on is_cv_owner, which is False in the container by construction.
+
 2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): AC8: server-side taking_longer_than_usual and the frontend wording are test-proven; no negative countdown is representable. AC2 stays unchecked: the deployed site hides the whole run section because can_generate_cv is env-dependent and false in the container - filed as TASK-151; the queue path itself is test-proven server-side.
 
 Capability detection already exists in effect: `_default_transport()` (`mailbox.py:1261`) returns the
