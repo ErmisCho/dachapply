@@ -3731,6 +3731,178 @@ def test_backfill_message_bodies_calendar_only_row_is_not_reselected_on_rerun(db
 
 
 # ===================================================================================================
+# TASK-149: backfill_message_bodies counted an attachment-only row as 'filled' forever -- Gmail
+# returns no body and no calendar data for it, only an attachment manifest, so the old two-field
+# candidate condition (body_text=='' AND calendar_summary=='') kept matching it after it was already
+# written once. Fix: attachments==[] is a third gate leg.
+# ===================================================================================================
+
+def _gmail_raw_b64_attachment_only(sender, subject, filename, attachment_bytes=b'dummy attachment bytes', message_id='<attach@example.test>'):
+    """A raw RFC822 message with ONLY an attachment part -- no text/plain, no text/calendar. The
+    exact real shape TASK-149 exists for.
+    """
+    msg = EmailMessage()
+    msg['From'] = sender
+    msg['Subject'] = subject
+    msg['Message-ID'] = message_id
+    msg.make_mixed()
+    msg.add_attachment(attachment_bytes, maintype='application', subtype='pdf', filename=filename)
+    return base64.urlsafe_b64encode(msg.as_bytes()).decode('ascii').rstrip('=')
+
+
+def test_attachments_empty_list_exact_match_filters_correctly_on_sqlite(db, owner):
+    """TASK-149 implementation note: the candidate-set gate needs `attachments=[]` to work as an
+    exact match against the test backend (sqlite) -- asserted directly here rather than assumed,
+    since JSONField exact-match behaviour is exactly why this gate was left out of
+    backfill_message_bodies the first time (see its TASK-135 comment history).
+    """
+    run = MailboxRun.objects.create()
+    empty_row = MailboxMessage.objects.create(run=run, uid=1, gmail_id='g1', sender='hr@acme.test', classification='uncertain', evaluator='heuristic')  # attachments defaults to []
+    MailboxMessage.objects.create(
+        run=run, uid=2, gmail_id='g2', sender='hr@acme.test', classification='uncertain', evaluator='heuristic',
+        attachments=[{'filename': 'x.pdf', 'mime_type': 'application/pdf', 'size': 10}],
+    )
+    matched_ids = set(MailboxMessage.objects.filter(attachments=[]).values_list('id', flat=True))
+    assert matched_ids == {empty_row.id}
+
+
+def test_backfill_message_bodies_attachment_only_row_is_written_once_and_not_reselected(db, owner, monkeypatch):
+    """AC1/AC2: an attachment-only refetch is written once (attachments populated, body_text and
+    calendar_summary stay '') and then leaves the candidate set for good -- a second run does not
+    attempt it again and does not count it in 'filled' a second time.
+    """
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=run, uid=1, gmail_id='g1', sender='hr@acme.test', subject='Documents attached', body_text='',
+        classification='uncertain', evaluator='heuristic',
+    )
+    details = {'g1': {'internalDate': '1', 'threadId': 't1', 'raw': _gmail_raw_b64_attachment_only('hr@acme.test', 'Documents attached', 'agenda.pdf')}}
+    fake_http = _FakeGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        first = backfill_message_bodies(dry_run=False)
+        second = backfill_message_bodies(dry_run=False)
+
+    assert first == {'attempted': 1, 'filled': 1, 'failed': 0, 'skipped_no_gmail_id': 0, 'refused': ''}
+    message = MailboxMessage.objects.get(gmail_id='g1')
+    assert message.body_text == '' and message.calendar_summary == ''
+    assert len(message.attachments) == 1 and message.attachments[0]['filename'] == 'agenda.pdf'
+    # AC2: the row already left the candidate set -- a second run must not count it in 'filled' again.
+    assert second == {'attempted': 0, 'filled': 0, 'failed': 0, 'skipped_no_gmail_id': 0, 'refused': ''}
+    assert fake_http.calls.count(('GET', f'{mailbox.GMAIL_API_BASE}/messages/g1?format=raw')) == 1, 're-fetched a row it had already filled'
+
+
+def test_backfill_message_bodies_attachment_only_dry_run_agrees_with_yes_run(db, owner, monkeypatch):
+    """AC3: the dry-run report and the --yes report must agree on the same row -- dry run does not
+    promise a fill that --yes cannot deliver."""
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=run, uid=1, gmail_id='g1', sender='hr@acme.test', subject='Documents attached', body_text='',
+        classification='uncertain', evaluator='heuristic',
+    )
+    details = {'g1': {'internalDate': '1', 'threadId': 't1', 'raw': _gmail_raw_b64_attachment_only('hr@acme.test', 'Documents attached', 'agenda.pdf')}}
+    fake_http = _FakeGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        dry = backfill_message_bodies(dry_run=True)
+        assert MailboxMessage.objects.get(gmail_id='g1').attachments == [], 'dry run wrote attachments anyway'
+        real = backfill_message_bodies(dry_run=False)
+
+    assert dry['filled'] == real['filled'] == 1
+    assert MailboxMessage.objects.get(gmail_id='g1').attachments != [], '--yes did not deliver what the dry run promised'
+
+
+# ===================================================================================================
+# TASK-150: calendar_missing=True -- a second, disjoint backfill mode for rows whose body was already
+# filled (by the pre-calendar-aware version of this function, or logged with a body from the start),
+# so the normal mode's body_text=='' condition can never select them again to pick up calendar data.
+# ===================================================================================================
+
+def test_backfill_message_bodies_calendar_missing_fills_calendar_fields_on_a_body_bearing_row(db, owner, monkeypatch):
+    """AC2: a body-bearing, calendar-less row whose refetch carries a text/calendar part gains
+    calendar_summary/location/organizer/start -- body_text is left exactly as it already was
+    (calendar_missing mode is additive-only, per AC1)."""
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=run, uid=1, gmail_id='g1', sender='doris.liegenfeld@ontec.at',
+        subject='Einladung zum Kennenlernen per Microsoft-Teams', body_text='pre-existing body text',
+        classification='uncertain', evaluator='heuristic',
+    )
+    details = {'g1': {'internalDate': '1', 'threadId': 't1', 'raw': _gmail_raw_b64_calendar_and_attachment('doris.liegenfeld@ontec.at', 'Einladung zum Kennenlernen per Microsoft-Teams', ONTEC_STYLE_ICS)}}
+    fake_http = _FakeGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = backfill_message_bodies(dry_run=False, calendar_missing=True)
+
+    assert result == {'attempted': 1, 'filled': 1, 'failed': 0, 'skipped_no_gmail_id': 0, 'refused': ''}
+    message = MailboxMessage.objects.get(gmail_id='g1')
+    assert message.body_text == 'pre-existing body text', 'calendar-missing mode must never touch body_text'
+    assert message.calendar_summary == 'Einladung zum Kennenlernen per Microsoft-Teams'
+    assert message.calendar_organizer == 'Doris Liegenfeld <doris.liegenfeld@ontec.at>'
+    assert message.calendar_checked_at is not None
+
+
+def test_backfill_message_bodies_calendar_missing_row_with_no_calendar_part_is_not_rewritten_or_reattempted(db, owner, monkeypatch):
+    """AC2: a body-bearing row whose refetch carries NO calendar part must not be rewritten, and must
+    not be re-attempted forever -- confirmed via calendar_checked_at, asserted by re-running and
+    checking Gmail is hit exactly once across both calls."""
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=run, uid=1, gmail_id='g1', sender='hr@acme.test', subject='Ordinary reply', body_text='pre-existing body text',
+        classification='uncertain', evaluator='heuristic',
+    )
+    details = {'g1': {'internalDate': '1', 'threadId': 't1', 'raw': _gmail_raw_b64('hr@acme.test', 'Ordinary reply', 'refetched but irrelevant')}}
+    fake_http = _FakeGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        first = backfill_message_bodies(dry_run=False, calendar_missing=True)
+        second = backfill_message_bodies(dry_run=False, calendar_missing=True)
+
+    assert first == {'attempted': 1, 'filled': 0, 'failed': 1, 'skipped_no_gmail_id': 0, 'refused': ''}
+    message = MailboxMessage.objects.get(gmail_id='g1')
+    assert message.body_text == 'pre-existing body text'
+    assert message.calendar_summary == ''
+    assert message.calendar_checked_at is not None, 'a genuinely calendar-less row must still be marked checked'
+    assert second == {'attempted': 0, 'filled': 0, 'failed': 0, 'skipped_no_gmail_id': 0, 'refused': ''}
+    assert fake_http.calls.count(('GET', f'{mailbox.GMAIL_API_BASE}/messages/g1?format=raw')) == 1, 're-attempted a row already confirmed calendar-less'
+
+
+def test_backfill_message_bodies_calendar_missing_dry_run_writes_nothing(db, owner, monkeypatch):
+    """AC1: dry-run by default -- reports what would be filled without writing calendar_checked_at,
+    so a repeated dry run reports the exact same candidate again rather than silently consuming it."""
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=run, uid=1, gmail_id='g1', sender='doris.liegenfeld@ontec.at', subject='x', body_text='pre-existing',
+        classification='uncertain', evaluator='heuristic',
+    )
+    details = {'g1': {'internalDate': '1', 'threadId': 't1', 'raw': _gmail_raw_b64_calendar_and_attachment('doris.liegenfeld@ontec.at', 'x', ONTEC_STYLE_ICS)}}
+    fake_http = _FakeGmailHttp([], details)
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = backfill_message_bodies(dry_run=True, calendar_missing=True)
+
+    assert result['filled'] == 1  # what WOULD be filled
+    message = MailboxMessage.objects.get(gmail_id='g1')
+    assert message.calendar_summary == '' and message.calendar_checked_at is None, 'dry_run wrote calendar fields anyway'
+
+
+def test_backfill_message_bodies_calendar_missing_ignores_empty_body_rows(db, owner):
+    """Scope: calendar_missing mode's candidate set is disjoint from the normal mode's -- a row with
+    body_text=='' is the normal mode's job (it needs a body fetched at all), not this one's, even
+    though its calendar fields are also empty. No Gmail call should happen for it in this mode.
+    """
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=run, uid=1, gmail_id='g1', sender='hr@acme.test', subject='x', body_text='',
+        classification='uncertain', evaluator='heuristic',
+    )
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        result = backfill_message_bodies(dry_run=False, calendar_missing=True)
+
+    assert result == {'attempted': 0, 'filled': 0, 'failed': 0, 'skipped_no_gmail_id': 0, 'refused': ''}
+
+
+# ===================================================================================================
 # TASK-133: derive_reply_recipients() -- reply/reply-all recipient derivation from a message's own
 # stored headers (AC2/AC7).
 # ===================================================================================================

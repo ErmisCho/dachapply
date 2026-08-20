@@ -2980,7 +2980,7 @@ def backfill_thread_ids(dry_run: bool = True, limit: int | None = None) -> dict:
     }
 
 
-def backfill_message_bodies(dry_run: bool = True, limit: int | None = None) -> dict:
+def backfill_message_bodies(dry_run: bool = True, limit: int | None = None, calendar_missing: bool = False) -> dict:
     """TASK-132 AC3/AC4: fills body_text for existing MailboxMessage rows via their OWN stored
     gmail_id. Never creates a row, never touches uid/thread_id/received_at/classification/etc -- the
     append-only guarantee holds, only body_text changes on an already-logged row (the one field
@@ -2997,15 +2997,45 @@ def backfill_message_bodies(dry_run: bool = True, limit: int | None = None) -> d
     all -- no body, no calendar invitation, no attachment.
 
     Resumable and idempotent (AC4): the candidate set -- every row still with body_text=='' AND
-    calendar_summary=='' -- is read fresh from the database on each call, not from a separate cursor,
-    so an interrupted run leaves whatever it already filled and simply is not selected again;
-    re-running picks up only the rows still empty of both, in the same oldest-uid-first order, without
-    ever re-fetching a row it already filled (calendar_summary is in that condition, not just
-    body_text, precisely so a calendar-only message -- filled body_text=='' by design -- is not
-    re-fetched forever; see the has_content note above). `limit` bounds how many rows THIS call
+    calendar_summary=='' AND attachments==[] -- is read fresh from the database on each call, not from
+    a separate cursor, so an interrupted run leaves whatever it already filled and simply is not
+    selected again; re-running picks up only the rows still empty of all three, in the same
+    oldest-uid-first order, without ever re-fetching a row it already filled. calendar_summary is in
+    that condition, not just body_text, precisely so a calendar-only message -- filled body_text==''
+    by design -- is not re-fetched forever (see the has_content note above).
+
+    TASK-149: attachments==[] is the third leg of that same guard, added after six consecutive real
+    runs each reported "11 filled" for the same 11 attachment-only rows -- Gmail returns no body and
+    no calendar data for them, only an attachment manifest, so has_content passed, the row was written
+    (attachments again), 'filled' incremented, and the OLD two-field candidate condition still matched
+    it, so every future run refetched and "filled" it again forever. Asserted (not assumed) to work as
+    an exact match against sqlite, the test backend, in
+    test_attachments_empty_list_exact_match_filters_correctly_on_sqlite -- JSONField exact-match
+    behaviour is exactly what made this gate risky enough to leave out the first time (see this
+    function's git history / TASK-135's original comment here). `limit` bounds how many rows THIS call
     attempts (a batch size, not a resume cursor); the default (BACKFILL_BATCH_LIMIT) keeps a bare call
     from becoming an unbounded sweep of the whole table -- 653 messages is exactly the kind of job AC4
     says must survive being interrupted.
+
+    TASK-150: `calendar_missing=True` switches this function to a SECOND, disjoint candidate set and
+    write shape -- for rows whose body was filled by the OLD, pre-calendar-aware version of this
+    function (or logged with a body from the start), so calendar_summary=='' AND calendar_checked_at
+    IS NULL can never become true again by the normal path above (that path only ever selects rows
+    with body_text==''). In this mode: candidates are rows with a gmail_id, a NON-empty body_text, and
+    calendar_summary=='' AND calendar_checked_at IS NULL, oldest-uid-first, bounded by the same
+    batch_limit; body_text is NEVER written in this mode (additive-only, per the task's own AC1) --
+    only calendar_* and attachments change. Discriminator choice, written down per the task's own
+    instruction: a new nullable `calendar_checked_at` timestamp (migration 0045, additive-only) is set
+    the moment a candidate's calendar status is DEFINITIVELY resolved (real calendar data found, or the
+    refetch confirmed there is none) -- never on a transient fetch exception, which leaves the row
+    eligible for retry next call, same as the normal path's 'failed' bucket. A sentinel written into an
+    existing field (attachments or calendar_summary itself) was rejected: both are legitimately empty
+    on the overwhelming majority of real rows whether checked or not, so writing an empty value there
+    to mean "checked" would be indistinguishable from "never checked" -- exactly the kind of lie the
+    task brief warns against. 'filled' in this mode counts only rows where real calendar data was
+    found; a row confirmed genuinely calendar-less is counted in 'failed' (nothing calendar-shaped was
+    written) but still leaves the candidate set via calendar_checked_at, so it is not re-attempted
+    forever either way -- see test_backfill_message_bodies_calendar_missing_* below.
 
     Only Gmail-API-sourced rows (gmail_id set) can be refetched this way -- an IMAP-sourced row has no
     gmail_id and IMAP itself has no equivalent of "fetch this exact message by id" cheaply, so those
@@ -3013,8 +3043,9 @@ def backfill_message_bodies(dry_run: bool = True, limit: int | None = None) -> d
 
     Returns {'attempted': int, 'filled': int, 'failed': int, 'skipped_no_gmail_id': int, 'refused':
     str}. AC3: 'filled' is the count that matters -- attempted-but-not-actually-written (a fetch
-    failure, or Gmail genuinely returning an empty body) is counted in 'failed', not 'filled'.
-    dry_run=True (the default) fetches and reports without writing body_text anywhere.
+    failure, or Gmail genuinely returning nothing usable) is counted in 'failed', not 'filled'; 'filled'
+    only ever counts a row that has just left its candidate set for good.
+    dry_run=True (the default) fetches and reports without writing anywhere.
     """
     empty = {'attempted': 0, 'filled': 0, 'failed': 0, 'skipped_no_gmail_id': 0}
     transport = _default_transport()
@@ -3022,18 +3053,20 @@ def backfill_message_bodies(dry_run: bool = True, limit: int | None = None) -> d
         return {**empty, 'refused': 'backfill needs the Gmail API (OAuth) transport; IMAP-sourced rows have no gmail_id to refetch by'}
 
     batch_limit = BACKFILL_BATCH_LIMIT if limit is None else limit
-    # TASK-135: also gated on calendar_summary=='' -- a calendar-only message (one of the six real
-    # cases this task exists for) fills calendar_summary but NEVER body_text (Gmail has no text/plain
-    # part to give it), so body_text=='' alone would keep re-selecting it as a candidate forever,
-    # re-fetching it on every single call. ponytail: not also gated on attachments==[] -- a message
-    # whose ONLY new content is an attachment manifest (no body, no calendar) would still be
-    # re-selected on every call; not one of the six measured cases, so left as a known gap rather than
-    # a JSONField-empty-list filter whose exact-match behaviour can vary by DB backend. Upgrade path:
-    # add that condition if an attachment-only, body-less, calendar-less message is ever actually seen.
-    candidates = list(
-        MailboxMessage.objects.filter(body_text='', calendar_summary='').exclude(gmail_id='')
-        .order_by('uid').values_list('id', 'gmail_id')[:batch_limit]
-    )
+
+    if calendar_missing:
+        candidates = list(
+            MailboxMessage.objects.filter(calendar_summary='', calendar_checked_at__isnull=True)
+            .exclude(gmail_id='').exclude(body_text='')
+            .order_by('uid').values_list('id', 'gmail_id')[:batch_limit]
+        )
+    else:
+        # TASK-149: gated on attachments==[] too -- see the docstring above.
+        candidates = list(
+            MailboxMessage.objects.filter(body_text='', calendar_summary='', attachments=[]).exclude(gmail_id='')
+            .order_by('uid').values_list('id', 'gmail_id')[:batch_limit]
+        )
+
     filled = failed = 0
     for message_id, gmail_id in candidates:
         try:
@@ -3042,12 +3075,30 @@ def backfill_message_bodies(dry_run: bool = True, limit: int | None = None) -> d
             logger.warning('backfill_message_bodies: could not refetch gmail_id=%s: %s', gmail_id, exc)
             failed += 1
             continue
+
+        if calendar_missing:
+            found_calendar = bool(fetched.calendar_summary)
+            if not dry_run:
+                update_fields = {'attachments': fetched.attachments, 'calendar_checked_at': timezone.now()}
+                if found_calendar:
+                    update_fields.update(
+                        calendar_summary=fetched.calendar_summary[:500], calendar_location=fetched.calendar_location[:500],
+                        calendar_organizer=fetched.calendar_organizer[:500], calendar_start=fetched.calendar_start,
+                        calendar_end=fetched.calendar_end,
+                    )
+                MailboxMessage.objects.filter(pk=message_id, calendar_summary='', calendar_checked_at__isnull=True).update(**update_fields)
+            if found_calendar:
+                filled += 1
+            else:
+                failed += 1  # attempted, confirmed genuinely calendar-less -- leaves the set via calendar_checked_at, never re-attempted
+            continue
+
         has_content = bool(fetched.body_text or fetched.calendar_summary or fetched.attachments)
         if not has_content:
             failed += 1  # genuinely nothing from Gmail -- nothing to write, not an error worth raising
             continue
         if not dry_run:
-            MailboxMessage.objects.filter(pk=message_id, body_text='', calendar_summary='').update(
+            MailboxMessage.objects.filter(pk=message_id, body_text='', calendar_summary='', attachments=[]).update(
                 body_text=fetched.body_text[:5000],
                 calendar_summary=fetched.calendar_summary[:500], calendar_location=fetched.calendar_location[:500],
                 calendar_organizer=fetched.calendar_organizer[:500], calendar_start=fetched.calendar_start,
@@ -3055,7 +3106,10 @@ def backfill_message_bodies(dry_run: bool = True, limit: int | None = None) -> d
             )
         filled += 1
 
-    skipped_no_gmail_id = MailboxMessage.objects.filter(body_text='', gmail_id='').count()
+    if calendar_missing:
+        skipped_no_gmail_id = MailboxMessage.objects.filter(calendar_summary='', gmail_id='').exclude(body_text='').count()
+    else:
+        skipped_no_gmail_id = MailboxMessage.objects.filter(body_text='', gmail_id='').count()
     return {
         'attempted': len(candidates), 'filled': filled, 'failed': failed,
         'skipped_no_gmail_id': skipped_no_gmail_id, 'refused': '',
