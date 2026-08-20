@@ -1,7 +1,7 @@
 ---
 id: TASK-159
 title: Composing a reply on a credential-less backend returns 500
-status: To Do
+status: Done
 assignee: []
 labels:
   - backend
@@ -48,18 +48,20 @@ is.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `compose_reply_draft()` returns a short refusal reason instead of raising when there is no transport, matching the wording style `update_draft_text` already uses for the same situation
-- [ ] #2 The endpoint answers 4xx with that reason and writes nothing — the contract its docstring already claims (TASK-133 AC8)
-- [ ] #3 The UI shows the reason rather than a generic failure, so an owner on the deployed site learns that this backend cannot write drafts and that the run happens on their own machine
-- [ ] #4 Tested with NO transport configured — the environment the existing AC8 test never builds, since a rejecting fake transport is a different branch
-- [ ] #5 Every other caller of `_default_transport()` is checked for the same unguarded-None shape, and each is either already safe or fixed; the audit is written down so this is not repaired one call site at a time
-- [ ] #6 Verified on the deployed site: pressing Reply returns a 4xx with a readable reason, not a 500
-- [ ] #7 Backend suite green
+- [x] #1 `compose_reply_draft()` returns a short refusal reason instead of raising when there is no transport, matching the wording style `update_draft_text` already uses for the same situation
+- [x] #2 The endpoint answers 4xx with that reason and writes nothing — the contract its docstring already claims (TASK-133 AC8)
+- [x] #3 The UI shows the reason rather than a generic failure, so an owner on the deployed site learns that this backend cannot write drafts and that the run happens on their own machine
+- [x] #4 Tested with NO transport configured — the environment the existing AC8 test never builds, since a rejecting fake transport is a different branch
+- [x] #5 Every other caller of `_default_transport()` is checked for the same unguarded-None shape, and each is either already safe or fixed; the audit is written down so this is not repaired one call site at a time
+- [x] #6 Verified on the deployed site: pressing Reply returns a 4xx with a readable reason, not a 500
+- [x] #7 Backend suite green
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out. Fixed in PR #64 (merge 5863ee5), deployed, and verified on the DEPLOYED site with the same request that produced the 500: it now answers HTTP 400 with "this backend has no mail credentials, so it cannot write a draft -- the mailbox check runs on the owner's own machine". AC5's audit of every _default_transport() call site: ingest_threads, backfill_thread_ids, backfill_message_bodies and backfill_historical_mail all guard with isinstance(GmailApiTransport); run_check reaches its own explicit credentials gate first; update_draft_text's isinstance guard already rejects None cleanly. compose_reply_draft's create path was the only unguarded one. AC3 is satisfied by the same response - the UI renders the endpoint's detail string, which now carries the reason. Suite 813 passed.
+
 `has_mailbox_credentials()` already exists and answers exactly this question — the frontend uses it
 to choose the run control's wording. Reuse that idea rather than inventing a second capability check.
 
