@@ -13,6 +13,10 @@ class Command(BaseCommand):
         'writes ONLY that refresh token to the local, gitignored GMAIL_OAUTH_TOKEN_PATH file. Never '
         'prints the token itself, and never contacts a real mailbox -- this is the consent handshake '
         'only, `manage.py check_mailbox` is what actually reads mail afterward.'
+        ' TASK-116 AC1: the requested scope now also includes calendar.readonly (quiet-hours '
+        'busyness), so re-running this command is required for any account that authorized before '
+        'that scope was added -- an old, Gmail-only token keeps working for mail but can never see a '
+        'calendar, and the picker/quiet-hours check will silently have nothing to show.'
     )
 
     def add_arguments(self, parser):
@@ -40,6 +44,13 @@ class Command(BaseCommand):
 
         code = (opts.get('code') or '').strip()
         if not code:
+            self.stdout.write(self.style.WARNING(
+                'TASK-116: this authorization now ALSO requests read-only Google Calendar access '
+                '(calendar.readonly), for quiet-hours busyness -- not just Gmail. If you have already '
+                'run this command before, that earlier refresh token is Gmail-only: re-consenting here '
+                'is required, or the calendar picker will stay empty and quiet-hours checking will '
+                'silently have no calendars to check.\n'
+            ))
             self.stdout.write('Open this URL in a browser, sign in with the mailbox you want checked, and consent:\n')
             self.stdout.write(oauth_authorization_url(client_id))
             self.stdout.write(

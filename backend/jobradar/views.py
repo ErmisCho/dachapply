@@ -866,6 +866,26 @@ class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
             'estimate': estimate,
             'taking_longer_than_usual': taking_longer_than_usual,
         })
+    @action(detail=False, methods=['get'], url_path='calendars')
+    def calendars_view(self, request):
+        """TASK-116 AC2: the calendars the Gmail OAuth token can see, for the settings-page picker --
+        the owner selects by name FROM this list; no URL is ever typed or pasted. Same is_mailbox_owner
+        gate as the rest of this viewset.
+
+        Always 200: an unconfigured or expired/revoked OAuth client is a normal, expected state here
+        (see docs/email-setup.md), not a server error, so this never raises to the client -- it
+        reports `error` instead, for the picker to show in place of the (then-empty) calendar list.
+        Response shape: {'calendars': [{'id': str, 'summary': str}, ...], 'error': str}.
+        """
+        if not is_mailbox_owner(request.user):
+            return Response({'detail': 'Not found.'}, status=404)
+        if not (settings.GMAIL_OAUTH_CLIENT_ID and settings.GMAIL_OAUTH_CLIENT_SECRET):
+            return Response({'calendars': [], 'error': 'Gmail OAuth is not configured on this server.'})
+        try:
+            calendars = mailbox.list_calendars(settings.GMAIL_OAUTH_CLIENT_ID, settings.GMAIL_OAUTH_CLIENT_SECRET, settings.GMAIL_OAUTH_TOKEN_PATH)
+        except Exception as exc:
+            return Response({'calendars': [], 'error': str(exc)})
+        return Response({'calendars': calendars, 'error': ''})
 
 class MailboxMessageViewSet(viewsets.GenericViewSet):
     """TASK-117 AC6/AC7. MailboxMessage.uid is globally unique with no user FK -- the mailbox
