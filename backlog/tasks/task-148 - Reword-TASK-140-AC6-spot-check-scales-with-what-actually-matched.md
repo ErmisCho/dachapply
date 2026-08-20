@@ -1,7 +1,7 @@
 ---
 id: TASK-148
 title: Reword TASK-140 AC6 — the spot-check scales with what actually matched
-status: To Do
+status: Done
 assignee: []
 labels:
   - process

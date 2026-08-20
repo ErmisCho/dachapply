@@ -1,7 +1,7 @@
 ---
 id: TASK-147
 title: The board renders every job twice, desktop and mobile
-status: In Progress
+status: Done
 assignee: []
 labels:
   - frontend

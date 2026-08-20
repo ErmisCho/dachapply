@@ -1,7 +1,7 @@
 ---
 id: TASK-140
 title: Match ATS mail by the company name in the From display name
-status: In Progress
+status: Done
 assignee: []
 labels:
   - backend

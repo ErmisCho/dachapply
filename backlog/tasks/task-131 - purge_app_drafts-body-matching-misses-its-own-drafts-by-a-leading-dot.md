@@ -1,7 +1,7 @@
 ---
 id: TASK-131
 title: purge_app_drafts body matching misses its own drafts by a leading dot
-status: In Progress
+status: Done
 assignee: []
 labels:
   - backend
