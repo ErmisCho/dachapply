@@ -1,7 +1,7 @@
 ---
 id: TASK-155
 title: A job's email history lists subjects but cannot be read
-status: To Do
+status: Done
 assignee: []
 labels:
   - frontend
@@ -40,17 +40,19 @@ will not display. The recovery is only worth what the reader can see.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A message in a job's email-history popup can be opened to read its full stored body text, without leaving the app and without the job needing a pending suggestion
-- [ ] #2 Rows stay collapsed by default so a 30-message history is still scannable — opening one is an explicit act, and the control says which state it is in (`aria-expanded`)
-- [ ] #3 The body renders as plain text exactly as the conversation bubbles do: entities decoded, a literal tag stays literal, no `dangerouslySetInnerHTML` — the TASK-134 #3 guarantee holds in this surface too
-- [ ] #4 TASK-138 AC7 is preserved: with a long body open, the popup's `scrollWidth` still equals its `clientWidth` (measured, at the 384px popup width)
-- [ ] #5 Verified in the browser on the real case: uid 913 on job 34 shows its recovered text ("We have received your application for the following job position/s ...") where it previously showed nothing
-- [ ] #6 `npx tsc --noEmit`, `npm test` and `npm run build` clean; no new dependency
+- [x] #1 A message in a job's email-history popup can be opened to read its full stored body text, without leaving the app and without the job needing a pending suggestion
+- [x] #2 Rows stay collapsed by default so a 30-message history is still scannable — opening one is an explicit act, and the control says which state it is in (`aria-expanded`)
+- [x] #3 The body renders as plain text exactly as the conversation bubbles do: entities decoded, a literal tag stays literal, no `dangerouslySetInnerHTML` — the TASK-134 #3 guarantee holds in this surface too
+- [x] #4 TASK-138 AC7 is preserved: with a long body open, the popup's `scrollWidth` still equals its `clientWidth` (measured, at the 384px popup width)
+- [x] #5 Verified in the browser on the real case: uid 913 on job 34 shows its recovered text ("We have received your application for the following job position/s ...") where it previously showed nothing
+- [x] #6 `npx tsc --noEmit`, `npm test` and `npm run build` clean; no new dependency
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out. Measured on the DEPLOYED site 2026-08-20 after PR #57 (merge ecd7203, deploy success, bundle index-KoJwCfg-.js), job 34's email-history popup: 30 rows carry 22 toggles (the 8 bodiless rows grow none, matching the 11 attachment-only rows in the corpus), every toggle starts aria-expanded=false with zero body elements rendered while collapsed, and expanding ALL 22 - longest body 4,129 characters - leaves the popup at clientWidth 376 / scrollWidth 376, so TASK-138 AC7's no-sideways-scroll guarantee holds under the harshest case. The recovered text is visible: "Hello Ermis Chorinopoulos, ... We have received your application regarding the job title(s...". Implementation reused MailboxConversationMessage's disclosure pattern rather than inventing a second one, and the list stayed flat per TASK-134 AC8. AC3 checked directly: the only two dangerouslySetInnerHTML matches in App.tsx are comments, not usages.
+
 The pieces already exist and should be reused, not re-created: `MailboxConversationMessage` already
 implements collapse/expand with `aria-controls`/`aria-expanded` and an id of the form
 `mailbox-msg-body-{id}`, and it already renders `decodeHtmlEntities(...)` into plain React children.
