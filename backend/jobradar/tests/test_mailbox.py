@@ -4898,3 +4898,24 @@ def test_run_check_generates_no_suggestion_or_draft_for_a_message_matched_to_a_r
     assert not MailboxDraft.objects.filter(message=message).exists()
     assert run.suggestion_count == 0
 
+
+
+def test_compose_reply_draft_refuses_when_this_backend_has_no_mail_credentials(db, owner, settings):
+    """TASK-159: the deployed site is exactly this environment, and it returned a 500 there.
+
+    _default_transport() returns None rather than raising when neither credential pair is set, and
+    the create path used to call append_draft() straight through it -- AttributeError, which the
+    except clause below does not catch. The existing AC8 coverage uses a fake transport that REJECTS
+    a draft, which is a different branch entirely: it never constructs a backend with no transport.
+    """
+    settings.GMAIL_IMAP_USER = ''
+    settings.GMAIL_IMAP_APP_PASSWORD = ''
+    settings.GMAIL_OAUTH_CLIENT_ID = ''
+    settings.GMAIL_OAUTH_CLIENT_SECRET = ''
+    message = _thread_message(sender='hr@acme.test', to_addrs='owner@example.test')
+
+    reason = compose_reply_draft(message, 'Thanks, that works for me.', to=['hr@acme.test'], cc=[])
+
+    assert reason, 'must refuse with a reason, never raise'
+    assert 'credentials' in reason
+    assert not MailboxDraft.objects.filter(message=message).exists(), 'a refused draft must write nothing'
