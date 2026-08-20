@@ -1,7 +1,7 @@
 ---
 id: TASK-116
 title: Use Calendar OAuth for quiet hours instead of secret ICS URLs
-status: To Do
+status: Done
 assignee: []
 labels:
   - mailbox
@@ -49,19 +49,49 @@ narrows exposure rather than widening it.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The OAuth consent requests `calendar.readonly` alongside the existing Gmail scope, and the setup command tells the owner plainly that re-consenting is required because the scope changed
-- [ ] #2 The owner selects which calendars count toward quiet hours **by name**, from the calendars the token can see — no URL is ever typed or pasted
-- [ ] #3 Busy-ness is determined by a single `freeBusy.query` across the selected calendars, not by fetching and parsing ICS files
-- [ ] #4 Fail-open is preserved exactly as TASK-109 AC7 requires: any failure reaching Google — expired token, revoked scope, network, API error — lets the mail run proceed, verified by test
-- [ ] #5 A failure is no longer silent: when the calendar check cannot run, the run records it where the owner can see it, rather than only logging (carried over from TASK-115 AC4, which is the reason that task exists)
-- [ ] #6 The stored-ICS-URL path is REMOVED, not left alongside: the profile field, the masking, the masked-round-trip merge and the ICS parser all go, and `GMAIL_CALENDAR_ICS_URL` is deleted from `settings.py`. Two configuration paths for one setting is the failure mode this task exists to end
-- [ ] #7 No secret is stored in the database by the new path — verified by inspecting what the profile row and the API response actually contain, not by reading the serializer
-- [ ] #8 Backend tests cover calendar selection, the any-calendar-busy rule, and every fail-open branch; no test contacts a real Google endpoint
+- [x] #1 The OAuth consent requests `calendar.readonly` alongside the existing Gmail scope, and the setup command tells the owner plainly that re-consenting is required because the scope changed
+- [x] #2 The owner selects which calendars count toward quiet hours **by name**, from the calendars the token can see — no URL is ever typed or pasted
+- [x] #3 Busy-ness is determined by a single `freeBusy.query` across the selected calendars, not by fetching and parsing ICS files
+- [x] #4 Fail-open is preserved exactly as TASK-109 AC7 requires: any failure reaching Google — expired token, revoked scope, network, API error — lets the mail run proceed, verified by test
+- [x] #5 A failure is no longer silent: when the calendar check cannot run, the run records it where the owner can see it, rather than only logging (carried over from TASK-115 AC4, which is the reason that task exists)
+- [x] #6 The stored-ICS-URL path is REMOVED, not left alongside: the profile field, the masking, the masked-round-trip merge and the ICS parser all go, and `GMAIL_CALENDAR_ICS_URL` is deleted from `settings.py`. Two configuration paths for one setting is the failure mode this task exists to end
+- [x] #7 No secret is stored in the database by the new path — verified by inspecting what the profile row and the API response actually contain, not by reading the serializer
+- [x] #8 Backend tests cover calendar selection, the any-calendar-busy rule, and every fail-open branch; no test contacts a real Google endpoint
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-21, verified end to end against the owner's real Google account after they re-consented and
+enabled the Calendar API. Shipped in PR #61 (merge fe69f42); migration 0046 confirmed applied in
+production (mailbox_calendar_ids present, mailbox_calendar_ics_urls gone, all 9 profiles intact).
+
+AC1 - the real command output carries both the warning and the scope:
+    "this authorization now ALSO requests read-only Google Calendar access (calendar.readonly) ...
+     re-consenting here is required"
+    scope=...gmail.modify+...calendar.readonly
+
+AC2 - eight calendars listed BY NAME over the token, no URL anywhere: Interviews (x2), Hangout,
+Holidays in Greece / Hungary / Austria, and two others.
+
+AC3 - one freeBusy.query decides busyness, and the instant matters:
+    inside a real event (2026-07-22 12:15-13:30Z)  -> (True, [])
+    at an instant provably inside no busy block    -> (False, [])
+    (84 busy blocks in a +/-30 day window; the free instant was found by walking the gaps, because a
+    naive "a day later" probe also returned True - correctly, that day was busy too.)
+
+AC4 - fail-open confirmed on each branch: a bad client secret, an unknown calendar id, and no
+calendars selected all return not-busy, so the mail run proceeds.
+
+AC5 - not silent: the bad-secret case returns the reason alongside it ("Calendar check failed: ...
+invalid_client ..."), which is what the run records and the picker shows.
+
+AC7 - inspected the row and the API response, not the serializer: a PATCH of two calendar ids
+round-trips unmasked and identical (DB == API), and neither contains a URL, an ICS address, a token
+or any other secret - calendar ids only. The temporary selection was restored to the owner's own
+value afterwards rather than imposing a choice.
+
+
 Filed 2026-08-18 after the owner asked the obvious question — *"can't this happen by just logging in to
 my Google Calendar and authorising the app, like Gmail?"* — which it can, and which is better than
 what had just been built. Recording that plainly: TASK-115's platform half shipped in PR #43 and is

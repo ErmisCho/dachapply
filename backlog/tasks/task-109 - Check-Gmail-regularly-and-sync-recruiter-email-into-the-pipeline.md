@@ -1,7 +1,7 @@
 ---
 id: TASK-109
 title: Check Gmail regularly and sync recruiter email into the pipeline
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-08-16 18:57'
 updated_date: '2026-08-17 15:50'
@@ -38,7 +38,7 @@ boundary is a hard requirement, not a preference.
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 A local job (management command runnable by the existing scheduler pattern or a Windows scheduled task) fetches new mail since its last run via IMAP app password or Gmail-API OAuth in personal testing mode; credentials live only in the local .env, which stays gitignored. Cadence is hourly while the machine is on (owner decision 2026-08-16); a missed or skipped run is harmless because the next run catches up from the last-seen marker
-- [ ] #7 Calendar-aware quiet hours (owner decision 2026-08-16): before running, the job checks the owner's Google Calendar via its private ICS URL (stored only in the local .env); if the current time falls inside a busy event, the run is skipped and the next idle-hour run catches up — no OAuth or Calendar API, and a fetch failure fails open (the run proceeds) so a broken calendar URL cannot silently stop mail checking
+- [x] #7 Calendar-aware quiet hours (owner decision 2026-08-16): before running, the job checks the owner's Google Calendar via its private ICS URL (stored only in the local .env); if the current time falls inside a busy event, the run is skipped and the next idle-hour run catches up — no OAuth or Calendar API, and a fetch failure fails open (the run proceeds) so a broken calendar URL cannot silently stop mail checking
 - [x] #8 Cadence and calendar-quiet are owner-changeable settings in the app (profile/settings page), defaulting to hourly + calendar-aware; the local job reads the stored setting on each tick, so changing it on the website takes effect without touching the machine
 - [x] #2 Classification has a heuristic floor that works with no LLM configured; a local LLM is an optional env-gated upgrade, matching the CV-generation pattern
 - [x] #3 Matched messages produce reviewable suggestions in the app (status change, interview_at date, feedback-clock close) that apply only on the owner's confirmation
@@ -50,6 +50,8 @@ boundary is a hard requirement, not a preference.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-21: AC7's calendar-aware quiet hours is live and proven - over OAuth rather than the ICS URLs this AC's original wording named, because TASK-116 replaced that route entirely (its AC6 deleted the ICS field and settings constant). Verified against the owner's real calendars: busy inside a real event, not busy in a gap, fail-open on every credential/API failure. See TASK-116's notes for the measurements.
+
 IMAP with a Gmail app password is the lazy correct transport (no Google app verification, ~stdlib
 imaplib + email parsing); the Gmail API is the upgrade path if labels/threads are ever needed.
 Owner involvement is one-time: creating the app password (see wave-plan owner checklist). Uncertain
