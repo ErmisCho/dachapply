@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,nextSortKeys,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -124,6 +124,31 @@ describe('parseSenderHeader',()=>{
     expect(parseSenderHeader('')).toEqual({name:'',address:''})
     expect(parseSenderHeader(null)).toEqual({name:'',address:''})
     expect(parseSenderHeader(undefined)).toEqual({name:'',address:''})
+  })
+})
+
+describe('parseAddressList/formatAddressList (TASK-133)',()=>{
+  it('splits on comma, semicolon, and newline, trimming each address',()=>{
+    expect(parseAddressList('a@x.com, b@y.com;c@z.com\nd@w.com')).toEqual(['a@x.com','b@y.com','c@z.com','d@w.com'])
+  })
+
+  it('drops blank entries left by stray separators instead of keeping an empty address',()=>{
+    expect(parseAddressList('a@x.com,,  ,b@y.com;')).toEqual(['a@x.com','b@y.com'])
+  })
+
+  it('treats empty or whitespace-only input as no addresses',()=>{
+    expect(parseAddressList('')).toEqual([])
+    expect(parseAddressList('   ')).toEqual([])
+  })
+
+  it('round-trips through formatAddressList as a comma-separated list',()=>{
+    const addrs=['a@x.com','b@y.com']
+    expect(formatAddressList(addrs)).toBe('a@x.com, b@y.com')
+    expect(parseAddressList(formatAddressList(addrs))).toEqual(addrs)
+  })
+
+  it('formats an empty list as an empty string',()=>{
+    expect(formatAddressList([])).toBe('')
   })
 })
 

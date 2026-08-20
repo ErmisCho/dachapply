@@ -181,6 +181,20 @@ export function parseSenderHeader(raw:string|null|undefined):ParsedSender{
   return {name,address}
 }
 
+// TASK-133 AC3. The reply/reply-all compose dialog (App.tsx) edits To/Cc as one comma-separated
+// text input per field rather than a token-per-address widget - no new dependency, and it keeps
+// AC3's "shown verbatim" literal: whatever text sits in the box IS what gets parsed and POSTed to
+// /mailbox-messages/{id}/reply/, nothing hidden behind chips. Splits on comma, semicolon OR newline
+// (all three appear as real mail clients' own address-list separators, and a newline covers a
+// pasted one-per-line list); blank entries between separators are dropped rather than becoming an
+// empty '' address the backend's invalid_email_addresses would then reject.
+export function parseAddressList(text:string):string[]{
+  return String(text||'').split(/[,;\n]+/).map(s=>s.trim()).filter(Boolean)
+}
+export function formatAddressList(addresses:string[]):string{
+  return (addresses||[]).join(', ')
+}
+
 // TASK-134 AC9/AC14. A thread reads top-to-bottom oldest-to-newest, chat style. The API
 // (`GET /jobs/{id}/mailbox/`) deliberately keeps returning newest-first with nulls LAST (other
 // consumers - the board popup, the pending-decision card, the latest-run digest - rely on that

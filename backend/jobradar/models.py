@@ -504,6 +504,16 @@ class MailboxMessage(models.Model):
     calendar_start=models.DateTimeField(null=True, blank=True)
     calendar_end=models.DateTimeField(null=True, blank=True)
     attachments=models.JSONField(default=list, blank=True)
+    # TASK-150: set ONLY by services.mailbox.backfill_message_bodies(calendar_missing=True) the moment
+    # it definitively resolves a body-bearing row's calendar status (found real calendar data OR
+    # confirmed the refetch carries none) -- never touched by any other path. This is the discriminator
+    # that lets a genuinely calendar-less row leave that mode's candidate set: calendar_summary=='' AND
+    # calendar_checked_at IS NULL is "never checked"; calendar_summary=='' AND calendar_checked_at IS
+    # NOT NULL is "checked, confirmed none" -- distinguishable from "never checked" without writing a
+    # lying sentinel into calendar_summary or attachments (both of which are legitimately empty on the
+    # overwhelming majority of real rows, checked or not). Left null/blank on every row this app is not
+    # deliberately auditing for missing calendar data.
+    calendar_checked_at=models.DateTimeField(null=True, blank=True)
     received_at=models.DateTimeField(null=True, blank=True)
     classification=models.CharField(max_length=30, choices=CLASSIFICATIONS, default='uncertain')
     evaluator=models.CharField(max_length=30, default='heuristic')
