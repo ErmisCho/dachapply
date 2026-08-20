@@ -389,6 +389,12 @@ ADMINS = [('DACHApply alerts', address) for address in env_list('ERROR_ALERT_EMA
 SERVER_EMAIL = os.getenv('SERVER_EMAIL') or DEFAULT_FROM_EMAIL
 EMAIL_SUBJECT_PREFIX = os.getenv('EMAIL_SUBJECT_PREFIX', '[DACHApply] ')
 ERROR_ALERT_COOLDOWN_SECONDS = int(os.getenv('ERROR_ALERT_COOLDOWN_SECONDS', '300'))
+# TASK-157: the alert above attaches a full settings dump, and Django decides what to mask by the
+# setting's NAME (API|TOKEN|KEY|SECRET|PASS|SIGNATURE|HTTP_COOKIE). DATABASE_URL matches none of
+# them, so the 2026-08-20 alert that finally proved this channel works also mailed the production
+# Neon connection string, password included, through a third-party relay. See config/error_filters
+# for the explicit extra list and for which settings were checked and deliberately left visible.
+DEFAULT_EXCEPTION_REPORTER_FILTER = 'config.error_filters.DachApplyExceptionReporterFilter'
 
 _alert_last_sent = {}
 

@@ -6,6 +6,7 @@ point of the task. The autouse _never_send_real_email fixture in conftest.py pin
 backend, so outbox is the real delivery path with the SMTP hop removed.
 """
 import logging
+import sys
 from unittest import mock
 
 import pytest
@@ -175,3 +176,97 @@ def test_alert_filter_never_raises_and_fails_open():
             raise RuntimeError('unbuildable message')
 
     assert settings_module.ErrorAlertCooldown().filter(Exploding()) is True
+
+
+# --- TASK-157: an error email must not carry the credentials it is reporting about ---------------
+# The 2026-08-20 21:28 alert that closed TASK-88 AC2 was delivered with DATABASE_URL - the whole
+# Neon connection string, password included - in its settings dump, because Django masks by setting
+# NAME and that name matches none of API|TOKEN|KEY|SECRET|PASS|SIGNATURE|HTTP_COOKIE.
+
+FAKE_DATABASE_URL = 'postgresql://someuser:sup3r-s3cret-pw@db.example.test/neondb?sslmode=require'
+
+
+def _rendered_report():
+    """The real reporter's output for a real exception, with the real configured filter."""
+    from django.test import RequestFactory
+    from django.views import debug as debug_module
+
+    # get_default_exception_reporter_filter() is lru_cached in Django, so a settings override in a
+    # test would otherwise be ignored -- clear it rather than asserting against a stale filter.
+    cache_clear = getattr(debug_module.get_default_exception_reporter_filter, 'cache_clear', None)
+    if cache_clear:
+        cache_clear()
+    request = RequestFactory().post(
+        '/api/prompts/generate/',
+        data='{"job_ids": ["not-a-number"]}',
+        content_type='application/json',
+        HTTP_AUTHORIZATION='Token abcdef-super-secret-token',
+        HTTP_COOKIE='sessionid=abcdef-session-value',
+    )
+    try:
+        raise ValueError("Field 'id' expected a number but got 'not-a-number'.")
+    except ValueError:
+        reporter = debug_module.ExceptionReporter(request, *sys.exc_info())
+        text = reporter.get_traceback_text()
+        html = reporter.get_traceback_html()
+    if cache_clear:
+        cache_clear()
+    return text, html
+
+
+@override_settings(
+    DATABASE_URL=FAKE_DATABASE_URL,
+    DEFAULT_EXCEPTION_REPORTER_FILTER='config.error_filters.DachApplyExceptionReporterFilter',
+)
+def test_exception_report_never_contains_the_database_url():
+    """AC3: no substring of the connection string survives, in either rendering."""
+    text, html = _rendered_report()
+    for rendering in (text, html):
+        assert FAKE_DATABASE_URL not in rendering
+        assert 'sup3r-s3cret-pw' not in rendering
+        assert 'someuser' not in rendering
+    # masked, not merely absent -- the reader should see that a value exists and was withheld
+    assert 'DATABASE_URL' in text
+
+
+@override_settings(DEFAULT_EXCEPTION_REPORTER_FILTER='config.error_filters.DachApplyExceptionReporterFilter')
+def test_exception_report_still_carries_the_traceback():
+    """AC5's spirit: masking must not cost the diagnosis the alert exists to deliver."""
+    text, _ = _rendered_report()
+    assert 'ValueError' in text
+    assert "expected a number but got 'not-a-number'" in text
+    assert '/api/prompts/generate/' in text
+
+
+@override_settings(DEFAULT_EXCEPTION_REPORTER_FILTER='config.error_filters.DachApplyExceptionReporterFilter')
+def test_exception_report_masks_the_authorization_and_cookie_headers():
+    """AC4: confirmed by test rather than inferred from one observed email."""
+    text, _ = _rendered_report()
+    assert 'abcdef-super-secret-token' not in text
+    assert 'abcdef-session-value' not in text
+
+
+@pytest.mark.parametrize(
+    'name,value',
+    [
+        ('DATABASE_URL', FAKE_DATABASE_URL),
+        ('GMAIL_CALENDAR_ICS_URL', 'https://calendar.google.com/calendar/ical/private-abc123/basic.ics'),
+        ('MAILBOX_DO_NOT_DISCLOSE', ['my current salary']),
+        ('MAILBOX_SALARY_FLOOR_EUR', '70000'),
+        ('EMAIL_HOST_USER', 'af6650001@smtp-brevo.com'),
+        ('GMAIL_IMAP_USER', 'owner@example.test'),
+    ],
+)
+def test_every_extra_sensitive_setting_is_masked(name, value):
+    """AC2: the audit, pinned. Each of these dodges Django's default pattern."""
+    from config.error_filters import DachApplyExceptionReporterFilter
+
+    cleansed = DachApplyExceptionReporterFilter().cleanse_setting(name, value)
+    assert cleansed != value
+    assert 'salary' not in str(cleansed).lower()
+    assert 'private-abc123' not in str(cleansed)
+
+
+def test_the_deployment_actually_uses_the_hardened_filter():
+    """AC1: the class existing is worth nothing if settings do not point at it."""
+    assert settings.DEFAULT_EXCEPTION_REPORTER_FILTER == 'config.error_filters.DachApplyExceptionReporterFilter'
