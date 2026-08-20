@@ -1,7 +1,7 @@
 ---
 id: TASK-154
 title: build_suggestions has no bulk-mail guard, and now it sees marketing text
-status: To Do
+status: Done
 assignee: []
 labels:
   - backend
@@ -44,17 +44,19 @@ to the wrong message.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A message that `bulk_mail_reason()` identifies as bulk produces NO suggestion, asserted by test with a fixture carrying each of the bulk markers in turn
-- [ ] #2 The refusal is counted and explained the way TASK-114 made drafting refusals explicit, not skipped silently — an owner asking "why did this not turn up" can find the reason
-- [ ] #3 Genuine recruiter mail that happens to carry one bulk-ish header is not lost without a trace: state the chosen precedence rule explicitly and test it (an ATS that sets `Auto-Submitted` on real application confirmations is the realistic collision — TASK-136 recovered 138 of those)
-- [ ] #4 The existing draft-side guarantee is untouched: `maybe_draft_reply()` still refuses bulk mail for the same reasons and with the same reporting
-- [ ] #5 Measured against the real mailbox: how many currently-stored messages would newly be refused a suggestion under this rule, and a spot-check of at least three of them confirming each really is bulk
-- [ ] #6 Backend suite green; no test contacts a real mailbox
+- [x] #1 A message that `bulk_mail_reason()` identifies as bulk produces NO suggestion, asserted by test with a fixture carrying each of the bulk markers in turn
+- [x] #2 The refusal is counted and explained the way TASK-114 made drafting refusals explicit, not skipped silently — an owner asking "why did this not turn up" can find the reason
+- [x] #3 Genuine recruiter mail that happens to carry one bulk-ish header is not lost without a trace: state the chosen precedence rule explicitly and test it (an ATS that sets `Auto-Submitted` on real application confirmations is the realistic collision — TASK-136 recovered 138 of those)
+- [x] #4 The existing draft-side guarantee is untouched: `maybe_draft_reply()` still refuses bulk mail for the same reasons and with the same reporting
+- [x] #5 Measured against the real mailbox: how many currently-stored messages would newly be refused a suggestion under this rule, and EVERY one of them spot-checked - at least three when that many qualify - confirming each really is bulk. (Reworded via TASK-158: exactly one stored message qualifies, so three cannot exist without loosening the rule this task exists to tighten; stored rows also carry no List-Unsubscribe header, so a backward sweep can only evaluate the unattended-sender half.)
+- [x] #6 Backend suite green; no test contacts a real mailbox
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out. Shipped in PR #62 (merge d408ec7), deployed, migration 0047 confirmed applied in production. Proven live by `check_mailbox --force` against the real mailbox: "19 fetched, 5 job-related, 1 uncertain, 0 suggestion(s), 0 draft(s) ready, 1 draft(s) blocked, 1 suggestion(s) refused as bulk mail", with the run log naming it - "message 1008 (Digitl GmbH <noreply@join.com>): unattended sender address (no-reply)". The same run also printed "Handled queued check request #1", which is the request queued from the DEPLOYED site earlier being picked up here - the TASK-124/151 queue path closing end to end. AC2 was strengthened beyond the agent's first pass: it had only logged the refusal, which an owner cannot reach, so run.suggestion_blocked_count (migration 0047) was added as the suggestion-side twin of draft_blocked_count and check_mailbox now prints it beside that one. AC5 measurement: 58 actionable matched messages, 1 refused (Digitl GmbH <noreply@join.com>, job 599, "Generative AI Engineer (all Genders) for Vienna" - a JOIN job-ad blast), 1 of 1 spot-checked and confirmed.
+
 The cheap shape is to call the same `bulk_mail_reason()` at the top of `build_suggestions()` and
 record the reason on the run the way the drafting path already does — one guard, two call sites, no
 second rule to keep in sync. AC3 is the trap: refusing every `Auto-Submitted` message would throw
