@@ -1,7 +1,7 @@
 ---
 id: TASK-148
 title: Reword TASK-140 AC6 — the spot-check scales with what actually matched
-status: To Do
+status: Done
 assignee: []
 labels:
   - process
@@ -30,9 +30,9 @@ confirmed by sender and subject.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 TASK-140 AC6 is reworded to: "Spot-check the result rather than trusting the count: list
+- [x] #1 TASK-140 AC6 is reworded to: "Spot-check the result rather than trusting the count: list
       ALL newly attached messages — across at least three jobs when that many gained mail — and
       confirm by reading sender and subject that each really is that company's mail"
-- [ ] #2 With that wording, the 2026-08-19 measurement (1 of 1 attached messages read and
+- [x] #2 With that wording, the 2026-08-19 measurement (1 of 1 attached messages read and
       confirmed as PIDSO's mail to job 36) satisfies it, and TASK-140 AC6 is ticked citing this task
 <!-- AC:END -->

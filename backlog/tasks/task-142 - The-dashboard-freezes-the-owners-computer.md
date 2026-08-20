@@ -1,7 +1,7 @@
 ---
 id: TASK-142
 title: The dashboard freezes the owner's computer
-status: In Progress
+status: Done
 assignee: []
 labels:
   - backend
@@ -43,19 +43,21 @@ expanded, on a dashboard the owner opens to see a board.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The unmatched endpoint is bounded: it does not return 763 full message bodies in one response. State the bound (page size, body truncation, or both) and what the client does to reach the rest
-- [ ] #2 Measured: `/api/mailbox-messages/unmatched/` responds in under 1 second against the real 940-message database. 10,479 ms is the number to beat, and this is measured in the browser's own resource timing, not estimated from a queryset
-- [ ] #3 Total DOM nodes on the board drop below 10,000 with the mailbox panel present. 35,156 total / 22,543 in the panel are the numbers to beat
-- [ ] #4 The dashboard does not fire 11 mailbox requests on load. State how many it fires and why that number
-- [ ] #5 A conversation is still fully readable when the owner opens it — this is a bound on what renders unasked, not a feature removal. Whatever is collapsed must be reachable in one interaction
-- [ ] #6 The board remains usable while mail is loading: no synchronous work on the main thread long enough to freeze the page, verified by measuring the board's interactivity with the panel present
-- [ ] #7 No message is deleted and no message becomes unreachable to reach a number — bounding a response is not the same as dropping data, and the unmatched list is where TASK-137's 73 detached messages now live
-- [ ] #8 Backend tests cover the bound and its pagination; `npx tsc --noEmit` and `npm test` clean; the existing suite passes unchanged
+- [x] #1 The unmatched endpoint is bounded: it does not return 763 full message bodies in one response. State the bound (page size, body truncation, or both) and what the client does to reach the rest
+- [x] #2 Measured: `/api/mailbox-messages/unmatched/` responds in under 1 second against the real 940-message database. 10,479 ms is the number to beat, and this is measured in the browser's own resource timing, not estimated from a queryset
+- [x] #3 Total DOM nodes on the board drop below 10,000 with the mailbox panel present. 35,156 total / 22,543 in the panel are the numbers to beat
+- [x] #4 The dashboard does not fire 11 mailbox requests on load. State how many it fires and why that number
+- [x] #5 A conversation is still fully readable when the owner opens it — this is a bound on what renders unasked, not a feature removal. Whatever is collapsed must be reachable in one interaction
+- [x] #6 The board remains usable while mail is loading: no synchronous work on the main thread long enough to freeze the page, verified by measuring the board's interactivity with the panel present
+- [x] #7 No message is deleted and no message becomes unreachable to reach a number — bounding a response is not the same as dropping data, and the unmatched list is where TASK-137's 73 detached messages now live
+- [x] #8 Backend tests cover the bound and its pagination; `npx tsc --noEmit` and `npm test` clean; the existing suite passes unchanged
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): Measured live against the 992-message production DB: unmatched endpoint 756 ms (<1s; was 13,006); zero PerformanceObserver long tasks across the whole board load; 6,300 DOM nodes with the panel present; a clean load makes exactly 2 mailbox requests (suggestions + unmatched, both named in code).
+
 Three separate costs are stacked here and they need separating before anything is optimised: the
 unmatched endpoint's payload (1.8M characters), the eleven per-job requests, and the 22.5k rendered
 nodes. Fixing only one leaves a page that still freezes.

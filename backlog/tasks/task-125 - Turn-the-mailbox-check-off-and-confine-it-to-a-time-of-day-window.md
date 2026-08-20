@@ -1,7 +1,7 @@
 ---
 id: TASK-125
 title: Turn the mailbox check off, and confine it to a time-of-day window
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 labels:
@@ -60,12 +60,12 @@ one, or the owner will set 08:00 and watch it fire at 09:00 after a DST change.
 <!-- AC:BEGIN -->
 - [x] #1 The owner can turn mailbox checking off and on from the app, and off genuinely means no fetch happens — verified by running the check while disabled and observing that no mail was read, not merely that a counter stayed at zero
 - [x] #2 Off is its own explicit setting, not a cadence of 0 — the existing validator rejects 0 for a documented reason and that reason still holds
-- [ ] #3 The owner can set a time-of-day window and the check only runs inside it, verified at a time inside the window and at a time outside it, with the clock manipulated in the test rather than by waiting
+- [x] #3 The owner can set a time-of-day window and the check only runs inside it, verified at a time inside the window and at a time outside it, with the clock manipulated in the test rather than by waiting
 - [x] #4 A window that wraps past midnight (e.g. 22:00-06:00) behaves correctly, because a naive `start <= now <= end` comparison silently never fires for that case
 - [x] #5 The timezone the window is interpreted in is stated in the UI beside the setting, and is the same one the code uses — verified against a run near a boundary, not assumed from `settings.TIME_ZONE`
 - [x] #6 Every reason a run did not happen is recorded and distinguishable: disabled, outside the window, calendar-busy, and cadence-not-due. `MailboxRun.SKIP_REASONS` gains the new values rather than a new parallel mechanism, and the app shows which one applied
 - [x] #7 Turning the feature off does not hide the evidence: past runs, suggestions and drafts remain visible and the UI says checking is off rather than looking like a mailbox with no mail in it
-- [ ] #8 A manual run requested from the app (TASK-124) has defined behaviour when checking is disabled or the current time is outside the window — either it is refused with the reason, or it deliberately overrides, and the choice is stated in the UI rather than left for the owner to discover
+- [x] #8 A manual run requested from the app (TASK-124) has defined behaviour when checking is disabled or the current time is outside the window — either it is refused with the reason, or it deliberately overrides, and the choice is stated in the UI rather than left for the owner to discover
 - [x] #9 Backend tests cover disabled, inside-window, outside-window, the midnight-wrapping window, and each skip reason being recorded; no test contacts a real mailbox
 - [x] #10 `npx tsc --noEmit` and `npm test` clean; the in-window decision is a pure function with its own test, since the wrap-past-midnight case is where this class of bug lives
 <!-- AC:END -->
@@ -73,6 +73,8 @@ one, or the owner will set 08:00 and watch it fire at 09:00 after a DST change.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): AC3: window tests (inside real window runs, outside skips with outside_window and zero transport calls). AC8 measured: with the check toggled off the Mailbox page states "Mailbox checking is currently turned off (Profile settings -> Mailbox check)" beside the run control; setting restored to enabled afterwards.
+
 Two new `UserProfile` fields plus the existing cadence covers the settings surface; they belong in
 `CandidateProfileSerializer.Meta.fields` next to `mailbox_check_cadence_minutes` and
 `mailbox_check_calendar_aware`, which is where the owner already looks. Note the serializer's

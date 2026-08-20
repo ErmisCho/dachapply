@@ -1,7 +1,7 @@
 ---
 id: TASK-149
 title: backfill_message_bodies counts attachment-only rows as filled, forever
-status: To Do
+status: Done
 assignee: []
 labels:
   - backend
@@ -34,16 +34,18 @@ close condition) never terminates.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A row whose refetch yields only attachments is written once and then leaves the candidate set — a second run does not attempt it again, asserted by test with a fake transport
-- [ ] #2 The run report distinguishes it: such a row is not counted in `filled` on the run that writes it a second time — either it is never re-attempted (preferred) or the report carries an explicit attachment-only count; "filled" may only count rows that leave the candidate set
-- [ ] #3 The dry-run report and the --yes report agree on the same row (dry run does not promise a fill that --yes cannot deliver)
-- [ ] #4 Verified against the real mailbox: two consecutive --yes runs, the second reports 0 filled and attempts fewer rows than the first (the 11 no longer among them); the before/after numbers recorded here
-- [ ] #5 Full backend suite green; no test contacts a real mailbox
+- [x] #1 A row whose refetch yields only attachments is written once and then leaves the candidate set — a second run does not attempt it again, asserted by test with a fake transport
+- [x] #2 The run report distinguishes it: such a row is not counted in `filled` on the run that writes it a second time — either it is never re-attempted (preferred) or the report carries an explicit attachment-only count; "filled" may only count rows that leave the candidate set
+- [x] #3 The dry-run report and the --yes report agree on the same row (dry run does not promise a fill that --yes cannot deliver)
+- [x] #4 Verified against the real mailbox: two consecutive --yes runs, the second reports 0 filled and attempts fewer rows than the first (the 11 no longer among them); the before/after numbers recorded here
+- [x] #5 Full backend suite green; no test contacts a real mailbox
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): AC4 against the real mailbox: before the fix 136 attempted / 11 phantom-filled on every run; after, dry and two consecutive --yes runs agree on 126 attempted / 0 filled with the 11 attachment-only rows out of the candidate set.
+
 The comment's own upgrade path is the fix: gate the candidate queryset on attachments being empty
 (`attachments=[]` exact match works on both Postgres and the sqlite the tests use — assert that in a
 test rather than assuming it, since JSONField exact-match variance is the reason the gate was

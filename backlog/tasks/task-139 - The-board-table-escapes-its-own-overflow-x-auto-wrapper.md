@@ -1,7 +1,7 @@
 ---
 id: TASK-139
 title: The board table escapes its own overflow-x-auto wrapper
-status: In Progress
+status: Done
 assignee: []
 labels:
   - frontend

@@ -1,7 +1,7 @@
 ---
 id: TASK-132
 title: Make a conversation actually be the whole thread
-status: In Progress
+status: Done
 assignee: []
 labels:
   - backend
@@ -59,19 +59,21 @@ next reader sees a decision rather than a drift.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A matched message's whole Gmail thread is ingested, not just the inbox message that triggered the match — including messages the owner sent, verified against the zooplus thread Gmail shows as "Julia, me 5" where the app currently has 2
-- [ ] #2 A message the owner sent is distinguishable from one they received, so the conversation reads as an exchange rather than a flat list — the view must be able to say who spoke without guessing from the address
-- [ ] #3 The 648 existing rows with no body are backfilled from Gmail by their stored `gmail_id`, and the count actually filled is reported — not assumed from the count attempted
-- [ ] #4 Backfill is resumable and idempotent: it can be interrupted and re-run without duplicating rows or re-fetching what it already has, because 653 messages is a long enough job to be interrupted
-- [ ] #5 Thread ingestion cannot explode the table: state the bound (per-thread message cap, date floor, matched-jobs-only) rather than leaving "fetch everything" implicit, and report what was skipped
-- [ ] #6 The append-only guarantee survives: existing rows are updated only in `body_text` and thread linkage, never rewritten or deleted, and `uid` stays unique
-- [ ] #7 No test contacts a real mailbox, and the no-send guarantee is unchanged — `grep -rn "messages.send\|smtplib" backend/` finds nothing new
-- [ ] #8 Run against the owner's real mailbox with before/after counts recorded in this file: 648 empty bodies and 3 zooplus messages are the numbers to beat
+- [x] #1 A matched message's whole Gmail thread is ingested, not just the inbox message that triggered the match — including messages the owner sent, verified against the zooplus thread Gmail shows as "Julia, me 5" where the app currently has 2
+- [x] #2 A message the owner sent is distinguishable from one they received, so the conversation reads as an exchange rather than a flat list — the view must be able to say who spoke without guessing from the address
+- [x] #3 The 648 existing rows with no body are backfilled from Gmail by their stored `gmail_id`, and the count actually filled is reported — not assumed from the count attempted
+- [x] #4 Backfill is resumable and idempotent: it can be interrupted and re-run without duplicating rows or re-fetching what it already has, because 653 messages is a long enough job to be interrupted
+- [x] #5 Thread ingestion cannot explode the table: state the bound (per-thread message cap, date floor, matched-jobs-only) rather than leaving "fetch everything" implicit, and report what was skipped
+- [x] #6 The append-only guarantee survives: existing rows are updated only in `body_text` and thread linkage, never rewritten or deleted, and `uid` stays unique
+- [x] #7 No test contacts a real mailbox, and the no-send guarantee is unchanged — `grep -rn "messages.send\|smtplib" backend/` finds nothing new
+- [x] #8 Run against the owner's real mailbox with before/after counts recorded in this file: 648 empty bodies and 3 zooplus messages are the numbers to beat
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): AC1: ingest_threads --yes (limit raised to cover all 69 threads) created 52 messages; the zooplus thread now holds 10 stored messages, 5 of them the owner's. AC3: under TASK-149's fix the body backfill terminates honestly - 126 attempted / 0 fillable (the remaining rows genuinely return no body). AC8 counts: 940 -> 992 (ingestion) -> 1000 (live run); empty bodies 136 -> 126; sent_by_owner 10 -> 59.
+
 `users.threads.get` returns every message in a thread in one call, which makes AC1 and AC3 the same
 mechanism rather than two: fetch the thread, store what is missing, fill the bodies you already have
 rows for.

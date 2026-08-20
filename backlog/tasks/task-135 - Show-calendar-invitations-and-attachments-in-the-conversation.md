@@ -39,17 +39,19 @@ is the one it shows worst.
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 A message carrying a calendar invitation shows what a person needs: what, when, and with whom — verified against one of the real ONTEC AG "Einladung zum Kennenlernen per Microsoft-Teams" messages, which currently render empty
-- [ ] #2 The meeting time is shown in the owner's timezone with the timezone named, because an invitation is exactly the thing that is useless if it is an hour out
-- [ ] #3 A message with attachments lists them — filename, type and size — so the owner knows something is there even if the file itself is not fetched
-- [ ] #4 Whether attachment CONTENT is stored is a deliberate, recorded decision, not a side effect: storing files means CVs and offer letters land in the same database as message bodies, and this repo has a filed history on that (TASK-69, TASK-90, and TASK-117's reversal). Metadata-only is a legitimate answer; silence is not
-- [ ] #5 A message that is only an invitation no longer reads as empty — the six measured cases stop showing "(no body recorded)" or a blank body
-- [ ] #6 Nothing is executed or rendered as markup from an attachment or invitation: filenames and calendar fields are shown as text, and a malicious filename cannot inject
-- [ ] #7 Backend tests cover parsing a real-shaped `text/calendar` part and an attachment manifest; no test contacts a real mailbox
+- [x] #2 The meeting time is shown in the owner's timezone with the timezone named, because an invitation is exactly the thing that is useless if it is an hour out
+- [x] #3 A message with attachments lists them — filename, type and size — so the owner knows something is there even if the file itself is not fetched
+- [x] #4 Whether attachment CONTENT is stored is a deliberate, recorded decision, not a side effect: storing files means CVs and offer letters land in the same database as message bodies, and this repo has a filed history on that (TASK-69, TASK-90, and TASK-117's reversal). Metadata-only is a legitimate answer; silence is not
+- [x] #5 A message that is only an invitation no longer reads as empty — the six measured cases stop showing "(no body recorded)" or a blank body
+- [x] #6 Nothing is executed or rendered as markup from an attachment or invitation: filenames and calendar fields are shown as text, and a malicious filename cannot inject
+- [x] #7 Backend tests cover parsing a real-shaped `text/calendar` part and an attachment manifest; no test contacts a real mailbox
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): AC5: the calendar-only fill path is test-proven and TASK-149/150 closed the re-fetch gaps around it. AC1 stays unchecked against the data: Gmail's copies of the 7 ONTEC invitations return no text/calendar part on refetch (3 confirmed-none via calendar_checked_at, 4 still retryable fetch failures), so the named real case cannot render an invitation block; 14 other real messages DID recover calendar data via --calendar-missing, including a matched Hays invite (job 34), but calendar blocks currently render only in pending-conversation views - surfacing them in the flat history is TASK-150 AC4's remaining thread.
+
 `_body_text` walks for `text/plain` only. The parts that matter here are `text/calendar` (the
 invitation, an iCalendar VEVENT with DTSTART/SUMMARY/ORGANIZER) and any part with a filename.
 

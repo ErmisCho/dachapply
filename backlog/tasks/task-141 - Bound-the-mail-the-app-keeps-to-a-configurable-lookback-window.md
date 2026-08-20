@@ -1,7 +1,7 @@
 ---
 id: TASK-141
 title: Bound the mail the app keeps to a configurable lookback window
-status: In Progress
+status: Done
 assignee: []
 labels:
   - backend
@@ -29,19 +29,21 @@ the settings page like every other mailbox control (`mailbox_check_enabled`, `_c
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A stored per-profile setting `mailbox_lookback_months` exists, default 6, with a migration — matching how every other mailbox setting on `UserProfile` is already stored
-- [ ] #2 The setting is editable from the app's settings page, in the same place as the other mailbox controls, not only via the API or the admin — the owner's words were "configurable from a menu"
-- [ ] #3 A value that would disable the bound is rejected rather than silently accepted: 0 or blank must not mean "unlimited" by accident. State the accepted range and what an out-of-range value does. `mailbox_check_cadence_minutes` already has this exact validation problem solved on the serializer — follow it
-- [ ] #4 Mail older than the window is not fetched: the Gmail query carries an `after:` derived from the setting, verified by asserting the query string the transport builds, not by reasoning about it
-- [ ] #5 The resume marker still works with the bound in place: two consecutive runs, the second fetches nothing new (this is TASK-136 AC4 and must not regress — a floor and a resume marker interact, and the interaction is what breaks)
-- [ ] #6 Changing the setting takes effect on the next run without a restart, verified by test
-- [ ] #7 Mail already stored that falls outside the window is NOT deleted by this change. Bounding what is fetched and deleting history are different decisions, and the second one is not being asked for here — if anything ages out data it gets its own task and its own argument
-- [ ] #8 Backend tests cover the default, the boundary, the rejected values and the query; frontend `npx tsc --noEmit` and `npm test` clean; no test contacts a real mailbox
+- [x] #1 A stored per-profile setting `mailbox_lookback_months` exists, default 6, with a migration — matching how every other mailbox setting on `UserProfile` is already stored
+- [x] #2 The setting is editable from the app's settings page, in the same place as the other mailbox controls, not only via the API or the admin — the owner's words were "configurable from a menu"
+- [x] #3 A value that would disable the bound is rejected rather than silently accepted: 0 or blank must not mean "unlimited" by accident. State the accepted range and what an out-of-range value does. `mailbox_check_cadence_minutes` already has this exact validation problem solved on the serializer — follow it
+- [x] #4 Mail older than the window is not fetched: the Gmail query carries an `after:` derived from the setting, verified by asserting the query string the transport builds, not by reasoning about it
+- [x] #5 The resume marker still works with the bound in place: two consecutive runs, the second fetches nothing new (this is TASK-136 AC4 and must not regress — a floor and a resume marker interact, and the interaction is what breaks)
+- [x] #6 Changing the setting takes effect on the next run without a restart, verified by test
+- [x] #7 Mail already stored that falls outside the window is NOT deleted by this change. Bounding what is fetched and deleting history are different decisions, and the second one is not being asked for here — if anything ages out data it gets its own task and its own argument
+- [x] #8 Backend tests cover the default, the boundary, the rejected values and the query; frontend `npx tsc --noEmit` and `npm test` clean; no test contacts a real mailbox
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): All eight ACs are test/code-proven (defaults, validation range, after: query derivation, resume marker, no-restart effect; the setting feeds only fetch_new).
+
 `UserProfile` already carries the pattern for all of this (`models.py:57-98`) including the comment
 explaining why `0` is treated as "unset" for the cadence — read it before choosing what `0` means
 here, because copying that idiom blindly would make `0` mean "unlimited lookback", which is the exact

@@ -1,7 +1,7 @@
 ---
 id: TASK-146
 title: Feedback deadline pane with followed-up and reschedule
-status: In Progress
+status: Done
 assignee: []
 labels:
   - backend
@@ -57,22 +57,24 @@ filter toggle, not a rebuild.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A dashboard pane lists company, job title and the feedback date for every actionable job whose `feedback_due_date` is today or later, soonest first — 8 such rows exist today and are the fixture to check against
-- [ ] #2 Already-expired feedback appears in the same pane, visually separated and marked as overdue, above the rest. The 3 measured overdue rows must be visible, and a job overdue by 23 days must not sort as if it were due soonest
-- [ ] #3 The overdue group can be turned off by the owner without code, since the literal request excluded it — state where that control lives
-- [ ] #4 Clicking a row navigates to that job in the board listing, and the job is actually located there rather than the board merely being opened — a board with filters or a saved sort applied must still land on the right row
-- [ ] #5 "I followed up" is recordable from the pane and is recorded as an auditable fact, not just a date change: it uses the existing `FollowUp` model rather than a second mechanism, and the row it writes says what was followed up on
-- [ ] #6 The feedback date is reschedulable from the pane, and rescheduling updates `JobLead.feedback_due_date` — the pane must not silently write to `FollowUp.follow_up_date` instead, since those are different fields with different meanings
-- [ ] #7 Both actions update the pane without a full reload, and a failed write reports the failure rather than appearing to succeed
-- [ ] #8 Non-actionable jobs (`rejected`, `withdrawn`, `skipped`, `archived`) never appear — consistent with TASK-143, and reusing the same named status set from the model rather than a second literal list
-- [ ] #9 The pane does not duplicate or contradict the existing `due_followups` panel and the `jobs_needing_follow_up` stat: state the relationship between them, and if this pane supersedes one, say so rather than shipping two panels that disagree
-- [ ] #10 The pane obeys TASK-142's budget: it must not add an unbounded query or a request per row, and the board's DOM node count must stay under the 10,000 that task sets
-- [ ] #11 Backend tests cover the date-window query including the overdue boundary and the actionable-status filter; `npx tsc --noEmit` and `npm test` clean; the full backend suite passes unchanged
+- [x] #1 A dashboard pane lists company, job title and the feedback date for every actionable job whose `feedback_due_date` is today or later, soonest first — 8 such rows exist today and are the fixture to check against
+- [x] #2 Already-expired feedback appears in the same pane, visually separated and marked as overdue, above the rest. The 3 measured overdue rows must be visible, and a job overdue by 23 days must not sort as if it were due soonest
+- [x] #3 The overdue group can be turned off by the owner without code, since the literal request excluded it — state where that control lives
+- [x] #4 Clicking a row navigates to that job in the board listing, and the job is actually located there rather than the board merely being opened — a board with filters or a saved sort applied must still land on the right row
+- [x] #5 "I followed up" is recordable from the pane and is recorded as an auditable fact, not just a date change: it uses the existing `FollowUp` model rather than a second mechanism, and the row it writes says what was followed up on
+- [x] #6 The feedback date is reschedulable from the pane, and rescheduling updates `JobLead.feedback_due_date` — the pane must not silently write to `FollowUp.follow_up_date` instead, since those are different fields with different meanings
+- [x] #7 Both actions update the pane without a full reload, and a failed write reports the failure rather than appearing to succeed
+- [x] #8 Non-actionable jobs (`rejected`, `withdrawn`, `skipped`, `archived`) never appear — consistent with TASK-143, and reusing the same named status set from the model rather than a second literal list
+- [x] #9 The pane does not duplicate or contradict the existing `due_followups` panel and the `jobs_needing_follow_up` stat: state the relationship between them, and if this pane supersedes one, say so rather than shipping two panels that disagree
+- [x] #10 The pane obeys TASK-142's budget: it must not add an unbounded query or a request per row, and the board's DOM node count must stay under the 10,000 that task sets
+- [x] #11 Backend tests cover the date-window query including the overdue boundary and the actionable-status filter; `npx tsc --noEmit` and `npm test` clean; the full backend suite passes unchanged
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): Endpoint order/fields/exclusions test-proven; pane measured live: click-through scrolled 0->7161 onto the single row copy, followed-up posts a completed FollowUp, reschedule writes feedback_due_date; board 6,300 DOM nodes.
+
 AC5 and AC6 are the pair most likely to be got wrong, because two similar-sounding date fields exist.
 `JobLead.feedback_due_date` is "when I expect to hear back"; `FollowUp.follow_up_date` is "when I
 plan to chase". "Rearrange feedback" is the first; "I followed up" is a completed instance of the
