@@ -374,6 +374,12 @@ class MailboxRun(models.Model):
     # suggestion_count's shape -- a cheap run-level summary on top of the per-message MailboxDraft log.
     draft_written_count=models.PositiveIntegerField(default=0)
     draft_blocked_count=models.PositiveIntegerField(default=0)
+    # TASK-154 AC2: the suggestion side of draft_blocked_count above. Drafting refusals have been
+    # counted on the run since TASK-114, and surfaced by check_mailbox and the run-status panel, so an
+    # owner asking "why did nothing turn up for this mail" can answer it without server logs. A
+    # suggestion refused as bulk mail needs the same answer available in the same place -- a log line
+    # in a container is not something the owner can reach.
+    suggestion_blocked_count=models.PositiveIntegerField(default=0)
     # True when this run found no prior resume marker and therefore suppressed reply drafting. The
     # first run against an existing mailbox reads the whole history: on 2026-08-17 that meant 641
     # messages fetched and 112 drafts written into the owner's real Gmail Drafts folder, replies to

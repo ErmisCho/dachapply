@@ -65,6 +65,7 @@ from jobradar.services.mailbox import (
     run_check,
     sanitize_inbound_text,
     seed_fake_run,
+    suggestion_bulk_mail_reason,
     update_draft_text,
 )
 from jobradar.services.prompt_builder import user_profile_settings
@@ -624,6 +625,132 @@ def test_build_suggestions_dismissed_prior_suggestion_does_not_block_a_new_one(d
     second_message = _log_message(applied_job, 'interview_invitation', uid=2)
     assert build_suggestions(second_message, applied_job, 'interview_invitation', '2026-04-04T10:00:00+02:00') == 1
     assert MailboxSuggestion.objects.filter(job=applied_job, suggestion_type='interview_date').count() == 2
+
+
+# ===================================================================================================
+# TASK-154: build_suggestions() gets its own bulk-mail guard -- deliberately NARROWER than
+# bulk_mail_reason() (drafting): List-Unsubscribe or a no-reply sender refuses a suggestion, but
+# Auto-Submitted/Precedence alone do not, because ATS systems routinely set Auto-Submitted on genuine
+# application confirmations (TASK-136 recovered 138 of those). See suggestion_bulk_mail_reason()'s own
+# docstring in services/mailbox.py for the owner's full precedence rule.
+# ===================================================================================================
+
+def _log_message_with_headers(job, classification='rejection', uid=1, sender='hr@acme.test', reply_to=''):
+    run = MailboxRun.objects.create()
+    return MailboxMessage.objects.create(run=run, uid=uid, sender=sender, reply_to=reply_to, subject='x', classification=classification, matched_job=job)
+
+
+@pytest.mark.parametrize('headers,expected', [
+    ({}, ''),
+    ({'list_unsubscribe': '<mailto:x@y.test>'}, 'List-Unsubscribe'),
+    ({'reply_to': 'no-reply@acme.test'}, 'no-reply'),
+    ({'sender': 'Acme <noreply@acme.test>'}, 'no-reply'),
+    # AC3, the owner's explicit precedence rule: these two DO block a draft (see
+    # test_bulk_mail_reason_cases) but must NOT block a suggestion on their own.
+    ({'precedence': 'bulk'}, ''),
+    ({'auto_submitted': 'auto-generated'}, ''),
+    ({'auto_submitted': 'no'}, ''),
+])
+def test_suggestion_bulk_mail_reason_cases(headers, expected):
+    r = raw(1, **headers)
+    message = MailboxMessage(sender=r.sender, reply_to=r.reply_to)
+    reason = suggestion_bulk_mail_reason(message, r)
+    assert (expected in reason) if expected else reason == ''
+
+
+def test_suggestion_bulk_mail_reason_with_no_raw_only_checks_the_stored_sender():
+    """attach_message_to_job() has no RawMessage at all (List-Unsubscribe is never persisted onto
+    MailboxMessage -- see that model's docstring), so raw=None must still work, checking only the
+    message's own stored sender/reply_to.
+    """
+    ordinary = MailboxMessage(sender='hr@acme.test', reply_to='')
+    assert suggestion_bulk_mail_reason(ordinary, None) == ''
+    no_reply = MailboxMessage(sender='Acme <noreply@acme.test>', reply_to='')
+    assert suggestion_bulk_mail_reason(no_reply, None) == 'unattended sender address (no-reply)'
+
+
+@pytest.mark.parametrize('headers', [
+    {'list_unsubscribe': '<mailto:x@y.test>'},
+    {'reply_to': 'no-reply@acme.test'},
+    {'sender': 'Acme <noreply@acme.test>'},
+])
+def test_build_suggestions_refuses_a_suggestion_for_each_bulk_marker_in_turn(db, applied_job, headers):
+    """AC1: a message carrying a suggestion-side bulk marker produces NO suggestion -- even for a
+    classification (rejection) that would otherwise always propose one (see
+    test_build_suggestions_rejection_creates_status_change above).
+    """
+    r = raw(1, **headers)
+    message = _log_message_with_headers(applied_job, 'rejection', sender=r.sender, reply_to=r.reply_to)
+    created = build_suggestions(message, applied_job, 'rejection', None, raw=r)
+    assert created == 0
+    assert not MailboxSuggestion.objects.filter(message=message).exists()
+
+
+@pytest.mark.parametrize('headers', [
+    {'auto_submitted': 'auto-generated'},
+    {'precedence': 'bulk'},
+])
+def test_build_suggestions_auto_submitted_or_precedence_alone_does_not_block_a_suggestion(db, owner, headers):
+    """AC3, the owner's explicit precedence rule: Auto-Submitted (and Precedence) alone must NOT
+    refuse a suggestion -- refusing every Auto-Submitted message would throw away application
+    confirmations, the single largest class TASK-136 recovered (138 of them).
+    """
+    job = JobLead.objects.create(company='zooplus', title='Senior Software Engineer', url='https://zooplus.test/1', status='to_apply', created_by=owner)
+    r = raw(1, sender='ats@zooplus.test', subject='Thank you for applying', **headers)
+    message = MailboxMessage.objects.create(run=MailboxRun.objects.create(), uid=1, sender=r.sender, subject=r.subject, classification='application_confirmed', matched_job=job)
+    created = build_suggestions(message, job, 'application_confirmed', None, raw=r)
+    assert created == 1
+    assert MailboxSuggestion.objects.filter(message=message, suggestion_type='status_change', payload={'status': 'applied'}).exists()
+
+
+def test_run_check_counts_and_explains_a_suggestion_refusal_on_the_run(db, owner, applied_job, caplog):
+    """AC2: the refusal is counted and explained, not skipped silently. It lands in two places an
+    owner can actually reach: run.suggestion_blocked_count -- the suggestion-side twin of
+    draft_blocked_count, which check_mailbox prints and the run-status panel reads -- and the run's
+    own log line naming the marker and the message. run.error is deliberately left untouched: dozens
+    of tests read `not run.error` as "nothing went wrong", and refusing to suggest on a newsletter is
+    the guard working, not a failure.
+    """
+    transport = FakeTransport([raw(
+        2, sender='hr@acme.test', subject='Unfortunately',
+        body='Unfortunately, we have decided to move forward with other candidates.',
+        list_unsubscribe='<mailto:unsubscribe@acme.test>',
+    )])
+    with caplog.at_level('INFO', logger='jobradar.services.mailbox'):
+        run = run_check(transport=transport)
+    message = MailboxMessage.objects.get(uid=2)
+    assert message.classification == 'rejection'
+    assert run.suggestion_count == 0
+    assert run.suggestion_blocked_count == 1
+    assert not run.error
+    assert not MailboxSuggestion.objects.filter(message=message).exists()
+    refusal_records = [r.getMessage() for r in caplog.records if 'refused' in r.getMessage()]
+    assert any('List-Unsubscribe' in text for text in refusal_records)
+    assert any(str(message.pk) in text for text in refusal_records)
+
+
+def test_run_check_auto_submitted_offer_gets_a_suggestion_but_the_draft_stays_blocked(not_cold_start, db, owner):
+    """AC3 and AC4 together, on one message: the owner's realistic collision (an Auto-Submitted
+    header on genuine mail) lets the narrower suggestion-side rule through, while the stricter,
+    UNCHANGED drafting-side bulk_mail_reason() keeps refusing the same message exactly as it did
+    before TASK-154 -- the two guards are meant to diverge, and this is the message that proves it.
+    """
+    job = JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', status='interview', status_date=timezone.localdate(), created_by=owner)
+    transport = FakeTransport([raw(
+        2, sender='ats@acme.test', subject='Offer', body='We are pleased to offer you the position.',
+        auto_submitted='auto-generated',
+    )])
+    run = run_check(transport=transport)
+    message = MailboxMessage.objects.get(uid=2)
+    assert message.classification == 'offer'
+    # AC3: the suggestion side lets it through.
+    assert run.suggestion_count == 1
+    assert MailboxSuggestion.objects.filter(message=message, suggestion_type='status_change', payload={'status': 'offer'}).exists()
+    # AC4: the drafting side is untouched -- still refused, still says why.
+    draft = MailboxDraft.objects.get(message=message)
+    assert draft.status == 'blocked' and 'Auto-Submitted' in draft.block_reason
+    assert transport.appended_drafts == []
+    assert run.draft_blocked_count == 1
 
 
 # --- Confirm / dismiss lifecycle (AC3, TASK-117 AC4's note-on-confirm) -----------------------
@@ -3000,6 +3127,140 @@ def test_update_draft_text_returns_a_reason_when_gmail_rejects_the_update(db, ow
 
 
 # ===================================================================================================
+# TASK-156: update_draft_text() must not strand the stored Gmail draft id -- production draft row 116
+# lost its id silently because the old code called transport.update_draft(...) and discarded the
+# response entirely. AC1/AC3: a changed id is captured and persisted in the same save as the body.
+# AC2: a response with no usable id must leave the stored id untouched, never blank it.
+# ===================================================================================================
+
+class _IdChangingUpdateTransport:
+    """Fake GmailApiTransport whose drafts.update response carries a DIFFERENT id than the one it was
+    called with -- the exact shape a real users.drafts.update response could return and the old code
+    never even looked at (see update_draft_text's docstring, TASK-156).
+    """
+
+    def __init__(self, new_id='new-id'):
+        self.new_id = new_id
+        self.update_calls = []  # draft_id passed to update_draft(), in call order
+
+    def update_draft(self, draft_id, mime_message, thread_id=None):
+        self.update_calls.append(draft_id)
+        return {'id': self.new_id, 'message': {'id': f'msg-{self.new_id}', 'threadId': thread_id or ''}}
+
+
+class _NoIdUpdateTransport:
+    """Fake GmailApiTransport whose drafts.update response carries no usable id at all -- an
+    unexpected response shape must not be allowed to blank a working id (AC2)."""
+
+    def __init__(self, response=None):
+        self.response = {} if response is None else response
+        self.update_calls = []
+
+    def update_draft(self, draft_id, mime_message, thread_id=None):
+        self.update_calls.append(draft_id)
+        return self.response
+
+
+def test_update_draft_text_persists_a_changed_gmail_draft_id_in_the_same_save_as_the_body(db, owner, monkeypatch):
+    """AC1: the id Gmail's drafts.update response actually carries is captured and persisted in the
+    SAME save() call as body_text/evaluator, whenever it differs from what was already stored.
+    """
+    draft = _draft_for_update(gmail_draft_id='old-id', gmail_thread_id='thread-1')
+    fake_transport = _IdChangingUpdateTransport(new_id='new-id')
+    # Same idiom test_update_draft_text_returns_a_reason_when_gmail_rejects_the_update already uses:
+    # binding the fake class to the module name so isinstance(transport, GmailApiTransport) passes.
+    monkeypatch.setattr(mailbox, 'GmailApiTransport', _IdChangingUpdateTransport)
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: fake_transport)
+
+    reason = update_draft_text(draft, 'Edited text.', user=owner)
+
+    assert reason == ''
+    assert fake_transport.update_calls == ['old-id'], 'this edit must still target the id that was actually stored'
+    draft.refresh_from_db()
+    assert draft.gmail_draft_id == 'new-id'
+    assert draft.body_text == 'Edited text.'
+    assert draft.evaluator == 'human'
+
+
+def test_update_draft_text_a_later_edit_targets_the_new_id(db, owner, monkeypatch):
+    """AC3: after the id changes, a SUBSEQUENT edit must target the new id, not the stale one --
+    otherwise the row's id is 'updated' in the database but every future edit still calls Gmail with
+    the wrong id.
+    """
+    draft = _draft_for_update(gmail_draft_id='old-id', gmail_thread_id='thread-1')
+    fake_transport = _IdChangingUpdateTransport(new_id='new-id')
+    monkeypatch.setattr(mailbox, 'GmailApiTransport', _IdChangingUpdateTransport)
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: fake_transport)
+
+    update_draft_text(draft, 'First edit.', user=owner)
+    draft.refresh_from_db()
+    update_draft_text(draft, 'Second edit.', user=owner)
+
+    assert fake_transport.update_calls == ['old-id', 'new-id']
+    draft.refresh_from_db()
+    assert draft.body_text == 'Second edit.'
+
+
+def test_update_draft_text_leaves_the_stored_id_untouched_when_the_response_has_no_id(db, owner, monkeypatch):
+    """AC2: a response carrying no usable id (an unexpected/empty shape) must NOT blank the stored
+    id -- a blanked id disables editing outright (see
+    test_update_draft_text_refuses_when_no_stored_draft_id above), which is strictly worse than a
+    stale one that still resolves most of the time. The body/evaluator still update normally.
+    """
+    draft = _draft_for_update(gmail_draft_id='old-id', gmail_thread_id='thread-1')
+    fake_transport = _NoIdUpdateTransport()
+    monkeypatch.setattr(mailbox, 'GmailApiTransport', _NoIdUpdateTransport)
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: fake_transport)
+
+    reason = update_draft_text(draft, 'Edited text.', user=owner)
+
+    assert reason == ''
+    draft.refresh_from_db()
+    assert draft.gmail_draft_id == 'old-id', 'a response with no usable id must never blank a stored one'
+    assert draft.body_text == 'Edited text.'
+
+
+def test_update_draft_text_leaves_the_stored_id_untouched_when_the_response_id_is_falsy(db, owner, monkeypatch):
+    """AC2's edge shape: a response that DOES carry an 'id' key but with a falsy value (None/'') is
+    exactly as unusable as no key at all, and must be treated the same way.
+    """
+    draft = _draft_for_update(gmail_draft_id='old-id', gmail_thread_id='thread-1')
+    fake_transport = _NoIdUpdateTransport(response={'id': '', 'message': {}})
+    monkeypatch.setattr(mailbox, 'GmailApiTransport', _NoIdUpdateTransport)
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: fake_transport)
+
+    reason = update_draft_text(draft, 'Edited text.', user=owner)
+
+    assert reason == ''
+    draft.refresh_from_db()
+    assert draft.gmail_draft_id == 'old-id'
+
+
+# --- TASK-156 AC4: append_draft()'s two callers only ever WRITE a fresh MailboxDraft row (there is no
+# prior id to strand), and compose_reply_draft()'s update-in-place branch already guards against
+# blanking one (`existing.gmail_draft_id = response.get('id') or existing.gmail_draft_id`, pre-dating
+# this task) -- this locks that already-correct behaviour in with a regression test, the same way
+# TASK-156's own AC2 tests above do for update_draft_text.
+
+def test_compose_reply_draft_update_leaves_the_existing_gmail_draft_id_untouched_when_the_response_has_no_id(db, owner, applied_job, monkeypatch):
+    message = _thread_message(sender='hr@acme.test', to_addrs='owner@example.test', thread_id='thread-xyz', job=applied_job)
+    MailboxDraft.objects.create(
+        message=message, job=applied_job, status='written', subject='Re: role', body_text='auto text',
+        evaluator='template', gmail_draft_id='draft-auto', gmail_thread_id='thread-xyz',
+    )
+    fake_transport = _NoIdUpdateTransport()
+    monkeypatch.setattr(mailbox, 'GmailApiTransport', _NoIdUpdateTransport)
+    monkeypatch.setattr(mailbox, '_default_transport', lambda: fake_transport)
+
+    reason = compose_reply_draft(message, 'A different, hand-written reply.', to=['hr@acme.test'], cc=[])
+
+    assert reason == ''
+    draft = MailboxDraft.objects.get(message=message)
+    assert draft.gmail_draft_id == 'draft-auto', 'a response with no usable id must never blank the existing one'
+    assert draft.body_text == 'A different, hand-written reply.'
+
+
+# ===================================================================================================
 # TASK-125: turn the check off, and confine it to a time-of-day window
 # ===================================================================================================
 
@@ -4636,3 +4897,4 @@ def test_run_check_generates_no_suggestion_or_draft_for_a_message_matched_to_a_r
     assert not MailboxSuggestion.objects.filter(message=message).exists()
     assert not MailboxDraft.objects.filter(message=message).exists()
     assert run.suggestion_count == 0
+
