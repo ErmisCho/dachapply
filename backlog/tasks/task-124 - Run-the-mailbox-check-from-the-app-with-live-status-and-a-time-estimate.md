@@ -71,7 +71,7 @@ observable.
 - [x] #5 While a run is in flight the app shows live progress that changes: at minimum messages fetched so far. This requires `run_check` to persist progress mid-run; a poller must observe the number increase during a single run, verified against a run over enough messages to see it move
 - [x] #6 When the run finishes the app shows the outcome without a manual refresh: fetched, job-related, uncertain, suggestions, drafts written and drafts blocked — the same counters the digest already reports — and a failed run shows its error rather than looking like a run that found nothing
 - [x] #7 A time estimate is shown before and during the run, derived from the duration of past completed runs rather than a constant, and it distinguishes a first/cold run from an incremental one because those differ by orders of magnitude. With no history yet it says so instead of inventing a number
-- [ ] #8 The estimate is honest when it is wrong: once elapsed time passes the estimate, the UI stops counting down and says it is taking longer than usual rather than showing a stuck or negative figure
+- [x] #8 The estimate is honest when it is wrong: once elapsed time passes the estimate, the UI stops counting down and says it is taking longer than usual rather than showing a stuck or negative figure
 - [x] #9 Starting a run is restricted to the owner, the same gate `/api/mailbox-runs/` already uses — verified with a second user against a real API response, since this control causes real mailbox access
 - [x] #10 The app still never sends mail: `grep -rn "messages.send\|smtplib" backend/` finds nothing new. Triggering a check must not become a path to sending
 - [x] #11 Backend tests cover starting a run, the no-credentials queued path, the already-running refusal, request pickup and single-use marking, the estimate including the no-history case, and the owner gate; no test contacts a real mailbox
@@ -81,6 +81,8 @@ observable.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): AC8: server-side taking_longer_than_usual and the frontend wording are test-proven; no negative countdown is representable. AC2 stays unchecked: the deployed site hides the whole run section because can_generate_cv is env-dependent and false in the container - filed as TASK-151; the queue path itself is test-proven server-side.
+
 Capability detection already exists in effect: `_default_transport()` (`mailbox.py:1261`) returns the
 configured transport or nothing, so "can this backend run a check" is that call rather than a new
 settings flag. Use it, and expose the answer to the client so the UI can pick its wording — the

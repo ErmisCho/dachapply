@@ -1,7 +1,7 @@
 ---
 id: TASK-136
 title: Mail that never reached the inbox is invisible to the app
-status: In Progress
+status: Done
 assignee: []
 labels:
   - backend
@@ -48,19 +48,21 @@ the search starts halfway through.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Mail that is not in the inbox is reachable: the specific message *"Thank you for applying to zooplus as Senior Software Engineer"* (3 June, archived) is present in the log after this ships — named because it is the case that proved the gap
-- [ ] #2 The change is a deliberate scope decision, recorded: reading all mail rather than the inbox means the app sees far more, including things the owner filed away on purpose. State what is now read and why, in the code and in this file
-- [ ] #3 The volume does not run away: the owner's mailbox already yielded 641 messages from the inbox alone. State the bound (date floor, query, cap) and report what was skipped rather than discovering it as a surprise
-- [ ] #4 The resume marker still works: `run_check` resumes from `MAX(internal_date_ms)`, and widening the query must not make a future run re-read the whole mailbox or skip new mail. Verified by running a check twice and asserting the second fetches nothing new
-- [ ] #5 An application-confirmation message is recognised as such rather than landing as `not_job_related` — it is the evidence that an application exists, and TASK-109's classifier has no category for it today
-- [ ] #6 Existing behaviour is preserved: TASK-114's bulk/board guards still refuse to draft at newsletters, and widening the fetch must not resurrect the class of mail those guards exist to ignore. Verified by test, since a wider net catches more marketing
-- [ ] #7 Backend tests cover the widened query, the resume marker across two runs, and the bound; no test contacts a real mailbox
-- [ ] #8 Run against the owner's real mailbox with before/after counts recorded here — 653 messages and a missing 3-June application email are the numbers to beat
+- [x] #1 Mail that is not in the inbox is reachable: the specific message *"Thank you for applying to zooplus as Senior Software Engineer"* (3 June, archived) is present in the log after this ships — named because it is the case that proved the gap
+- [x] #2 The change is a deliberate scope decision, recorded: reading all mail rather than the inbox means the app sees far more, including things the owner filed away on purpose. State what is now read and why, in the code and in this file
+- [x] #3 The volume does not run away: the owner's mailbox already yielded 641 messages from the inbox alone. State the bound (date floor, query, cap) and report what was skipped rather than discovering it as a surprise
+- [x] #4 The resume marker still works: `run_check` resumes from `MAX(internal_date_ms)`, and widening the query must not make a future run re-read the whole mailbox or skip new mail. Verified by running a check twice and asserting the second fetches nothing new
+- [x] #5 An application-confirmation message is recognised as such rather than landing as `not_job_related` — it is the evidence that an application exists, and TASK-109's classifier has no category for it today
+- [x] #6 Existing behaviour is preserved: TASK-114's bulk/board guards still refuse to draft at newsletters, and widening the fetch must not resurrect the class of mail those guards exist to ignore. Verified by test, since a wider net catches more marketing
+- [x] #7 Backend tests cover the widened query, the resume marker across two runs, and the bound; no test contacts a real mailbox
+- [x] #8 Run against the owner's real mailbox with before/after counts recorded here — 653 messages and a missing 3-June application email are the numbers to beat
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): What the fetch reads now (AC2's in-file statement): everything in the mailbox except Spam and Trash - inbox, archived, filed, auto-labelled and sent mail alike - bounded by the resume marker plus FETCH_HISTORY_FLOOR_DAYS on a cold start, with backfill_historical_mail as the explicit marker-ignoring one-off for older mail. AC1/AC8: the 3 June zooplus confirmation is stored (count 1); totals 653 (pre-widening) -> 940 (task-time) -> 1000 today.
+
 The narrow change is dropping `labelIds: 'INBOX'` (or swapping it for a Gmail `q=` that includes
 archived mail). The care is in AC3 and AC6: the inbox filter has been doing double duty as a volume
 bound and as a crude relevance filter, and removing it removes both at once.

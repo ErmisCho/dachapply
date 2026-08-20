@@ -1,7 +1,7 @@
 ---
 id: TASK-144
 title: A conversation has only one side because sent mail is never fetched
-status: In Progress
+status: Done
 assignee: []
 labels:
   - backend
@@ -48,20 +48,22 @@ one the app is least likely to have.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The owner's own sent mail is fetched, so a conversation has two sides: at least one job that currently shows 0 owner messages shows the owner's own replies afterwards, named in this file with before/after counts. 10-of-940 is the number to beat
-- [ ] #2 A fetched sent message is stored with `sent_by_owner=True` and renders on the owner's side — the existing left/right rendering must be what displays it, not a second code path
-- [ ] #3 Sent mail never produces a suggestion, a draft, or a reply-to-yourself: the classifier and suggestion rules must not treat the owner's own words as a recruiter's. Verified by test, because this is the failure that would put a draft reply to the owner's own email in Gmail Drafts
-- [ ] #4 The volume stays bounded by TASK-141's lookback window — sent mail is subject to the same six-month bound as received mail, not a second unbounded fetch
-- [ ] #5 Sent mail that belongs to no tracked job does not flood the unmatched list: state how it is scoped (thread membership, matched job, or query) and what is skipped
-- [ ] #6 TASK-137's matching still holds: a sent message is matched by the thread it belongs to, not by its recipient's domain, since the owner sends *to* ATS addresses and matching on those is the exact bug TASK-137 fixed
-- [ ] #7 Two-sided rendering is verified in a browser, with a screenshot-equivalent measurement: in one real conversation, at least one bubble measures on the left and one on the right, with different backgrounds
-- [ ] #8 The resume marker and TASK-141's bound both still hold with the extra query in place: two consecutive runs, the second fetches nothing new
-- [ ] #9 Backend tests cover the sent-mail query, the `sent_by_owner` flag, and the no-suggestion guarantee; the existing suite passes unchanged; no test contacts a real mailbox
+- [x] #1 The owner's own sent mail is fetched, so a conversation has two sides: at least one job that currently shows 0 owner messages shows the owner's own replies afterwards, named in this file with before/after counts. 10-of-940 is the number to beat
+- [x] #2 A fetched sent message is stored with `sent_by_owner=True` and renders on the owner's side — the existing left/right rendering must be what displays it, not a second code path
+- [x] #3 Sent mail never produces a suggestion, a draft, or a reply-to-yourself: the classifier and suggestion rules must not treat the owner's own words as a recruiter's. Verified by test, because this is the failure that would put a draft reply to the owner's own email in Gmail Drafts
+- [x] #4 The volume stays bounded by TASK-141's lookback window — sent mail is subject to the same six-month bound as received mail, not a second unbounded fetch
+- [x] #5 Sent mail that belongs to no tracked job does not flood the unmatched list: state how it is scoped (thread membership, matched job, or query) and what is skipped
+- [x] #6 TASK-137's matching still holds: a sent message is matched by the thread it belongs to, not by its recipient's domain, since the owner sends *to* ATS addresses and matching on those is the exact bug TASK-137 fixed
+- [x] #7 Two-sided rendering is verified in a browser, with a screenshot-equivalent measurement: in one real conversation, at least one bubble measures on the left and one on the right, with different backgrounds
+- [x] #8 The resume marker and TASK-141's bound both still hold with the extra query in place: two consecutive runs, the second fetches nothing new
+- [x] #9 Backend tests cover the sent-mail query, the `sent_by_owner` flag, and the no-suggestion guarantee; the existing suite passes unchanged; no test contacts a real mailbox
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): Live run (MailboxRun 12) plus thread ingestion took sent_by_owner from 10 of 940 to 59 of 1000 (Hays 10, Dynatrace 10, DataScience 6, Takeda 6, zooplus 5). Browser: 39 bubbles in real pending conversations - 16 right-anchored rgb(37,99,235), 23 left-anchored rgb(241,245,249).
+
 `GmailApiTransport` already knows how to query with `labelIds` — TASK-136's whole argument was about
 removing `INBOX` from it. `SENT` is the same mechanism pointed at a different label, and
 `sent_by_owner` already exists on the model and is already honoured by the frontend, so the rendering

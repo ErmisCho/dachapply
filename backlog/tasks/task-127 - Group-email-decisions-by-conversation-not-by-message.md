@@ -1,7 +1,7 @@
 ---
 id: TASK-127
 title: Group email decisions by conversation, not by message
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 labels:
@@ -64,9 +64,9 @@ polish; without it the feature is worse than what it replaces.
 <!-- AC:BEGIN -->
 - [x] #1 Pending decisions are grouped by the job they concern, so several emails about one application render as ONE conversation card, not one card per email — verified in a browser against the real case of 9 pending suggestions across 4 jobs
 - [x] #2 A conversation card shows the exchange in order (oldest to newest or newest to oldest, chosen deliberately and stated), each message with its sender, date and classification — not only the message that triggered a suggestion
-- [ ] #3 Every proposal in that conversation keeps its own accept/decline, and one action still maps to exactly one confirm/dismiss call. Grouping the display must not group the decision — TASK-119 AC3 established this and it must survive
+- [x] #3 Every proposal in that conversation keeps its own accept/decline, and one action still maps to exactly one confirm/dismiss call. Grouping the display must not group the decision — TASK-119 AC3 established this and it must survive
 - [x] #4 A long history does not make the card unusable: the 95-message job must render without flooding the panel, verified against that actual job, not a synthetic one. State how it is bounded (collapse, cap with a count, scroll) rather than leaving it implicit
-- [ ] #5 The drafted reply shown is the one for the message it belongs to, and it stays obvious WHICH message is being replied to when several are on screen
+- [x] #5 The drafted reply shown is the one for the message it belongs to, and it stays obvious WHICH message is being replied to when several are on screen
 - [x] #6 Grouping is a pure function in `appUtils.ts` with its own tests, keyed so that swapping `matched_job` for `thread_id` later is a one-line change — `thread_id` exists on only 5 of 653 rows today, so it cannot be the key yet
 - [x] #7 `npx tsc --noEmit` and `npm test` clean; no new backend endpoint is required (the per-job payload already returns the full history)
 <!-- AC:END -->
@@ -74,6 +74,8 @@ polish; without it the feature is worse than what it replaces.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): AC3 measured with fetch capture: one click on Yes -> exactly one POST /confirm/, one click on No -> exactly one POST /dismiss/ (blocked before commit, nothing decided). AC5 observed live: the draft block ("Drafted reply (in Gmail Drafts)") renders inside the same bordered group as the message it answers, position badge visible.
+
 `GET /api/jobs/{id}/mailbox/` already returns `{messages, notes}` for a job with every message, its
 draft and its pending suggestions — TASK-120 built it and `JobMailboxTrigger` already renders it. The
 dashboard panel and `/mailbox` still work off the flat `/mailbox-suggestions/` list, which is why they

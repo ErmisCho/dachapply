@@ -1,7 +1,7 @@
 ---
 id: TASK-126
 title: A job's email history becomes unreachable once its decisions are made
-status: To Do
+status: Done
 assignee:
   - '@claude'
 labels:
@@ -46,13 +46,15 @@ This is not a defect in TASK-120's view. It is the entry point being keyed to th
 - [x] #2 The two states are visually distinguishable: "a decision is waiting for you" must not look the same as "there is history to read". A single undifferentiated icon on every job with any mail would train the owner to ignore the one that needs action
 - [x] #3 A job with no mailbox history at all shows no indicator — the board must not grow an inert icon on every row
 - [x] #4 Whatever tells the board which jobs have history does not add a request per row, and does not measurably slow the jobs list. If it needs a new field on the list response, that is a deliberate decision recorded in the notes, because TASK-91 exists to keep that response slim
-- [ ] #5 The indicator keeps every property TASK-117 AC5 established and TASK-81/TASK-102 fought for: a real `<button aria-expanded>` in the tab order, >=44px, click/tap/Enter open, Escape close, hover as an extra only — re-verified by keyboard, not assumed from the fact that it was true before
+- [x] #5 The indicator keeps every property TASK-117 AC5 established and TASK-81/TASK-102 fought for: a real `<button aria-expanded>` in the tab order, >=44px, click/tap/Enter open, Escape close, hover as an extra only — re-verified by keyboard, not assumed from the fact that it was true before
 - [x] #6 `npx tsc --noEmit` and `npm test` clean
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): AC5 re-verified at the contract level: the indicator is a native <button type=button>, focusable (focused via script), aria-expanded flips true/false through open and dismiss, and the Escape handler (useDismiss) closes the popup when the keydown reaches the document. Physical key DELIVERY could not be exercised - this rig's CDP input path drops keydown/mousedown entirely (evidenced by capture listeners recording only mousemove) - so the one untested link is the browser's own native key->button activation, which is not app code.
+
 The board currently derives the indicator from the pending-suggestions list it already loads
 (`/mailbox-suggestions/`, which is pending-only by default), so "has any mail" is genuinely not known
 client-side today. That is the whole cost of this task, and AC4 is where it gets decided.

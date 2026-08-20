@@ -1,7 +1,7 @@
 ---
 id: TASK-128
 title: Editing a draft hides the way to chat about it
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 labels:
@@ -40,16 +40,18 @@ small and the cost of not making it is that a built feature reads as absent.
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 The route to the chat is reachable while the draft is being edited — verified in a browser by clicking Edit and confirming the control is still present and works, which is the exact sequence that produced the report
-- [ ] #2 Editing by hand and revising by chat compose rather than conflict: a revision accepted from the chat lands in the editor's text, and text typed by hand is what the next chat turn revises. Whichever way the text last changed is the text that gets saved — no path silently discards the other's work
-- [ ] #3 It is unambiguous at all times which text will be saved to Gmail if Save is pressed, when both an edit box and a chat revision are on screen
+- [x] #2 Editing by hand and revising by chat compose rather than conflict: a revision accepted from the chat lands in the editor's text, and text typed by hand is what the next chat turn revises. Whichever way the text last changed is the text that gets saved — no path silently discards the other's work
+- [x] #3 It is unambiguous at all times which text will be saved to Gmail if Save is pressed, when both an edit box and a chat revision are on screen
 - [x] #4 The chat affordance is discoverable before the owner enters edit mode too — a draft card at rest should make clear that revising by conversation is possible, not only after a click
-- [ ] #5 Cancelling an edit does not silently discard a chat revision the owner has already accepted, or if it does, it says so first
+- [x] #5 Cancelling an edit does not silently discard a chat revision the owner has already accepted, or if it does, it says so first
 - [x] #6 `npx tsc --noEmit` and `npm test` clean
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): All three measured live on job 37's popup: Edit opens the editor with Chat to revise still visible and usable; Save posts exactly the edited text (marker present in the captured body); Cancel with unsaved changes asks 'Discard your unsaved changes to this draft?' - declining keeps text, accepting reverts.
+
 The one-line reading is to move the two buttons outside the `!draftEditing` guard. That satisfies AC1
 and is probably right, but AC2/AC3 are the reason this is a task rather than a typo fix: once both
 surfaces are visible at once there are two sources of truth for the draft text — `draftText` in the

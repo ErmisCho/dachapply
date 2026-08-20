@@ -1,7 +1,7 @@
 ---
 id: TASK-143
 title: Only track conversations for jobs still worth acting on
-status: In Progress
+status: Done
 assignee: []
 labels:
   - backend
@@ -39,19 +39,21 @@ withdrawn, skipped, archived`. The owner's "when I can still do something about 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The actionable set is defined once, named, in the model next to `STATUSES`/`DATED_STATUSES`/`UNAPPLIED_STATUSES` — not repeated as a literal in a view, a service and a component. The proposed split is actionable = `new, reviewed, to_apply, applied, interview, offer, accepted`; not actionable = `rejected, withdrawn, skipped, archived`
-- [ ] #2 A conversation whose job is not actionable is not shown in the mailbox review panel: job 760 (rejected) disappears from the panel, verified in a browser and not from the queryset
-- [ ] #3 No new suggestion or draft is generated for a message matched to a non-actionable job — "you no longer have to check" means the work stops, not just the display. Verified by test
-- [ ] #4 Nothing is deleted and nothing becomes unreachable: the messages, notes and past decisions on a rejected job remain on that job's own detail view. This hides a conversation from the review panel; it does not erase the record
-- [ ] #5 A job moving back into an actionable status brings its conversation back, with no re-fetch and no data repair needed — status is a filter, never a destructive action. Verified by test
-- [ ] #6 A message matched to a non-actionable job is still visible somewhere the owner can find it, and that place is named. Silently swallowing mail is the failure mode TASK-137 just spent a whole task fixing
-- [ ] #7 Existing pending suggestions on now-excluded jobs are handled deliberately: state whether they are dismissed, left pending but hidden, or migrated, and why. There are 4 such suggestions in production today, so this is a real case and not hypothetical
-- [ ] #8 Backend tests cover the status gate on generation and on the panel query; `npx tsc --noEmit` and `npm test` clean; the existing suite passes unchanged
+- [x] #1 The actionable set is defined once, named, in the model next to `STATUSES`/`DATED_STATUSES`/`UNAPPLIED_STATUSES` — not repeated as a literal in a view, a service and a component. The proposed split is actionable = `new, reviewed, to_apply, applied, interview, offer, accepted`; not actionable = `rejected, withdrawn, skipped, archived`
+- [x] #2 A conversation whose job is not actionable is not shown in the mailbox review panel: job 760 (rejected) disappears from the panel, verified in a browser and not from the queryset
+- [x] #3 No new suggestion or draft is generated for a message matched to a non-actionable job — "you no longer have to check" means the work stops, not just the display. Verified by test
+- [x] #4 Nothing is deleted and nothing becomes unreachable: the messages, notes and past decisions on a rejected job remain on that job's own detail view. This hides a conversation from the review panel; it does not erase the record
+- [x] #5 A job moving back into an actionable status brings its conversation back, with no re-fetch and no data repair needed — status is a filter, never a destructive action. Verified by test
+- [x] #6 A message matched to a non-actionable job is still visible somewhere the owner can find it, and that place is named. Silently swallowing mail is the failure mode TASK-137 just spent a whole task fixing
+- [x] #7 Existing pending suggestions on now-excluded jobs are handled deliberately: state whether they are dismissed, left pending but hidden, or migrated, and why. There are 4 such suggestions in production today, so this is a real case and not hypothetical
+- [x] #8 Backend tests cover the status gate on generation and on the panel query; `npx tsc --noEmit` and `npm test` clean; the existing suite passes unchanged
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): Generation gate and panel filter test-proven; browser: no card for job 760 (Deltia AI, rejected) with the panel open against production data; the job's history stays reachable (job endpoint test).
+
 AC1 exists because this list will be wrong once and then needs changing in one place. `models.py:113-115`
 already establishes exactly this pattern with `DATED_STATUSES` and `UNAPPLIED_STATUSES`, both of which
 are consumed from the model rather than re-typed.
