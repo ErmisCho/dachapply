@@ -8,6 +8,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Reply and reply-all can now be composed from the conversation itself: every message carries a
+  Reply control that shows exactly who will receive the draft before it is saved, with To and Cc
+  editable in place; the saved Gmail draft contains exactly what was shown.
 - Mail sent through a multi-tenant ATS (Ashby, JOIN, ...) is matched to the right job by the company
   name in the sender's display name — the one place the ATS names its client — with ambiguity never
   guessed, and a dry-run-by-default `manage.py rematch_ats_display_name_messages` for mail stored
@@ -87,6 +90,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Text inside a conversation can actually be selected and copied again. The panel's drag-to-reorder
+  makes the browser mark everything inside it unselectable; the conversation card now opts back in.
+- The per-job email-history popup no longer scrolls sideways: its rows now shrink to the popup's
+  width instead of forcing a 640px-wide line into a 380px panel.
+- The saved board sort is genuinely applied when the board loads with no explicit sort — the same
+  order now appears on another device, as the settings page always claimed.
+- The message-body backfill no longer reports the same attachment-only messages as "filled" on
+  every run, and a new --calendar-missing mode recovers calendar invitations for messages whose
+  bodies were stored before calendar support existed.
 - The board renders each job once instead of twice. The desktop table and the mobile cards were both
   fully present in the DOM at every screen size with CSS hiding one — 84% of the page was the same
   jobs twice; now only the rendering that fits the screen is mounted, and selection and sort survive
