@@ -8,7 +8,8 @@ from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.db import connection, transaction
-from django.db.models import Avg, Case, Count, F, IntegerField, Q, Value, When
+from django.db.models import Avg, Case, Count, Exists, F, IntegerField, OuterRef, Q, Value, When
+from django.db.models.functions import Substr
 from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.encoding import force_str
@@ -20,7 +21,7 @@ from rest_framework.decorators import api_view, permission_classes, action, thro
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile, InviteCode
-from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxDraftSerializer, MailboxMessageSerializer, MailboxMessageWithSuggestionsSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, normalize_job_url
+from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxDraftSerializer, MailboxMessageListSerializer, MailboxMessageSerializer, MailboxMessageWithSuggestionsSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, invalid_email_addresses, normalize_job_url
 from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, has_candidate_profile, user_profile_settings
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
@@ -30,10 +31,11 @@ from .services.cleaning import clean_job_location
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
 from .services.interview_coach import analyze_answer, suggest_questions
-from .services import mailbox
+from .services import mailbox, mailbox_tasks
 from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_suggestion
+from .services.draft_chat import ChatTurn, run_chat_turn
 from .services.analytics import record_demo_click
-from .services.cv_generator import ARTIFACT_KEYS, decode_correction_image, generation_preview, is_cv_owner, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
+from .services.cv_generator import ARTIFACT_KEYS, available_model_options, decode_correction_image, generation_preview, is_cv_owner, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
 from .services.cv_tasks import cancel_cv_task, get_cv_task, get_cv_task_download, start_cv_compile_task, start_cv_revision, start_cv_task
 from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
 from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
@@ -49,21 +51,31 @@ BOARD_THRESHOLDS = {
     'deadline_soon_days': JobLead.DEADLINE_SOON_DAYS,
     'unapplied_statuses': JobLead.UNAPPLIED_STATUSES,
     'dated_statuses': JobLead.DATED_STATUSES,
+    # TASK-143 AC1: published for the same reason as the two lists above -- the frontend needs to
+    # know which statuses are still worth acting on (it hides mailbox conversations for the rest),
+    # and a second copy of the list in App.tsx is the bug TASK-96 exists to delete. The client keeps
+    # a fallback for a pre-auth render, exactly as it already does for unapplied_statuses.
+    'actionable_statuses': JobLead.ACTIONABLE_STATUSES,
 }
 
 
-# The board's default ordering: urgency first, then the server-side formula. Sorting is an
-# opt-in override of this, never a replacement -- ?ordering= absent, empty or unrecognised
-# lands here.
-DEFAULT_BOARD_ORDERING = ('stale_rank', 'status_rank', 'priority_rank', '-evaluations__fit_score', '-created_at')
+# TASK-145 AC1/AC3: the board's default ordering -- attention order first (new, then interview,
+# then everything else in pipeline order, closed statuses last -- see _attention_rank below),
+# then the age/urgency formula as tiebreakers within a group. Sorting is an opt-in override of
+# this, never a replacement -- ?ordering= absent, empty or unrecognised lands here.
+# stale_rank is demoted, not deleted (AC3): it no longer leads (the owner declined that variant),
+# but it is still the second key, so two jobs in the same attention group still surface an
+# imminent deadline or a stale one before the rest -- ordering *within* a group is unchanged from
+# before this task.
+DEFAULT_BOARD_ORDERING = ('attention_rank', 'stale_rank', 'priority_rank', '-evaluations__fit_score', '-created_at')
 
 # TASK-97/TASK-108's sort control. The query parameter is a lookup *key*, never an argument to
 # order_by(): passing it through would let a client order by any related column
 # (?ordering=-created_by__password) and read values off the resulting row order, which is
 # information disclosure, not just untidy. An unknown key simply misses the dict.
-# 'status' points at status_pipeline_rank (built below from JobLead.STATUSES), not status_rank
-# -- status_rank is an attention order DEFAULT_BOARD_ORDERING depends on, and collapses
-# interview/offer together, which is wrong for a user explicitly sorting by pipeline stage.
+# 'status' points at status_pipeline_rank (built below from JobLead.STATUSES), not attention_rank
+# -- attention_rank is the grouped order DEFAULT_BOARD_ORDERING depends on (new, then interview,
+# then pipeline order for the rest), which is wrong for a user explicitly sorting by pipeline stage.
 BOARD_ORDERINGS = {
     'status': 'status_pipeline_rank',
     'fit_score': 'evaluations__fit_score',
@@ -80,6 +92,23 @@ def _status_pipeline_rank():
     silently fail to sort -- the pipeline order is never restated as a second literal list."""
     whens = [When(status=s, then=Value(i)) for i, (s, _label) in enumerate(JobLead.STATUSES)]
     return Case(*whens, default=Value(len(JobLead.STATUSES)), output_field=IntegerField())
+
+
+def _attention_rank():
+    """TASK-145 AC1/AC2: the board's default GROUP order -- new first, interview second, then
+    every other status in the model's own pipeline order, closed statuses last -- built from
+    JobLead.STATUSES the same way _status_pipeline_rank() is above, so a status added to the
+    model can't silently sort into an arbitrary position. 'new' and 'interview' are pulled out to
+    ranks 0 and 1; everything else keeps its pipeline index offset by 2, which preserves their
+    relative (pipeline) order without restating it as a second list -- STATUSES already lists
+    reviewed/to_apply/applied/offer/accepted before the closed statuses, so offsetting by 2 keeps
+    them in that same order after 'new' and 'interview' are pulled to the front.
+    """
+    whens = [
+        When(status=s, then=Value(0 if s == 'new' else 1 if s == 'interview' else 2 + i))
+        for i, (s, _label) in enumerate(JobLead.STATUSES)
+    ]
+    return Case(*whens, default=Value(2 + len(JobLead.STATUSES)), output_field=IntegerField())
 
 
 def _ordering_expr(key, descending):
@@ -559,11 +588,20 @@ class JobLeadViewSet(viewsets.ModelViewSet):
                 When(status__in=JobLead.DATED_STATUSES, status_date__lt=today-timezone.timedelta(days=JobLead.STALE_APPLIED_DAYS), then=Value(1)),
                 When(status__in=JobLead.UNAPPLIED_STATUSES, created_at__lt=timezone.now()-timezone.timedelta(days=JobLead.STALE_UNAPPLIED_DAYS), then=Value(1)),
                 default=Value(0), output_field=IntegerField()),
-            status_rank=Case(When(status='new', then=Value(0)), When(status='to_apply', then=Value(1)), When(status='reviewed', then=Value(2)), When(status__in=['interview','offer'], then=Value(3)), When(status='applied', then=Value(4)), default=Value(5), output_field=IntegerField()),
+            # TASK-145 AC1/AC2: the default board GROUP order -- see _attention_rank's own docstring.
+            attention_rank=_attention_rank(),
             priority_rank=Case(When(evaluations__priority='high', then=Value(0)), When(evaluations__priority='medium', then=Value(1)), When(evaluations__priority='low', then=Value(2)), default=Value(3), output_field=IntegerField()),
             # TASK-108: pipeline order for ordering=status, distinct from status_rank's attention
             # order above -- see BOARD_ORDERINGS' comment.
             status_pipeline_rank=_status_pipeline_rank(),
+            # TASK-126 AC4: recorded decision -- option 1 from the task notes. A boolean Exists()
+            # subquery rather than a Count(): this queryset already joins/filters through
+            # `evaluations` and ends in .distinct(), so a Count() on a second reverse relation would
+            # fan out with that join and need its own distinct-count gymnastics for a value this view
+            # only ever treats as true/false. Exists() never joins, so it costs nothing beyond one
+            # correlated subquery per row and is exposed only on JobLeadListSerializer (the /jobs/
+            # list), never widening the detail response.
+            has_mailbox_history=Exists(MailboxMessage.objects.filter(matched_job=OuterRef('pk'))),
         ).order_by(*parse_board_ordering(p.get('ordering')))
         return qs.distinct()
     def list(self, request, *args, **kwargs):
@@ -631,6 +669,11 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         here -- see TASK-120's task notes. self.get_object() runs against get_queryset()
         (accessible_jobs) exactly like every other detail action above -- a job this user cannot see
         404s before any message or note is read (TASK-120 AC6).
+
+        TASK-143 AC4/AC6: deliberately NOT filtered by JobLead.ACTIONABLE_STATUSES -- this is the
+        named place a message matched to a non-actionable (e.g. rejected) job stays fully visible.
+        MailboxSuggestionViewSet.list below hides that job's conversation from the review PANEL;
+        nothing here erases it from the job's own detail view.
         """
         job=self.get_object()
         # TASK-120 AC2: MailboxMessage.Meta.ordering ('-uid') is wrong for this view -- for
@@ -648,6 +691,32 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             'messages': MailboxMessageWithSuggestionsSerializer(messages, many=True).data,
             'notes': ApplicationNoteSerializer(notes, many=True).data,
         })
+    @action(detail=False, methods=['get'], url_path='feedback-due')
+    def feedback_due(self, request):
+        """TASK-146 AC1/AC2/AC8: the feedback-deadline pane's one query -- every actionable job
+        that carries a feedback_due_date, oldest date first. A single ascending sort by
+        feedback_due_date does both of AC1/AC2's asks in one expression: overdue rows (date <
+        today) sort before upcoming ones because their dates are chronologically earlier, and
+        within each side of that boundary the same ascending order reads as "most overdue first"
+        and "soonest first" respectively -- so the job overdue by 23 days leads the overdue group
+        instead of sorting as if it were barely due (AC2). `overdue` is computed in Python, not a
+        second query, from `today` and each row's own date.
+
+        AC8: reuses JobLead.ACTIONABLE_STATUSES, the one place this split is defined (see that
+        constant's own comment), rather than a second literal status list -- a rejected/withdrawn/
+        skipped/archived job never appears here, same rule TASK-143's mailbox review panel follows.
+
+        AC10: one query. `.values()` selects only JobLead's own columns (no join, no
+        prefetch_related, no evaluations touched) so the response costs exactly one SELECT
+        regardless of how many rows come back -- no per-row query for company/title/status/date,
+        all of which already live on this table.
+        """
+        today=timezone.localdate()
+        rows=accessible_jobs(request.user).filter(
+            status__in=JobLead.ACTIONABLE_STATUSES,
+            feedback_due_date__isnull=False,
+        ).order_by('feedback_due_date', 'id').values('id', 'company', 'title', 'status', 'feedback_due_date')
+        return Response([{**row, 'overdue': row['feedback_due_date'] < today} for row in rows])
 
 class EvaluationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class=JobEvaluationSerializer; queryset=JobEvaluation.objects.select_related('job').all()
@@ -685,6 +754,18 @@ class MailboxSuggestionViewSet(viewsets.GenericViewSet):
         qs=self.get_queryset()
         statuses=[s for s in (request.query_params.get('status') or 'pending').split(',') if s]
         if statuses: qs=qs.filter(status__in=statuses)
+        # TASK-143 AC2/AC5/AC7: this is the mailbox review panel's own feed (the frontend builds one
+        # JobMailboxConversationCard per job that shows up here), so a job the owner has already
+        # closed out (rejected/withdrawn/skipped/archived) is filtered OUT here -- job 760
+        # (Deltia AI, rejected) disappears from the panel this way. Deliberately only here, not in
+        # get_queryset() above: confirm/dismiss keep working on a suggestion reached some other way
+        # (e.g. from the job's own detail view, TASK-143 AC4/AC6), so an existing pending suggestion
+        # on a now-excluded job is HIDDEN, never dismissed or deleted (AC7 -- there are 4 of those in
+        # production today, and this is the "left pending but hidden" choice, the least destructive
+        # of the three the task names). Because this filters on the job's live `status` rather than a
+        # stored flag, moving the job back to an actionable status brings it back on the very next
+        # load, with no re-fetch or repair (AC5).
+        qs=qs.filter(job__status__in=JobLead.ACTIONABLE_STATUSES)
         return Response(self.get_serializer(qs, many=True).data)
     @action(detail=True, methods=['post'])
     def confirm(self, request, pk=None):
@@ -710,22 +791,128 @@ class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         if not is_cv_owner(self.request.user): return MailboxRun.objects.none()
         return MailboxRun.objects.all().prefetch_related('messages__matched_job','messages__draft')
+    @action(detail=False, methods=['post'], url_path='run-now')
+    def run_now(self, request):
+        """TASK-124 AC1/AC2/AC9: same owner gate as the rest of this viewset -- this triggers real
+        mailbox access, so it is never reachable by anyone else. Delegates entirely to
+        services.mailbox_tasks.start_mailbox_check, which already decides start-now-on-a-thread vs
+        queue-a-request from has_mailbox_credentials() (services.mailbox._default_transport()) --
+        this view adds no second capability check of its own. Returns immediately either way
+        (AC1): 'queued' tells the client which case it got, matching the {'queued', 'task_id'} /
+        {'queued', 'request_id'} shapes start_mailbox_check documents.
+        """
+        if not is_cv_owner(request.user):
+            return Response({'detail': 'Not found.'}, status=404)
+        return Response(mailbox_tasks.start_mailbox_check(request.user))
+    @action(detail=False, methods=['get'], url_path='status')
+    def status_view(self, request):
+        """TASK-124 AC5/AC6/AC7/AC8: one endpoint to poll regardless of how the run was triggered
+        (this app's own thread, a queued request picked up on the owner's machine, or a plain
+        `manage.py check_mailbox` on the command line) -- mailbox.current_mailbox_run() is the one
+        row AC4's concurrency guard allows to be "in progress" at a time, so there is nothing to
+        disambiguate between triggers here.
+
+        `run` is the in-progress run while one exists, otherwise the most recently attempted one
+        (AC6: the outcome -- counters or error -- must still be visible without a manual refresh).
+        `estimate` is mailbox.mailbox_check_estimate() verbatim (AC7: None with no history of that
+        kind, never an invented number). `taking_longer_than_usual` is computed here, not left for
+        the client to derive, so a missing estimate or an instant run can never read as a negative
+        countdown (AC8).
+        """
+        if not is_cv_owner(request.user):
+            return Response({'detail': 'Not found.'}, status=404)
+        run = mailbox.current_mailbox_run() or MailboxRun.objects.first()
+        running = bool(run and run.finished_at is None)
+        elapsed_seconds = (timezone.now() - run.started_at).total_seconds() if running else None
+        estimate = mailbox.mailbox_check_estimate()
+        estimated_seconds = estimate.get('estimated_seconds')
+        taking_longer_than_usual = bool(running and estimated_seconds is not None and elapsed_seconds > estimated_seconds)
+        return Response({
+            'has_credentials': mailbox.has_mailbox_credentials(),
+            'running': running,
+            'run': MailboxRunSerializer(run).data if run else None,
+            'elapsed_seconds': elapsed_seconds,
+            'estimate': estimate,
+            'taking_longer_than_usual': taking_longer_than_usual,
+        })
 
 class MailboxMessageViewSet(viewsets.GenericViewSet):
     """TASK-117 AC6/AC7. MailboxMessage.uid is globally unique with no user FK -- the mailbox
     subsystem is single-owner by construction, so this is gated on is_cv_owner exactly like
     MailboxRunViewSet above, not on accessible_jobs. Exposes only what AC6 needs (the unmatched list
-    and the manual attach action) -- never a generic list/retrieve/PATCH/DELETE, keeping the model's
-    append-only guarantee true for everything except the one owner-initiated attach.
+    and the manual attach action), TASK-142's `retrieve` (the full-body counterpart to unmatched's
+    truncated preview -- see MailboxMessageListSerializer), plus TASK-133's reply-recipients preview
+    and reply-compose actions below -- still never list/PATCH/DELETE, keeping the model's append-only
+    guarantee true for everything except the one owner-initiated attach (matched_job). Composing a
+    reply never mutates MailboxMessage itself either -- it only ever creates/updates the message's
+    MailboxDraft row (see services.mailbox.compose_reply_draft), the same append-only-except-one-field
+    shape attach already holds.
+
+    reply_recipients/reply are deliberately scoped through accessible_jobs (like MailboxDraftViewSet
+    below), not the is_cv_owner gate the rest of this viewset uses -- see each action's own docstring.
     """
     serializer_class=MailboxMessageSerializer
     def get_queryset(self):
         if not is_cv_owner(self.request.user): return MailboxMessage.objects.none()
         return MailboxMessage.objects.all()
+    def retrieve(self, request, pk=None):
+        """TASK-142 AC1/AC5/AC7 support: `unmatched` below truncates body_text to a preview
+        (MailboxMessageListSerializer) so the list itself stays bounded -- this is where the owner
+        gets the FULL message, including its complete body and any pending suggestions, when a row
+        is actually opened. Same is_cv_owner gate as the rest of this viewset (an unmatched message
+        has no matched_job to scope through accessible_jobs the way _accessible_message below does).
+        Nothing is deleted or unreachable by bounding the list (AC7): every message still has exactly
+        one extra request between it and being fully readable.
+        """
+        message=self.get_object()
+        return Response(MailboxMessageWithSuggestionsSerializer(message).data)
     @action(detail=False, methods=['get'])
     def unmatched(self, request):
-        qs=self.get_queryset().exclude(classification='not_job_related').filter(matched_job__isnull=True).order_by('-uid')
-        return Response(MailboxMessageSerializer(qs, many=True).data)
+        # TASK-142 AC2, round 1 (coordinator re-measurement, 2026-08-19): truncating in
+        # MailboxMessageListSerializer.to_representation() was NOT enough -- Django had already
+        # pulled every row's FULL body_text off the wire (Neon, not local sqlite) before that Python
+        # code ever ran, so 836 messages x ~2,354 chars still cost the same ~2MB transfer regardless
+        # of what the serializer did with it afterwards. The truncation has to happen in the SQL:
+        # .defer('body_text') drops the full column from the SELECT list, and the Substr annotation
+        # computes a BOUNDED (PREVIEW_CHARS+1)-char preview in the database instead -- the +1 is so
+        # the serializer can tell "was this the whole body" apart from "was this truncated" without a
+        # second COUNT/LENGTH query. MailboxMessageListSerializer reads body_preview, never
+        # instance.body_text (touching the deferred field would silently trigger one reload query
+        # PER ROW, reintroducing the exact cost this removes).
+        #
+        # TASK-142 AC2, round 2 (coordinator re-measurement, 2026-08-19): the payload was fixed
+        # (408KB, well under a second) but wall-clock was not -- 320 queries against Neon (~38ms
+        # each) for 319 rows, all but one of them `SELECT ... FROM mailboxdraft WHERE message_id=?`,
+        # one per row. `draft` is a REVERSE one-to-one (MailboxDraft.message), so DRF fetches it lazily
+        # per instance unless the query already joined it. select_related('draft') -- not
+        # prefetch_related, which would still be 2 queries but the wrong fix for a reverse
+        # one-to-one -- pulls it in the SAME query via a LEFT OUTER JOIN.
+        #
+        # Considered dropping `draft` from this serializer instead (an unmatched message has no
+        # matched_job, and a draft is only ever written for a matched one -- see
+        # maybe_draft_reply()'s `if matched is not None` gate and compose_reply_draft()'s
+        # accessible_jobs scoping in this same file, both in services.mailbox/views.py). Checked
+        # rather than assumed: TASK-129/TASK-137's historical detach_job_board_messages()/
+        # detach_ats_host_messages() clear `matched_job` back to None WITHOUT touching an already-
+        # written MailboxDraft, so a message can be unmatched today with a real draft still attached
+        # -- confirmed against production (DACHAPPLY_ALLOW_PROD_DB=1, read-only): 107 of 836 unmatched
+        # messages carry one. Dropping the field would silently hide 107 real Gmail Drafts the owner
+        # already has open, which is worse than the 12s this join removes -- select_related is the
+        # correct fix, not a shortcut around checking.
+        #
+        # matched_job_company/matched_job_title (source='matched_job.company'/'.title' on the base
+        # MailboxMessageSerializer) do NOT need the same treatment: matched_job__isnull=True in this
+        # queryset means matched_job_id is NULL on every row, and Django's forward-FK descriptor
+        # returns None from that WITHOUT a query when the id itself is None -- no join needed here,
+        # though that is this endpoint's own filter guaranteeing it, not a property of the serializer,
+        # so it would need revisiting if this serializer is ever reused without that filter.
+        preview_len = MailboxMessageListSerializer.BODY_PREVIEW_CHARS + 1
+        qs=(self.get_queryset().exclude(classification='not_job_related').filter(matched_job__isnull=True)
+            .select_related('draft')
+            .annotate(body_preview=Substr('body_text', 1, preview_len))
+            .defer('body_text')
+            .order_by('-uid'))
+        return Response(MailboxMessageListSerializer(qs, many=True).data)
     @action(detail=True, methods=['post'])
     def attach(self, request, pk=None):
         """TASK-117 AC6: the only writer of `matched_job` for a message that already ran through
@@ -746,6 +933,70 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         if message.matched_job_id and message.matched_job_id != job.id:
             return Response({'detail':'This message is already attached to a different job.'}, status=400)
         attach_message_to_job(message, job, user=request.user)
+        message.refresh_from_db()
+        return Response(MailboxMessageWithSuggestionsSerializer(message).data)
+
+    def _accessible_message(self, request, pk):
+        """TASK-133: reply-recipients/reply write into and read from the OWNER's real mailbox, so
+        this is deliberately not self.get_object() (which routes through get_queryset()'s
+        is_cv_owner gate above) -- it is scoped through the message's own matched_job via
+        accessible_jobs, the same rule every other job-linked resource in this app already uses
+        (MailboxDraftViewSet.get_queryset(), JobLeadViewSet, ...). A second user who cannot see the
+        matched job gets 404 here exactly as they would reading that job's own mailbox panel,
+        regardless of whether they are the mailbox's is_cv_owner.
+        """
+        return MailboxMessage.objects.filter(pk=pk, matched_job__in=accessible_jobs(request.user)).first()
+
+    @action(detail=True, methods=['get'], url_path='reply-recipients')
+    def reply_recipients(self, request, pk=None):
+        """TASK-133 AC2/AC3: read-only preview of who a reply or reply-all would go to, BEFORE
+        anything is written -- derived from the message's own headers (mailbox.derive_reply_recipients),
+        never guessed. `reply` below writes exactly the list the owner confirms here, so this preview
+        and what gets saved must come from the same derivation to keep AC3's "shown verbatim" true.
+        """
+        message = self._accessible_message(request, pk)
+        if not message:
+            return Response({'detail': 'Not found.'}, status=404)
+        reply_all = str(request.query_params.get('reply_all') or '').strip().lower() in ('1', 'true', 'yes')
+        return Response(mailbox.derive_reply_recipients(message, reply_all))
+
+    @action(detail=True, methods=['post'])
+    def reply(self, request, pk=None):
+        """TASK-133 AC2/AC3/AC6/AC8: compose a hand-edited reply and save it into Gmail Drafts on
+        this message's thread.
+
+        `to`/`cc` are taken from the request EXACTLY as sent -- never re-derived here and silently
+        substituted, or reply_recipients' preview above would not be what actually gets saved (AC3).
+        Malformed addresses are rejected before compose_reply_draft ever runs (AC7's "a recipient the
+        owner did not intend cannot be introduced silently" starts with "cannot be a typo either").
+
+        compose_reply_draft runs check_guardrails on the composed text exactly as maybe_draft_reply
+        does for a generated draft (AC6), and returns '' on success or a short refusal reason
+        otherwise -- never raises -- so a Gmail rejection or a guardrail block is a 4xx with the
+        reason and nothing half-written (AC8), the same contract update_draft_text already holds.
+        """
+        message = self._accessible_message(request, pk)
+        if not message:
+            return Response({'detail': 'Not found.'}, status=404)
+        body_text = (request.data.get('body_text') or '').strip()
+        raw_to = request.data.get('to')
+        raw_cc = request.data.get('cc', [])
+        if not body_text:
+            return Response({'detail': 'body_text is required.'}, status=400)
+        if not isinstance(raw_to, list):
+            return Response({'detail': 'to must be a list of addresses.'}, status=400)
+        if not isinstance(raw_cc, list):
+            return Response({'detail': 'cc must be a list of addresses.'}, status=400)
+        to = [addr.strip() for addr in raw_to if (addr or '').strip()]
+        cc = [addr.strip() for addr in raw_cc if (addr or '').strip()]
+        if not to:
+            return Response({'detail': 'At least one To address is required.'}, status=400)
+        invalid = invalid_email_addresses(to + cc)
+        if invalid:
+            return Response({'detail': f'Not a valid email address: {", ".join(invalid)}'}, status=400)
+        reason = mailbox.compose_reply_draft(message, body_text, to, cc, user=request.user)
+        if reason:
+            return Response({'detail': reason}, status=400)
         message.refresh_from_db()
         return Response(MailboxMessageWithSuggestionsSerializer(message).data)
 
@@ -774,8 +1025,82 @@ class MailboxDraftViewSet(viewsets.GenericViewSet):
         reason=mailbox.update_draft_text(draft, new_text, user=request.user)
         if reason:
             return Response({'detail': reason}, status=400)
+        # TASK-122 AC4/AC5: whatever conversation led here is spent the moment its result is
+        # accepted -- the accepted text is body_text's new baseline going forward, so a later chat
+        # turn must re-feed IT as the "original draft", not a transcript that ends at older text
+        # update_draft_text just overwrote. mailbox.py is out of this task's file scope, so the
+        # reset happens here rather than inside update_draft_text itself.
+        MailboxDraft.objects.filter(pk=draft.pk).update(chat_history=[])
         draft.refresh_from_db()
         return Response(self.get_serializer(draft).data)
+    @action(detail=False, methods=['get'], url_path='model-options')
+    def model_options(self, request):
+        """TASK-122 AC3/AC4: the same machine-capability probe CV generation already uses (never a
+        second one), plus the owner's last-chosen (provider, model) so the picker does not reset on
+        every mount the way CV generation's does.
+        """
+        profile=user_profile_settings(request.user)
+        return Response({
+            'models': available_model_options(),
+            'selected_provider': profile.mailbox_chat_provider,
+            'selected_model': profile.mailbox_chat_model,
+        })
+    @action(detail=True, methods=['post'])
+    def chat(self, request, pk=None):
+        """TASK-122 AC2/AC3/AC4/AC6/AC7/AC8: one turn of the draft-revision conversation.
+        Rebuilds `history` from chat_history (never trusts the client to resend it -- the stored
+        JSON is the one source of truth), calls run_chat_turn, and returns the revision for the
+        owner to look at. NEVER writes to Gmail or to `body_text` here (AC5's write-through only
+        happens via `edit` above, on explicit accept) -- see draft_chat's module docstring.
+
+        The (provider, model) requested is persisted onto the user's profile immediately (AC4),
+        regardless of whether this particular turn succeeds -- it is what the owner picked in the
+        UI, and CV generation's picker resetting on every mount is exactly the annoyance this must
+        not repeat. Only a turn with reason == '' (AC7: no provider failure, AC6: no guardrail
+        block) is appended to chat_history; a refused turn changes nothing on record, so a later
+        turn still re-feeds the last text that was actually safe to show.
+        """
+        draft=self.get_object()
+        user_message=(request.data.get('user_message') or '').strip()
+        if not user_message:
+            return Response({'detail':'user_message is required.'}, status=400)
+        provider=request.data.get('provider') or ''
+        model=request.data.get('model') or ''
+        effort=request.data.get('effort') or ''
+        speed=request.data.get('speed') or 'normal'
+        profile=user_profile_settings(request.user)
+        if provider and model and (profile.mailbox_chat_provider != provider or profile.mailbox_chat_model != model):
+            profile.mailbox_chat_provider=provider
+            profile.mailbox_chat_model=model
+            profile.save(update_fields=['mailbox_chat_provider','mailbox_chat_model'])
+        history=[ChatTurn(**item) for item in draft.chat_history]
+        result=run_chat_turn(draft.body_text, history, user_message, provider, model, effort, speed, profile=profile)
+        if result.reason:
+            return Response({'detail': result.reason}, status=400)
+        draft.chat_history=draft.chat_history + [{'user_message': user_message, 'revised_text': result.revised_text}]
+        draft.save(update_fields=['chat_history'])
+        return Response(self.get_serializer(draft).data)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def raise_test_error(request):
+    """TASK-88 AC2: deliberately raise, so the alerting path can be proven end to end in production.
+
+    AC1 wired unhandled 500s to AdminEmailHandler, but "it is configured" and "an alert actually
+    arrives in the owner's inbox" are different claims, and only the second one is worth anything at
+    3am. There was no way to make the app fail on purpose, so the channel had never been exercised
+    against production -- ERROR_ALERT_EMAILS, the Brevo relay, SERVER_EMAIL being a verified sender,
+    and the cooldown all had to be right simultaneously, untested.
+
+    Owner-gated (is_cv_owner, the same gate /api/mailbox-runs/ uses) and POST-only, so it cannot be
+    reached by a stray GET, a crawler, or another account. Kept rather than deleted after the first
+    successful alert: the same three things can silently rot -- a Brevo key rotates, a sender
+    verification lapses, a recipient changes -- and this is how you find out before an outage does
+    rather than after.
+    """
+    if not is_cv_owner(request.user):
+        return Response({'detail': 'Not found.'}, status=404)
+    raise RuntimeError('TASK-88 AC2: deliberate test error, raised on purpose to prove alerting works.')
 
 @api_view(['POST'])
 def practice_evaluate(request):
@@ -1051,6 +1376,18 @@ def cv_generation_status(request, task_id):
     if not is_cv_owner(request.user):
         return Response({'detail':'Not found.'}, status=404)
     task=get_cv_task(task_id, request.user.id)
+    return Response(task) if task else Response({'detail':'Task not found.'}, status=404)
+
+
+@api_view(['GET'])
+def mailbox_check_task_status(request, task_id):
+    """TASK-124 AC1: polling for the specific in-thread task run-now just started -- same
+    shape/gate as cv_generation_status above. Only reachable when the run started on THIS
+    process's thread (see services.mailbox_tasks); a queued request (no credentials) has no task
+    to poll here at all -- the caller should watch /api/mailbox-runs/status/ instead."""
+    if not is_cv_owner(request.user):
+        return Response({'detail':'Not found.'}, status=404)
+    task=mailbox_tasks.get_mailbox_check_task(task_id, request.user.id)
     return Response(task) if task else Response({'detail':'Task not found.'}, status=404)
 
 

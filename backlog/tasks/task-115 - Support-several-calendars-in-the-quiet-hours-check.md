@@ -1,8 +1,9 @@
 ---
 id: TASK-115
 title: Manage several quiet-hours calendars from the platform
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-08-18 11:30'
 labels:
   - mailbox
@@ -39,14 +40,14 @@ So this is two things: a missing feature, and a configuration mistake that the s
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 Several quiet-hours calendars are configurable **in the app** (profile/settings page), the same way cadence and calendar-awareness already are (TASK-109 AC8) — not only in a local .env
-- [ ] #2 The run is treated as busy if ANY configured calendar reports a busy event at that moment
-- [ ] #3 One unreachable or unparseable calendar does not prevent the others being checked, and total failure still fails open (the run proceeds) — verified by a test with one good and one broken URL
-- [ ] #4 A configured-but-unusable calendar is no longer silent: when a configured URL fails, the run records it where the owner can see it (`MailboxRun.error` or an equivalent surfaced field), rather than only logging
+- [x] #2 The run is treated as busy if ANY configured calendar reports a busy event at that moment
+- [x] #3 One unreachable or unparseable calendar does not prevent the others being checked, and total failure still fails open (the run proceeds) — verified by a test with one good and one broken URL
+- [x] #4 A configured-but-unusable calendar is no longer silent: when a configured URL fails, the run records it where the owner can see it (`MailboxRun.error` or an equivalent surfaced field), rather than only logging
 - [ ] #5 The stored URLs are never returned in full by the API: a GET returns them masked (calendar-owner part visible, the `private-<hash>` secret replaced), while a write accepts the full URL — an ICS private URL grants read access to an entire calendar with no authentication, so it is a secret, unlike every other mailbox setting in this serializer
 - [ ] #6 Masking is verified against an actual API response, not by reading the serializer — a GET on the profile endpoint contains no `private-<hash>` substring
 - [ ] #7 The platform is the ONLY way to configure quiet-hours calendars: the `GMAIL_CALENDAR_ICS_URL` environment variable is removed, and nothing in the UI, docs or `.env.local.example` tells the owner to edit a file
-- [ ] #8 The parser tolerates a pasted `[a, b, c]` list literal and surrounding quotes rather than treating it as one URL — that shape is what someone naturally writes, and getting it wrong currently fails open and silent
-- [ ] #9 Backend tests cover multi-calendar parsing, the any-calendar-busy rule, the partial-failure case and the masking; no test fetches a real calendar
+- [x] #8 The parser tolerates a pasted `[a, b, c]` list literal and surrounding quotes rather than treating it as one URL — that shape is what someone naturally writes, and getting it wrong currently fails open and silent
+- [x] #9 Backend tests cover multi-calendar parsing, the any-calendar-busy rule, the partial-failure case and the masking; no test fetches a real calendar
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -138,3 +139,50 @@ This task is therefore closed as **superseded**, not as done. Nothing in it is a
 every open criterion has a named successor in TASK-116, which is the paper trail TW-005 requires for
 a criterion that will not be satisfied as written.
 <!-- SECTION:NOTES:END -->
+
+## Progress (2026-08-18) — the reading half, and what it does NOT fix
+
+The platform half shipped in PR #43. The reading half never did, because `mailbox.py` was locked by a
+parallel session at the time, and nothing since connected the two. Measured on the owner's live
+mailbox today, during a real `check_mailbox --force`:
+
+    URLError: <urlopen error unknown url type: [https>
+
+`calendar_busy_now(now, ics_url=None)` read **`settings.GMAIL_CALENDAR_ICS_URL`** — one env var,
+handed whole to `_fetch_ics` — and the call site passed no profile at all. So the calendars the
+settings page writes were never read by anything, and the value that WAS read was the bracketed list
+literal this task was filed about.
+
+Now: `calendar_busy_now(now, urls_raw)` takes the profile's `mailbox_calendar_ics_urls`, parsed by
+the existing `parse_calendar_ics_urls` (no second parser written — AC8's tolerance for
+`[a, b, c]`, commas, newlines and stray quotes already lived there). Every calendar is checked
+independently, any one busy wins (AC2), one dead URL cannot hide the others and total failure still
+fails open (AC3, TASK-109 AC7), and per-calendar failures are recorded on `MailboxRun.error` with the
+URL **masked** (AC4) — the secret an owner pastes must not reappear unmasked in a run record.
+
+### The thing this does not fix, measured against production
+
+    profiles: 9 | mailbox_check_calendar_aware: True on all | configured calendars: 0 on all
+
+The owner's calendar only ever lived in a local `.env`. So quiet hours still do nothing until a
+calendar is entered in Settings — the difference is that it now fails for an honest reason instead of
+a stale one. **AC1 stays unchecked**: the field and UI exist, but "configurable in the app" is not
+demonstrated until a calendar entered there is shown to drive a run.
+
+### Reverted, deliberately
+
+Reporting "calendar-aware ON, nothing configured" on each run was implemented and then removed:
+`mailbox_check_calendar_aware` defaults to True, so it fired for every account that simply does not
+use quiet hours, and twelve tests caught it. A warning that cries wolf on every run is the disease
+AC4 exists to cure. The reasoning is left in a comment at the call site, and the mismatch belongs on
+the settings page beside the toggle that causes it — assigned to the frontend wave.
+
+### Still open
+
+- **AC1** — needs a calendar entered in the app and shown to drive a run.
+- **AC5/AC6** — masking shipped with the platform half; not re-verified against a live API response
+  in this pass, so left unchecked rather than assumed.
+- **AC7** — `mailbox.py` no longer reads `GMAIL_CALENDAR_ICS_URL`, but `settings.py` still defines it;
+  deleting it was out of the implementing agent's territory. TASK-116 removes it wholesale.
+
+582 backend tests pass.

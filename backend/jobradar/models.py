@@ -1,3 +1,5 @@
+from datetime import time
+
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -55,7 +57,33 @@ class UserProfile(models.Model):
     # serializers.CandidateProfileSerializer.validate_mailbox_check_cadence_minutes) because 0 would
     # collide with prompt_builder's generic profile codec, which treats a falsy value as "unset".
     mailbox_check_cadence_minutes=models.PositiveIntegerField(default=60)
+    # TASK-141 AC1/AC3/AC7: how far back check_mailbox looks for NEW mail -- read by
+    # GmailApiTransport.fetch_new() to build the query's `after:` floor (services/mailbox.py, out of
+    # this file's territory) so a cold start (or a raised window) stays bounded instead of reading the
+    # account's entire history the way TASK-136 left it. Bounding what is fetched only; mail already
+    # stored outside the window is never deleted by this setting (AC7 -- that is a different decision
+    # with its own task if it is ever wanted).
+    # Range is 1-60 months (five years): a floor of 1 keeps the window meaningful, a ceiling of 60
+    # keeps it a window rather than "no limit" spelled as a very large number. Deliberately NOT the
+    # same "0/falsy means unset" idiom mailbox_check_cadence_minutes documents above -- that idiom
+    # would make 0 read back as unset and silently fall back to unlimited lookback, which is the one
+    # meaning the owner explicitly ruled out ("that should also be configurable" -- 6 months, not
+    # "off"). See CandidateProfileSerializer.validate_mailbox_lookback_months for the rejection.
+    mailbox_lookback_months=models.PositiveIntegerField(default=6)
     mailbox_check_calendar_aware=models.BooleanField(default=True)
+    # TASK-125 AC1/AC2: the explicit off switch. Deliberately not cadence=0 -- the validator above
+    # rejects 0 for a documented reason (it would read back as "unset" through the profile codec and
+    # fall back to the default, silently meaning "every hour" rather than "never"). Default True so
+    # every existing account keeps checking exactly as it did before this field existed.
+    mailbox_check_enabled=models.BooleanField(default=True)
+    # TASK-125 AC3/AC4/AC5: the check only runs inside this window, interpreted in settings.TIME_ZONE
+    # (Europe/Vienna) via timezone.localtime() -- see services.mailbox.is_within_check_window and
+    # run_check, the one place both fields are read. Two times rather than a string, so the
+    # midnight-wrap case (e.g. 22:00-06:00) is a comparison, not a parse. Equal start/end (the
+    # default for both) means "no restriction" -- every existing account keeps checking around the
+    # clock exactly as before until it explicitly sets a window.
+    mailbox_check_window_start=models.TimeField(default=time(0, 0))
+    mailbox_check_window_end=models.TimeField(default=time(0, 0))
     # TASK-110 AC2. Guardrails, not prompt text -- neither field is in prompt_builder.PROFILE_FIELDS,
     # so it never reaches an LLM prompt; services.mailbox.check_guardrails reads it only to check the
     # *generated* draft text in code. 0 / '' both mean "not configured" (no floor, no blocklist), same
@@ -64,6 +92,13 @@ class UserProfile(models.Model):
     # web-only compromise can never raise the floor or shrink the blocklist below the machine's own.
     mailbox_salary_floor_eur=models.PositiveIntegerField(default=0)
     mailbox_do_not_disclose=models.TextField(blank=True, default='')
+    # TASK-122 AC4: the owner's last-chosen (provider, model) for the mailbox draft-chat
+    # conversation, so it survives a page reload instead of resetting like CV generation's
+    # React-state-only picker does. '' means "nothing chosen yet" -- services.draft_chat.
+    # available_model_options() is what the picker offers; these two fields only ever mirror one
+    # of those options back, never a second source of truth for what the machine can run.
+    mailbox_chat_provider=models.CharField(max_length=30, blank=True, default='')
+    mailbox_chat_model=models.CharField(max_length=120, blank=True, default='')
     # TASK-115: one or more quiet-hours ICS calendar URLs, same one-per-line idiom as
     # mailbox_do_not_disclose above (services.calendar_ics.parse_calendar_ics_urls also tolerates
     # comma-separated and a pasted `[a, b, c]` list literal -- AC8). This profile value is the only
@@ -74,6 +109,17 @@ class UserProfile(models.Model):
     # read access to the whole calendar with no authentication. CandidateProfileSerializer masks it
     # on every read (owner decision 2026-08-18) and never lets a masked value overwrite a real one.
     mailbox_calendar_ics_urls=models.TextField(blank=True, default='')
+    # TASK-145 AC4/AC8: the board's saved multi-sort, per account and synced (the owner's explicit
+    # choice over localStorage) -- same wire format `?ordering=` already accepts and
+    # views.parse_board_ordering already parses (e.g. 'status,-fit_score'), so no second parser or
+    # allowlist exists for this value. Blank is "no saved sort" and is how a user clears it back to
+    # views.DEFAULT_BOARD_ORDERING (AC8) -- parse_board_ordering already falls back to that default
+    # on blank/absent input, and already caps at 3 keys and drops anything outside BOARD_ORDERINGS
+    # (AC7/AC9), so a hostile or stale saved value degrades the same way a hostile query param does
+    # rather than erroring. Deliberately unvalidated here for that same reason: rejecting an invalid
+    # value at save time would be a second enforcement point to keep in sync with the one that
+    # already exists.
+    board_sort_keys=models.CharField(max_length=120, blank=True, default='')
     # TASK-83: the capability that gates the nine CV endpoints. Off by default -- generation shells
     # out to a model CLI and LaTeX on the server, so it is granted per account in the admin, never
     # by signing up. services.cv_generator.is_cv_owner still honours CODEX_CV_OWNER_EMAIL as a
@@ -91,6 +137,18 @@ class JobLead(models.Model):
     STATUSES=[('new','New'),('reviewed','Reviewed'),('to_apply','To apply'),('applied','Applied'),('interview','Interview'),('offer','Offer'),('accepted','Accepted'),('rejected','Rejected'),('withdrawn','Withdrawn'),('skipped','Skipped'),('archived','Archived')]
     DATED_STATUSES=['applied','interview','offer']  # active statuses that carry a status_date and can go stale
     UNAPPLIED_STATUSES=['new','reviewed','to_apply']  # lead is still ours to act on; ages out from created_at
+    # TASK-143 AC1: the owner's "when I can still do something about it" split of STATUSES, defined
+    # ONCE here so it cannot drift between the mailbox review panel's queryset (views.
+    # MailboxSuggestionViewSet.list) and suggestion/draft generation (services.mailbox, gated there
+    # separately -- out of this task's file territory). Not yet exposed on /api/auth/me/'s
+    # BOARD_THRESHOLDS -- a frontend component that needs this list should read it from there rather
+    # than re-typing it (same pattern as unapplied_statuses/dated_statuses above), but wiring that up
+    # is a one-line addition plus a one-line fix to test_api.py's exact-dict assertion, both outside
+    # this task's file territory this wave. 'accepted' is deliberately included: an accepted offer
+    # still produces mail worth reading (start date, paperwork onboarding) -- the owner's question is
+    # "can I still act on this", not "is the application still open". The complement (rejected, withdrawn,
+    # skipped, archived) is never spelled out as its own list; it is just "not in this one".
+    ACTIONABLE_STATUSES=['new','reviewed','to_apply','applied','interview','offer','accepted']
     # The only home for the board's urgency thresholds. views.stale_rank orders by them and
     # /api/auth/me/ ships them to the frontend badge, so the numbers are never written twice.
     STALE_APPLIED_DAYS=21  # applied/interview/offer with no movement since status_date
@@ -275,6 +333,12 @@ class PracticeSession(models.Model):
 class ScheduledTaskRun(models.Model):
     name=models.CharField(max_length=120, unique=True)
     last_run_at=models.DateTimeField(null=True, blank=True)
+    # TASK-124 AC4: set only by services.mailbox._claim_run while a run for this task is actually in
+    # flight, and cleared by _release_run() the instant it finishes (success, error, or any skip) --
+    # a dedicated marker rather than reading MailboxRun.finished_at IS NULL, because plenty of test
+    # fixtures (and seed_fake_run's historical-baseline rows) create a MailboxRun directly without
+    # ever setting finished_at, which would misread as "still running" if this reused that column.
+    running_since=models.DateTimeField(null=True, blank=True)
     updated_at=models.DateTimeField(auto_now=True)
     def __str__(self): return f'{self.name}: {self.last_run_at or "never"}'
 
@@ -285,7 +349,16 @@ class MailboxRun(models.Model):
     only a real attempt (whether it goes on to skip for calendar-quiet-hours or fetches mail) is
     worth a row, so this table doubles as the run digest AC4 asks for without extra bookkeeping.
     """
-    SKIP_REASONS=[('', 'Not skipped'), ('quiet_hours', 'Calendar busy')]
+    # TASK-125 AC6: every reason a run does nothing is a value here, never a second mechanism --
+    # this column is the one place a skip is recorded, and the gate order in services.mailbox.run_check
+    # decides which one wins when more than one would apply (disabled, then outside_window, then
+    # quiet_hours -- cheapest and most specific first).
+    SKIP_REASONS=[
+        ('', 'Not skipped'),
+        ('quiet_hours', 'Calendar busy'),
+        ('disabled', 'Checking turned off'),
+        ('outside_window', 'Outside the allowed time window'),
+    ]
     started_at=models.DateTimeField(auto_now_add=True)
     finished_at=models.DateTimeField(null=True, blank=True)
     skipped=models.BooleanField(default=False)
@@ -309,6 +382,24 @@ class MailboxRun(models.Model):
     error=models.TextField(blank=True, default='')
     class Meta: ordering=['-started_at']
     def __str__(self): return f'Run {self.started_at}: ' + (f'skipped ({self.skip_reason})' if self.skipped else f'{self.fetched_count} fetched')
+
+class MailboxCheckRequest(models.Model):
+    """TASK-124 AC2/AC3: a manual "run now" request recorded on a backend with no mail credentials
+    (the deployed site), for the owner's own machine to pick up on its next check_mailbox tick.
+
+    Deliberately its own model rather than overloading ScheduledTaskRun, which tracks a recurring
+    SCHEDULE's last-run-at, not a one-off ask -- see the task notes. `handled_at` is the once-only
+    marker (AC3: picked up and run on the next tick, then never acted on again, whatever the
+    outcome); `result_run` links to the MailboxRun the request actually produced -- including a
+    skipped one (disabled/outside_window/quiet_hours all still count as "this was handled") -- so the
+    app can show the outcome of the specific thing that was asked for.
+    """
+    requested_at=models.DateTimeField(auto_now_add=True)
+    requested_by=models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    handled_at=models.DateTimeField(null=True, blank=True)
+    result_run=models.ForeignKey(MailboxRun, null=True, blank=True, related_name='fulfilled_requests', on_delete=models.SET_NULL)
+    class Meta: ordering=['-requested_at']
+    def __str__(self): return f'Request at {self.requested_at}: ' + (f'handled -> run {self.result_run_id}' if self.handled_at else 'pending')
 
 class MailboxMessage(models.Model):
     """TASK-109 AC5: the append-only log of every message check_mailbox read.
@@ -346,8 +437,43 @@ class MailboxMessage(models.Model):
     previously documented as "transient, never persisted") -- a different id from anything on
     MailboxDraft (that one threads the REPLY), and it is what a per-message "open this conversation in
     Gmail" link needs. Blank for every IMAP-sourced row, same as gmail_id.
+
+    TASK-132 (2026-08-19, the owner's decision, recorded here not just in the commit): this table now
+    also stores the owner's OWN sent mail, not just what they received -- services.mailbox.
+    ingest_threads() ingests a matched thread's whole `users.threads.get` result, including the
+    owner's replies, so a "conversation" reads as an exchange instead of one side of it. That is a
+    second widening of what this database holds beyond TASK-117's body_text (see above); do not
+    revert it back to inbound-only. `sent_by_owner` is what makes the widening honest instead of
+    silent: a message this app stored because it wrote it (a reply drafted here) is indistinguishable
+    at this field from one the owner sent from Gmail directly -- both are simply "the owner spoke".
+
+    TASK-136 (2026-08-19): `GmailApiTransport.fetch_new` no longer restricts itself to `labelIds=
+    INBOX` -- an application confirmation is routinely archived (moved out of the inbox) the moment
+    it is read, and thread ingestion above only ever expands a thread this app already knows about, so
+    an archived FIRST message of a thread was invisible and stayed that way forever. This table can
+    therefore now contain anything the owner's Gmail account holds except Spam/Trash (the Gmail API's
+    own default `messages.list` scope with no `labelIds` given), not just what was still sitting in
+    the inbox at fetch time -- a further, deliberate widening in the same spirit as the two above; see
+    services.mailbox.GmailApiTransport.fetch_new for the date-floor bound that keeps a cold start
+    finite. `classification` gained `application_confirmed` in the same change: an "application
+    received"/"thank you for applying" acknowledgment previously had no category of its own and
+    landed as `not_job_related` or `recruiter_reply`, neither of which proposes anything -- see
+    services.mailbox.build_suggestions, which now proposes moving the job to `applied` (with
+    `applied_at` taken from the message's own received date, not "today") when it sees one.
+
+    TASK-135 (2026-08-19): `calendar_summary`/`calendar_location`/`calendar_organizer`/
+    `calendar_start`/`calendar_end` are the what/when/with-whom of the FIRST iCalendar VEVENT found in
+    a `text/calendar` MIME part (services.mailbox.parse_calendar_invitation) -- blank/null when the
+    message carries no invitation. `attachments` is a JSON list of `{filename, mime_type, size}` for
+    every OTHER MIME part carrying a filename -- METADATA ONLY, a deliberate decision (this repo has a
+    filed history of pulling personal-data files into this same database and reversing it: TASK-69,
+    TASK-90, TASK-117's own body_text reversal-of-a-reversal above). The Gmail API's `format=raw` read
+    this module already used hands the full attachment bytes over as an unavoidable side effect of
+    decoding the whole RFC822 message; `size` is measured from those bytes and the bytes themselves
+    are discarded immediately after, never assigned to this model or any other. "Reply in Gmail"
+    remains the only route to the actual file, same as before this task.
     """
-    CLASSIFICATIONS=[('rejection','Rejection'),('interview_invitation','Interview invitation'),('offer','Offer'),('recruiter_reply','Recruiter reply'),('uncertain','Uncertain'),('not_job_related','Not job related')]
+    CLASSIFICATIONS=[('rejection','Rejection'),('interview_invitation','Interview invitation'),('offer','Offer'),('recruiter_reply','Recruiter reply'),('application_confirmed','Application confirmed'),('uncertain','Uncertain'),('not_job_related','Not job related')]
     run=models.ForeignKey(MailboxRun, related_name='messages', on_delete=models.CASCADE)
     uid=models.PositiveIntegerField(unique=True)
     gmail_id=models.CharField(max_length=32, blank=True, default='')
@@ -356,8 +482,28 @@ class MailboxMessage(models.Model):
     thread_id=models.CharField(max_length=32, blank=True, default='')
     sender=models.CharField(max_length=254, blank=True, default='')
     subject=models.CharField(max_length=500, blank=True, default='')
+    # TASK-132 AC1/AC2/TASK-133 AC2/AC7: the raw To/Cc/Reply-To header values (TextField, not capped
+    # to CharField's 254 like `sender`, because a header can list several addresses with display
+    # names) -- TASK-114 stopped short of these, adding only the bulk-marker headers. Read by
+    # services.mailbox.derive_reply_recipients() to build reply-all without a second Gmail fetch.
+    # `sent_by_owner` is a STORED flag (never a From-address comparison at render time -- the owner
+    # has several addresses; see services.mailbox._is_owner_address), set once at ingest time by
+    # run_check()/ingest_threads(), so "who spoke" in a conversation never depends on a guess made
+    # fresh on every page load.
+    reply_to=models.TextField(blank=True, default='')
+    to_addrs=models.TextField(blank=True, default='')
+    cc_addrs=models.TextField(blank=True, default='')
+    sent_by_owner=models.BooleanField(default=False)
     # TASK-117 AC1: capped to 5000 chars, the same cap RawMessage.body_text already applies off the wire.
     body_text=models.TextField(blank=True, default='')
+    # TASK-135 AC1/AC2/AC3/AC4: see the class docstring. Blank/null/empty-list on every message with
+    # no calendar invitation and no attachment -- the overwhelming majority of rows.
+    calendar_summary=models.CharField(max_length=500, blank=True, default='')
+    calendar_location=models.CharField(max_length=500, blank=True, default='')
+    calendar_organizer=models.CharField(max_length=500, blank=True, default='')
+    calendar_start=models.DateTimeField(null=True, blank=True)
+    calendar_end=models.DateTimeField(null=True, blank=True)
+    attachments=models.JSONField(default=list, blank=True)
     received_at=models.DateTimeField(null=True, blank=True)
     classification=models.CharField(max_length=30, choices=CLASSIFICATIONS, default='uncertain')
     evaluator=models.CharField(max_length=30, default='heuristic')
@@ -418,6 +564,14 @@ class MailboxDraft(models.Model):
     gmail_draft_id=models.CharField(max_length=32, blank=True, default='')
     gmail_message_id=models.CharField(max_length=32, blank=True, default='')
     gmail_thread_id=models.CharField(max_length=32, blank=True, default='')
+    # TASK-122 AC4/AC5: the multi-turn draft-chat transcript, as a JSON list of
+    # {"user_message": ..., "revised_text": ...} -- one dict per services.draft_chat.ChatTurn,
+    # in order, so `[ChatTurn(**item) for item in chat_history]` reconstructs it exactly. Only a
+    # turn the model actually produced (ChatTurnResult.reason == '') is ever appended here -- a
+    # provider failure or a guardrail block never becomes part of the conversation a later turn
+    # re-feeds. Reset to [] whenever body_text changes through the `edit` action (see
+    # MailboxDraftViewSet.edit): once accepted, that text is the new baseline, not one more turn.
+    chat_history=models.JSONField(default=list, blank=True)
     created_at=models.DateTimeField(auto_now_add=True)
     class Meta: ordering=['-created_at']
     def __str__(self): return f'Draft for {self.message}: {self.get_status_display()}'

@@ -23,6 +23,31 @@ The only work exempt is a question that is answered rather than built, and a cha
 filing it would cost more than doing it — and even then, say which exemption was used rather than
 silently skipping the workflow.
 
+## TW-00A: What "Done" means
+
+Owner instruction, 2026-08-18. A task is Done only when **all** of these are true. Anything less is
+In Progress, whatever the code looks like:
+
+1. **Committed** — the change is in a commit, staged file by file (TW-002), not left in the working
+   tree.
+2. **Pushed** — the branch is on `origin`, not only local.
+3. **Working** — verified in the real thing, not argued from the code (TW-004). Tests green, and the
+   browser/CLI measurement done for anything user-facing.
+4. **Squash-merged to `main`** — via a PR, with CI green before the merge.
+5. **Branch deleted** — remote and local, once merged.
+
+Consequences worth stating, because they have already bitten in this repo:
+
+- A stacked PR whose base branch is deleted gets **auto-closed by GitHub** and cannot be reopened or
+  retargeted. Rebase the child onto `main`, force-push with `--force-with-lease`, and open a
+  replacement PR referencing the closed one.
+- Merging to `main` deploys to production (`.github/workflows/deploy-container-apps.yml`), and
+  `scripts/start-container.sh` runs `migrate --noinput` under `set -e`. So step 4 is also the moment
+  any migration reaches the production database, and a live 200 afterwards is what proves the
+  migration applied. Record the rollback image before merging (TW-006).
+- A task with an unverifiable criterion does NOT get marked Done to tidy the board. Leave it In
+  Progress and name the blocker (TW-005).
+
 ## TW-001: Rubric before work, never after
 
 Write the asian-dad rubric **before** any implementation exists, derived from the task's acceptance

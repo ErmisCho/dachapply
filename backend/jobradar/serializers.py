@@ -1,5 +1,7 @@
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import validate_email
 from django.utils import timezone
 from rest_framework import serializers
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile
@@ -51,6 +53,27 @@ def value_is_valid_url(value):
         return False
 
 
+# TASK-133 AC3/AC7: the owner edits To/Cc by hand before a reply is saved, so those addresses need
+# the same "is this even well-formed" floor value_is_valid_url gives a pasted URL above. Django's own
+# validate_email (no new dependency, same rung normalize_job_url already reaches for with DRF's
+# URLField) -- never a hand-rolled regex for something this security-adjacent.
+def invalid_email_addresses(addresses):
+    """The subset of `addresses` that are not a well-formed email address, in the order given.
+    Blank/whitespace-only entries count as invalid too -- a To/Cc slot has nothing to say empty.
+    """
+    invalid = []
+    for addr in addresses:
+        addr = (addr or '').strip()
+        if not addr:
+            invalid.append(addr or '(empty)')
+            continue
+        try:
+            validate_email(addr)
+        except DjangoValidationError:
+            invalid.append(addr)
+    return invalid
+
+
 def extract_url_from_text(value):
     text=str(value or '')
     m=re.search(r'https?://[^\s)\]]+', text)
@@ -79,7 +102,14 @@ def clean_job_title(value):
 class CandidateProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model=UserProfile
-        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ics_urls','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
+        # TASK-125 AC1/AC2: mailbox_check_enabled/window_start/window_end sit next to the existing
+        # cadence/calendar_aware fields, where the owner already looks for mailbox settings.
+        # TASK-141 AC1/AC2: mailbox_lookback_months sits next to the cadence field it shares its
+        # validation shape with -- same place on the settings page as every other mailbox control.
+        # TASK-145 AC4/AC8: board_sort_keys sits with the other board/mailbox settings this
+        # serializer already exposes plainly (no masking -- unlike mailbox_calendar_ics_urls, it
+        # carries no secret).
+        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_check_enabled','mailbox_check_window_start','mailbox_check_window_end','mailbox_lookback_months','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ics_urls','board_sort_keys','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
     # The profile codec is a text codec: it JSON-wraps values for drifted SQLite schemas and
     # coerces falsy values to ''. Running a boolean through it would store '' in a
     # BooleanField and serialise False as ''. Booleans (and mailbox_check_cadence_minutes, an int
@@ -101,6 +131,16 @@ class CandidateProfileSerializer(serializers.ModelSerializer):
         # the profile codec above (encode_profile_value treats a falsy value as unset).
         if v < 5 or v > 1440:
             raise serializers.ValidationError('Mailbox check cadence must be between 5 and 1440 minutes.')
+        return v
+    def validate_mailbox_lookback_months(self, v):
+        # TASK-141 AC3: 0 (or blank, already rejected by PositiveIntegerField's own type coercion
+        # before this ever runs) must not mean "unlimited" -- that is exactly the bug this field's
+        # model comment (models.py, UserProfile.mailbox_lookback_months) warns against copying from
+        # mailbox_check_cadence_minutes' "falsy is unset" idiom. Accepted range: 1-60 months (five
+        # years) -- same floor/ceiling shape as the cadence validator above, sized so the window stays
+        # a window rather than reading as "no limit" spelled as a very large number.
+        if v < 1 or v > 60:
+            raise serializers.ValidationError('Mailbox lookback must be between 1 and 60 months.')
         return v
     def update(self, instance, validated_data):
         # TASK-115: the settings page always GETs the masked text above into its textarea, so a save
@@ -252,6 +292,14 @@ class JobLeadListSerializer(JobLeadSerializer):
     the board reads them from the list response -- the job detail page fetches
     /api/jobs/<id>/ for its editor and source-text pane.
     """
+    # TASK-126 AC1/AC4: the board's mail indicator used to derive "this job has mail" only from
+    # /mailbox-suggestions/ (pending-only), so it vanished the moment a suggestion was decided --
+    # see the task's Description for the measured bug. This is the recorded decision from that
+    # task's notes: option 1 (a field on the list response), not a second per-row request (option 2,
+    # which TASK-91 was filed to avoid) or overloading /mailbox-suggestions/ to return decided rows
+    # too (option 3). Read-only: sourced from the Exists() annotation JobLeadViewSet.get_queryset()
+    # adds for every row already in this one list query, not a per-row lookup.
+    has_mailbox_history=serializers.BooleanField(read_only=True, default=False)
     class Meta(JobLeadSerializer.Meta):
         fields=None  # DRF forbids fields and exclude together; the parent sets fields='__all__'
         exclude=('raw_description','original_source_text')
@@ -293,8 +341,15 @@ class PracticeEvaluateSerializer(serializers.Serializer):
 # (inside the function, not at module level) because services.mailbox itself imports
 # JobLeadSerializer from this module -- a top-level import here would be circular.
 def _gmail_url(message_id):
-    from .services.mailbox import gmail_conversation_url
-    return gmail_conversation_url(message_id) or None
+    # TASK-121 AC3/AC4, measured against the owner's real mailbox 2026-08-18: a bare
+    # https://mail.google.com/mail/u/0/#search/... opens whichever Google account signed in FIRST in
+    # that browser, not necessarily the mailbox the app reads. The owner had to hand-edit /u/0/ to
+    # /u/3/ before the link found the message. Passing the mailbox's own address as authuser makes
+    # the link say which account it means instead of relying on tab order.
+    # Imported inside the function on purpose: services.mailbox imports JobLeadSerializer from this
+    # module, so a module-level import here is a circular import that breaks the whole app.
+    from .services.mailbox import _reply_from_address, gmail_conversation_url
+    return gmail_conversation_url(message_id, authuser=_reply_from_address() or '') or None
 
 class MailboxDraftSerializer(serializers.ModelSerializer):
     """TASK-110 AC5. Read-only everywhere -- MailboxDraft is append-only, same shape as
@@ -309,7 +364,10 @@ class MailboxDraftSerializer(serializers.ModelSerializer):
     gmail_url=serializers.SerializerMethodField()
     class Meta:
         model=MailboxDraft
-        fields=('id','status','block_reason','subject','body_text','evaluator','gmail_draft_id','gmail_message_id','gmail_thread_id','gmail_url','created_at')
+        # TASK-122 AC4/AC5: chat_history is read-only here too -- the only writer is
+        # MailboxDraftViewSet.chat (append on a successful turn) and .edit (reset on accept),
+        # never a generic field on this serializer.
+        fields=('id','status','block_reason','subject','body_text','evaluator','gmail_draft_id','gmail_message_id','gmail_thread_id','gmail_url','chat_history','created_at')
         read_only_fields=fields
     def get_gmail_url(self, obj):
         return _gmail_url(obj.message.message_id)
@@ -334,7 +392,16 @@ class MailboxMessageSerializer(serializers.ModelSerializer):
         # TASK-121 AC2: thread_id is the inbound Gmail thread id -- a different id from a draft's own
         # gmail_thread_id above. Exposed for completeness even though gmail_conversation_url does not
         # consume it today (it links by message_id alone -- see that function's docstring).
-        fields=('id','sender','subject','body_text','received_at','classification','matched_job','matched_job_company','matched_job_title','draft','thread_id','gmail_url','created_at')
+        # TASK-132/TASK-133 AC2: to_addrs/cc_addrs are the raw header text services.mailbox.
+        # derive_reply_recipients() parses into reply/reply-all recipient lists -- exposed here too so
+        # the client can render an exchange without a second request. sent_by_owner is the stored
+        # (never guessed) flag distinguishing the owner's own sent mail from what they received, so a
+        # conversation reads as an exchange rather than a flat list.
+        # TASK-135: calendar_summary/calendar_location/calendar_organizer/calendar_start/calendar_end/
+        # attachments were added to the model (migration 0042) but never added here -- see
+        # MailboxMessage's own docstring for exactly what each holds. Read-only like everything else
+        # in this serializer (ModelSerializer default for a field with no explicit writable=True).
+        fields=('id','sender','subject','body_text','received_at','classification','matched_job','matched_job_company','matched_job_title','draft','thread_id','gmail_url','to_addrs','cc_addrs','sent_by_owner','created_at','calendar_summary','calendar_location','calendar_organizer','calendar_start','calendar_end','attachments')
     def get_draft(self, obj):
         draft=getattr(obj,'draft',None)
         return MailboxDraftSerializer(draft).data if draft else None
@@ -352,6 +419,45 @@ class MailboxSuggestionSerializer(serializers.ModelSerializer):
         model=MailboxSuggestion
         fields=('id','message','job','job_company','job_title','suggestion_type','payload','status','created_at','decided_at')
         read_only_fields=fields
+
+class MailboxMessageListSerializer(MailboxMessageSerializer):
+    """TASK-142 AC1: MailboxMessageViewSet.unmatched -- measured at 763 messages carrying 1,796,060
+    characters of body_text (2,354 chars/message average) in one response, 10.5s to answer. A list
+    row exists to be scanned (sender/subject/classification), not read in full, so body_text here is
+    truncated to a preview -- never omitted outright, so the list still gives the owner something to
+    recognise the thread by without opening it. `body_truncated` tells the client whether there is
+    more to fetch. Nothing is deleted and nothing becomes unreachable (AC7): MailboxMessageViewSet.
+    retrieve returns this same message with its FULL body_text, so the one row the owner actually
+    opens is still completely readable in a single extra request -- see that method's docstring.
+
+    TASK-142 AC2 (coordinator re-measurement, 2026-08-19): slicing body_text in
+    to_representation() -- the previous shape of this serializer -- truncated the RESPONSE but not
+    the QUERY: Django (and, in production, the Neon round-trip) had already paid for every row's
+    full body_text before this code ever ran, so the endpoint got slower, not faster (12.3s, up from
+    10.5s, as the message count grew). The view now `.defer('body_text')`s the real column and
+    annotates a bounded `body_preview` (Substr, computed in SQL) instead -- this serializer reads
+    THAT, never `instance.body_text` directly. Touching the deferred field here would silently
+    trigger one reload query per row (Django's deferred-field descriptor), which is worse than the
+    original bug: N extra round-trips instead of one oversized one.
+    """
+    BODY_PREVIEW_CHARS = 300
+    body_text = serializers.SerializerMethodField()
+    body_truncated = serializers.SerializerMethodField()
+    class Meta(MailboxMessageSerializer.Meta):
+        fields = MailboxMessageSerializer.Meta.fields + ('body_truncated',)
+    def _preview(self, obj):
+        # body_preview is the view's Substr(...) annotation -- (BODY_PREVIEW_CHARS + 1) chars, so its
+        # own length (not a second query) is what tells truncated apart from whole-body-happened-to-
+        # be-short. Falls back to '' for any caller that reuses this serializer without the
+        # annotation (e.g. a stray direct instantiation in a test) rather than raising.
+        return getattr(obj, 'body_preview', '') or ''
+    def get_body_text(self, obj):
+        preview = self._preview(obj)
+        if len(preview) > self.BODY_PREVIEW_CHARS:
+            return preview[:self.BODY_PREVIEW_CHARS].rstrip() + '…'
+        return preview
+    def get_body_truncated(self, obj):
+        return len(self._preview(obj)) > self.BODY_PREVIEW_CHARS
 
 class MailboxMessageWithSuggestionsSerializer(MailboxMessageSerializer):
     """TASK-117 AC2/AC6: the per-job mailbox panel (JobLeadViewSet.mailbox) and the manual-attach
