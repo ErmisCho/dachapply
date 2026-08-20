@@ -35,8 +35,14 @@ button{@apply rounded-lg px-3 py-2 bg-slate-900 text-white disabled:opacity-50 t
    Opting the conversation card itself out as a drag SOURCE (it can still be reordered by dragging the
    panel's own chrome elsewhere) restores normal text selection/copy inside it without touching
    DashboardPanel's drag behaviour for the other four panel types. Firefox does not read
-   -webkit-user-drag and does not have this bug, so this is a no-op there rather than a fix needed. */
-.mailbox-selectable{-webkit-user-drag:none}
+   -webkit-user-drag and does not have this bug, so this is a no-op there rather than a fix needed.
+   TASK-134 #1 (owner report, still broken after the fix above - measured live): Chrome's UA
+   stylesheet also applies `user-select:none` to any `[draggable="true"]` element, and that value
+   INHERITS into every descendant, including every message body in this card - so text stayed
+   unselectable even with the drag-hijack fixed above, because nothing had overridden user-select
+   itself. -webkit-user-select/user-select:text below re-enables selection specifically inside the
+   conversation card without removing `draggable` from the panel - reordering keeps working. */
+.mailbox-selectable{-webkit-user-drag:none;-webkit-user-select:text;user-select:text}
 .dashboard-panel-small{min-height:4.65rem}
 .dashboard-panel-wide>.premium-card{height:100%;box-shadow:none!important}
 .dashboard-panel-wide .premium-card{padding:.875rem!important}
