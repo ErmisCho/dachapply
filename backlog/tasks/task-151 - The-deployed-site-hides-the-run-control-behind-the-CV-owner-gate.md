@@ -1,7 +1,7 @@
 ---
 id: TASK-151
 title: The deployed site hides the run control behind the CV-owner gate
-status: To Do
+status: Done
 assignee: []
 labels:
   - frontend
@@ -35,15 +35,17 @@ use.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The run section's visibility is gated on an owner property that is true for the owner's account on EVERY deployment of the same database — stated explicitly which property and why it cannot diverge between deployments
-- [ ] #2 On the deployed (credential-less) site, the owner sees the run control, pressing it queues a `MailboxCheckRequest`, and the UI states the run has NOT started yet — verified live, which also closes TASK-124 AC2
-- [ ] #3 A non-owner account (a friend-submitter) still does not see the run section — asserted by whatever test or measurement fits the chosen gate
-- [ ] #4 `can_generate_cv` keeps meaning exactly what its model help_text says; CV generation gating is untouched
+- [x] #1 The run section's visibility is gated on an owner property that is true for the owner's account on EVERY deployment of the same database — stated explicitly which property and why it cannot diverge between deployments
+- [x] #2 On the deployed (credential-less) site, the owner sees the run control, pressing it queues a `MailboxCheckRequest`, and the UI states the run has NOT started yet — verified live, which also closes TASK-124 AC2
+- [x] #3 A non-owner account (a friend-submitter) still does not see the run section — asserted by whatever test or measurement fits the chosen gate
+- [x] #4 `can_generate_cv` keeps meaning exactly what its model help_text says; CV generation gating is untouched
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20 close-out. Verified on the DEPLOYED site 2026-08-20 after PR #56 (merge edeb82f, deploy green, live HTTP 200): the run control renders for the owner (is_staff true, can_generate_cv false - the two are now correctly independent), GET /api/mailbox-runs/status/ returns 200 where it returned 404 before, and pressing Run POSTs /api/mailbox-runs/run-now/ -> 200 {"queued":true,"request_id":1} with the UI stating: "This backend has no mail credentials. The request has been recorded for the owner's machine to pick up on its next check - it has NOT started yet." The MailboxCheckRequest row is confirmed in the production database (1 row, requested_by the owner). The fix had two halves and BOTH shipped: the frontend gate (PR #55) and the backend one (PR #56) - is_mailbox_owner(user) = authenticated and is_staff, applied to the mailbox endpoints only, with the CV endpoints deliberately left on is_cv_owner because the CODEX_CV_ENABLED kill switch is correct for them (AC4). Tests that encoded the old gate were updated rather than deleted, and a test pins that CV generation still refuses when the kill switch is off. Known bounded divergence worth stating: services._owner_user() still resolves "the owner" by CODEX_CV_OWNER_EMAIL while the views now gate on is_staff; in production both resolve to the same single account (1 of 9 is staff), so this is latent rather than active.
+
 2026-08-20, measured. The description above named the mechanism imprecisely; the real one, proven
 live, is worth stating exactly because it has TWO halves:
 
