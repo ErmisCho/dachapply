@@ -186,7 +186,9 @@ def sortable_board(client):
 # any particular field. These deliberately avoid credential words (`password`, `passwd`): the string
 # exists precisely to be REJECTED, so naming it after a secret only teaches secret scanners to flag
 # a test for doing its job. `last_login` is just as foreign to BOARD_ORDERINGS.
-@pytest.mark.parametrize('hostile', [
+# Module-level so the TASK-145 AC4 saved-value test below reuses the same hostile values instead of
+# retyping them.
+HOSTILE_ORDERING_VALUES = [
     'evaluations__job__created_by__last_login',
     '-evaluations__job__created_by__last_login',
     "status; DROP TABLE jobradar_joblead;--",
@@ -194,13 +196,59 @@ def sortable_board(client):
     'company',
     '-id',
     '?',
-])
+]
+
+
+@pytest.mark.parametrize('hostile', HOSTILE_ORDERING_VALUES)
 def test_hostile_or_unrecognised_ordering_values_fall_back_to_default(client, sortable_board, hostile):
     default = [j['company'] for j in client.get('/api/jobs/').data]
     assert default == ['Low', 'High', 'Mid']
     r = client.get('/api/jobs/', {'ordering': hostile})
     assert r.status_code == 200
     assert [j['company'] for j in r.data] == default
+
+
+# --- TASK-145 AC4: the saved sort actually APPLIES when the board loads -- the cap test above
+# only proves the wire format/parser is shared once a client echoes the saved value back as
+# ?ordering=; these prove the server reads UserProfile.board_sort_keys itself when the request
+# carries no ordering= param at all. ---------------------------------------------------------
+
+def test_saved_board_sort_orders_the_board_when_no_ordering_param_is_sent(client, tie_break_board):
+    from jobradar.models import UserProfile
+    UserProfile.objects.update_or_create(user=client.user, defaults={'board_sort_keys': 'status,-fit_score'})
+    r = client.get('/api/jobs/', {'status': 'reviewed,archived'})  # no ordering= key at all
+    assert r.status_code == 200
+    assert [j['company'] for j in r.data] == ['T-high', 'T-mid', 'T-low', 'Outlier']
+
+
+def test_an_explicit_ordering_param_beats_the_saved_value(client, tie_break_board):
+    from jobradar.models import UserProfile
+    UserProfile.objects.update_or_create(user=client.user, defaults={'board_sort_keys': 'status,-fit_score'})
+    r = client.get('/api/jobs/', {'status': 'reviewed,archived', 'ordering': 'status,fit_score'})
+    assert r.status_code == 200
+    # If the saved value had won this would read T-high, T-mid, T-low, Outlier instead.
+    assert [j['company'] for j in r.data] == ['T-low', 'T-mid', 'T-high', 'Outlier']
+
+
+@pytest.mark.parametrize('hostile', HOSTILE_ORDERING_VALUES)
+def test_hostile_saved_board_sort_degrades_to_default_instead_of_erroring(client, sortable_board, hostile):
+    from jobradar.models import UserProfile
+    UserProfile.objects.update_or_create(user=client.user, defaults={'board_sort_keys': hostile})
+    r = client.get('/api/jobs/')  # no ordering= key -> reads the (hostile) saved value
+    assert r.status_code == 200
+    assert [j['company'] for j in r.data] == ['Low', 'High', 'Mid']  # same default as sortable_board's known order
+
+
+def test_blank_saved_board_sort_yields_the_default_attention_ordering(client, sortable_board):
+    """Distinct from test_no_ordering_param_yields_the_default_board_ordering above: that test's
+    owner has no UserProfile row at all, this one has a row whose board_sort_keys is explicitly ''
+    -- the AC8 "clear without editing the database" path -- so both must land on the default.
+    """
+    from jobradar.models import UserProfile
+    UserProfile.objects.update_or_create(user=client.user, defaults={'board_sort_keys': ''})
+    r = client.get('/api/jobs/')
+    assert r.status_code == 200
+    assert [j['company'] for j in r.data] == ['Low', 'High', 'Mid']
 
 
 def test_mixing_one_valid_key_with_junk_still_honours_the_valid_one(client, sortable_board):

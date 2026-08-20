@@ -581,6 +581,18 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         if p.get('board') in ('1','true','yes'):
             qs=qs.exclude(Q(title='')|Q(title__istartswith='Untitled role'))
         today=timezone.localdate()
+        # TASK-145 AC4: an absent ?ordering= -- the key missing from the request entirely, distinct
+        # from an explicit ?ordering= that is empty or hostile (those already resolve to the default
+        # via parse_board_ordering's own '(raw or '').split(',')' fallback, and an explicit param must
+        # win over the saved one regardless of what it resolves to) -- reads the user's saved
+        # board_sort_keys instead of jumping straight to DEFAULT_BOARD_ORDERING. The profile value is
+        # handed to the exact same parse_board_ordering() below as a typed ?ordering= value -- same
+        # allowlist, same 3-key cap, same degrade-on-hostile-input -- so there is no second parser to
+        # keep in sync with the one that already guards against ?ordering=-created_by__password.
+        raw_ordering=p.get('ordering')
+        if raw_ordering is None:
+            profile=getattr(self.request.user, 'jobradar_profile', None)
+            raw_ordering=profile.board_sort_keys if profile else ''
         qs=qs.annotate(
             # -1 surfaces, 1 sinks. One expression owns every age/deadline signal on the board.
             stale_rank=Case(
@@ -602,7 +614,7 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             # correlated subquery per row and is exposed only on JobLeadListSerializer (the /jobs/
             # list), never widening the detail response.
             has_mailbox_history=Exists(MailboxMessage.objects.filter(matched_job=OuterRef('pk'))),
-        ).order_by(*parse_board_ordering(p.get('ordering')))
+        ).order_by(*parse_board_ordering(raw_ordering))
         return qs.distinct()
     def list(self, request, *args, **kwargs):
         response=super().list(request, *args, **kwargs)
