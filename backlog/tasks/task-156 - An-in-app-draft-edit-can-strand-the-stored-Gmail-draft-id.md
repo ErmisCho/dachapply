@@ -44,17 +44,19 @@ without ever saying so.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `update_draft_text` reads the id back out of Gmail's `drafts.update` response and persists it when it differs from the stored one, in the same save as the body
-- [ ] #2 A response carrying no usable id leaves the stored id untouched rather than blanking it — asserted by test, since a blanked id is strictly worse than a stale one (it disables editing outright)
-- [ ] #3 A test drives the id-changed case with a fake transport and asserts the row now points at the new id and a subsequent edit targets it
-- [ ] #4 The same question is answered for `append_draft`/`compose_reply_draft`: state whether their stored id can go stale the same way, and cover it if so
+- [x] #1 `update_draft_text` reads the id back out of Gmail's `drafts.update` response and persists it when it differs from the stored one, in the same save as the body
+- [x] #2 A response carrying no usable id leaves the stored id untouched rather than blanking it — asserted by test, since a blanked id is strictly worse than a stale one (it disables editing outright)
+- [x] #3 A test drives the id-changed case with a fake transport and asserts the row now points at the new id and a subsequent edit targets it
+- [x] #4 The same question is answered for `append_draft`/`compose_reply_draft`: state whether their stored id can go stale the same way, and cover it if so
 - [ ] #5 Checked against the real mailbox: after an in-app edit, the stored id still resolves in Gmail (list the drafts and match by id), recorded here
-- [ ] #6 Backend suite green; no test contacts a real mailbox
+- [x] #6 Backend suite green; no test contacts a real mailbox
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-20. Shipped in PR #62 (merge d408ec7), deployed, migration 0047 confirmed applied in production. update_draft_text now persists a differing id in the same save as the body and leaves it untouched when the response carries none. AC4 answered: append_draft's callers only ever create new rows so they cannot strand an id, and compose_reply_draft's update branch already guarded against blanking - now pinned by a regression test. AC5 stays unchecked: it needs a draft with a live Gmail id to edit, and the three stored ones were purged with the owner's approval while closing TASK-130, so proving it means writing a NEW draft into the owner's Gmail - their call, not something to do unasked.
+
 The fix is small — `resp = transport.update_draft(...)`, then take `resp.get('id')` and include
 `gmail_draft_id` in `update_fields` when it is truthy and different. The care is in AC2: Gmail
 returning an unexpected shape must not be allowed to erase a working id.
