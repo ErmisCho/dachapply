@@ -952,6 +952,38 @@ def bulk_mail_reason(raw: RawMessage) -> str:
     return ''
 
 
+def suggestion_bulk_mail_reason(message: MailboxMessage, raw: RawMessage | None) -> str:
+    """TASK-154 AC3: the build_suggestions() counterpart to bulk_mail_reason() above -- and
+    DELIBERATELY a narrower marker set. This is the owner's explicit 2026-08-20 precedence decision,
+    not to be re-litigated in a later bugfix:
+
+        An unsubscribe link (List-Unsubscribe) or an unattended sender address (no-reply) blocks a
+        suggestion, the same as it blocks a draft. `Precedence: bulk/list/junk` and `Auto-Submitted`
+        do NOT block a suggestion on their own.
+
+    Why the split: `bulk_mail_reason()` gates maybe_draft_reply(), which writes into the owner's real
+    Gmail Drafts folder -- the higher-cost mistake, so it treats every marker (including a bare
+    Auto-Submitted) as disqualifying. build_suggestions() only ever proposes a reviewable, dismissable
+    in-app change; refusing every Auto-Submitted message here would throw away application
+    confirmations, the single largest class TASK-136 recovered (138 of them) -- many ATS systems set
+    Auto-Submitted on that exact genuine, reply-worthy mail. The two guards are allowed to diverge on
+    purpose; this function is where that divergence is decided, once, rather than each caller
+    re-deciding it.
+
+    `raw` is the transient, this-run-only RawMessage that actually carries List-Unsubscribe --
+    MailboxMessage never persists that header (see its docstring). The one caller with no RawMessage
+    at all, attach_message_to_job() (a manual match the owner made by hand, having already looked at
+    the message), passes raw=None and so only gets the no-reply-sender half of the check, off the
+    message's own stored sender/reply_to fields.
+    """
+    if raw is not None and raw.list_unsubscribe.strip():
+        return 'sender offers an unsubscribe link (List-Unsubscribe)'
+    for address in (message.reply_to, message.sender):
+        if _NO_REPLY_RE.search(address or ''):
+            return 'unattended sender address (no-reply)'
+    return ''
+
+
 def _sender_domain(sender):
     m = re.search(r'@([\w.-]+)', sender or '')
     return m.group(1).lower().strip('>') if m else ''
@@ -1459,7 +1491,16 @@ def _create_pending_suggestion(message: MailboxMessage, job: JobLead, suggestion
     return 1
 
 
-def build_suggestions(message: MailboxMessage, job: JobLead, classification: str, interview_at):
+def build_suggestions(message: MailboxMessage, job: JobLead, classification: str, interview_at, raw: RawMessage | None = None) -> int:
+    """Returns the number of MailboxSuggestion rows created (unchanged contract -- every existing
+    caller/test treats this as a plain count, so TASK-154 keeps that shape rather than widening it
+    into a tuple; see suggestion_bulk_mail_reason() above for how a bulk-mail refusal is surfaced
+    instead).
+
+    `raw`, when the caller has it (run_check() does; attach_message_to_job() does not -- see
+    suggestion_bulk_mail_reason's own docstring), is what lets the List-Unsubscribe half of that
+    guard run.
+    """
     # TASK-143 AC3: "you no longer have to check" means the WORK stops, not just the display -- a
     # message matched to a job the owner has already closed out (rejected/withdrawn/skipped/archived,
     # i.e. not in JobLead.ACTIONABLE_STATUSES) proposes nothing, from every caller of this function
@@ -1467,6 +1508,19 @@ def build_suggestions(message: MailboxMessage, job: JobLead, classification: str
     # review panel already filters (views.MailboxSuggestionViewSet.list). Checked first, before any of
     # the classification branches below, so nothing downstream needs its own copy of this gate.
     if job.status not in JobLead.ACTIONABLE_STATUSES:
+        return 0
+    # TASK-154 AC1/AC2/AC3: the suggestion-side counterpart of bulk_mail_reason() (drafting) -- see
+    # suggestion_bulk_mail_reason()'s own docstring for the owner's narrower precedence rule and why
+    # the two guards diverge. Checked before every classification branch below: nothing is worth
+    # proposing from a message this reason already disqualifies. Logged (AC2 -- not skipped silently)
+    # so an owner asking "why did this not turn up" can find the reason in the app's own logs;
+    # run_check() separately re-derives the same reason (suggestion_bulk_mail_reason is the one
+    # source of truth either way) to fold a per-run count into MailboxRun.error, since this function's
+    # int-count contract has no room to carry a reason string back without breaking every existing
+    # caller.
+    refusal = suggestion_bulk_mail_reason(message, raw)
+    if refusal:
+        logger.info('build_suggestions: refused a suggestion for message %s (%s): %s', message.pk, message.sender, refusal)
         return 0
     created = 0
     if classification == 'rejection' and job.status != 'rejected':
@@ -2276,13 +2330,29 @@ def update_draft_text(draft: MailboxDraft, new_text: str, user=None) -> str:
     # returned 500, not a reason. Returning it as a refusal keeps this function's one contract --
     # '' means written to BOTH Gmail and the database, anything else means NOTHING was written.
     try:
-        transport.update_draft(draft.gmail_draft_id, mime_message, thread_id=draft.gmail_thread_id or None)
+        response = transport.update_draft(draft.gmail_draft_id, mime_message, thread_id=draft.gmail_thread_id or None)
     except (RuntimeError, URLError, OSError) as exc:
         logger.warning('update_draft_text: Gmail rejected the update for draft %s: %s', draft.pk, exc)
         return f'Gmail would not accept the edit: {exc}'[:400]
     draft.body_text = new_text
     draft.evaluator = 'human'
-    draft.save(update_fields=['body_text', 'evaluator'])
+    update_fields = ['body_text', 'evaluator']
+    # TASK-156 AC1/AC2: capture whatever id Gmail's own drafts.update response actually carries, and
+    # persist it IN THE SAME SAVE as the body whenever it differs from the one already stored -- this
+    # is what production draft row 116 needed and did not get (the pre-fix code discarded `response`
+    # entirely, see the task file). A response with no usable id (an unexpected shape, or a falsy
+    # value) leaves gmail_draft_id untouched rather than blanking it: a blank id disables editing
+    # outright (the guard at the top of this function), which is strictly worse than a stale one that
+    # still resolves most of the time.
+    # (response or {}): a transport's update_draft() is contracted to return a dict (see
+    # GmailApiTransport.update_draft/_gmail_api_request), but a test fake or an unexpected future
+    # transport returning None must be treated exactly like an empty dict -- "no usable id", per AC2
+    # -- rather than crashing here.
+    new_draft_id = (response or {}).get('id')
+    if new_draft_id and new_draft_id != draft.gmail_draft_id:
+        draft.gmail_draft_id = new_draft_id
+        update_fields.append('gmail_draft_id')
+    draft.save(update_fields=update_fields)
     return ''
 
 
@@ -2768,6 +2838,11 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         # newest-last, same as the real IMAP UIDs it stands in for.
         next_uid = (MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0) if is_gmail_api else None
         sort_key = (lambda item: item.internal_date_ms or 0) if is_gmail_api else (lambda item: item.uid)
+        # TASK-154 AC2: build_suggestions() refusing a message for bulk mail is counted and explained
+        # here, not skipped silently -- MailboxRun has no dedicated counter for this (unlike
+        # draft_blocked_count for the drafting side, and run.error is already spoken for -- see the
+        # logging call after the loop below for why this stays a log record, not a new DB write).
+        suggestion_refusals: list[str] = []
         for raw in sorted(raw_messages, key=sort_key):
             # Gmail's `after:` search is only second-granular (see GmailApiTransport.fetch_new), so a
             # message right at the resume boundary can come back on two consecutive runs -- this dedup
@@ -2826,7 +2901,15 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             # to it. Without this guard the app would draft a reply to the owner's own email and save
             # it to Gmail Drafts.
             if matched is not None and not sent_by_owner:
-                run.suggestion_count += build_suggestions(message, matched, classification, interview_at)
+                run.suggestion_count += build_suggestions(message, matched, classification, interview_at, raw=raw)
+                # TASK-154 AC2: re-derives the same reason build_suggestions() itself just checked
+                # (suggestion_bulk_mail_reason is the one source of truth for the rule either way) so
+                # the refusal is counted/explained on the run without widening build_suggestions()'s
+                # existing int-count return contract (every other caller/test relies on that shape).
+                suggestion_refusal = suggestion_bulk_mail_reason(message, raw) if matched.status in JobLead.ACTIONABLE_STATUSES else ''
+                if suggestion_refusal:
+                    suggestion_refusals.append(f'message {message.pk} ({message.sender}): {suggestion_refusal}')
+                    run.suggestion_blocked_count += 1
                 if not is_cold_start:
                     draft = maybe_draft_reply(message, raw, matched, classification, interview_at, owner, profile, active_transport)
                     if draft is not None:
@@ -2837,8 +2920,16 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             # TASK-124 AC5: persisted after every message, not just once at the end -- a poller reading
             # the row mid-run must see fetched_count actually move, and the first live run's 641
             # messages is exactly the case a save-only-at-the-end would leave silent the whole time.
-            run.save(update_fields=['fetched_count', 'job_related_count', 'uncertain_count', 'suggestion_count', 'draft_written_count', 'draft_blocked_count'])
+            run.save(update_fields=['fetched_count', 'job_related_count', 'uncertain_count', 'suggestion_count', 'suggestion_blocked_count', 'draft_written_count', 'draft_blocked_count'])
 
+        if suggestion_refusals:
+            # TASK-154 AC2: NOT folded into run.error -- dozens of existing tests treat `not run.error`
+            # as "this run had nothing go wrong" for scenarios that have nothing to do with suggestion
+            # generation (see e.g. test_widened_fetch_still_refuses_a_board_style_newsletter_via_bulk_mail_reason,
+            # which matches a bulk-mail message to a tracked job on purpose). A logged, counted summary
+            # is what "not skipped silently" needs without repurposing a field every other test already
+            # relies on meaning "nothing failed".
+            logger.info('run_check: %d suggestion(s) refused for bulk mail: %s', len(suggestion_refusals), '; '.join(suggestion_refusals))
         run.finished_at = timezone.now()
         run.save()
     except Exception as exc:
@@ -3439,7 +3530,7 @@ def backfill_historical_mail(dry_run: bool = True, limit: int | None = None, flo
             )
             next_uid += 1
             if matched is not None:
-                build_suggestions(message, matched, classification, interview_at)
+                build_suggestions(message, matched, classification, interview_at, raw=raw)
         created += 1
 
     if run is not None:
