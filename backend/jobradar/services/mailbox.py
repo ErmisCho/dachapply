@@ -2475,6 +2475,15 @@ def compose_reply_draft(message: MailboxMessage, body_text: str, to: list[str], 
 
     existing = MailboxDraft.objects.filter(message=message).first()
     transport = _default_transport()
+    # TASK-159: _default_transport() returns None when this backend has no mail credentials at all
+    # (its own docstring, TASK-124 AC2) -- it does not raise. Without this guard the create path
+    # below calls append_draft() on None, and AttributeError is not in the except clause that
+    # follows, so it escaped as a 500 on the deployed site, which is exactly the credential-less
+    # environment the compose UI is reachable from. The guard further down only covers the UPDATE
+    # path (`updating_in_gmail and not isinstance(...)`), which is why creating a reply hit it and
+    # editing one never did. Same shape and register as update_draft_text's own refusal.
+    if transport is None:
+        return "this backend has no mail credentials, so it cannot write a draft -- the mailbox check runs on the owner's own machine"
     raw = RawMessage(uid=message.uid, sender=message.sender, subject=message.subject, received_at=message.received_at, message_id=message.message_id)
     mime_message = build_reply_mime(raw, _reply_from_address(), body_text, to=to, cc=cc)
 
