@@ -1,7 +1,7 @@
 ---
 id: TASK-115
 title: Manage several quiet-hours calendars from the platform
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-08-18 11:30'
@@ -39,13 +39,13 @@ So this is two things: a missing feature, and a configuration mistake that the s
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Several quiet-hours calendars are configurable **in the app** (profile/settings page), the same way cadence and calendar-awareness already are (TASK-109 AC8) — not only in a local .env
+- [x] #1 Several quiet-hours calendars are configurable **in the app** (profile/settings page), the same way cadence and calendar-awareness already are (TASK-109 AC8) — not only in a local .env
 - [x] #2 The run is treated as busy if ANY configured calendar reports a busy event at that moment
 - [x] #3 One unreachable or unparseable calendar does not prevent the others being checked, and total failure still fails open (the run proceeds) — verified by a test with one good and one broken URL
 - [x] #4 A configured-but-unusable calendar is no longer silent: when a configured URL fails, the run records it where the owner can see it (`MailboxRun.error` or an equivalent surfaced field), rather than only logging
 - [x] #5 The stored URLs are never returned in full by the API: a GET returns them masked (calendar-owner part visible, the `private-<hash>` secret replaced), while a write accepts the full URL — an ICS private URL grants read access to an entire calendar with no authentication, so it is a secret, unlike every other mailbox setting in this serializer
 - [x] #6 Masking is verified against an actual API response, not by reading the serializer — a GET on the profile endpoint contains no `private-<hash>` substring
-- [ ] #7 The platform is the ONLY way to configure quiet-hours calendars: the `GMAIL_CALENDAR_ICS_URL` environment variable is removed, and nothing in the UI, docs or `.env.local.example` tells the owner to edit a file
+- [x] #7 The platform is the ONLY way to configure quiet-hours calendars: the `GMAIL_CALENDAR_ICS_URL` environment variable is removed, and nothing in the UI, docs or `.env.local.example` tells the owner to edit a file
 - [x] #8 The parser tolerates a pasted `[a, b, c]` list literal and surrounding quotes rather than treating it as one URL — that shape is what someone naturally writes, and getting it wrong currently fails open and silent
 - [x] #9 Backend tests cover multi-calendar parsing, the any-calendar-busy rule, the partial-failure case and the masking; no test fetches a real calendar
 <!-- AC:END -->
@@ -53,6 +53,8 @@ So this is two things: a missing feature, and a configuration mistake that the s
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-21: closed as SUPERSEDED by TASK-116, which shipped and deleted the machinery this task built. AC1's 'calendars configurable in the app, shown to drive a run' is satisfied by TASK-116's pick-by-name picker over OAuth - no ICS URL is entered anywhere - and AC7's 'env var removed everywhere' was completed by TASK-116 AC6, which deleted GMAIL_CALENDAR_ICS_URL from settings.py and settings_test.py along with the field, the masking, the merge and the parser. The masked-value work (AC5/AC6) was real and correct for the design it served; that design is gone, which is the outcome this task's own notes predicted.
+
 2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): AC5/AC6 are test-proven including the masked-value-in-a-real-response assertion. AC1 needs a real calendar configured (owner) and AC7 is a one-line deletion owned by TASK-116; both likely mooted if TASK-116 replaces the ICS route - close as superseded when it lands.
 
 Deliberately deferred on 2026-08-18 rather than done immediately: `mailbox.py` had 154 uncommitted
