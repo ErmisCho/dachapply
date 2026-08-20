@@ -1,7 +1,7 @@
 ---
 id: TASK-88
 title: Add production error logging and alerting
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-08-16 00:43'
@@ -23,13 +23,38 @@ No LOGGING config and no error tracker exist anywhere in backend/config (grep: n
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Unhandled 500s produce a durable, pushed signal — Django LOGGING to mail_admins/webhook, or a Sentry DSN via env var
-- [ ] #2 A deliberately raised test error reaches the channel end to end in production, recorded in the closing notes
+- [x] #2 A deliberately raised test error reaches the channel end to end in production, recorded in the closing notes
 - [x] #3 Noise-guarded: 404s and throttled (429) requests do not alert
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+
+### 2026-08-20 — AC2 closed, end to end in production
+
+With the owner's approval, a deliberate 500 was raised on the DEPLOYED site the way this task's own
+notes prescribed ("a 500 that costs nothing"): `POST /api/prompts/generate/` with
+`{"job_ids": ["not-a-number"]}`. That reaches the ORM and fails there
+(`views.py:1278`, `filter(id__in=ids)` -> `ValueError: Field 'id' expected a number but got
+'not-a-number'`), so it writes nothing, changes no code, and adds no crash route. The site stayed
+healthy through it: board 200 with 73 jobs, `/health/` 200.
+
+The alert arrived. Delivered to ermis.chorinopoulos@gmail.com at 2026-08-20 21:28 Europe/Vienna,
+from `DACHApply <...@11494992.brevosend.com>` with `Reply-To` the owner, subject:
+
+    [DACHApply] ERROR (EXTERNAL IP): Internal Server Error: /api/prompts/generate/
+
+carrying the exception type, value, full traceback and request context. That is AC2's end-to-end
+delivery, on the real deployment, for a real error. AC1 and AC3 were already proven.
+
+**The proof immediately surfaced a security defect, filed as TASK-157:** the settings dump in that
+email prints `DATABASE_URL` in full - the complete production Neon connection string including its
+password - because Django's `SafeExceptionReporterFilter` masks by setting NAME
+(`API|TOKEN|KEY|SECRET|PASS|SIGNATURE`) and `DATABASE_URL` matches none of them. `SECRET_KEY`,
+`EMAIL_HOST_PASSWORD` and `DATABASES[...]['PASSWORD']` were all correctly masked in the same email.
+So alerting works, and every 500 it reports mails the database credentials until TASK-157 lands.
+
 Sentry's free tier is the lazy complete answer (grouping, rate-limiting, context for free); if avoiding the dependency, a LOGGING dict with an ERROR-level handler posting to a webhook is ~20 lines. Either way it is configuration, not code.
 
 ### Progress (2026-08-16) — prep landed in Wave 6, AC1/AC2 need the owner
