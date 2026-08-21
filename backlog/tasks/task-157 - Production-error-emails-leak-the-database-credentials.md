@@ -1,7 +1,7 @@
 ---
 id: TASK-157
 title: Production error emails leak the database credentials
-status: To Do
+status: Done
 assignee: []
 labels:
   - security
@@ -45,13 +45,63 @@ console) and stopping the next email from carrying it (code).
 - [x] #3 Proven by test: rendering the exception report with a populated `DATABASE_URL` produces no substring of that value anywhere in the output, asserted against the real reporter (not by inspecting the filter's config)
 - [x] #4 The request-data half is checked in the same pass: `HTTP_AUTHORIZATION` and `HTTP_COOKIE` were already masked in the observed email, but confirm by test rather than by that one sample
 - [x] #5 Verified in production after deploy: trigger one more harmless 500 the same way, and confirm from the delivered email that the connection string is masked and the traceback is still useful
-- [ ] #6 The exposed Neon credential is rotated (owner action, Neon console) and the new value set on the Container App; recorded here once done
+- [x] #6 The exposed Neon credential is rotated (owner action, Neon console) and the new value set on the Container App; recorded here once done
 - [x] #7 Backend suite green
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-21, AC6 closed. The exposed Neon credential is rotated and every path is verified.
+
+What was done, in order:
+
+  1. Owner reset the `neondb_owner` password in the Neon console (project dachapply-production,
+     branch production, AWS Europe Central 1).
+  2. The new pooled connection string went into the local .env.
+  3. The Container App secret `database-url` was set from that file and revision dachapply--0000098
+     was restarted. Note the revision number: the task originally recorded 0000094, but PRs #67 and
+     #68 deployed in the meantime, so `az containerapp revision restart --revision dachapply--0000094`
+     fails with "deactivated or does not exist". Always look the active revision up rather than
+     reusing a number from an earlier note.
+
+Verified, not assumed:
+
+  new credential works    connect as neondb_owner, read 13 rows from jobradar_mailboxrun -- the same
+                          count recorded after the TASK-160 cleanup, so no data moved in the rotation
+  stored secret is right  151 chars, byte-identical to the .env value, starts postgresql://, uses the
+                          -pooler host, carries sslmode
+  live site               GET /api/health/ -> 200 {"status":"ok","database":"ok"}
+                          GET /            -> 200
+                          GET /api/mailbox-health/ -> 200 {"status":"ok"}  (TASK-160 watchdog, which
+                          reads the database, so it is a second independent proof of the credential)
+  OLD PASSWORD IS DEAD    reconnecting with the leaked password against the same host is refused:
+                          "password authentication failed". This is the criterion that actually
+                          matters and it is measured, not inferred from the console showing a reset.
+
+Two failure modes worth recording, because both produced a *silently wrong* secret rather than an
+error, and the app only reported them as a generic 500:
+
+  - The az commands were run in cmd.exe, not PowerShell. In cmd, single quotes are not quote
+    characters, `<` is a redirect operator, and `&`/`?` inside a Neon connection string split the
+    command. The first attempt stored the literal placeholder text (18 chars); the second stored the
+    literal string `$conn` (5 chars), because cmd does not expand PowerShell variables and Read-Host
+    does not exist there.
+  - Neither attempt failed loudly. `az containerapp secret set` accepts any string, so the only
+    symptom was the site continuing to 500 with "password authentication failed for user
+    'neondb_owner'" -- indistinguishable from "the rotation broke the app".
+
+The diagnostic that resolved it, and the one to reuse: never print the secret, print its SHAPE.
+Length, does it start with postgresql://, does it contain -pooler, does it contain sslmode, does it
+still contain the old password. A length of 18 or 5 identifies the mistake immediately without ever
+putting the value on screen. The fix was to read the value out of the .env file and pass it to az
+from there, so it never crosses a shell quoting boundary at all.
+
+Remaining hygiene, deliberately NOT claimed by this task: the old password still appears in this
+session's transcript and in the delivered error email that started all of this. It is now inert --
+Neon rejects it -- which is the whole point of rotating rather than redacting. TASK-69 tracks the
+separate git-history exposure.
+
 2026-08-20 close-out. Fixed in PR #60 (merge 29e1ce0), deployed, and PROVEN in production by
 raising a second harmless 500 the same way and comparing the two delivered emails side by side:
 
