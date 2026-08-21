@@ -279,6 +279,23 @@ def health(request):
 # (the mailbox check is broken), so there is nothing to key by.
 MAILBOX_HEALTH_ALERT_CACHE_KEY = 'mailbox_health_watchdog_alert_sent'
 
+# TASK-161 AC5: the `unmatched` action's recency window for its two low-consequence classes
+# (application_confirmed, recruiter_reply -- see UNMATCHED_LOW_CONSEQUENCE_CLASSIFICATIONS below).
+# 90 days, not a rounder number, because it is where the measured age distribution actually breaks:
+# 68 of the panel's 321 rows fall inside 90 days and 253 outside it, and that boundary is where live
+# mail flow ends and the backfill_historical_mail/ingest_threads bulk import begins (see task-161's
+# Implementation Notes for the full cumulative distribution). rejection/interview_invitation are
+# NEVER subject to this window -- 15 of the 41 unattached ones are over a year old, so any uniform
+# cutoff would hide the very rows this endpoint exists to surface.
+UNMATCHED_RECENCY_WINDOW_DAYS = 90
+# rank 0 (never age-filtered): the two classes attaching can act on regardless of the target job's
+# state -- set to rejected/interview. rank 1 (age-filtered): only useful for a subset of jobs
+# (application_confirmed backdates an unapplied job; recruiter_reply clears a feedback clock a job
+# may not have) and is a data-repair chore rather than a decision once it is this old. rank 2
+# (age-filtered): uncertain and anything else not in the two lists above.
+UNMATCHED_HIGH_CONSEQUENCE_CLASSIFICATIONS = ('rejection', 'interview_invitation')
+UNMATCHED_LOW_CONSEQUENCE_CLASSIFICATIONS = ('application_confirmed', 'recruiter_reply')
+
 
 def _mailbox_health():
     """TASK-160 AC1: health computed from MailboxRun rows alone -- no call to Gmail or to the
@@ -1061,13 +1078,51 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         # returns None from that WITHOUT a query when the id itself is None -- no join needed here,
         # though that is this endpoint's own filter guaranteeing it, not a property of the serializer,
         # so it would need revisiting if this serializer is ever reused without that filter.
+        #
+        # TASK-161: `-uid` alone buried the 41 currently-unattached rejections/interview invitations
+        # among 280 messages attaching can mostly do nothing with (task-161's Implementation Notes).
+        # `rank` is a Case/When computed HERE, in the query, not in Python or the browser (AC2) --
+        # UNMATCHED_HIGH_CONSEQUENCE_CLASSIFICATIONS first, UNMATCHED_LOW_CONSEQUENCE_CLASSIFICATIONS
+        # second, everything else (including 'offer', which the task's rank spec never names) last --
+        # and order_by sorts on that annotation, then most-recent-first, with `-uid` kept as the final
+        # tiebreak so ordering stays deterministic when received_at is null or two rows tie (AC1).
+        #
+        # `F('received_at').desc(nulls_last=True)` rather than a plain `-received_at`, and the reason
+        # is a divergence the test suite CANNOT catch: Postgres (Neon, production) defaults DESC to
+        # NULLS FIRST, so a row with no received_at would sort as though it were the newest in its
+        # rank bucket -- the opposite of most-recent-first -- while sqlite (the hermetic test DB)
+        # sorts nulls lowest and puts them last, so a green suite proves nothing here. Measured
+        # 2026-08-21: 0 of the 321 current panel rows have a null received_at, so this is latent
+        # rather than live, but it is one expression and the same idiom line 815 already uses.
+        #
+        # The recency window (UNMATCHED_RECENCY_WINDOW_DAYS) applies ONLY to rank 1/2 -- rank 0 rows
+        # are never age-filtered, because 15 of the 41 high-signal rows measured against production are
+        # themselves over a year old; filtering them by age would hide the exact rows this endpoint
+        # exists to surface (AC3/AC4). A row with no received_at at all counts as visible rather than
+        # guessed old -- there is no measured age to filter it by. hidden_count is a second, cheap
+        # COUNT(*) query (never selects body_text -- see
+        # test_unmatched_messages_query_defers_body_text_and_computes_a_bounded_db_side_preview) run
+        # only when the filter is actually applied, so the UI can state what `?include_older=1` -- which
+        # skips the filter and this query entirely -- would add back, rather than silently dropping it.
         preview_len = MailboxMessageListSerializer.BODY_PREVIEW_CHARS + 1
+        include_older = str(request.query_params.get('include_older') or '').strip().lower() in ('1', 'true', 'yes')
         qs=(self.get_queryset().exclude(classification='not_job_related').filter(matched_job__isnull=True)
             .select_related('draft')
             .annotate(body_preview=Substr('body_text', 1, preview_len))
             .defer('body_text')
-            .order_by('-uid'))
-        return Response(MailboxMessageListSerializer(qs, many=True).data)
+            .annotate(rank=Case(
+                When(classification__in=UNMATCHED_HIGH_CONSEQUENCE_CLASSIFICATIONS, then=Value(0)),
+                When(classification__in=UNMATCHED_LOW_CONSEQUENCE_CLASSIFICATIONS, then=Value(1)),
+                default=Value(2), output_field=IntegerField(),
+            ))
+            .order_by('rank', F('received_at').desc(nulls_last=True), '-uid'))
+        hidden_count = 0
+        if not include_older:
+            cutoff = timezone.now() - timezone.timedelta(days=UNMATCHED_RECENCY_WINDOW_DAYS)
+            visible = Q(rank=0) | Q(received_at__isnull=True) | Q(received_at__gte=cutoff)
+            hidden_count = qs.exclude(visible).count()
+            qs = qs.filter(visible)
+        return Response({'results': MailboxMessageListSerializer(qs, many=True).data, 'hidden_count': hidden_count})
     @action(detail=True, methods=['post'])
     def attach(self, request, pk=None):
         """TASK-117 AC6: the only writer of `matched_job` for a message that already ran through
