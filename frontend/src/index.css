@@ -265,8 +265,19 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
 @keyframes tourPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.035)}}
 
 /* Responsive job table: keep content contained on narrow screens. */
+/* TASK-165: `top:0`, not an offset derived from the nav. Measured 2026-08-21 rather than reasoned
+   from the stylesheet, and the measurement overturned the obvious fix. This header does NOT stick to
+   the viewport at all: its nearest scrollable ancestor is the `.overflow-x-auto` wrapper (its
+   overflow-y computes to `auto` too -- CSS forces `visible` to `auto` when the other axis is not
+   visible), so `sticky` resolves against that container and the header scrolls away with the page
+   (thead top measured at 8373 -> -20 -> -420 while scrolling). The old `top:2.05rem` therefore bought
+   nothing and cost 33px: a sticky offset here only pushes the header DOWN over the first body row --
+   33px of a 78px row, with the row's own link entirely beneath it, so elementFromPoint at that link
+   returned a header sort BUTTON and clicks on the first job never reached it. Overlap equalled the
+   offset at every scroll position, so raising it to the nav's real 37px height would have made the
+   bug worse, not better. 0 is the only value that costs nothing here. */
 .job-table{min-width:980px;table-layout:fixed}
-.job-table thead th{position:sticky;top:2.05rem;z-index:12;background:rgba(248,250,252,.96);backdrop-filter:blur(12px);box-shadow:0 1px 0 rgba(203,213,225,.9)}
+.job-table thead th{position:sticky;top:0;z-index:12;background:rgba(248,250,252,.96);backdrop-filter:blur(12px);box-shadow:0 1px 0 rgba(203,213,225,.9)}
 .dark .job-table thead th{background:rgba(5,7,13,.96)!important;box-shadow:0 1px 0 rgba(255,255,255,.08)}
 .job-table th,.job-table td{max-width:12rem;overflow-wrap:anywhere;word-break:break-word;white-space:normal;vertical-align:top}
 .job-table a,.job-table pre,.job-table div,.job-table span{overflow-wrap:anywhere;word-break:break-word;max-width:100%}
