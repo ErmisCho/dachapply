@@ -52,3 +52,20 @@ jobs:
 
           echo "::error::dachapply health check failed after 3 attempts against $APP_URL"
           exit 1
+
+      # TASK-160: a broken mailbox check is not the site being down (AC5), so this step must never
+      # fail the workflow -- continue-on-error plus a script that always exits 0 belt-and-suspenders
+      # the same guarantee. jobradar.views.mailbox_health computes health from MailboxRun rows alone
+      # and, on a failing or stale result, emails the owner itself (cooldown-bounded); this step only
+      # needs to trigger the probe and log what it said.
+      - name: Probe mailbox health (best-effort, never fails this workflow)
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          APP_URL="${{ vars.APP_URL || '' }}"
+          [ -n "$APP_URL" ] || APP_URL="$DEFAULT_APP_URL"
+          echo "probing $APP_URL/api/mailbox-health/"
+          body=$(curl --silent --show-error --max-time 20 "$APP_URL/api/mailbox-health/") || true
+          echo "mailbox health: ${body:-no response}"
+          exit 0

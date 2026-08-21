@@ -5,6 +5,7 @@ from django.contrib.auth import authenticate, login, logout, get_user_model
 from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
+from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.db import connection, transaction
@@ -271,6 +272,106 @@ def health(request):
         database = 'unavailable'
         status_code = 503
     return Response({'status': 'ok' if status_code == 200 else 'degraded', 'database': database}, status=status_code)
+
+
+# TASK-160: cache key the mailbox watchdog alert's cooldown lives under. A plain module constant,
+# not per-failure like _alert_key() in config/settings.py -- there is only one kind of alert here
+# (the mailbox check is broken), so there is nothing to key by.
+MAILBOX_HEALTH_ALERT_CACHE_KEY = 'mailbox_health_watchdog_alert_sent'
+
+
+def _mailbox_health():
+    """TASK-160 AC1: health computed from MailboxRun rows alone -- no call to Gmail or to the
+    owner's machine, which is the entire point (the deployed site reads the same database the
+    local check writes to, but can reach neither Gmail nor the laptop itself).
+
+    Returns (status, detail): `status` is the coarse value AC6 allows the endpoint to expose
+    ('ok' | 'failing' | 'stale'); `detail` is for the alert email only, never for the response body.
+
+    A failing latest run always wins over staleness: whatever the last successful run looked like,
+    a fresh error is the more specific, more actionable thing to report. 'successful' matches the
+    existing idiom in services.mailbox.mailbox_check_estimate -- finished_at set and error blank --
+    so a legitimate skip (quiet hours, disabled, outside the check window) still counts as evidence
+    the checker itself is alive, which is what staleness is actually asking about.
+    """
+    latest = MailboxRun.objects.order_by('-started_at').first()
+    if latest is not None and latest.error:
+        return 'failing', latest.error
+    last_success = MailboxRun.objects.filter(finished_at__isnull=False, error='').order_by('-finished_at').first()
+    cutoff = timezone.now() - timezone.timedelta(hours=settings.MAILBOX_STALE_ALERT_HOURS)
+    if last_success is None or last_success.finished_at < cutoff:
+        if last_success is None:
+            detail = 'No successful run has ever been recorded.'
+        else:
+            hours_ago = round((timezone.now() - last_success.finished_at).total_seconds() / 3600, 1)
+            detail = f'No successful run in over {hours_ago} hours (last one was {hours_ago} hours ago).'
+        return 'stale', detail
+    return 'ok', ''
+
+
+def _send_mailbox_health_alert(status_value, detail):
+    """TASK-160 AC2/AC3/AC4/AC6: sends through django.core.mail directly, not through the logging
+    handler -- mail_admins carries require_debug_false, which would block this locally even if the
+    owner's machine had SMTP configured to begin with (it does not). Recipients are whatever the
+    deployed site already has configured for TASK-88's alerting (settings.ADMINS, built from
+    ERROR_ALERT_EMAILS): no second address to configure, no new shared secret (see the task's
+    Implementation Notes).
+
+    AC4: at most one alert per settings.ERROR_ALERT_COOLDOWN_SECONDS -- the same cooldown idea
+    config.settings.ErrorAlertCooldown uses, reused via the cache rather than a second mechanism.
+    cache.add() is atomic and only succeeds the first time a key is set, which is exactly "have I
+    already alerted for this within the window" without a race between concurrent workers; CACHES is
+    DatabaseCache (see settings.py), so this is shared across every worker and process, unlike that
+    filter's own admittedly per-process dict.
+
+    Never raises: a broken alert email must not break the health probe it rides on.
+    """
+    recipients = [address for _name, address in settings.ADMINS]
+    if not recipients:
+        return  # AC6/task notes: nothing configured means nothing to do, never a crash
+    if not cache.add(MAILBOX_HEALTH_ALERT_CACHE_KEY, True, timeout=settings.ERROR_ALERT_COOLDOWN_SECONDS):
+        return  # already alerted inside the current cooldown window
+    reason = f'is failing: {detail}' if status_value == 'failing' else detail
+    subject = 'DACHApply mailbox check needs attention'
+    body = (
+        f'The DACHApply mailbox check {reason}\n\n'
+        'What to do:\n\n'
+        '1. Re-authorize the Gmail connection on the machine that runs the check:\n\n'
+        '   python manage.py gmail_oauth_setup\n\n'
+        '2. If this keeps recurring roughly every 7 days, publish the OAuth consent screen '
+        '(Google Cloud Console -> APIs & Services -> OAuth consent screen -> Publish App). While '
+        'the app stays in "Testing" publishing status, Google expires the refresh token after '
+        'about 7 days of use regardless of whether it is actually being used; publishing the '
+        'OAuth consent screen removes that 7-day testing-mode refresh-token expiry entirely.\n'
+    )
+    try:
+        send_mail(subject, body, settings.DEFAULT_FROM_EMAIL, recipients, fail_silently=False)
+    except Exception:
+        logger.exception('Mailbox health alert email failed to send')
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def mailbox_health(request):
+    """TASK-160: lets the DEPLOYED site notice when the mailbox check has stopped working, even
+    though the deployed site never runs that check itself -- see backlog/tasks/task-160 for why
+    TASK-88's alerting cannot cover this (it runs on the owner's own machine, where DEBUG=True
+    blocks the mail_admins handler and there is no SMTP configured anyway).
+
+    AC6: always 200 and a coarse status only, unauthenticated -- /api/health/ stays the uptime
+    workflow's up/down signal (do not overload it, per the task notes); this is a separate,
+    side-effecting probe the workflow calls in addition, and it must never be able to fail that
+    workflow on its own. Nothing about mailbox content (subjects, senders, counts) is exposed here;
+    that detail goes only into the alert email, which reaches the owner's own configured address.
+    """
+    status_value, detail = _mailbox_health()
+    if status_value == 'ok':
+        # AC4: clear any cooldown key left over from a prior failure, so the NEXT failure alerts
+        # promptly instead of riding out a cooldown window that started before the recovery.
+        cache.delete(MAILBOX_HEALTH_ALERT_CACHE_KEY)
+    else:
+        _send_mailbox_health_alert(status_value, detail)
+    return Response({'status': status_value})
 
 
 @ensure_csrf_cookie
