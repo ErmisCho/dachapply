@@ -1,7 +1,7 @@
 ---
 id: TASK-69
 title: Purge the leaked personal data export from public git history
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 updated_date: '2026-08-17 15:15'
@@ -25,7 +25,7 @@ Verified 2026-08-16: `git show 912b853:"dachapply-full-2026-05-22.json"` returns
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The export blob is unreachable from every ref on GitHub (history rewritten with git-filter-repo or BFG; `git log --all -- "dachapply-full-2026-05-22.json"` is empty on a fresh clone)
+- [x] #1 The export blob is unreachable from every ref on GitHub (history rewritten with git-filter-repo or BFG; `git log --all -- "dachapply-full-2026-05-22.json"` is empty on a fresh clone)
 - [x] #2 The force push is performed by the owner personally, after coordinating any open branches (PSA-003 — agents never force-push)
 - [x] #3 A full-history secret/PII sweep (gitleaks or trufflehog over all refs) confirms no other personal exports or credentials remain reachable, with the command and result recorded in the task notes
 <!-- AC:END -->
@@ -33,6 +33,35 @@ Verified 2026-08-16: `git show 912b853:"dachapply-full-2026-05-22.json"` returns
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-21 - AC1 closed. GitHub Support acted on ticket #4672555, and the result is measured from a
+genuinely fresh public clone rather than taken from their reply.
+
+**The pre-rewrite pull-request refs are gone.** At submission `git ls-remote` advertised
+refs/pull/1/head .. refs/pull/30/head. Today it advertises 40 refs running #30 .. #69 -- #1 through
+#29 no longer exist, and everything still advertised was opened after the rewrite, so all of it
+points at post-rewrite history.
+
+Verified across ALL 43 refs (3 branches + 40 pull refs), fetched explicitly rather than assumed:
+
+    commits touching 'dachapply-full-2026-05-22.json'   0
+    blob 59fcfc77187f88491fd3b1c11a6d4d18453ef855       PURGED (git cat-file -e non-zero)
+    @ebcont.com occurrences reachable from any ref      0
+    blobs reachable from every ref                      1145
+
+Compare against the numbers recorded on 2026-08-17, when fetching the pull refs put the data back:
+2 commits touching the export, 967 blobs, 20 address hits. All three are now zero or clean.
+
+**A false negative nearly closed this early, and it is the same shape the task already warned about.**
+The first check ran `git fetch origin 'refs/pull/*:refs/pull/*'` and reported "0 commits touching the
+export" -- while also reporting `pull refs fetched: 0`. The fetch had silently retrieved nothing, so
+the "including pull refs" check was just the branches-only check run twice, and it would have read as
+proof. The refspec had to be written as `+refs/pull/*/head:refs/remotes/pr/*` to actually land the 40
+refs. **Always assert the fetch count before trusting what the fetch proves.** `grep -a` was used for
+the address sweep, per the NUL-byte trap recorded above.
+
+Still true and still worth saying plainly when this is cited: forks and clones taken before the
+rewrite are reachable by none of this, and no request to GitHub changes that.
+
 `git filter-repo --invert-paths --path "dachapply-full-2026-05-22.json"` on a fresh clone, then force-push all refs. Note the limits honestly when closing: existing forks/clones and GitHub's commit-view cache can retain the blob — GitHub support can be asked to run GC on cached views. The file contains no credentials, so this is exposure minimization, not rotation. Do this before TASK-70 stores any backup dumps anywhere near the repo.
 
 ### Investigation (2026-08-16) — AC3 executed; AC1 as written is not achievable by a force push
