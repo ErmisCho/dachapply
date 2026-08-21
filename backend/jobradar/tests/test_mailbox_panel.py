@@ -13,6 +13,7 @@ from rest_framework.test import APIClient
 from jobradar.models import ApplicationNote, JobLead, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion
 from jobradar.services import mailbox
 from jobradar.services.prompt_builder import user_profile_settings
+from jobradar.views import UNMATCHED_RECENCY_WINDOW_DAYS
 
 
 @pytest.fixture(autouse=True)
@@ -267,12 +268,62 @@ def test_unmatched_messages_list_is_empty_for_non_owner_and_populated_for_owner(
     owner_response = client.get('/api/mailbox-messages/unmatched/')
     other_response = other_client.get('/api/mailbox-messages/unmatched/')
 
-    assert other_response.data == []
-    ids = [row['id'] for row in owner_response.data]
+    assert other_response.data['results'] == []
+    ids = [row['id'] for row in owner_response.data['results']]
     assert unmatched.id in ids
     assert matched.id not in ids  # already matched -- not "unmatched"
     assert not_job_related.id not in ids  # not job-related -- not something to review
-    assert owner_response.data[0]['body_text'] == 'We are recruiting for a role like yours.'
+    assert owner_response.data['results'][0]['body_text'] == 'We are recruiting for a role like yours.'
+
+
+# --- TASK-161 AC1/AC3/AC4: rank the unmatched list by what attaching can actually do ---------------
+
+def test_unmatched_messages_ranks_rejection_above_application_confirmed_regardless_of_uid_or_date(client):
+    """AC1/AC2: consequence rank beats both uid and received_at -- a rejection logged FIRST (lower
+    uid) and received EARLIER must still rank ABOVE an application_confirmed logged SECOND (higher
+    uid) and received LATER, because attaching the rejection can always act (sets the job to
+    rejected) while the application_confirmed mostly cannot (only 23 of 91 jobs were unapplied,
+    task-161's own measurement)."""
+    now = timezone.now()
+    rejection = _log_message(None, 'rejection', sender='hr1@agency.test', received_at=now - timezone.timedelta(days=5))
+    application_confirmed = _log_message(None, 'application_confirmed', sender='hr2@agency.test', received_at=now)
+
+    r = client.get('/api/mailbox-messages/unmatched/')
+
+    ids = [row['id'] for row in r.data['results']]
+    assert ids.index(rejection.id) < ids.index(application_confirmed.id)
+
+
+def test_unmatched_messages_recency_filter_hides_an_old_application_confirmed_but_not_an_old_rejection(client):
+    """AC3/AC4: the recency window applies only to the low-consequence classes -- an
+    application_confirmed older than the window is hidden by default, but a rejection of the exact
+    same age never is, because 15 of the 41 currently-unattached rejections/interview invitations
+    measured against production are themselves over a year old (task-161's Implementation Notes)."""
+    old = timezone.now() - timezone.timedelta(days=UNMATCHED_RECENCY_WINDOW_DAYS + 1)
+    old_confirmed = _log_message(None, 'application_confirmed', sender='hr1@agency.test', received_at=old)
+    old_rejection = _log_message(None, 'rejection', sender='hr2@agency.test', received_at=old)
+
+    r = client.get('/api/mailbox-messages/unmatched/')
+
+    ids = [row['id'] for row in r.data['results']]
+    assert old_rejection.id in ids
+    assert old_confirmed.id not in ids
+    assert r.data['hidden_count'] == 1
+
+
+def test_unmatched_messages_include_older_reveals_what_the_recency_filter_hid(client):
+    """AC4: the owner can reveal the hidden low-consequence rows without leaving the page --
+    ?include_older=1 disables the recency filter and returns everything, hidden_count included."""
+    old = timezone.now() - timezone.timedelta(days=UNMATCHED_RECENCY_WINDOW_DAYS + 1)
+    old_confirmed = _log_message(None, 'application_confirmed', sender='hr@agency.test', received_at=old)
+
+    default_response = client.get('/api/mailbox-messages/unmatched/')
+    revealed_response = client.get('/api/mailbox-messages/unmatched/?include_older=1')
+
+    assert old_confirmed.id not in [row['id'] for row in default_response.data['results']]
+    assert default_response.data['hidden_count'] == 1
+    assert old_confirmed.id in [row['id'] for row in revealed_response.data['results']]
+    assert revealed_response.data['hidden_count'] == 0
 
 
 # --- AC6: attach ----------------------------------------------------------------------------------
@@ -985,7 +1036,7 @@ def test_unmatched_messages_list_truncates_long_body_text(client):
     r = client.get('/api/mailbox-messages/unmatched/')
 
     assert r.status_code == 200
-    row = next(row for row in r.data if row['id'] == message.id)
+    row = next(row for row in r.data['results'] if row['id'] == message.id)
     assert len(row['body_text']) < len(long_body)
     assert row['body_text'] == long_body[:300].rstrip() + '…'
     assert row['body_truncated'] is True
@@ -997,7 +1048,7 @@ def test_unmatched_messages_list_leaves_a_short_body_untouched(client):
 
     r = client.get('/api/mailbox-messages/unmatched/')
 
-    row = next(row for row in r.data if row['id'] == message.id)
+    row = next(row for row in r.data['results'] if row['id'] == message.id)
     assert row['body_text'] == short_body
     assert row['body_truncated'] is False
 
@@ -1011,6 +1062,10 @@ def test_unmatched_messages_query_defers_body_text_and_computes_a_bounded_db_sid
     against a remote database is not reproducible here (the coordinator re-measures that number in
     the browser) -- this asserts the query's SHAPE instead: body_text is deferred (never a bare
     column in the SELECT list for this table) and a bounded SUBSTR(...) annotation stands in for it.
+
+    TASK-161: a second query now counts how many rows the recency filter suppressed (hidden_count) --
+    a plain COUNT(*) that never selects body_text (or any column) at all, so it is excluded below by
+    construction rather than by having to inspect it.
     """
     long_body = 'Thank you for applying. ' * 200  # MailboxMessage.body_text's own 5000-char cap
     _log_message(None, 'uncertain', sender='hr1@agency.test', body_text=long_body)
@@ -1021,16 +1076,20 @@ def test_unmatched_messages_query_defers_body_text_and_computes_a_bounded_db_sid
 
     assert r.status_code == 200
     message_queries = [q['sql'] for q in ctx.captured_queries if 'FROM "jobradar_mailboxmessage"' in q['sql']]
-    # Exactly one query for the whole list -- if body_text were deferred WITHOUT the serializer
-    # reading the annotation instead, DRF would trigger one reload query per row to hydrate the
-    # deferred field, and this count would grow with the message count instead of staying flat at 1.
-    assert len(message_queries) == 1
-    sql = message_queries[0]
-    assert 'SUBSTR("jobradar_mailboxmessage"."body_text"' in sql  # the DB-side bounded preview
+    # Two queries: the TASK-161 hidden_count COUNT(*) and the row SELECT itself -- if body_text were
+    # deferred WITHOUT the serializer reading the annotation instead, DRF would trigger one reload
+    # query per row to hydrate the deferred field, and this count would grow with the message count
+    # instead of staying flat at 2.
+    assert len(message_queries) == 2
+    select_queries = [sql for sql in message_queries if 'SUBSTR("jobradar_mailboxmessage"."body_text"' in sql]
+    assert len(select_queries) == 1  # only the row SELECT carries the DB-side bounded preview
+    sql = select_queries[0]
     # The only place body_text's column name may legitimately appear is inside that SUBSTR(...) call
     # -- a second, bare `"jobradar_mailboxmessage"."body_text"` in the SELECT list would mean
     # .defer('body_text') silently did nothing and the full column crossed the wire again.
     assert sql.count('"jobradar_mailboxmessage"."body_text"') == 1
+    count_query = next(sql for sql in message_queries if sql not in select_queries)
+    assert 'body_text' not in count_query  # the COUNT(*) never touches the column at all
 
 
 def test_unmatched_messages_query_count_does_not_scale_with_row_count(client):
@@ -1065,13 +1124,13 @@ def test_unmatched_messages_query_count_does_not_scale_with_row_count(client):
         _unmatched(i, with_draft=(i % 2 == 0))
     with CaptureQueriesContext(connection) as few:
         r = client.get('/api/mailbox-messages/unmatched/')
-    assert r.status_code == 200 and len(r.data) == 2
+    assert r.status_code == 200 and len(r.data['results']) == 2
 
     for i in range(2, 8):
         _unmatched(i, with_draft=(i % 2 == 0))
     with CaptureQueriesContext(connection) as many:
         r = client.get('/api/mailbox-messages/unmatched/')
-    assert r.status_code == 200 and len(r.data) == 8
+    assert r.status_code == 200 and len(r.data['results']) == 8
 
     assert len(few.captured_queries) == len(many.captured_queries), (few.captured_queries, many.captured_queries)
 
@@ -1082,7 +1141,7 @@ def test_unmatched_messages_list_does_not_drop_messages_to_bound_the_response(cl
 
     r = client.get('/api/mailbox-messages/unmatched/')
 
-    ids = {row['id'] for row in r.data}
+    ids = {row['id'] for row in r.data['results']}
     assert {m.id for m in messages} <= ids
 
 
@@ -1247,7 +1306,7 @@ def test_unmatched_messages_reaches_an_is_staff_user_even_with_cv_owner_disabled
     r = client.get('/api/mailbox-messages/unmatched/')
 
     assert r.status_code == 200
-    assert len(r.data) == 1
+    assert len(r.data['results']) == 1
 
 
 def test_unmatched_messages_still_empty_for_a_non_staff_authenticated_user(db):
@@ -1257,7 +1316,7 @@ def test_unmatched_messages_still_empty_for_a_non_staff_authenticated_user(db):
 
     r = other_client.get('/api/mailbox-messages/unmatched/')
 
-    assert r.data == []
+    assert r.data['results'] == []
 
 
 def test_cv_generation_still_refuses_an_is_staff_user_when_codex_cv_disabled(client, applied_job):
