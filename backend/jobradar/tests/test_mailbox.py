@@ -279,6 +279,112 @@ def test_classify_email_llm_accepts_application_confirmed(monkeypatch):
     assert (classification, evaluator) == ('application_confirmed', 'openai-compatible')
 
 
+# --- TASK-162: two named false positives -- a support ticket and a platform digest -- must not reach
+# a status-changing classification, and the fix must not cost the two true-positive shapes it exists
+# to keep working. Each of the two false-positive tests below fails against the pre-TASK-162
+# classifier (both REJECTION_KEYWORDS/INTERVIEW_KEYWORDS hits with no guard in front of them).
+
+def test_classify_email_support_ticket_refusal_wording_is_not_rejection():
+    """AC1/AC5, the exact production example: a spare-parts support ticket ("Re: [Ticket#...]
+    Ersatzteil fuer PRINZ PZ-STM1") carries ordinary German refusal wording ('leider ... nicht') that
+    hits REJECTION_KEYWORDS, but nothing in it is evidence of an application (no domain match, no
+    APPLICATION_CONTEXT_KEYWORDS term) -- Rule B must keep it out of 'rejection'.
+    """
+    r = raw(
+        1, sender='support@dual.de',
+        subject='Re: [Ticket#2026080110000112] Ersatzteil fuer PRINZ PZ-STM1',
+        body='Leider können wir Ihnen dieses Ersatzteil derzeit nicht liefern, da es beim Hersteller nicht mehr vorrätig ist.',
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'not_job_related'
+
+
+def test_classify_email_platform_digest_is_not_interview_invitation():
+    """AC1/AC4, the other named production example: a platform (Slack) notification digest whose
+    body can legitimately read like an invitation ('would like to invite you') hits
+    INTERVIEW_KEYWORDS, but Slack is neither an employer nor an ATS -- Rule A must keep it out of
+    'interview_invitation' regardless of what the wording says.
+    """
+    r = raw(
+        1, sender='notifications@slack.com', subject="You've got 3 unread messages",
+        body='Jane Doe would like to invite you to a huddle in #hiring.',
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'not_job_related'
+
+
+def test_classify_email_genuine_rejection_naming_bewerbung_still_classifies():
+    """True-positive guard: a genuine rejection from an untracked domain (domain_known=False) that
+    names 'Bewerbung' still classifies as rejection -- Rule B is satisfied by the application-context
+    term, exactly the case it exists to keep working.
+    """
+    r = raw(
+        1, sender='hr@newcompany.test',
+        body='Leider müssen wir Ihre Bewerbung ablehnen, da wir uns für einen anderen Kandidaten entschieden haben.',
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'rejection'
+
+
+def test_classify_email_genuine_interview_invitation_still_classifies():
+    """True-positive guard: a genuine interview invitation from an untracked domain still classifies
+    as interview_invitation -- the application-context term ('position') satisfies Rule B."""
+    r = raw(
+        1, sender='hr@newcompany.test', subject='Interview invitation',
+        body='We would like to invite you to an interview for the Backend Engineer position next Tuesday.',
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'interview_invitation'
+
+
+def test_classify_email_domain_known_alone_satisfies_rule_b_with_no_context_keyword():
+    """True-positive guard, AC5's other half: a tracked employer's terse rejection with a
+    REJECTION_KEYWORDS hit ('regret to inform') but no APPLICATION_CONTEXT_KEYWORDS term anywhere in
+    it still classifies as rejection, because domain_known=True is itself sufficient evidence."""
+    r = raw(1, body='We regret to inform you that we will not be proceeding.')
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=True)
+    assert classification == 'rejection'
+
+
+# --- TASK-162 coordinator fix (same day, measured against production): Rule A must exempt ATS
+# correspondence, and Rule B must not apply to interview_invitation -- both regressions the initial
+# guard introduced. Each of the three tests below fails against that first version.
+
+def test_classify_email_greenhouse_application_confirmation_is_not_blocked_as_a_job_board():
+    """Cause 1: greenhouse.io is filed inside JOB_BOARD_DOMAINS (TASK-114, for a job's own
+    listing-page URL), but its own outbound mail is genuine single-employer ATS correspondence, not a
+    board digest -- _is_ats_correspondence() must exempt it from Rule A."""
+    r = raw(
+        1, sender='no-reply@eu.greenhouse.io', subject='Thanks for applying to Bitpanda!',
+        body='We have received your application and will be in touch soon.',
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'application_confirmed'
+
+
+def test_classify_email_smartrecruiters_application_confirmation_is_not_blocked_as_a_job_board():
+    """Same as above for smartrecruiters.com, the other production example."""
+    r = raw(
+        1, sender='noreply@smartrecruiters.com', subject='Vielen Dank für Ihre Bewerbung',
+        body='Wir haben Ihre Bewerbung erhalten und melden uns in Kürze.',
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'application_confirmed'
+
+
+def test_classify_email_vorstellungsgespraech_invitation_needs_no_context_keyword():
+    """Cause 2: 'Invitation: Vorstellungsgespräch' from an ordinary employer domain, with NO
+    APPLICATION_CONTEXT_KEYWORDS term anywhere in subject or body, must still classify as
+    interview_invitation -- Rule B does not apply to this class; INTERVIEW_KEYWORDS' own
+    'vorstellungsgespräch' entry is specific enough on its own."""
+    r = raw(
+        1, sender='christian.tesch@ebcont.com', subject='Invitation: Vorstellungsgespräch - Elastic Consulting',
+        body='Wir würden uns freuen, Sie am Montag um 10 Uhr im Büro zu begrüßen.',
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'interview_invitation'
+
+
 # --- JobLead domain matching -----------------------------------------------------------------
 
 def test_owned_job_domains_normalizes_www_prefix(db, owner):

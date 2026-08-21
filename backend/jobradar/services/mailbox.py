@@ -885,6 +885,36 @@ APPLICATION_CONFIRMATION_KEYWORDS = [
     'wir haben deine bewerbung erhalten', 'bewerbung ist eingegangen',
 ]
 
+# TASK-162 AC5 (Rule B): refusal WORDING alone is not evidence a message is about an application at
+# all -- the motivating case is a spare-parts support ticket ("Re: [Ticket#...] Ersatzteil fuer PRINZ
+# PZ-STM1") whose ordinary German refusal language ("leider ... nicht") hits REJECTION_KEYWORDS with
+# nothing about a job anywhere in it. `rejection` requires EITHER domain_known (the sender already
+# matches a tracked job) OR one of these terms present -- see _guard_status_changing() below.
+#
+# Coordinator correction, same day: Rule B is scoped to `rejection` ONLY, not `interview_invitation`.
+# Measured against production: "Invitation: Vorstellungsgespräch", plain "Vorstellungsgespräch" and
+# "Bewerber Update Call" subjects carry ZERO of these terms, so applying Rule B there demoted five
+# genuine interview invitations. INTERVIEW_KEYWORDS is already specific enough on its own (a message
+# saying "Vorstellungsgespräch"/"invite you to an interview" is essentially never non-job mail, unlike
+# generic refusal words like "leider"/"unfortunately", which are common everywhere) -- Rule A (platform
+# senders) is the only guard interview_invitation needs, and it already catches slack/substack/
+# linkedin/stepstone. Enumerating every German interview noun (Vorstellungsgespräch,
+# Kennenlerngespräch, Bewerbergespräch, Erstgespräch, ...) to fix this instead would be a losing game.
+#
+# Deliberately small, and deliberately NOT including a bare "stelle" (the obvious German term for
+# "position/vacancy"): "stelle" is a substring of extremely common German business words --
+# "bestellen"/"Bestellung" (to order/an order), "vorstellen" (to introduce), "feststellen" (to
+# determine), "zustellen" (to deliver) -- any of which a parts/support ticket is likely to contain, so
+# a bare substring match on "stelle" would have defeated the guard on the exact example this task
+# exists for. 'bewerbung'/'beworben'/'bewerber' and 'vorstellungsgespräch' cover the DACH-market German
+# phrasing a genuine rejection overwhelmingly uses (the last one for a rejection that references an
+# interview that already happened -- "Nach dem Vorstellungsgespräch haben wir uns leider entschieden
+# ..." -- without ever saying "Bewerbung" itself).
+APPLICATION_CONTEXT_KEYWORDS = [
+    'bewerbung', 'beworben', 'bewerber', 'vorstellungsgespräch',
+    'application', 'applied', 'candidate', 'position', 'vacancy', 'role',
+]
+
 _DATE_TIME_PATTERNS = [
     # 2026-03-03 14:00 or 2026-03-03T14:00
     (re.compile(r'(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})'), lambda m: (int(m[1]), int(m[2]), int(m[3]), int(m[4]), int(m[5]))),
@@ -1011,23 +1041,82 @@ def _hit(lower_text, keywords):
     return any(k in lower_text for k in keywords)
 
 
-def _classify_heuristic(subject, body_text, domain_known):
+# TASK-162: the four classifications build_suggestions() turns into a one-click job STATE CHANGE
+# (status_change to rejected/offer/applied, or an interview_date + feedback-clock clear) -- see its
+# own docstring. These are the only classes _guard_status_changing() below ever has reason to touch;
+# recruiter_reply/uncertain/not_job_related propose nothing on their own and are left alone.
+STATUS_CHANGING_CLASSIFICATIONS = frozenset({'rejection', 'interview_invitation', 'offer', 'application_confirmed'})
+
+
+def _guard_status_changing(classification, interview_at, subject, body_text, domain_known, sender_domain):
+    """TASK-162 AC4/AC5: the ONE enforcement point both classification paths -- the heuristic below
+    and the local-LLM path in classify_email() -- funnel their result through before either is
+    trusted. A prompt instruction is not an enforcement point, so the LLM path checks its RESULT here
+    exactly the same way the heuristic checks its own.
+
+    Rule A (AC4, named basis, not a subject-line keyword list): a message from a platform that is
+    neither an employer nor an ATS -- a job board (is_job_board(), already excludes LinkedIn/Xing) or
+    the new is_platform_notification() set below (Slack, GitHub, Substack, Wellfound) -- never reaches
+    a status-changing classification, however strongly its own wording reads like one ("You've got 3
+    unread messages" from slack.com is exactly this: a Slack digest whose body can legitimately say
+    "X would like to invite you to a call").
+
+    ATS correspondence is explicitly EXEMPT from Rule A (coordinator fix, same day, measured against
+    production): is_ats_host() (ashbyhq.com/join.com/workable.com/personio.com) is checked directly,
+    plus _is_ats_correspondence()'s own small addition -- see that function's docstring for why
+    is_ats_host() alone is not sufficient. This is a separate, named exemption layered on top of the
+    board check, never a removal of it: xing.com/linkedin.com/indeed.com/stepstone/... are still
+    blocked exactly as before.
+
+    Rule B (AC5, coordinator-corrected same day): ONLY `rejection` additionally requires SOME
+    evidence the message is about an application at all -- domain_known (the sender already matches a
+    tracked job) OR an APPLICATION_CONTEXT_KEYWORDS term. Refusal wording alone is not enough (a
+    spare-parts support ticket's "leider ... nicht" reads exactly like a rejection's "leider" to
+    REJECTION_KEYWORDS with nothing about a job in it). Measured against production: applying this
+    same check to `interview_invitation` demoted five genuine invitations ("Invitation:
+    Vorstellungsgespräch", "ARISTO | Bewerber Update Call", ...) whose German interview vocabulary
+    APPLICATION_CONTEXT_KEYWORDS cannot enumerate -- INTERVIEW_KEYWORDS is already specific enough on
+    its own (unlike "leider"/"unfortunately", essentially never non-job mail), so Rule A is the only
+    guard interview_invitation needs. Also not extended to offer/application_confirmed, unchanged from
+    before -- both already require a specific phrase rare enough outside real application mail.
+
+    A classification this blocks demotes to whatever the ORIGINAL heuristic fallback would have
+    picked -- recruiter_reply/uncertain via RECRUITER_KEYWORDS or domain_known, else not_job_related --
+    rather than to a fixed value, so a platform sender whose digest happens to also thank the reader
+    for an application still lands where the rest of the pipeline already expects that phrase to land.
+    """
+    if classification not in STATUS_CHANGING_CLASSIFICATIONS:
+        return classification, interview_at
+    lower = f'{subject}\n{body_text}'.lower()
+    blocked = (is_job_board(sender_domain) or is_platform_notification(sender_domain)) and not _is_ats_correspondence(sender_domain)
+    if not blocked and classification == 'rejection':
+        blocked = not (domain_known or _hit(lower, APPLICATION_CONTEXT_KEYWORDS))
+    if not blocked:
+        return classification, interview_at
+    if _hit(lower, RECRUITER_KEYWORDS) or domain_known:
+        return ('recruiter_reply' if domain_known else 'uncertain'), None
+    return 'not_job_related', None
+
+
+def _classify_heuristic(subject, body_text, domain_known, sender_domain=''):
     lower = f'{subject}\n{body_text}'.lower()
     if _hit(lower, OFFER_KEYWORDS):
-        return 'offer', None
-    if _hit(lower, REJECTION_KEYWORDS):
-        return 'rejection', None
-    if _hit(lower, INTERVIEW_KEYWORDS):
-        return 'interview_invitation', _extract_datetime(f'{subject}\n{body_text}')
+        classification, interview_at = 'offer', None
+    elif _hit(lower, REJECTION_KEYWORDS):
+        classification, interview_at = 'rejection', None
+    elif _hit(lower, INTERVIEW_KEYWORDS):
+        classification, interview_at = 'interview_invitation', _extract_datetime(f'{subject}\n{body_text}')
     # TASK-136 AC5: checked BEFORE the domain_known fallback below, and independently of it -- an
     # explicit "thank you for applying" phrase is as strong and domain-independent a signal as
     # rejection/offer/interview above, and this is exactly the message that most often arrives from a
     # domain the app has never seen before (the FIRST message of a brand-new application).
-    if _hit(lower, APPLICATION_CONFIRMATION_KEYWORDS):
-        return 'application_confirmed', None
-    if _hit(lower, RECRUITER_KEYWORDS) or domain_known:
-        return ('recruiter_reply' if domain_known else 'uncertain'), None
-    return 'not_job_related', None
+    elif _hit(lower, APPLICATION_CONFIRMATION_KEYWORDS):
+        classification, interview_at = 'application_confirmed', None
+    elif _hit(lower, RECRUITER_KEYWORDS) or domain_known:
+        classification, interview_at = ('recruiter_reply' if domain_known else 'uncertain'), None
+    else:
+        classification, interview_at = 'not_job_related', None
+    return _guard_status_changing(classification, interview_at, subject, body_text, domain_known, sender_domain)
 
 
 def _build_classification_prompt(raw, domain_known):
@@ -1083,17 +1172,25 @@ def classify_email(raw: RawMessage, domain_known: bool):
     """(classification, interview_at_iso_or_None, evaluator). Heuristic floor always available;
     a local LLM (LLM_PROVIDER) is an optional upgrade with the same fallback-unless-strict shape as
     interview_coach.analyze_answer -- a failed LLM call never drops a message, it just falls back.
+
+    TASK-162: whichever path produces a classification, it is run through _guard_status_changing()
+    before this function returns -- the LLM's own say-so is not trusted any more than the heuristic's
+    own keyword hit is (a prompt instruction is not an enforcement point).
     """
+    sender_domain = _sender_domain(raw.sender)
     config = _load_llm_config()
     if config.provider != 'heuristic':
         try:
             classification, interview_at = _classify_with_local_llm(raw, domain_known, config)
+            classification, interview_at = _guard_status_changing(
+                classification, interview_at, raw.subject, raw.body_text, domain_known, sender_domain,
+            )
             return classification, interview_at, config.provider
         except Exception:
             if config.strict:
                 raise
             logger.warning('Local-LLM mailbox classification failed; falling back to heuristic', exc_info=True)
-    classification, interview_at = _classify_heuristic(raw.subject, raw.body_text, domain_known)
+    classification, interview_at = _classify_heuristic(raw.subject, raw.body_text, domain_known, sender_domain)
     return classification, interview_at, 'heuristic'
 
 
@@ -1114,6 +1211,26 @@ JOB_BOARD_DOMAINS = frozenset({
 def is_job_board(domain: str) -> bool:
     domain = (domain or '').lower().lstrip('.')
     return any(domain == board or domain.endswith('.' + board) for board in JOB_BOARD_DOMAINS)
+
+
+# TASK-162 AC4: platforms whose mail can read like refusal/invitation wording but that are neither an
+# employer nor an ATS -- named per the task, and its OWN set (same suffix-match shape as
+# JOB_BOARD_DOMAINS above, deliberately NOT folded into it: a social/dev/newsletter platform does not
+# LIST job postings, and merging the sets would change owned_job_domains()/TASK-163's suggestion rule
+# as a side effect neither task asked for). LinkedIn and Xing are NOT repeated here -- they are already
+# job boards (JOB_BOARD_DOMAINS above) and already covered by is_job_board(); this set only adds what
+# that one does not:
+#   slack.com      team-chat notification digests ("You've got 3 unread messages" -- named in TASK-162
+#                  itself as one of the two real false positives this task exists to close)
+#   github.com     dev-collaboration PR/issue/discussion digests -- never an employer or ATS
+#   substack.com   newsletter platform -- a subscription blast, not employer mail
+#   wellfound.com  startup-jobs discovery/social feed (formerly AngelList) -- named in the task's AC4
+PLATFORM_NOTIFICATION_DOMAINS = frozenset({'slack.com', 'github.com', 'substack.com', 'wellfound.com'})
+
+
+def is_platform_notification(domain: str) -> bool:
+    domain = (domain or '').lower().lstrip('.')
+    return any(domain == host or domain.endswith('.' + host) for host in PLATFORM_NOTIFICATION_DOMAINS)
 
 
 # TASK-137 AC2/AC3: applicant-tracking-system hosts used by MANY unrelated companies (job 760/Deltia
@@ -1142,6 +1259,30 @@ def _registrable_domain(domain: str) -> str:
 
 def is_ats_host(domain: str) -> bool:
     return _registrable_domain((domain or '').lower().lstrip('.')) in ATS_DOMAINS
+
+
+# TASK-162 follow-up (coordinator, same day, measured against production): _guard_status_changing()'s
+# Rule A must not block genuine ATS/employer correspondence. is_ats_host() above is the obvious
+# exemption and is checked directly by _is_ats_correspondence() below -- but it is NOT sufficient on
+# its own. greenhouse.io, lever.co, personio.de, workday.com and smartrecruiters.com are ALSO
+# applicant-tracking-system SaaS products whose own outbound mail ("thanks for applying to Bitpanda!",
+# "Vielen Dank für Ihre Bewerbung") is exactly the same single-employer correspondence shape as
+# ashbyhq.com/join.com/workable.com/personio.com -- they are simply filed inside JOB_BOARD_DOMAINS
+# instead of ATS_DOMAINS, a TASK-114-era categorization built for a DIFFERENT question ("is a job's
+# own LISTING-PAGE url on this domain?", still correct for that) that Rule A's SENDER check answers
+# wrong. Moving them into ATS_DOMAINS was deliberately not done here: ATS_DOMAINS' registrable-domain
+# matching also feeds owned_job_domains()/match_job()'s display-name fallback and the
+# detach_ats_host_messages cleanup command, none of which this fix is chartered to touch or
+# re-verify -- this narrower, guard-only exemption gets Rule A the same result without that blast
+# radius. Suffix-matched, same shape as is_job_board()/is_platform_notification().
+_ATS_CORRESPONDENCE_JOB_BOARD_DOMAINS = frozenset({'greenhouse.io', 'lever.co', 'personio.de', 'workday.com', 'smartrecruiters.com'})
+
+
+def _is_ats_correspondence(sender_domain: str) -> bool:
+    domain = (sender_domain or '').lower().lstrip('.')
+    if is_ats_host(domain):
+        return True
+    return any(domain == host or domain.endswith('.' + host) for host in _ATS_CORRESPONDENCE_JOB_BOARD_DOMAINS)
 
 
 def _normalize_domain(domain):
@@ -1863,6 +2004,65 @@ def rematch_ats_display_name_messages(dry_run: bool = True) -> list[dict]:
             MailboxMessage.objects.filter(pk__in=[m.pk for m in messages]).update(matched_job=job)
 
     return [{'job': job, 'message_count': len(messages), 'messages': messages} for job, messages in by_job.items()]
+
+
+# --- TASK-162 AC6: re-run the new false-positive guard over already-stored classifications --------
+
+def reclassify_messages(dry_run: bool = True, limit: int | None = None) -> list[dict]:
+    """One-time (also safely re-runnable) back-catalogue pass applying _guard_status_changing() --
+    the exact enforcement point classify_email() now runs every NEW message through -- to
+    MailboxMessage rows stored before TASK-162 shipped. Only rows currently in one of the four
+    status-changing classes (STATUS_CHANGING_CLASSIFICATIONS) can possibly change, so nothing else is
+    even read.
+
+    `domain_known` is re-derived from each row's OWN, CURRENT `matched_job` rather than by re-running
+    match_job() -- exactly what Rule B ("evidence the message is about an application") is actually
+    asking about, and it reflects anything that has changed the match since ingestion (a manual
+    attach, an ATS display-name rematch), not a stale value from the original run.
+
+    Deliberately does NOT re-run the local-LLM path for rows an LLM originally classified (evaluator
+    != 'heuristic') -- an LLM's semantic judgement is not something a keyword re-check should try to
+    reproduce from scratch, would require a live, possibly-different LLM configuration to even run,
+    and is out of what this guard is for. It only demotes a classification the new rules no longer
+    allow, the same demotion classify_email() itself would now apply going forward, whichever engine
+    originally produced it.
+
+    Any PENDING MailboxSuggestion generated from a message this demotes is dismissed with it
+    (dismiss_suggestion() -- writes no ApplicationNote, see its docstring) -- the whole point of this
+    task is that a rejection/interview_invitation false positive is one click from corrupting a real
+    job's state, and leaving that click sitting there while only the underlying message's own label
+    changes underneath it would not close that risk. A `confirmed` suggestion is left exactly as
+    decided, the same one-directional safety rule detach_ats_host_messages() uses -- nothing about an
+    owner's own past decision is ever undone by a re-classification.
+
+    Returns one dict per row that WOULD change (or did, when not dry_run):
+        {'message': MailboxMessage, 'from': str, 'to': str, 'dismissed_count': int}
+    `[]` when nothing would change (also true on a second run -- the query only looks at rows still in
+    a status-changing class, and the guard is idempotent). dry_run=True (the default) reports without
+    writing anything.
+    """
+    candidates = MailboxMessage.objects.filter(classification__in=STATUS_CHANGING_CLASSIFICATIONS).exclude(sender='').order_by('uid')
+    if limit is not None:
+        candidates = candidates[:limit]
+
+    changes = []
+    for message in candidates:
+        sender_domain = _sender_domain(message.sender)
+        domain_known = message.matched_job_id is not None
+        old_classification = message.classification
+        new_classification, _new_interview_at = _guard_status_changing(
+            old_classification, None, message.subject, message.body_text, domain_known, sender_domain,
+        )
+        if new_classification == old_classification:
+            continue
+        pending = list(MailboxSuggestion.objects.filter(message=message, status='pending'))
+        if not dry_run:
+            for suggestion in pending:
+                dismiss_suggestion(suggestion)
+            message.classification = new_classification
+            message.save(update_fields=['classification'])
+        changes.append({'message': message, 'from': old_classification, 'to': new_classification, 'dismissed_count': len(pending)})
+    return changes
 
 
 # --- Reply drafting into Gmail Drafts (TASK-110) -------------------------------------------------
