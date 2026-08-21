@@ -33,7 +33,8 @@ from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
 from .services.interview_coach import analyze_answer, suggest_questions
 from .services import mailbox, mailbox_tasks
-from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_suggestion
+from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_suggestion, suggest_job_for_message
+from .services.followup_digest import owned_jobs
 from .services.draft_chat import ChatTurn, run_chat_turn
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, available_model_options, decode_correction_image, generation_preview, is_cv_owner, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
@@ -295,6 +296,14 @@ UNMATCHED_RECENCY_WINDOW_DAYS = 90
 # (age-filtered): uncertain and anything else not in the two lists above.
 UNMATCHED_HIGH_CONSEQUENCE_CLASSIFICATIONS = ('rejection', 'interview_invitation')
 UNMATCHED_LOW_CONSEQUENCE_CLASSIFICATIONS = ('application_confirmed', 'recruiter_reply')
+# TASK-163 fix 1 (coordinator re-measurement, 2026-08-21): a tracked company's name routinely sits
+# past BODY_PREVIEW_CHARS (300) -- matching against that preview alone found only 8 of 321 rows a
+# suggestion, because the name simply is not in the first 300 characters. A SECOND, separately bounded
+# Substr(...) annotation (match_text, below) gives suggest_job_for_message more text to search without
+# undoing the point of body_preview: still ONE query, still never touches the deferred body_text
+# column, and match_text is not added to MailboxMessageListSerializer.Meta.fields, so it never reaches
+# the client -- the response payload is unchanged.
+UNMATCHED_MATCH_TEXT_CHARS = 2000
 
 
 def _mailbox_health():
@@ -1106,9 +1115,15 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         # skips the filter and this query entirely -- would add back, rather than silently dropping it.
         preview_len = MailboxMessageListSerializer.BODY_PREVIEW_CHARS + 1
         include_older = str(request.query_params.get('include_older') or '').strip().lower() in ('1', 'true', 'yes')
+        # TASK-163 AC5: a second, independent reveal -- same query-param naming as include_older --
+        # for rows whose subject/body names no tracked company at all (no `suggested_job` below).
+        # Applied AFTER the recency filter, on whatever this request would otherwise have shown, the
+        # same "second, cheap dimension stacked on the first" shape include_older already has.
+        include_unidentified = str(request.query_params.get('include_unidentified') or '').strip().lower() in ('1', 'true', 'yes')
         qs=(self.get_queryset().exclude(classification='not_job_related').filter(matched_job__isnull=True)
             .select_related('draft')
             .annotate(body_preview=Substr('body_text', 1, preview_len))
+            .annotate(match_text=Substr('body_text', 1, UNMATCHED_MATCH_TEXT_CHARS))
             .defer('body_text')
             .annotate(rank=Case(
                 When(classification__in=UNMATCHED_HIGH_CONSEQUENCE_CLASSIFICATIONS, then=Value(0)),
@@ -1122,7 +1137,36 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
             visible = Q(rank=0) | Q(received_at__isnull=True) | Q(received_at__gte=cutoff)
             hidden_count = qs.exclude(visible).count()
             qs = qs.filter(visible)
-        return Response({'results': MailboxMessageListSerializer(qs, many=True).data, 'hidden_count': hidden_count})
+
+        # TASK-163 AC1/AC3/AC5/AC9: suggest the single tracked job named in each row's own
+        # subject/body(/sender) -- never matched_job (attach_message_to_job is still the only writer
+        # of that field). `jobs` is ONE bulk query for the owner's whole tracked-job list, fetched
+        # here rather than inside suggest_job_for_message, so scoring every row below costs zero extra
+        # queries -- the same per-row-query trap TASK-142's select_related('draft') already fixed for
+        # `draft`. `row.match_text` (the SECOND, wider Substr(...) annotation above -- see
+        # UNMATCHED_MATCH_TEXT_CHARS' comment) is what gets scored, never row.body_text -- that column
+        # is still .defer()'d, so touching it would silently trigger one reload query PER ROW, exactly
+        # the regression TASK-142 removed for this endpoint.
+        jobs = list(owned_jobs(request.user).exclude(company=''))
+        rows = list(qs)
+        for row in rows:
+            row.suggested_job = suggest_job_for_message(row.subject, row.match_text, row.sender, jobs)
+        # TASK-163 fix 3 (coordinator re-measurement, 2026-08-21): parking every suggestion-less row
+        # hid 38 of TASK-161's 41 high-consequence rows -- rank 0 (rejection/interview_invitation) is
+        # never age-filtered by the recency window above for exactly the same reason it must never be
+        # PARKED here either: attaching one can always act, suggestion or not, so hiding it behind
+        # "no suggestion" reverses the whole point of TASK-161 shipping it to the top of the list.
+        # Only rank 1/2 (the low-consequence/uncertain classes) are parked when they carry no
+        # suggestion -- the same asymmetry the recency window already applies, for the same reason.
+        parked_count = 0
+        if not include_unidentified:
+            parked_count = sum(1 for row in rows if row.suggested_job is None and row.rank != 0)
+            rows = [row for row in rows if row.suggested_job is not None or row.rank == 0]
+        return Response({
+            'results': MailboxMessageListSerializer(rows, many=True).data,
+            'hidden_count': hidden_count,
+            'parked_count': parked_count,
+        })
     @action(detail=True, methods=['post'])
     def attach(self, request, pk=None):
         """TASK-117 AC6: the only writer of `matched_job` for a message that already ran through

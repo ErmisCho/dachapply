@@ -1249,6 +1249,63 @@ def _match_by_ats_display_name(sender: str, owner) -> JobLead | None:
     return next(iter(matches.values())) if len(matches) == 1 else None
 
 
+def suggest_job_for_message(subject: str, body_text: str, sender: str, jobs) -> JobLead | None:
+    """TASK-163: a SUGGESTION for the unmatched-mail panel (views.py's `unmatched` action), never a
+    match() -- the owner confirms it with one click, and this function never writes matched_job
+    itself (attach_message_to_job is still the only writer, per TASK-117's append-only guarantee).
+
+    Reuses the exact TASK-140 token-subset rule _match_by_ats_display_name already applies to a From
+    display name, here applied instead to the message's own subject+body -- free text full of OTHER
+    companies' names, which is exactly why owned_job_domains' docstring argues against matching on it
+    and why this is a suggestion the owner confirms rather than a domain match.
+
+    `jobs` is the owner's tracked-job list, passed in rather than queried here: the caller fetches it
+    ONCE for the whole unmatched list, so evaluating every row costs zero extra queries -- calling
+    owned_jobs(owner) per row here would reintroduce exactly the per-row query cost TASK-142 already
+    removed from this same endpoint for body_text.
+
+    Measured against production (coordinator, 2026-08-21): a tracked company that reduces to a SINGLE
+    token after _company_name_tokens strips legal forms/role phrases ('Post AG' -> {post}, 'Nejo' ->
+    {nejo}, 'Hays' -> {hays} -- 34 of 82 tracked jobs) is common-word-sized, and a subset-of-free-text
+    check against it matches almost anything containing that word -- 'Post AG' matched a newsletter
+    headlined "The 3 Candidates I Always Rejected as a Bar Raiser at Amazon" purely because it
+    contained "post". A single-token company therefore has to appear in the message's own SENDER
+    (address or From display name -- already on the row, no extra query) instead of the free-text
+    subject/body -- the same trust _match_by_ats_display_name places in that short, structured field.
+    A company with two or more tokens keeps matching the subject/body: two-plus tokens co-occurring in
+    free text is already strong evidence a single common word is not.
+
+    Same "more than one claimant -> None" rule as owned_job_domains and _match_by_ats_display_name: if
+    more than one tracked job's company token set is a subset of its haystack, this returns None
+    rather than guessing -- a wrong one-click suggestion is worse than no suggestion at all (AC4).
+
+    Measured against production a second time (coordinator, 2026-08-21): with FIX 2/FIX 1 in place,
+    precision was still 5/12 -- all 7 wrong suggestions came from jobs@mail.xing.com JOB-ALERT DIGESTS,
+    which legitimately list many companies' openings (including tracked ones), so the multi-token
+    match fired correctly on text that is not correspondence about an application at all. A JOB BOARD
+    sender is refused before any token comparison -- the exact judgement owned_job_domains' docstring
+    already applies to matching ("a board or ATS host here would match the board's/ATS's own
+    marketing... mail, not the employer's"), extended to this free-text suggestion. Deliberately NOT
+    extended to ATS hosts (is_ats_host()): an ATS sends one-application correspondence naming the real
+    employer -- exactly what _match_by_ats_display_name and this function both exist to catch -- while
+    a board sends digests advertising many employers at once. Boards send digests; ATSes send
+    correspondence; that distinction is the whole rule.
+    """
+    if is_job_board(_sender_domain(sender)):
+        return None
+    text_tokens = _company_name_tokens(f'{subject}\n{body_text}')
+    sender_tokens = _company_name_tokens(sender)
+    matches: dict[frozenset, JobLead] = {}
+    for job in jobs:
+        company_tokens = _company_name_tokens(job.company)
+        if not company_tokens:
+            continue
+        haystack = sender_tokens if len(company_tokens) == 1 else text_tokens
+        if company_tokens.issubset(haystack):
+            matches.setdefault(company_tokens, job)
+    return next(iter(matches.values())) if len(matches) == 1 else None
+
+
 def match_job(raw: RawMessage, job_domains: dict, owner=None) -> JobLead | None:
     """Domain match first (job_domains, from owned_job_domains() -- see its docstring for why general
     company-name matching is not attempted). TASK-140: owned_job_domains() has already excluded every

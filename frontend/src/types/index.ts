@@ -58,7 +58,11 @@ export type MailboxDraft={id:number;status:'written'|'blocked';block_reason:stri
 // METADATA ONLY (filename, mime_type, size) for every OTHER MIME part carrying a filename - no file
 // content is ever stored or served, "Reply in Gmail" remains the only route to the actual file.
 export type MailboxAttachment={filename:string;mime_type:string;size:number}
-export type MailboxMessage={id:number;sender:string;subject:string;body_text:string;received_at:string|null;classification:string;matched_job:number|null;matched_job_company:string;matched_job_title:string;draft:MailboxDraft|null;thread_id:string;gmail_url:string|null;sent_by_owner:boolean;created_at:string;calendar_summary:string;calendar_location:string;calendar_organizer:string;calendar_start:string|null;calendar_end:string|null;attachments:MailboxAttachment[]}
+// TASK-163: suggested_job is only ever populated by the unmatched-mail endpoint (a SUGGESTION the
+// owner confirms, computed from the message's own subject/body - see services.mailbox.
+// suggest_job_for_message) - optional because every other MailboxMessage-shaped response (retrieve,
+// job mailbox, digest) never sets it, and null when the row names no tracked company or more than one.
+export type MailboxMessage={id:number;sender:string;subject:string;body_text:string;received_at:string|null;classification:string;matched_job:number|null;matched_job_company:string;matched_job_title:string;draft:MailboxDraft|null;thread_id:string;gmail_url:string|null;sent_by_owner:boolean;created_at:string;calendar_summary:string;calendar_location:string;calendar_organizer:string;calendar_start:string|null;calendar_end:string|null;attachments:MailboxAttachment[];suggested_job?:{id:number;label:string}|null}
 export type MailboxSuggestion={id:number;message:MailboxMessage;job:number;job_company:string;job_title:string;suggestion_type:'status_change'|'interview_date'|'feedback_clear';payload:Record<string,any>;status:'pending'|'confirmed'|'dismissed';created_at:string;decided_at:string|null}
 // TASK-117 AC2/AC6: GET /api/jobs/{id}/mailbox/ and POST /api/mailbox-messages/{id}/attach/ both
 // answer with this shape (MailboxMessageWithSuggestionsSerializer) - each suggestion nested here is

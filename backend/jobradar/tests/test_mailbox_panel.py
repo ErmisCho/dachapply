@@ -265,8 +265,10 @@ def test_unmatched_messages_list_is_empty_for_non_owner_and_populated_for_owner(
     other = User.objects.create_user('other4@example.test', email='other4@example.test', password='pw')
     other_client = APIClient(); other_client.force_authenticate(other)
 
-    owner_response = client.get('/api/mailbox-messages/unmatched/')
-    other_response = other_client.get('/api/mailbox-messages/unmatched/')
+    # TASK-163: this message names no tracked company, so it is parked by default -- revealed here
+    # (?include_unidentified=1) because this test's own concern is owner-gating, not identifiability.
+    owner_response = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+    other_response = other_client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
 
     assert other_response.data['results'] == []
     ids = [row['id'] for row in owner_response.data['results']]
@@ -288,7 +290,9 @@ def test_unmatched_messages_ranks_rejection_above_application_confirmed_regardle
     rejection = _log_message(None, 'rejection', sender='hr1@agency.test', received_at=now - timezone.timedelta(days=5))
     application_confirmed = _log_message(None, 'application_confirmed', sender='hr2@agency.test', received_at=now)
 
-    r = client.get('/api/mailbox-messages/unmatched/')
+    # TASK-163: neither message names a tracked company (no job fixture here at all) -- revealed
+    # (?include_unidentified=1) because this test's own concern is rank ordering, not identifiability.
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
 
     ids = [row['id'] for row in r.data['results']]
     assert ids.index(rejection.id) < ids.index(application_confirmed.id)
@@ -303,7 +307,9 @@ def test_unmatched_messages_recency_filter_hides_an_old_application_confirmed_bu
     old_confirmed = _log_message(None, 'application_confirmed', sender='hr1@agency.test', received_at=old)
     old_rejection = _log_message(None, 'rejection', sender='hr2@agency.test', received_at=old)
 
-    r = client.get('/api/mailbox-messages/unmatched/')
+    # TASK-163: neither message names a tracked company -- revealed (?include_unidentified=1) because
+    # this test's own concern is the recency filter, not identifiability.
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
 
     ids = [row['id'] for row in r.data['results']]
     assert old_rejection.id in ids
@@ -318,12 +324,186 @@ def test_unmatched_messages_include_older_reveals_what_the_recency_filter_hid(cl
     old_confirmed = _log_message(None, 'application_confirmed', sender='hr@agency.test', received_at=old)
 
     default_response = client.get('/api/mailbox-messages/unmatched/')
-    revealed_response = client.get('/api/mailbox-messages/unmatched/?include_older=1')
+    # TASK-163: old_confirmed names no tracked company, so it is ALSO parked -- include_unidentified=1
+    # stacked alongside include_older=1 so this test isolates the recency reveal it actually tests.
+    revealed_response = client.get('/api/mailbox-messages/unmatched/?include_older=1&include_unidentified=1')
 
     assert old_confirmed.id not in [row['id'] for row in default_response.data['results']]
     assert default_response.data['hidden_count'] == 1
     assert old_confirmed.id in [row['id'] for row in revealed_response.data['results']]
     assert revealed_response.data['hidden_count'] == 0
+
+
+# --- TASK-163: suggest the job for unmatched mail, and park what matches nothing -------------------
+#
+# suggest_job_for_message (services.mailbox) reuses _company_name_tokens/the TASK-140 subset rule --
+# this file only exercises the VIEW layer: the suggestion surfaced on each row, the identifiable/
+# unidentifiable partition (parked_count + ?include_unidentified=1, mirroring hidden_count/
+# ?include_older=1), and that TASK-161's ordering still holds with suggestions present (AC8).
+#
+# Coordinator re-measurement against production, 2026-08-21, found the first cut wrong three ways --
+# each has its own test below: FIX 1 (recall) matched against the 301-char body_preview, and a tracked
+# company's name routinely sits deeper than that; FIX 2 (precision) let a company that reduces to a
+# SINGLE token ('Acme' -> {acme}) match anywhere in free text, so 'Post AG' matched a newsletter that
+# merely contained the word "post"; FIX 3 (parking scope) parked every suggestion-less row, which hid
+# 38 of TASK-161's 41 high-consequence (rank 0) rows -- exactly what that task shipped to surface.
+
+def test_unmatched_single_token_company_named_only_in_the_body_gets_no_suggestion(client, applied_job):
+    """FIX 2: applied_job's company ('Acme') reduces to ONE token -- naming it in the free-text body
+    is NOT enough (production measured a single common token matching mail that had nothing to do
+    with the tracked company); a single-token company must appear in the message's own SENDER."""
+    message = _log_message(None, 'uncertain', sender='hr@agency.test', subject='Update', body_text='We enjoyed learning about Acme during your interview process.')
+
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+
+    row = next(row for row in r.data['results'] if row['id'] == message.id)
+    assert row['suggested_job'] is None
+
+
+def test_unmatched_single_token_company_named_in_the_sender_gets_suggested(client, applied_job):
+    """FIX 2's positive case: the same single-token company DOES get suggested once it is the
+    message's own sender (address or display name) -- a short, structured field, not free text, the
+    same trust _match_by_ats_display_name already places in it."""
+    message = _log_message(None, 'uncertain', sender='HR Team <hr@acme.test>', subject='Update', body_text='Thanks for your patience.')
+
+    r = client.get('/api/mailbox-messages/unmatched/')
+
+    row = next(row for row in r.data['results'] if row['id'] == message.id)
+    assert row['suggested_job'] == {'id': applied_job.id, 'label': 'Acme — Engineer'}
+
+
+def test_unmatched_multi_token_company_named_beyond_the_preview_gets_suggested(client, owner):
+    """FIX 1: a company name sitting past BODY_PREVIEW_CHARS (300) still gets a suggestion -- the
+    match_text annotation searches up to UNMATCHED_MATCH_TEXT_CHARS (2000), not just the 301-char
+    preview the list response itself truncates to."""
+    job = JobLead.objects.create(company='Acme Corp', title='Engineer', created_by=owner)
+    padding = 'Thank you for your application. ' * 20  # > 300 chars of filler before the company name
+    assert len(padding) > 300
+    body_text = padding + 'We are pleased to move forward with Acme Corp for the next round.'
+    message = _log_message(None, 'uncertain', sender='hr@agency.test', subject='Update', body_text=body_text)
+
+    r = client.get('/api/mailbox-messages/unmatched/')
+
+    row = next(row for row in r.data['results'] if row['id'] == message.id)
+    assert row['suggested_job'] == {'id': job.id, 'label': 'Acme Corp — Engineer'}
+
+
+def test_unmatched_job_board_sender_never_gets_a_suggestion(client, owner):
+    """FIX 4: jobs@mail.xing.com sends job-ALERT DIGESTS that legitimately list many companies'
+    openings, including tracked ones -- the company name is genuinely in the body and the multi-token
+    rule would otherwise fire, but the mail is not correspondence about an application to it. A job
+    board sender is refused before any token comparison -- the same judgement owned_job_domains
+    already applies to matching, extended here to the suggestion. is_job_board() already recognises
+    mail.xing.com (xing.com is in JOB_BOARD_DOMAINS, matched by suffix) -- no domain list change was
+    needed. Same multi-token body as the FIX 1 test above, so board-refusal (not FIX 2's single-token
+    rule) is what is under test here -- the identical body from a non-board sender still matches."""
+    job = JobLead.objects.create(company='Acme Corp', title='Engineer', created_by=owner)
+    board_message = _log_message(None, 'uncertain', sender='jobs@mail.xing.com', subject='5 neue Stellenangebote', body_text='Acme Corp sucht: Backend Engineer.')
+    non_board_message = _log_message(None, 'uncertain', sender='hr@agency.test', subject='Update', body_text='Acme Corp sucht: Backend Engineer.')
+
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+
+    rows_by_id = {row['id']: row for row in r.data['results']}
+    assert rows_by_id[board_message.id]['suggested_job'] is None
+    assert rows_by_id[non_board_message.id]['suggested_job'] == {'id': job.id, 'label': 'Acme Corp — Engineer'}
+
+
+def test_unmatched_two_multi_token_companies_named_gets_no_suggestion_and_is_parked(client, owner):
+    """AC4: naming two tracked (multi-token, so FIX 2 does not restrict this to the sender) companies
+    is genuine ambiguity, reported as no suggestion -- same 'more than one claimant -> None' rule as
+    owned_job_domains -- and the row is parked (rank 2, not rank 0) because it carries no suggestion,
+    exactly like a message naming nothing tracked."""
+    JobLead.objects.create(company='Acme Corp', title='Engineer', created_by=owner)
+    JobLead.objects.create(company='Globex Systems', title='Manager', created_by=owner)
+    message = _log_message(None, 'uncertain', sender='hr@agency.test', subject='Update', body_text='Interviewing with Acme Corp and, separately, with Globex Systems.')
+
+    default_response = client.get('/api/mailbox-messages/unmatched/')
+    revealed_response = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+
+    assert message.id not in [row['id'] for row in default_response.data['results']]
+    assert default_response.data['parked_count'] == 1
+    revealed_row = next(row for row in revealed_response.data['results'] if row['id'] == message.id)
+    assert revealed_row['suggested_job'] is None
+    assert revealed_response.data['parked_count'] == 0
+
+
+def test_unmatched_message_naming_no_tracked_company_is_parked_by_default(client, applied_job):
+    """A message that names nothing tracked (applied_job: 'Acme', not mentioned anywhere, including
+    the sender) gets no suggestion and is parked -- not shown by default, counted in parked_count."""
+    message = _log_message(None, 'uncertain', sender='hr@agency.test', subject='Update on your candidacy', body_text='We will follow up soon.')
+
+    r = client.get('/api/mailbox-messages/unmatched/')
+
+    assert message.id not in [row['id'] for row in r.data['results']]
+    assert r.data['parked_count'] == 1
+
+
+def test_unmatched_include_unidentified_reveals_the_parked_rows(client, applied_job):
+    """AC5's reveal control, same shape as ?include_older=1 above: ?include_unidentified=1 returns
+    the parked rows too, parked_count included."""
+    message = _log_message(None, 'uncertain', sender='hr@agency.test', subject='Update', body_text='no tracked company mentioned here')
+
+    default_response = client.get('/api/mailbox-messages/unmatched/')
+    revealed_response = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+
+    assert message.id not in [row['id'] for row in default_response.data['results']]
+    assert default_response.data['parked_count'] == 1
+    assert message.id in [row['id'] for row in revealed_response.data['results']]
+    assert revealed_response.data['parked_count'] == 0
+
+
+def test_unmatched_rejection_with_no_suggestion_is_still_shown_by_default(client):
+    """FIX 3: rank 0 (rejection/interview_invitation) is NEVER parked, suggestion or not -- the same
+    asymmetry the recency window already applies (rank 0 is never age-filtered either), for the same
+    reason: attaching one can always act. Reversing this hid 38 of TASK-161's 41 high-consequence rows
+    against production."""
+    rejection = _log_message(None, 'rejection', sender='hr@agency.test', subject='Unfortunately...', body_text='We have decided to move forward with other candidates.')
+
+    r = client.get('/api/mailbox-messages/unmatched/')
+
+    row = next(row for row in r.data['results'] if row['id'] == rejection.id)
+    assert row['suggested_job'] is None
+    assert r.data['parked_count'] == 0
+
+
+def test_unmatched_messages_ranking_still_holds_with_suggestions_present(client, applied_job):
+    """AC8: TASK-161's consequence-rank ordering is untouched by suggestions riding along on the
+    same rows -- a rejection still ranks above an application_confirmed regardless of uid/date, exactly
+    as test_unmatched_messages_ranks_rejection_above_application_confirmed_regardless_of_uid_or_date
+    already proves without suggestions. sender carries 'acme' -- applied_job's company ('Acme') is a
+    single token, so FIX 2 requires it in the sender, not the subject/body, to get a suggestion here."""
+    now = timezone.now()
+    rejection = _log_message(None, 'rejection', sender='hr@acme.test', subject='Your application', received_at=now - timezone.timedelta(days=5))
+    application_confirmed = _log_message(None, 'application_confirmed', sender='hr@acme.test', subject='Your application', received_at=now)
+
+    r = client.get('/api/mailbox-messages/unmatched/')
+
+    ids = [row['id'] for row in r.data['results']]
+    assert ids.index(rejection.id) < ids.index(application_confirmed.id)
+    rows_by_id = {row['id']: row for row in r.data['results']}
+    assert rows_by_id[rejection.id]['suggested_job']['id'] == applied_job.id
+    assert rows_by_id[application_confirmed.id]['suggested_job']['id'] == applied_job.id
+
+
+def test_unmatched_messages_suggestion_computation_adds_exactly_one_bulk_query(client, applied_job):
+    """TASK-163 AC9: suggest_job_for_message is given the owner's tracked-job list rather than
+    querying it itself, so scoring every row costs ONE extra query total, not one per row -- the same
+    per-row-query trap TASK-142's select_related('draft') already fixed for `draft`. Also proves FIX 1's
+    second Substr(...) annotation (match_text) does not add a query of its own -- unaffected by row
+    count for the same reason test_unmatched_messages_query_count_does_not_scale_with_row_count already
+    proves."""
+    client.get('/api/mailbox-messages/unmatched/')  # warm-up: visitor-tracking middleware
+    _log_message(None, 'uncertain', sender='hr1@agency.test', body_text='Acme')
+    _log_message(None, 'uncertain', sender='hr2@agency.test', body_text='not tracked at all')
+
+    with CaptureQueriesContext(connection) as ctx:
+        r = client.get('/api/mailbox-messages/unmatched/')
+
+    assert r.status_code == 200
+    joblead_queries = [q['sql'] for q in ctx.captured_queries if 'FROM "jobradar_joblead"' in q['sql']]
+    assert len(joblead_queries) == 1  # one bulk fetch of the owner's tracked jobs, never per-row
+    message_queries = [q['sql'] for q in ctx.captured_queries if 'FROM "jobradar_mailboxmessage"' in q['sql']]
+    assert len(message_queries) == 2  # unchanged from the TASK-142/TASK-161 baseline (rows + hidden_count)
 
 
 # --- AC6: attach ----------------------------------------------------------------------------------
@@ -1033,7 +1213,9 @@ def test_unmatched_messages_list_truncates_long_body_text(client):
     assert len(long_body) > 300
     message = _log_message(None, 'uncertain', sender='hr@agency.test', body_text=long_body)
 
-    r = client.get('/api/mailbox-messages/unmatched/')
+    # TASK-163: this body names no tracked company -- revealed (?include_unidentified=1) because this
+    # test's own concern is the truncation preview, not identifiability.
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
 
     assert r.status_code == 200
     row = next(row for row in r.data['results'] if row['id'] == message.id)
@@ -1046,7 +1228,7 @@ def test_unmatched_messages_list_leaves_a_short_body_untouched(client):
     short_body = 'We are recruiting for a role like yours.'
     message = _log_message(None, 'uncertain', sender='hr@agency.test', body_text=short_body)
 
-    r = client.get('/api/mailbox-messages/unmatched/')
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
 
     row = next(row for row in r.data['results'] if row['id'] == message.id)
     assert row['body_text'] == short_body
@@ -1082,14 +1264,19 @@ def test_unmatched_messages_query_defers_body_text_and_computes_a_bounded_db_sid
     # instead of staying flat at 2.
     assert len(message_queries) == 2
     select_queries = [sql for sql in message_queries if 'SUBSTR("jobradar_mailboxmessage"."body_text"' in sql]
-    assert len(select_queries) == 1  # only the row SELECT carries the DB-side bounded preview
+    assert len(select_queries) == 1  # only the row SELECT carries the DB-side bounded preview(s)
     sql = select_queries[0]
-    # The only place body_text's column name may legitimately appear is inside that SUBSTR(...) call
-    # -- a second, bare `"jobradar_mailboxmessage"."body_text"` in the SELECT list would mean
-    # .defer('body_text') silently did nothing and the full column crossed the wire again.
-    assert sql.count('"jobradar_mailboxmessage"."body_text"') == 1
+    # TASK-163 fix 1: a SECOND bounded Substr(...) (match_text, UNMATCHED_MATCH_TEXT_CHARS) rides in
+    # the SAME query as body_preview -- both are legitimate SUBSTR(...) references, so the column name
+    # now appears exactly TWICE here, never as a third, BARE `"jobradar_mailboxmessage"."body_text"`
+    # in the SELECT list, which is what would mean .defer('body_text') silently did nothing and the
+    # full column crossed the wire again.
+    assert sql.count('"jobradar_mailboxmessage"."body_text"') == 2
     count_query = next(sql for sql in message_queries if sql not in select_queries)
     assert 'body_text' not in count_query  # the COUNT(*) never touches the column at all
+    # TASK-163 fix 1: match_text is for suggest_job_for_message only -- never serialized, so the
+    # response payload does not grow just because the match window widened.
+    assert all('match_text' not in row for row in r.data['results'])
 
 
 def test_unmatched_messages_query_count_does_not_scale_with_row_count(client):
@@ -1120,16 +1307,18 @@ def test_unmatched_messages_query_count_does_not_scale_with_row_count(client):
             MailboxDraft.objects.create(message=message, status='written', subject='Re: x', body_text='Thanks.', evaluator='template')
         return message
 
+    # TASK-163: none of these name a tracked company -- ?include_unidentified=1 throughout so this
+    # test keeps measuring what it always measured (query count vs row count), unaffected by parking.
     for i in range(2):
         _unmatched(i, with_draft=(i % 2 == 0))
     with CaptureQueriesContext(connection) as few:
-        r = client.get('/api/mailbox-messages/unmatched/')
+        r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
     assert r.status_code == 200 and len(r.data['results']) == 2
 
     for i in range(2, 8):
         _unmatched(i, with_draft=(i % 2 == 0))
     with CaptureQueriesContext(connection) as many:
-        r = client.get('/api/mailbox-messages/unmatched/')
+        r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
     assert r.status_code == 200 and len(r.data['results']) == 8
 
     assert len(few.captured_queries) == len(many.captured_queries), (few.captured_queries, many.captured_queries)
@@ -1139,7 +1328,9 @@ def test_unmatched_messages_list_does_not_drop_messages_to_bound_the_response(cl
     """AC7: bounding the response truncates bodies, it never drops a row to hit a smaller number."""
     messages = [_log_message(None, 'uncertain', sender=f'hr{i}@agency.test') for i in range(5)]
 
-    r = client.get('/api/mailbox-messages/unmatched/')
+    # TASK-163: none of these name a tracked company -- revealed (?include_unidentified=1) because
+    # this test's own concern is that no row is dropped, not identifiability.
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
 
     ids = {row['id'] for row in r.data['results']}
     assert {m.id for m in messages} <= ids
@@ -1303,7 +1494,9 @@ def test_unmatched_messages_reaches_an_is_staff_user_even_with_cv_owner_disabled
     settings.CODEX_CV_ENABLED = False
     _log_message(None, 'uncertain', sender='hr@agency.test')
 
-    r = client.get('/api/mailbox-messages/unmatched/')
+    # TASK-163: names no tracked company -- revealed (?include_unidentified=1) because this test's
+    # own concern is the is_staff gate, not identifiability.
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
 
     assert r.status_code == 200
     assert len(r.data['results']) == 1
