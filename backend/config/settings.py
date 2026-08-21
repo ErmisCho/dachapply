@@ -398,6 +398,16 @@ ERROR_ALERT_COOLDOWN_SECONDS = int(os.getenv('ERROR_ALERT_COOLDOWN_SECONDS', '30
 # extra list and for which settings were checked and deliberately left visible.
 DEFAULT_EXCEPTION_REPORTER_FILTER = 'config.error_filters.DachApplyExceptionReporterFilter'
 
+# TASK-160: the mailbox check itself runs on the owner's own machine (that is where the Gmail
+# credentials live), so it can never alert on its own -- DEBUG=True there blocks the mail_admins
+# handler above, and there is no SMTP configured locally either. jobradar.views.mailbox_health, on
+# the DEPLOYED site, reads the same database the local check writes to and alerts instead. This
+# threshold is a fixed, generous default rather than derived from
+# UserProfile.mailbox_check_cadence_minutes: quiet hours and a closed check window already create
+# legitimate gaps between successful runs, and deriving the threshold from cadence is a refinement
+# for later, not a requirement now (see the task's Implementation Notes).
+MAILBOX_STALE_ALERT_HOURS = int(os.getenv('MAILBOX_STALE_ALERT_HOURS', '24'))
+
 _alert_last_sent = {}
 
 

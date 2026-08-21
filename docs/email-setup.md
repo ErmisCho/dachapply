@@ -148,10 +148,26 @@ OAuth consent screen is in "Testing" publishing status, Google expires the refre
 days of testing-mode use, regardless of whether it's actually being used. When that happens,
 `check_mailbox` will fail every run with a Gmail OAuth error recorded on the `MailboxRun` it creates
 (visible in the /mailbox digest, same as any other check failure) -- it does not fail silently. To
-recover, just run `manage.py gmail_oauth_setup` again. To stop the 7-day cycle entirely, publish the
-OAuth consent screen (OAuth consent screen -> Publish App) -- for a single-owner personal-use app this
-does not require Google's verification review as long as the requested scope stays at `gmail.modify`
-or narrower and the app is not distributed to other users.
+recover, just run `manage.py gmail_oauth_setup` again.
+
+**Publishing to stop the 7-day cycle was tried on 2026-08-21 and is NOT available to this app.** The
+advice this paragraph used to give -- publish the consent screen, no verification review needed for a
+single-owner app -- was true about the *review* and wrong about the *button*. In the current Google
+Auth Platform console (Audience page) the "Publish app" control is greyed out behind:
+
+    "Your app's OAuth configuration is incomplete. You must enter the missing information to
+     proceed. Please visit the Branding page to finish configuring your app."
+
+Branding requires an application home page, a privacy policy URL and matching Authorised domains,
+and an authorised domain must be verified in Google Search Console -- i.e. a domain the owner
+controls. The app is served from `*.azurecontainerapps.io`, which is not verifiable by us, so
+publishing needs a purchased domain hosting a privacy policy. "Make internal" is greyed out too: that
+needs a Google Workspace account, not a gmail.com one.
+
+So the 7-day re-authorization stands, and TASK-160 covers it instead: the deployed site watches the
+shared database and emails the owner when the check is failing or has not succeeded within
+`MAILBOX_STALE_ALERT_HOURS` (default 24). Re-authorizing is two commands and takes about 30 seconds;
+the point of the watchdog is that nobody has to remember to check.
 
 ## Which file to use
 
