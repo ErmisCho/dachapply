@@ -427,12 +427,21 @@ class MailboxMessageListSerializer(MailboxMessageSerializer):
     THAT, never `instance.body_text` directly. Touching the deferred field here would silently
     trigger one reload query per row (Django's deferred-field descriptor), which is worse than the
     original bug: N extra round-trips instead of one oversized one.
+
+    TASK-163: `suggested_job` reads the same body_preview annotation this serializer already uses,
+    never a second body fetch -- see get_suggested_job below and the view's own comment.
     """
     BODY_PREVIEW_CHARS = 300
     body_text = serializers.SerializerMethodField()
     body_truncated = serializers.SerializerMethodField()
+    # TASK-163 AC1/AC3: the view (MailboxMessageViewSet.unmatched) sets a transient `suggested_job`
+    # attribute per row -- a JobLead or None, never a model field, never persisted -- computed by
+    # services.mailbox.suggest_job_for_message. {'id', 'label'} is enough for the owner to recognise
+    # the job and for the client to pre-fill/confirm the existing attach <select> with it; null when
+    # the row's subject/body names no tracked company or names more than one (AC4: never a guess).
+    suggested_job = serializers.SerializerMethodField()
     class Meta(MailboxMessageSerializer.Meta):
-        fields = MailboxMessageSerializer.Meta.fields + ('body_truncated',)
+        fields = MailboxMessageSerializer.Meta.fields + ('body_truncated', 'suggested_job')
     def _preview(self, obj):
         # body_preview is the view's Substr(...) annotation -- (BODY_PREVIEW_CHARS + 1) chars, so its
         # own length (not a second query) is what tells truncated apart from whole-body-happened-to-
@@ -446,6 +455,9 @@ class MailboxMessageListSerializer(MailboxMessageSerializer):
         return preview
     def get_body_truncated(self, obj):
         return len(self._preview(obj)) > self.BODY_PREVIEW_CHARS
+    def get_suggested_job(self, obj):
+        job = getattr(obj, 'suggested_job', None)
+        return {'id': job.id, 'label': f'{job.company} — {job.title}'} if job else None
 
 class MailboxMessageWithSuggestionsSerializer(MailboxMessageSerializer):
     """TASK-117 AC2/AC6: the per-job mailbox panel (JobLeadViewSet.mailbox) and the manual-attach
