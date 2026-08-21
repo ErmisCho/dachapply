@@ -1,7 +1,7 @@
 ---
 id: TASK-134
 title: Make the conversation read like an email thread
-status: In Progress
+status: Done
 assignee: []
 labels:
   - frontend
@@ -37,7 +37,7 @@ there since TASK-132. This is the rendering.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The text of any message in the conversation can be selected and copied with the mouse — verified by actually selecting text in a browser, since the likely cause is a click handler or `select-none` on an ancestor rather than anything visible in the markup
+- [x] #1 The text of any message in the conversation can be selected and copied with the mouse — verified by actually selecting text in a browser, since the likely cause is a click handler or `select-none` on an ancestor rather than anything visible in the markup
 - [x] #2 HTML entities render as the characters they stand for: a body containing `&nbsp;`, `&amp;`, `&#39;` shows a space, an ampersand and an apostrophe. Verified against one of the 44 real messages that contain them, not a synthetic string
 - [x] #3 Decoding entities does not introduce an injection route: a body containing `<script>` or `<b>` renders as literal visible text, never as markup. Asserted by test — this is the one place where "make it look like email" and "never execute what a stranger sent me" pull against each other
 - [x] #4 A reader can tell at a glance that the messages are one exchange, and who spoke: the owner's own messages (`sent_by_owner`, stored since TASK-132) are visually distinct from the other party's
@@ -57,6 +57,60 @@ there since TASK-132. This is the rendering.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-08-21 - AC1 closed, and the earlier reading of this task was WRONG in a way worth recording.
+
+This AC had been carried for several sessions as "blocked: the automation rig drops mousedown, so a
+human has to drag once". That premise was never measured, only inherited. It is false. A real drag
+was attempted and the events arrived just fine:
+
+    mousedown@1331,648  ->  selectstart  ->  dragstart@1331,648      selectionLength: 0
+
+The rig delivers mousedown. What it exposed was a REAL BUG that the CSS-only reading had hidden.
+
+**Root cause.** `DashboardPanel` (frontend/src/App.tsx) renders `<div draggable ...>`, so the entire
+panel is a drag source. A drag begun on message text is claimed by the panel, and Chrome never
+starts a text selection. `dragstart` fires with `target = DIV.dashboard-panel-wide` at hops-to-
+draggable 0 and `-webkit-user-drag: element`.
+
+Chrome's UA stylesheet also applies `user-select: none` to `[draggable="true"]`, and it inherits, so
+three ancestors carried it (`grid gap-3`, `premium-card p-4`, `dashboard-panel-wide`). The existing
+`.mailbox-selectable` rule already overrode that back to `user-select: text` on the card, which is
+why programmatic selection worked and made the bug look fixed.
+
+**Two hypotheses were tested against the live page and REJECTED before the third was written:**
+
+    draggable="false" on the card       dragstart still fired, selection still 0.
+                                        The attribute does not stop a drag owned by an ancestor.
+    preventDefault() on dragstart       dragstart suppressed, but selection still 0. Chrome commits
+                                        to drag-vs-select at the first mousemove, so cancelling the
+                                        dragstart afterwards is already too late.
+
+**The fix that works: flip the panel's `draggable` attribute off during `mousedown`** -- before the
+decision point -- when the mousedown target is inside `.mailbox-selectable`, and restore it on
+`mouseup`. Done imperatively through a ref on purpose: `setState` is async and is not guaranteed to
+land before Chrome decides.
+
+**Verified in the real compiled bundle**, not the dev server: built with `npm run build` and served
+by Django out of `frontend/dist` (settings.py adds it to both TEMPLATES DIRS and STATICFILES_DIRS),
+against the production database.
+
+    drag across message text     dragstart NOT fired, 28 chars selected ("hr geehrte Frau Velagic, ")
+    drag on the panel header     dragstart FIRED on DIV.dashboard-panel-wide -- panel drag intact
+    after mouseup                panel draggable back to "true"
+    panel order                  unchanged (mailbox_review still first) -- nothing reordered
+
+**Copy half of the AC**, measured separately because `document.execCommand('copy')` is rejected
+without a user gesture and would have read as a failure: a real Ctrl+C through the browser fired a
+`copy` event with `defaultPrevented: false` carrying 738 characters of the selected message text. No
+`oncopy`/`onselectstart`/`ondragstart` handler anywhere in the ancestor chain blocks it.
+
+Selection coverage across the whole thread: **16 of 16 body text nodes selectable, 0 failures**,
+probed with `caretRangeFromPoint` at real viewport coordinates. An earlier run of that same probe
+reported 5/16 and was a measurement artifact, not a defect -- `caretRangeFromPoint` only resolves
+inside the visible viewport, and the thread is far taller than one screen. Scrolling each node into
+view first turned 11 phantom failures into passes. Worth remembering: a viewport-relative API used on
+a scrolling container silently reports "broken" for everything below the fold.
+
 2026-08-20 close-out (evidence: backend suite 783 green; browser measurements on the built bundle at localhost:8000; prod-DB reads and app-command runs with the owner's approval; merges #51/#52/#53 live with HTTP 200): #1 stays unchecked for one human gesture: every measurable precondition is fixed and measured - computed user-select:text on the body chain (was none via Chrome's UA [draggable] rule, fixed in #52), -webkit-user-drag:none on the card, and no dragstart hijack observed - but this rig's pointer input drops mousedown entirely (capture listeners recorded only mousemove on two drags and a double-click), so an actual drag-selection needs one human hand. #2 measured: stored 'Hi Ermis,&nbsp;' renders as a real space. #11 measured: header computes transparent background at 11px.
 
 AC1's likely cause is the expand/collapse control: if the whole message is inside a `<button>`, or an
