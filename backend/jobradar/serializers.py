@@ -111,14 +111,23 @@ class CandidateProfileSerializer(serializers.ModelSerializer):
         # Calendar id carries no secret (unlike the ICS URL it replaces), so, unlike every other field
         # that used to need TASK-115's masking treatment, it is exposed here exactly like every other
         # plain field: no masking below, no merge in update().
-        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_check_enabled','mailbox_check_window_start','mailbox_check_window_end','mailbox_lookback_months','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ids','board_sort_keys','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
+        # TASK-169: mailbox_identify_window_months sits right next to mailbox_lookback_months -- same
+        # family, deliberately a different field (see the model comment on both for why fetch and
+        # identify must not share one setting).
+        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_check_enabled','mailbox_check_window_start','mailbox_check_window_end','mailbox_lookback_months','mailbox_identify_window_months','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ids','board_sort_keys','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
     # The profile codec is a text codec: it JSON-wraps values for drifted SQLite schemas and
     # coerces falsy values to ''. Running a boolean through it would store '' in a
     # BooleanField and serialise False as ''. Booleans (and mailbox_check_cadence_minutes, an int
     # that is never 0 per the validator below) pass through untouched.
     def to_representation(self, instance):
         data=super().to_representation(instance)
-        data={k: (v if isinstance(v, (bool, int)) else decode_profile_value(v)) for k,v in data.items()}
+        # TASK-169: `or v is None` added for mailbox_identify_window_months, the first field in this
+        # serializer that is genuinely nullable rather than defaulting to '' -- without it, None (not
+        # isinstance of bool/int) would fall into decode_profile_value(None), which returns '' (its
+        # "falsy input" branch), silently turning an explicit "not set yet" into the WRONG kind of
+        # falsy (the text-field idiom, not this field's own null-means-unset one). No existing field
+        # can be None (every other field here has a non-null default), so this changes nothing else.
+        data={k: (v if isinstance(v, (bool, int)) or v is None else decode_profile_value(v)) for k,v in data.items()}
         return data
     # No validate_candidate_profile: clearing the field used to store somebody else's bio instead,
     # so a user could never actually empty it. Empty now stays empty and prompt generation refuses.
@@ -139,9 +148,24 @@ class CandidateProfileSerializer(serializers.ModelSerializer):
         if v < 1 or v > 60:
             raise serializers.ValidationError('Mailbox lookback must be between 1 and 60 months.')
         return v
+    def validate_mailbox_identify_window_months(self, v):
+        # TASK-169 AC4/AC7: same range/reasoning as validate_mailbox_lookback_months above -- 0 must
+        # never read back as "unlimited". Unlike that field, None IS accepted here and means something
+        # different from 0: "the owner has not explicitly chosen a window" (views.py's `unmatched`
+        # action reads that as the 3-month default), not "off"/"unbounded" -- see the model field's own
+        # comment for why this needed a nullable field rather than mailbox_check_cadence_minutes'
+        # 0-means-unset idiom. Sending None is how the owner resets back to the default explicitly.
+        if v is None:
+            return v
+        if v < 1 or v > 60:
+            raise serializers.ValidationError('Identification window must be between 1 and 60 months.')
+        return v
     def update(self, instance, validated_data):
         for field, value in validated_data.items():
-            setattr(instance, field, value if isinstance(value, (bool, int)) else encode_profile_value(field, value))
+            # TASK-169: see to_representation's own comment -- None must pass through untouched here
+            # too, or PATCHing mailbox_identify_window_months back to null would encode_profile_value
+            # it into '' and try to store that in an integer column.
+            setattr(instance, field, value if isinstance(value, (bool, int)) or value is None else encode_profile_value(field, value))
         instance.save(update_fields=list(validated_data.keys()))
         return instance
 
@@ -440,8 +464,14 @@ class MailboxMessageListSerializer(MailboxMessageSerializer):
     # the job and for the client to pre-fill/confirm the existing attach <select> with it; null when
     # the row's subject/body names no tracked company or names more than one (AC4: never a guess).
     suggested_job = serializers.SerializerMethodField()
+    # TASK-171 AC3/AC4: true only when the view's `?include_dismissed=1` reveal actually included this
+    # row (the default queryset excludes dismissed rows entirely) -- lets the client render a
+    # "Restore" control instead of the attach picker for a revealed row, without a second request.
+    dismissed = serializers.SerializerMethodField()
     class Meta(MailboxMessageSerializer.Meta):
-        fields = MailboxMessageSerializer.Meta.fields + ('body_truncated', 'suggested_job')
+        fields = MailboxMessageSerializer.Meta.fields + ('body_truncated', 'suggested_job', 'dismissed')
+    def get_dismissed(self, obj):
+        return obj.dismissed_at is not None
     def _preview(self, obj):
         # body_preview is the view's Substr(...) annotation -- (BODY_PREVIEW_CHARS + 1) chars, so its
         # own length (not a second query) is what tells truncated apart from whole-body-happened-to-
