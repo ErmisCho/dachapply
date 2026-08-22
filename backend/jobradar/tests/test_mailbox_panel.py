@@ -334,6 +334,83 @@ def test_unmatched_messages_include_older_reveals_what_the_recency_filter_hid(cl
     assert revealed_response.data['hidden_count'] == 0
 
 
+# --- TASK-169: the identification window (view-layer half -- AC6/AC7/AC8) --------------------------
+#
+# AC1/AC3/AC4 (the model default and serializer validation) are covered further down, in their own
+# section, mirroring TASK-141's lookback-months split above.
+
+def test_unmatched_messages_window_defaults_to_three_months(client):
+    """AC1: an unset profile (mailbox_identify_window_months is None) reads as
+    UNMATCHED_RECENCY_WINDOW_DAYS (90 days = 3 months) -- exactly the existing TASK-161 recency
+    behaviour, now sourced from the per-account setting's default rather than a bare constant."""
+    old = timezone.now() - timezone.timedelta(days=UNMATCHED_RECENCY_WINDOW_DAYS + 1)
+    recent = timezone.now() - timezone.timedelta(days=UNMATCHED_RECENCY_WINDOW_DAYS - 1)
+    old_confirmed = _log_message(None, 'application_confirmed', sender='hr1@agency.test', received_at=old)
+    recent_confirmed = _log_message(None, 'application_confirmed', sender='hr2@agency.test', received_at=recent)
+
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+
+    ids = [row['id'] for row in r.data['results']]
+    assert old_confirmed.id not in ids
+    assert recent_confirmed.id in ids
+
+
+def test_unmatched_default_window_never_hides_a_rank_0_row_but_an_explicit_one_does(client, owner):
+    """AC7 REWORDED: a same-aged rank-0 (rejection) row -- the DEFAULT window (unset profile) never
+    hides it, exactly as TASK-161 shipped, but once the owner explicitly sets a narrower window, it
+    does, with its own separately-reported count distinct from hidden_count (which stays rank-1/2-only
+    either way)."""
+    old = timezone.now() - timezone.timedelta(days=40)
+    rejection = _log_message(None, 'rejection', sender='hr@agency.test', received_at=old)
+
+    default_response = client.get('/api/mailbox-messages/unmatched/')
+    assert rejection.id in [row['id'] for row in default_response.data['results']]
+    assert default_response.data['high_consequence_hidden_count'] == 0
+
+    profile = user_profile_settings(owner)
+    profile.mailbox_identify_window_months = 1  # 30 days -- narrower than the 40-day-old rejection
+    profile.save(update_fields=['mailbox_identify_window_months'])
+
+    explicit_response = client.get('/api/mailbox-messages/unmatched/')
+    assert rejection.id not in [row['id'] for row in explicit_response.data['results']]
+    assert explicit_response.data['high_consequence_hidden_count'] == 1
+    assert explicit_response.data['hidden_count'] == 0  # never folded into the rank-1/2 count
+
+
+def test_unmatched_explicit_high_consequence_hidden_rows_are_revealable(client, owner):
+    """AC7: 'revealable in one click' -- the same include_older=1 reveal that already surfaces
+    age-hidden rank-1/2 rows also surfaces an explicitly-windowed-out rank-0 row."""
+    old = timezone.now() - timezone.timedelta(days=40)
+    rejection = _log_message(None, 'rejection', sender='hr@agency.test', received_at=old)
+    profile = user_profile_settings(owner)
+    profile.mailbox_identify_window_months = 1
+    profile.save(update_fields=['mailbox_identify_window_months'])
+
+    revealed = client.get('/api/mailbox-messages/unmatched/?include_older=1')
+
+    assert rejection.id in [row['id'] for row in revealed.data['results']]
+    assert revealed.data['high_consequence_hidden_count'] == 0
+
+
+def test_unmatched_no_identification_attempt_for_a_message_older_than_the_window(client, owner, monkeypatch):
+    """AC6: the identification ATTEMPT itself is bounded, not just the display -- a message older
+    than the window never reaches suggest_job_for_message at all, even when include_older reveals it
+    for display."""
+    calls = []
+    monkeypatch.setattr('jobradar.views.suggest_job_for_message', lambda *a, **k: (calls.append(1), None)[1])
+    old = timezone.now() - timezone.timedelta(days=UNMATCHED_RECENCY_WINDOW_DAYS + 1)
+    old_message = _log_message(None, 'uncertain', sender='hr1@agency.test', body_text='Acme', received_at=old)
+    recent_message = _log_message(None, 'uncertain', sender='hr2@agency.test', body_text='Acme', received_at=timezone.now())
+
+    r = client.get('/api/mailbox-messages/unmatched/?include_older=1&include_unidentified=1')
+
+    assert len(calls) == 1  # only the recent (within-window) message was ever scored
+    rows_by_id = {row['id']: row for row in r.data['results']}
+    assert old_message.id in rows_by_id  # still shown -- revealed by include_older
+    assert rows_by_id[old_message.id]['suggested_job'] is None  # but never guessed at
+    assert recent_message.id in rows_by_id
+
+
 # --- TASK-163: suggest the job for unmatched mail, and park what matches nothing -------------------
 #
 # suggest_job_for_message (services.mailbox) reuses _company_name_tokens/the TASK-140 subset rule --
@@ -503,7 +580,9 @@ def test_unmatched_messages_suggestion_computation_adds_exactly_one_bulk_query(c
     joblead_queries = [q['sql'] for q in ctx.captured_queries if 'FROM "jobradar_joblead"' in q['sql']]
     assert len(joblead_queries) == 1  # one bulk fetch of the owner's tracked jobs, never per-row
     message_queries = [q['sql'] for q in ctx.captured_queries if 'FROM "jobradar_mailboxmessage"' in q['sql']]
-    assert len(message_queries) == 2  # unchanged from the TASK-142/TASK-161 baseline (rows + hidden_count)
+    # TASK-171: baseline moves from 2 to 3 -- rows + hidden_count (TASK-142/TASK-161) + dismissed_count
+    # (TASK-171 AC3/AC4), the same bounded-not-per-row shape hidden_count already has.
+    assert len(message_queries) == 3
 
 
 # --- AC6: attach ----------------------------------------------------------------------------------
@@ -1200,6 +1279,157 @@ def test_profile_settings_rejects_blank_lookback_months(client):
     assert r.status_code == 400
 
 
+# --- TASK-169 AC1/AC3/AC4/AC7: the identification window settings field ----------------------------
+#
+# View-layer behaviour (AC6/AC7/AC8) is covered above, next to the recency-filter tests it extends.
+# This section is the model default and serializer validation, the same split TASK-141's lookback
+# tests above already draw.
+
+def test_profile_settings_mailbox_identify_window_months_defaults_to_null(client):
+    """AC1/AC3: null, not 3 -- the model stores 'nobody has chosen a value yet', and views.py's
+    _identify_window() is what reads null as the 3-month default (see that function's own comment).
+    A plain default of 3 would have made 'the owner explicitly chose 3' indistinguishable from
+    'nobody touched this', which AC7 depends on being distinguishable."""
+    r = client.get('/api/profile/')
+    assert r.status_code == 200
+    assert r.data['mailbox_identify_window_months'] is None
+
+
+def test_profile_settings_accepts_mailbox_identify_window_months(client):
+    r = client.patch('/api/profile/', {'mailbox_identify_window_months': 1}, format='json')
+    assert r.status_code == 200
+    assert r.data['mailbox_identify_window_months'] == 1
+    profile = user_profile_settings(client.user)
+    assert profile.mailbox_identify_window_months == 1
+
+
+def test_profile_settings_can_reset_mailbox_identify_window_months_to_null(client):
+    """AC7's other half: the owner can go back to 'no explicit choice', not just set one."""
+    client.patch('/api/profile/', {'mailbox_identify_window_months': 1}, format='json')
+
+    r = client.patch('/api/profile/', {'mailbox_identify_window_months': None}, format='json')
+
+    assert r.status_code == 200
+    assert r.data['mailbox_identify_window_months'] is None
+    profile = user_profile_settings(client.user)
+    assert profile.mailbox_identify_window_months is None
+
+
+@pytest.mark.parametrize('value', [0, 61])
+def test_profile_settings_rejects_out_of_range_identify_window_months(client, value):
+    """AC4: the accepted range is 1-60 months -- 0 is rejected rather than read back as 'unlimited',
+    same reasoning as validate_mailbox_lookback_months. Unlike that field, null IS a valid value here
+    (it means 'unset'), but 0 explicitly sent is not null -- it is a value, and a rejected one."""
+    r = client.patch('/api/profile/', {'mailbox_identify_window_months': value}, format='json')
+    assert r.status_code == 400
+    profile = user_profile_settings(client.user)
+    assert profile.mailbox_identify_window_months is None  # untouched by the rejected write
+
+
+def test_profile_settings_rejects_blank_identify_window_months(client):
+    """AC4's other half: '' is not the same input as omitting the field or sending null -- DRF's own
+    IntegerField coercion rejects it before validate_mailbox_identify_window_months ever runs."""
+    r = client.patch('/api/profile/', {'mailbox_identify_window_months': ''}, format='json')
+    assert r.status_code == 400
+
+
+# --- TASK-171 AC3/AC4/AC5/AC6: dismiss ("not attachable to any job") -------------------------------
+#
+# AC1/AC2 (the expand-to-preview UI) are frontend-only -- the backend half (body_preview in the list,
+# `retrieve` for the full body) already exists (TASK-142) and is already covered by the AC7 section
+# below (test_unmatched_messages_list_truncates_long_body_text and
+# test_mailbox_message_retrieve_returns_the_full_untruncated_body), unaffected by this task.
+
+def test_dismiss_hides_the_row_and_reports_a_revealable_count(client):
+    message = _log_message(None, 'uncertain', sender='hr@agency.test', subject='Update', body_text='no tracked company here')
+
+    r = client.post(f'/api/mailbox-messages/{message.id}/dismiss/')
+    assert r.status_code == 200
+    assert r.data['dismissed'] is True
+
+    default_response = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+    assert message.id not in [row['id'] for row in default_response.data['results']]
+    assert default_response.data['dismissed_count'] == 1
+
+    revealed_response = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1&include_dismissed=1')
+    revealed_row = next(row for row in revealed_response.data['results'] if row['id'] == message.id)
+    assert revealed_row['dismissed'] is True
+    assert revealed_response.data['dismissed_count'] == 0
+
+
+def test_undismiss_reverses_it(client):
+    message = _log_message(None, 'uncertain', sender='hr@agency.test')
+    client.post(f'/api/mailbox-messages/{message.id}/dismiss/')
+
+    r = client.post(f'/api/mailbox-messages/{message.id}/undismiss/')
+
+    assert r.status_code == 200
+    assert r.data['dismissed'] is False
+    default_response = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+    assert message.id in [row['id'] for row in default_response.data['results']]
+    assert default_response.data['dismissed_count'] == 0
+
+
+def test_dismiss_is_idempotent(client):
+    """Dismissing an already-dismissed message must not error or move its timestamp."""
+    message = _log_message(None, 'uncertain', sender='hr@agency.test')
+    first = client.post(f'/api/mailbox-messages/{message.id}/dismiss/')
+    message.refresh_from_db()
+    first_dismissed_at = message.dismissed_at
+
+    second = client.post(f'/api/mailbox-messages/{message.id}/dismiss/')
+
+    assert second.status_code == 200
+    message.refresh_from_db()
+    assert message.dismissed_at == first_dismissed_at
+
+
+def test_dismiss_writes_no_matched_job_and_generates_no_suggestion(client):
+    """AC5: dismissing must never be implemented as attaching to a placeholder job -- that would put
+    a fake lead on the board and feed the stats."""
+    message = _log_message(None, 'uncertain', sender='hr@agency.test')
+
+    client.post(f'/api/mailbox-messages/{message.id}/dismiss/')
+
+    message.refresh_from_db()
+    assert message.matched_job_id is None
+    assert not MailboxSuggestion.objects.filter(message=message).exists()
+
+
+def test_dismiss_is_owner_gated(db):
+    message = _log_message(None, 'uncertain', sender='hr@agency.test')
+    other = User.objects.create_user('other20@example.test', email='other20@example.test', password='pw')
+    other_client = APIClient(); other_client.force_authenticate(other)
+
+    r = other_client.post(f'/api/mailbox-messages/{message.id}/dismiss/')
+
+    assert r.status_code == 404
+    message.refresh_from_db()
+    assert message.dismissed_at is None
+
+
+def test_dismissed_message_is_not_recreated_by_the_gmail_id_dedup_guard_on_re_ingestion(db):
+    """AC6: MailboxMessage's gmail_id-uniqueness guard -- every ingestion path (services.mailbox.
+    run_check, backfill_historical_mail, ingest_threads) checks
+    `MailboxMessage.objects.filter(gmail_id=...).exists()` before ever creating a row for a given
+    gmail_id -- is what prevents re-ingestion from resurrecting ANY message, dismissed or not.
+    Dismissing only sets a second field on the SAME row, so it is unaffected by (and does not need to
+    change) that guard. Verified directly against it, rather than driving the full Gmail-API-mocked
+    run_check/backfill_historical_mail (test_mailbox.py's own territory), which would only prove the
+    same existing invariant a second time.
+    """
+    run = MailboxRun.objects.create()
+    message = MailboxMessage.objects.create(run=run, uid=1, gmail_id='gm-dismissed-1', sender='hr@agency.test', subject='x')
+    message.dismissed_at = timezone.now()
+    message.save(update_fields=['dismissed_at'])
+
+    # The exact guard every ingestion path checks before creating a row for this gmail_id.
+    assert MailboxMessage.objects.filter(gmail_id='gm-dismissed-1').exists()
+    assert MailboxMessage.objects.filter(gmail_id='gm-dismissed-1').count() == 1  # never duplicated
+    message.refresh_from_db()
+    assert message.dismissed_at is not None  # dismissal itself was never touched
+
+
 # --- TASK-142 AC1/AC7/AC8 (backend half): the unmatched list is bounded by truncating body_text ----
 #
 # AC2 (measured response time against the real 940-message database) and AC3/AC6 (DOM nodes,
@@ -1245,9 +1475,14 @@ def test_unmatched_messages_query_defers_body_text_and_computes_a_bounded_db_sid
     the browser) -- this asserts the query's SHAPE instead: body_text is deferred (never a bare
     column in the SELECT list for this table) and a bounded SUBSTR(...) annotation stands in for it.
 
-    TASK-161: a second query now counts how many rows the recency filter suppressed (hidden_count) --
-    a plain COUNT(*) that never selects body_text (or any column) at all, so it is excluded below by
+    TASK-161: a second query counts how many rows the recency filter suppressed (hidden_count) -- a
+    plain COUNT(*) that never selects body_text (or any column) at all, so it is excluded below by
     construction rather than by having to inspect it.
+
+    TASK-171 AC3/AC4: a THIRD query counts how many rows are dismissed (dismissed_count), the same
+    bounded-not-per-row shape as hidden_count -- so this file's own baseline moves from 2 to 3, and
+    this test (and test_unmatched_messages_suggestion_computation_adds_exactly_one_bulk_query below)
+    are updated to say so rather than silently drifting.
     """
     long_body = 'Thank you for applying. ' * 200  # MailboxMessage.body_text's own 5000-char cap
     _log_message(None, 'uncertain', sender='hr1@agency.test', body_text=long_body)
@@ -1258,11 +1493,11 @@ def test_unmatched_messages_query_defers_body_text_and_computes_a_bounded_db_sid
 
     assert r.status_code == 200
     message_queries = [q['sql'] for q in ctx.captured_queries if 'FROM "jobradar_mailboxmessage"' in q['sql']]
-    # Two queries: the TASK-161 hidden_count COUNT(*) and the row SELECT itself -- if body_text were
-    # deferred WITHOUT the serializer reading the annotation instead, DRF would trigger one reload
-    # query per row to hydrate the deferred field, and this count would grow with the message count
-    # instead of staying flat at 2.
-    assert len(message_queries) == 2
+    # Three queries: TASK-171's dismissed_count COUNT(*), TASK-161's hidden_count COUNT(*), and the row
+    # SELECT itself -- if body_text were deferred WITHOUT the serializer reading the annotation
+    # instead, DRF would trigger one reload query per row to hydrate the deferred field, and this count
+    # would grow with the message count instead of staying flat at 3.
+    assert len(message_queries) == 3
     select_queries = [sql for sql in message_queries if 'SUBSTR("jobradar_mailboxmessage"."body_text"' in sql]
     assert len(select_queries) == 1  # only the row SELECT carries the DB-side bounded preview(s)
     sql = select_queries[0]
@@ -1272,8 +1507,9 @@ def test_unmatched_messages_query_defers_body_text_and_computes_a_bounded_db_sid
     # in the SELECT list, which is what would mean .defer('body_text') silently did nothing and the
     # full column crossed the wire again.
     assert sql.count('"jobradar_mailboxmessage"."body_text"') == 2
-    count_query = next(sql for sql in message_queries if sql not in select_queries)
-    assert 'body_text' not in count_query  # the COUNT(*) never touches the column at all
+    count_queries = [sql for sql in message_queries if sql not in select_queries]
+    assert len(count_queries) == 2
+    assert all('body_text' not in q for q in count_queries)  # neither COUNT(*) touches the column
     # TASK-163 fix 1: match_text is for suggest_job_for_message only -- never serialized, so the
     # response payload does not grow just because the match window widened.
     assert all('match_text' not in row for row in r.data['results'])

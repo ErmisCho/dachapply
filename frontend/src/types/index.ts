@@ -28,7 +28,14 @@ export type Stats={funnel?:Funnel;source_effectiveness?:SourceEffectiveness[];[k
 // TASK-145 AC4/AC5: board_sort_keys is UserProfile's saved multi-sort, wire-compatible with the board's
 // own `?ordering=` string (e.g. "status,-fit_score") - the owner chose this over localStorage so the
 // same sort follows the account across devices. '' means "no saved sort, use the server default".
-export type CandidateProfile={candidate_profile:string;candidate_evidence:string;target_roles:string;preferred_locations:string;salary_expectations:string;language_levels:string;preferred_stack:string;red_flags:string;selling_points:string;learned_application_preferences:string;follow_up_digest_enabled:boolean;mailbox_check_cadence_minutes:number;mailbox_check_calendar_aware:boolean;mailbox_check_enabled:boolean;mailbox_check_window_start:string;mailbox_check_window_end:string;mailbox_salary_floor_eur:number;mailbox_lookback_months:number;mailbox_do_not_disclose:string;mailbox_calendar_ids:string;board_sort_keys:string;evaluation_prompt_template:string;combined_prompt_template:string;enrichment_prompt_template:string;bulk_links_prompt_template:string}
+// TASK-169 AC1/AC3/AC7: mailbox_identify_window_months is a THIRD window, distinct from
+// mailbox_lookback_months (that one bounds FETCHING; this one bounds the app's ATTEMPT to identify a
+// job for mail already stored). null means "the owner has not explicitly chosen a value" - read as a
+// 3-month default server-side - not "unlimited" (see the backend model field's own comment). A
+// non-null value is an explicit choice, which also changes whether rejection/interview-invitation
+// mail can be hidden by age (see high_consequence_hidden_count, read inline off GET
+// /mailbox-messages/unmatched/ in App.tsx's loadMailboxPanel - that response has no named type here).
+export type CandidateProfile={candidate_profile:string;candidate_evidence:string;target_roles:string;preferred_locations:string;salary_expectations:string;language_levels:string;preferred_stack:string;red_flags:string;selling_points:string;learned_application_preferences:string;follow_up_digest_enabled:boolean;mailbox_check_cadence_minutes:number;mailbox_check_calendar_aware:boolean;mailbox_check_enabled:boolean;mailbox_check_window_start:string;mailbox_check_window_end:string;mailbox_salary_floor_eur:number;mailbox_lookback_months:number;mailbox_identify_window_months:number|null;mailbox_do_not_disclose:string;mailbox_calendar_ids:string;board_sort_keys:string;evaluation_prompt_template:string;combined_prompt_template:string;enrichment_prompt_template:string;bulk_links_prompt_template:string}
 export type InviteCode={id:number;code:string;label:string;active:boolean;expires_at:string|null;created_at:string}
 export type PracticeSession={id:number;job:number|null;job_company:string;job_title:string;question:string;answer_text:string;language:'de'|'en';clarity_score:number;structure_score:number;confidence_score:number;overall_score:number;feedback:string[];stronger_answer:string;evaluator:string;model:string|null;fallback_used:boolean;created_at:string}
 // TASK-109: mailbox check ingest + review. classification is a MailboxMessage.CLASSIFICATIONS key.
@@ -62,7 +69,12 @@ export type MailboxAttachment={filename:string;mime_type:string;size:number}
 // owner confirms, computed from the message's own subject/body - see services.mailbox.
 // suggest_job_for_message) - optional because every other MailboxMessage-shaped response (retrieve,
 // job mailbox, digest) never sets it, and null when the row names no tracked company or more than one.
-export type MailboxMessage={id:number;sender:string;subject:string;body_text:string;received_at:string|null;classification:string;matched_job:number|null;matched_job_company:string;matched_job_title:string;draft:MailboxDraft|null;thread_id:string;gmail_url:string|null;sent_by_owner:boolean;created_at:string;calendar_summary:string;calendar_location:string;calendar_organizer:string;calendar_start:string|null;calendar_end:string|null;attachments:MailboxAttachment[];suggested_job?:{id:number;label:string}|null}
+// TASK-171 AC1/AC2/AC3: body_truncated/dismissed are also unmatched-list-only (MailboxMessageListSerializer)
+// - optional for the same reason suggested_job is. body_truncated says whether body_text here is the
+// ~300-char preview or the whole (short) body already; a truncated row's full text is one more request
+// away (GET /mailbox-messages/{id}/, TASK-142's retrieve). dismissed is true only when a row was
+// explicitly revealed via ?include_dismissed=1 - the default list never includes a dismissed row at all.
+export type MailboxMessage={id:number;sender:string;subject:string;body_text:string;received_at:string|null;classification:string;matched_job:number|null;matched_job_company:string;matched_job_title:string;draft:MailboxDraft|null;thread_id:string;gmail_url:string|null;sent_by_owner:boolean;created_at:string;calendar_summary:string;calendar_location:string;calendar_organizer:string;calendar_start:string|null;calendar_end:string|null;attachments:MailboxAttachment[];suggested_job?:{id:number;label:string}|null;body_truncated?:boolean;dismissed?:boolean}
 export type MailboxSuggestion={id:number;message:MailboxMessage;job:number;job_company:string;job_title:string;suggestion_type:'status_change'|'interview_date'|'feedback_clear';payload:Record<string,any>;status:'pending'|'confirmed'|'dismissed';created_at:string;decided_at:string|null}
 // TASK-117 AC2/AC6: GET /api/jobs/{id}/mailbox/ and POST /api/mailbox-messages/{id}/attach/ both
 // answer with this shape (MailboxMessageWithSuggestionsSerializer) - each suggestion nested here is

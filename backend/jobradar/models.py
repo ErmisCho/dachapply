@@ -70,6 +70,24 @@ class UserProfile(models.Model):
     # meaning the owner explicitly ruled out ("that should also be configurable" -- 6 months, not
     # "off"). See CandidateProfileSerializer.validate_mailbox_lookback_months for the rejection.
     mailbox_lookback_months=models.PositiveIntegerField(default=6)
+    # TASK-169: a THIRD window, distinct from mailbox_lookback_months (FETCH, above) and from views.
+    # UNMATCHED_RECENCY_WINDOW_DAYS (DISPLAY, views.py -- now only the default's own source of truth,
+    # see that constant's comment) -- how far back the unmatched-mail panel ATTEMPTS to identify a
+    # job for a message at all. Measured against production 2026-08-21: the owner set
+    # mailbox_lookback_months to 3 and the panel barely changed, because that field bounds FETCHING
+    # only -- 247 of 309 panel rows were already stored from before the narrower fetch, so nothing
+    # about them could be affected by it. This field is what actually bounds the identification
+    # attempt itself, not just what gets fetched.
+    # Nullable, and null is deliberately NOT this field's "unlimited" (the one meaning AC3/AC4 forbid,
+    # same reasoning as mailbox_lookback_months's own comment below) -- null means "nobody has
+    # explicitly chosen a value", read as the 3-month default everywhere this is consumed (views.py's
+    # `unmatched` action). A non-null value means the OWNER explicitly chose it, which matters for
+    # AC7: TASK-161 measured that 15 of 41 currently-unattached high-consequence rows (rejection/
+    # interview_invitation) are themselves over a year old, so a DEFAULT the owner never touched must
+    # never bury them -- but a window they DID set is honoured even there, with its own separately-
+    # reported, revealable count (views.py). See CandidateProfileSerializer.
+    # validate_mailbox_identify_window_months for the accepted range once a value is given.
+    mailbox_identify_window_months=models.PositiveIntegerField(null=True, blank=True, default=None)
     mailbox_check_calendar_aware=models.BooleanField(default=True)
     # TASK-125 AC1/AC2: the explicit off switch. Deliberately not cadence=0 -- the validator above
     # rejects 0 for a documented reason (it would read back as "unset" through the profile codec and
@@ -414,10 +432,14 @@ class MailboxMessage(models.Model):
     """TASK-109 AC5: the append-only log of every message check_mailbox read.
 
     Rows are created once and never updated by check_mailbox itself -- no view in this app exposes a
-    generic PATCH/DELETE for this model. The one deliberate exception is `matched_job`: TASK-117 AC6
-    lets the owner attach a message that matched no job to one by hand
-    (services.mailbox.attach_message_to_job), which is the only thing anywhere that mutates a row
-    after creation, and it only ever touches that one field.
+    generic PATCH/DELETE for this model. There are now TWO deliberate exceptions. The first is
+    `matched_job`: TASK-117 AC6 lets the owner attach a message that matched no job to one by hand
+    (services.mailbox.attach_message_to_job), which mutates a row after creation, and (before TASK-171)
+    was the only thing anywhere that did. The second is `dismissed_at` -- see its own field comment
+    below (TASK-171 AC3/AC5/AC6). Both are owner-initiated, single-field mutations; neither is
+    something check_mailbox/ingest_threads/backfill_historical_mail ever touch, so re-ingestion can
+    never undo either one (those functions' own gmail_id-existence dedup guards mean a message already
+    in this table is never recreated at all, whatever its matched_job/dismissed_at say).
 
     TASK-117 AC1 (2026-08-18): the owner reversed this model's earlier minimal-metadata default.
     `body_text` now stores the received body, capped at the 5000 chars the wire read already applies
@@ -527,6 +549,14 @@ class MailboxMessage(models.Model):
     classification=models.CharField(max_length=30, choices=CLASSIFICATIONS, default='uncertain')
     evaluator=models.CharField(max_length=30, default='heuristic')
     matched_job=models.ForeignKey(JobLead, null=True, blank=True, related_name='mailbox_messages', on_delete=models.SET_NULL)
+    # TASK-171 AC3/AC5/AC6: the panel's "not attachable to any job" decision. A nullable timestamp,
+    # not a boolean, for the same reason decided_at/calendar_checked_at above are timestamps rather
+    # than booleans -- "when" is free once the column exists. Set only by views.
+    # MailboxMessageViewSet.dismiss, cleared only by its undismiss counterpart -- the second
+    # deliberate exception to this model's append-only guarantee (see the class docstring). Writes NO
+    # matched_job and generates NO suggestion; attach_message_to_job remains the only path that does
+    # either, so dismissing can never be mistaken for (or implemented as) attaching to a placeholder.
+    dismissed_at=models.DateTimeField(null=True, blank=True)
     created_at=models.DateTimeField(auto_now_add=True)
     class Meta: ordering=['-uid']
     def __str__(self): return f'{self.sender}: {self.subject[:60]} ({self.classification})'

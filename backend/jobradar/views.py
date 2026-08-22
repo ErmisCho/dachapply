@@ -280,22 +280,46 @@ def health(request):
 # (the mailbox check is broken), so there is nothing to key by.
 MAILBOX_HEALTH_ALERT_CACHE_KEY = 'mailbox_health_watchdog_alert_sent'
 
-# TASK-161 AC5: the `unmatched` action's recency window for its two low-consequence classes
-# (application_confirmed, recruiter_reply -- see UNMATCHED_LOW_CONSEQUENCE_CLASSIFICATIONS below).
-# 90 days, not a rounder number, because it is where the measured age distribution actually breaks:
-# 68 of the panel's 321 rows fall inside 90 days and 253 outside it, and that boundary is where live
-# mail flow ends and the backfill_historical_mail/ingest_threads bulk import begins (see task-161's
-# Implementation Notes for the full cumulative distribution). rejection/interview_invitation are
-# NEVER subject to this window -- 15 of the 41 unattached ones are over a year old, so any uniform
-# cutoff would hide the very rows this endpoint exists to surface.
+# TASK-161 AC5 (TASK-169: superseded as the ACTIVE window -- kept only as the default's source of
+# truth, see _identify_window() below): the `unmatched` action's recency window for its two
+# low-consequence classes (application_confirmed, recruiter_reply -- see
+# UNMATCHED_LOW_CONSEQUENCE_CLASSIFICATIONS below). 90 days, not a rounder number, because it is
+# where the measured age distribution actually breaks: 68 of the panel's 321 rows fall inside 90 days
+# and 253 outside it, and that boundary is where live mail flow ends and the
+# backfill_historical_mail/ingest_threads bulk import begins (see task-161's Implementation Notes for
+# the full cumulative distribution). It also happens to equal the 3 months TASK-169 asked for as the
+# per-account DEFAULT -- coincidence, not a rename: UserProfile.mailbox_identify_window_months is a
+# real per-account setting an owner can change, this constant is not.
 UNMATCHED_RECENCY_WINDOW_DAYS = 90
-# rank 0 (never age-filtered): the two classes attaching can act on regardless of the target job's
-# state -- set to rejected/interview. rank 1 (age-filtered): only useful for a subset of jobs
-# (application_confirmed backdates an unapplied job; recruiter_reply clears a feedback clock a job
+# rank 0 (never age-filtered UNDER THE DEFAULT window -- TASK-169 AC7 changes this once the owner sets
+# an EXPLICIT window, see _identify_window()): the two classes attaching can act on regardless of the
+# target job's state -- set to rejected/interview. rank 1 (age-filtered): only useful for a subset of
+# jobs (application_confirmed backdates an unapplied job; recruiter_reply clears a feedback clock a job
 # may not have) and is a data-repair chore rather than a decision once it is this old. rank 2
 # (age-filtered): uncertain and anything else not in the two lists above.
 UNMATCHED_HIGH_CONSEQUENCE_CLASSIFICATIONS = ('rejection', 'interview_invitation')
 UNMATCHED_LOW_CONSEQUENCE_CLASSIFICATIONS = ('application_confirmed', 'recruiter_reply')
+
+
+def _identify_window(profile):
+    """TASK-169: the identification window's effective length in days, and whether the OWNER
+    explicitly chose it -- (days, explicit). `profile.mailbox_identify_window_months` is None until
+    the owner sets it (the model field's own comment explains why null, not 0, means "unset"); this
+    is where that null gets read as the 3-month default (UNMATCHED_RECENCY_WINDOW_DAYS, this
+    module's own source of truth for that default -- see its comment above). 30 days/month, the same
+    convention services.mailbox._lookback_days already uses for mailbox_lookback_months, so the two
+    settings stay comparable at a glance.
+
+    AC7: `explicit` is what `unmatched` below uses to decide whether rank 0 (rejection/
+    interview_invitation) is bound by this window too -- a DEFAULT the owner never touched must never
+    bury them (TASK-161 measured 15 of 41 currently-unattached ones are over a year old), but a window
+    the owner DID set is honoured even there, visibly and reversibly (its own separately-reported,
+    revealable count).
+    """
+    months = profile.mailbox_identify_window_months if profile else None
+    if months is None:
+        return UNMATCHED_RECENCY_WINDOW_DAYS, False
+    return months * 30, True
 # TASK-163 fix 1 (coordinator re-measurement, 2026-08-21): a tracked company's name routinely sits
 # past BODY_PREVIEW_CHARS (300) -- matching against that preview alone found only 8 of 321 rows a
 # suggestion, because the name simply is not in the first 300 characters. A SECOND, separately bounded
@@ -1020,12 +1044,14 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
     MailboxRunViewSet above (TASK-151: switched from is_cv_owner -- see is_mailbox_owner's
     docstring), not on accessible_jobs. Exposes only what AC6 needs (the unmatched list
     and the manual attach action), TASK-142's `retrieve` (the full-body counterpart to unmatched's
-    truncated preview -- see MailboxMessageListSerializer), plus TASK-133's reply-recipients preview
+    truncated preview -- see MailboxMessageListSerializer), TASK-171's dismiss/undismiss (the OTHER
+    honest ending for an unmatched message, alongside attach), plus TASK-133's reply-recipients preview
     and reply-compose actions below -- still never list/PATCH/DELETE, keeping the model's append-only
-    guarantee true for everything except the one owner-initiated attach (matched_job). Composing a
-    reply never mutates MailboxMessage itself either -- it only ever creates/updates the message's
-    MailboxDraft row (see services.mailbox.compose_reply_draft), the same append-only-except-one-field
-    shape attach already holds.
+    guarantee true for everything except the two owner-initiated single-field mutations (matched_job,
+    dismissed_at -- see the model docstring). Composing a reply never mutates MailboxMessage itself
+    either -- it only ever creates/updates the message's MailboxDraft row (see
+    services.mailbox.compose_reply_draft), the same append-only-except-those-fields shape attach and
+    dismiss already hold.
 
     reply_recipients/reply are deliberately scoped through accessible_jobs (like MailboxDraftViewSet
     below), not the is_mailbox_owner gate the rest of this viewset uses -- see each action's own
@@ -1120,7 +1146,17 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         # Applied AFTER the recency filter, on whatever this request would otherwise have shown, the
         # same "second, cheap dimension stacked on the first" shape include_older already has.
         include_unidentified = str(request.query_params.get('include_unidentified') or '').strip().lower() in ('1', 'true', 'yes')
-        qs=(self.get_queryset().exclude(classification='not_job_related').filter(matched_job__isnull=True)
+        # TASK-171 AC3/AC4: a third, independent reveal, same shape again -- a message the owner
+        # dismissed ("not attachable to any job") is excluded from the base queryset entirely (not
+        # merely display-filtered like the two above), so it never reaches the rank/suggestion work
+        # below at all unless this is set.
+        include_dismissed = str(request.query_params.get('include_dismissed') or '').strip().lower() in ('1', 'true', 'yes')
+        base_qs = self.get_queryset().exclude(classification='not_job_related').filter(matched_job__isnull=True)
+        dismissed_count = 0
+        if not include_dismissed:
+            dismissed_count = base_qs.filter(dismissed_at__isnull=False).count()
+            base_qs = base_qs.filter(dismissed_at__isnull=True)
+        qs=(base_qs
             .select_related('draft')
             .annotate(body_preview=Substr('body_text', 1, preview_len))
             .annotate(match_text=Substr('body_text', 1, UNMATCHED_MATCH_TEXT_CHARS))
@@ -1131,12 +1167,29 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
                 default=Value(2), output_field=IntegerField(),
             ))
             .order_by('rank', F('received_at').desc(nulls_last=True), '-uid'))
+
+        # TASK-169: the per-account identification window is now the ACTIVE cutoff --
+        # UNMATCHED_RECENCY_WINDOW_DAYS above only supplies its default (see _identify_window's own
+        # comment). `window_explicit` is AC7's whole point: a DEFAULT window stays display-only for
+        # rank 0 (never filters it, exactly as TASK-161 shipped -- 15 of 41 high-consequence rows are
+        # themselves over a year old), while an EXPLICIT one also bounds rank 0, with its own
+        # separately-reported, revealable count (high_consequence_hidden_count) rather than folding
+        # into hidden_count, which stays rank-1/2-only either way.
+        profile = user_profile_settings(request.user)
+        window_days, window_explicit = _identify_window(profile)
+        cutoff = timezone.now() - timezone.timedelta(days=window_days)
+        within_window = Q(received_at__isnull=True) | Q(received_at__gte=cutoff)
+
         hidden_count = 0
+        high_consequence_hidden_count = 0
         if not include_older:
-            cutoff = timezone.now() - timezone.timedelta(days=UNMATCHED_RECENCY_WINDOW_DAYS)
-            visible = Q(rank=0) | Q(received_at__isnull=True) | Q(received_at__gte=cutoff)
-            hidden_count = qs.exclude(visible).count()
-            qs = qs.filter(visible)
+            low_consequence_visible = Q(rank=0) | within_window
+            hidden_count = qs.exclude(low_consequence_visible).count()
+            if window_explicit:
+                high_consequence_hidden_count = qs.filter(rank=0).exclude(within_window).count()
+                qs = qs.filter(within_window)
+            else:
+                qs = qs.filter(low_consequence_visible)
 
         # TASK-163 AC1/AC3/AC5/AC9: suggest the single tracked job named in each row's own
         # subject/body(/sender) -- never matched_job (attach_message_to_job is still the only writer
@@ -1150,7 +1203,15 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         jobs = list(owned_jobs(request.user).exclude(company=''))
         rows = list(qs)
         for row in rows:
-            row.suggested_job = suggest_job_for_message(row.subject, row.match_text, row.sender, jobs)
+            # TASK-169 AC6: the identification ATTEMPT is what the window bounds, not just what gets
+            # displayed -- a row outside the window never reaches suggest_job_for_message at all,
+            # whatever include_older says (revealing an old row shows it; it does not retroactively
+            # pay for guessing a job for it). No received_at at all counts as within the window, the
+            # same "no measured age to filter by" rule the display filter above already applies.
+            if row.received_at is not None and row.received_at < cutoff:
+                row.suggested_job = None
+            else:
+                row.suggested_job = suggest_job_for_message(row.subject, row.match_text, row.sender, jobs)
         # TASK-163 fix 3 (coordinator re-measurement, 2026-08-21): parking every suggestion-less row
         # hid 38 of TASK-161's 41 high-consequence rows -- rank 0 (rejection/interview_invitation) is
         # never age-filtered by the recency window above for exactly the same reason it must never be
@@ -1165,7 +1226,9 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         return Response({
             'results': MailboxMessageListSerializer(rows, many=True).data,
             'hidden_count': hidden_count,
+            'high_consequence_hidden_count': high_consequence_hidden_count,
             'parked_count': parked_count,
+            'dismissed_count': dismissed_count,
         })
     @action(detail=True, methods=['post'])
     def attach(self, request, pk=None):
@@ -1189,6 +1252,34 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         attach_message_to_job(message, job, user=request.user)
         message.refresh_from_db()
         return Response(MailboxMessageWithSuggestionsSerializer(message).data)
+
+    @action(detail=True, methods=['post'])
+    def dismiss(self, request, pk=None):
+        """TASK-171 AC3/AC5/AC6: marks a message "not attachable to any job" -- excluded from
+        `unmatched`'s default results from the very next load on (AC3), reversible via `undismiss`
+        below (AC4). Writes NEITHER matched_job NOR a suggestion (AC5): attach_message_to_job remains
+        the only path that does either, so this can never be mistaken for (or reimplemented as)
+        attaching to a placeholder job, which would put a fake lead on the board and feed the stats.
+        Idempotent -- dismissing an already-dismissed message leaves its original dismissed_at alone.
+        """
+        message=self.get_object()
+        if message.dismissed_at is None:
+            message.dismissed_at=timezone.now()
+            message.save(update_fields=['dismissed_at'])
+        return Response(MailboxMessageListSerializer(message).data)
+
+    @action(detail=True, methods=['post'])
+    def undismiss(self, request, pk=None):
+        """TASK-171 AC4: the reversal -- clears dismissed_at so the message is a normal unmatched row
+        again on the very next load, the same "reversible, never destructive" shape TASK-161's
+        include_older and TASK-163's include_unidentified reveals already hold to (neither of those
+        deletes anything either; they only stop filtering it out).
+        """
+        message=self.get_object()
+        if message.dismissed_at is not None:
+            message.dismissed_at=None
+            message.save(update_fields=['dismissed_at'])
+        return Response(MailboxMessageListSerializer(message).data)
 
     def _accessible_message(self, request, pk):
         """TASK-133: reply-recipients/reply write into and read from the OWNER's real mailbox, so
