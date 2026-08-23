@@ -76,4 +76,39 @@ Watch the archived case: Formunauts id=292 is `archived` and id=535 is `intervie
 tempting as a tiebreak and is NOT sufficient on its own — an archived process still receives mail
 (rejections arrive after the owner has moved on), and attributing a late rejection to the live
 process because the other one is archived would be exactly wrong.
+
+### Coordinator measurement against production, 2026-08-23 (and the rule change it forced)
+
+The first implementation dated a process from `applied_at` and the owner's own sent mail only. Measured
+against production (82 tracked jobs, 854 unmatched messages) it did not work:
+
+    companies where timing can separate two candidates    1 of 11
+    Formunauts (the case this task was filed about)       0 suggestions on all 7 of its messages
+
+Every suggestion it produced on a multi-job company won by being the ONLY dated candidate, so the
+discriminator described in AC2 never actually ran. Field coverage explains why:
+
+    applied_at        23/82 (28%)      status_date       37/82 (45%)
+    last_update_date  49/82 (60%)      interview_at       0/82 (0%)
+    owner sent mail   11/82
+
+The sent-mail evidence was also contaminated: six jobs carried a first-sent date BEFORE the job
+existed, by 238-685 days (old correspondence matched onto the thread), so `_process_started_at`
+was reading an application date that was up to two years wrong.
+
+**Three changes follow, and AC2's "state the rule chosen" now means this rule:**
+
+1. Widen the evidence to `status_date` and `last_update_date` as well as `applied_at`. Measured
+   effect: separable companies 1/11 -> 6/11, and both motivating cases then resolve BY EVIDENCE
+   (Formunauts -> 535, DataScience Service -> 462) rather than by iteration order.
+2. Bound sent-mail evidence to `received_at >= job.created_at`, removing the contamination above.
+3. **Owner decision, 2026-08-23:** a 90-day cap. If the winning process started more than 90 days
+   before the message arrived, the answer is `None`. Owner's reasoning: *"the user can be applying at
+   multiple positions for a company, so if the time is too much apart, the email is probably
+   referring to another job position/interview round."* 90 was chosen against the five attributions
+   measured correct (1, 5, 8, 12 and 28 days) while staying clear of the late-rejection case this
+   task's notes already warn about.
+
+`interview_at` is populated on ZERO of 82 jobs despite TASK-078 being marked Done. Filed separately as
+TASK-179; it is not a dependency of this task.
 <!-- SECTION:NOTES:END -->

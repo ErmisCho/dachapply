@@ -1557,7 +1557,104 @@ def _match_by_ats_display_name(sender: str, owner) -> JobLead | None:
     return next(iter(matches.values())) if len(matches) == 1 else None
 
 
-def suggest_job_for_message(subject: str, body_text: str, sender: str, jobs) -> JobLead | None:
+def _process_started_at(job, first_sent_at):
+    """TASK-170 AC3: the local date the owner's process with THIS job is first known to have been
+    alive, or None when nothing dates it.
+
+    EARLIEST of every date the job itself carries plus the owner's own sent mail on its thread
+    (`first_sent_at` -- see suggest_job_for_message's argument of the same name). Earliest, because
+    `status_date` and `last_update_date` record the LAST movement rather than the first, so taking
+    the minimum is the tightest bound the data supports without ever claiming a process started later
+    than it really did.
+
+    All four sources are needed, because no single one covers the board -- measured over the owner's
+    82 tracked jobs (coordinator, 2026-08-23): `applied_at` 23 rows (28%), `status_date` 37 (45%),
+    `last_update_date` 49 (60%), owner's sent mail 11 rows (8 once bounded, see views.unmatched).
+    `applied_at` ALONE left just 1 of the 11 multi-job companies with two dated candidates, which
+    means the timing rule below could never actually discriminate: every suggestion it produced won
+    by being the only dated candidate. With all four it is 6 of 11, and both cases task-170 was filed
+    about then resolve on evidence rather than returning nothing -- Formunauts 292 (last activity
+    2026-06-25) vs 535 (`status_date` 2026-08-13) for mail arriving 08-17/18, and DataScience Service
+    461 (07-02) vs 462 (07-22) for the after-interview-assignment thread. The coverage gap is
+    structural, not accidental: `applied_at` is written by JobLead.save() only once the board's status
+    reaches 'applied', while `status_date`/`last_update_date` are written by JobLeadSerializer on any
+    status move, so they are what date the many real processes the owner never marked applied.
+
+    `interview_at` is deliberately absent: it is populated on ZERO of those 82 rows, so adding it
+    would be a date source that has never once held a date.
+
+    `created_at` is deliberately NOT a fallback either. When a lead was TRACKED says nothing about
+    whether the owner ever engaged with it, and using it would hand a confident answer to exactly the
+    case with no evidence in it -- two leads at one company, neither ever acted on, would be
+    separated by the order they were pasted onto the board. That is AC4's case: no evidence means no
+    suggestion, because a plausible-looking wrong process is worse than no suggestion at all.
+    """
+    dates = [job.applied_at, job.status_date, job.last_update_date,
+             timezone.localdate(first_sent_at) if first_sent_at else None]
+    return min([d for d in dates if d], default=None)
+
+
+ATTRIBUTION_MAX_AGE_DAYS = 90  # owner's decision, 2026-08-23 -- reasoning in _job_by_process_timing
+
+
+def _job_by_process_timing(candidates, received_at, first_sent_at):
+    """TASK-170 AC2 -- the rule, in one sentence: a message belongs to the candidate process that had
+    MOST RECENTLY STARTED when the message arrived, unless that process started more than
+    ATTRIBUTION_MAX_AGE_DAYS before it, in which case there is no suggestion. Each candidate's
+    process starts on the earliest date anything knows it was alive (_process_started_at -- the
+    owner's own sent mail, applied_at, status_date, last_update_date); those start dates cut the
+    timeline into one window per process, and the message's own `received_at` picks the window it
+    falls into. The owner's own words for it, on the Formunauts pair (2026-08-21): "this should
+    belong to one of the Formunauts processes according to when I had the interview with them and
+    when I sent the email to them to apply."
+
+    The 90-day cap is the owner's second decision on this (2026-08-23): "the user can be applying at
+    multiple positions for a company, so if the time is too much apart, the email is probably
+    referring to another job position/interview round." Without it, the most-recently-started process
+    wins by default however stale it is, which is precisely where a window rule turns a missing
+    candidate into a confident wrong answer. 90 is not a round number picked for looking reasonable;
+    it is the one that clears both measured edges. The five attributions verifiable by hand against
+    production sit at 1, 5, 8, 12 and 28 days between process start and message, so the cap has to
+    stay well clear of 28 or it starts cutting correspondence that is right -- and task-170's
+    Implementation Notes require the LATE REJECTION to remain admissible ("an archived process still
+    receives mail (rejections arrive after the owner has moved on)"), which a 30-day cap would refuse
+    outright. It bounds the gap between process start and message arrival, NOT the message's own age:
+    views.unmatched's identification window (UNMATCHED_RECENCY_WINDOW_DAYS) is what bounds that, and
+    the two are independent measurements that merely happen to share a default number today.
+
+    Answers None -- never a guess -- whenever the timeline cannot separate the candidates (AC4):
+    the message has no received_at to place; no candidate is dated at all; the message predates every
+    candidate's start (it cannot belong to a process that had not begun); the winner is older than
+    the cap above; or two candidates share the same latest start date, which is the same "more than
+    one claimant" refusal owned_job_domains and _match_by_ats_display_name already make, now
+    surviving same-company candidates.
+
+    Job STATUS is deliberately not consulted, here or anywhere else in this path (task-170's
+    Implementation Notes): an archived process still receives mail -- a rejection routinely arrives
+    after the owner has moved on -- so preferring the live job over the archived one would be exactly
+    wrong on the case that produces the most such mail.
+
+    The known ceiling of a window rule, stated rather than hidden: a message that arrives AFTER a
+    second application to the same company is attributed to that second process even when it is
+    really late correspondence about the first, because nothing in the data separates the two at that
+    point. The cap bounds how far that can drift, not whether it can happen at all.
+    """
+    if received_at is None:
+        return None
+    arrived = timezone.localdate(received_at)
+    started = [(start, job) for start, job in
+               ((_process_started_at(job, first_sent_at.get(job.id)), job) for job in candidates)
+               if start is not None and start <= arrived]
+    if not started:
+        return None
+    latest = max(start for start, _ in started)
+    if (arrived - latest).days > ATTRIBUTION_MAX_AGE_DAYS:
+        return None
+    live = [job for start, job in started if start == latest]
+    return live[0] if len(live) == 1 else None
+
+
+def suggest_job_for_message(subject: str, body_text: str, sender: str, jobs, received_at=None, first_sent_at=None) -> JobLead | None:
     """TASK-163: a SUGGESTION for the unmatched-mail panel (views.py's `unmatched` action), never a
     match() -- the owner confirms it with one click, and this function never writes matched_job
     itself (attach_message_to_job is still the only writer, per TASK-117's append-only guarantee).
@@ -1598,20 +1695,43 @@ def suggest_job_for_message(subject: str, body_text: str, sender: str, jobs) -> 
     employer -- exactly what _match_by_ats_display_name and this function both exist to catch -- while
     a board sends digests advertising many employers at once. Boards send digests; ATSes send
     correspondence; that distinction is the whole rule.
+
+    TASK-170: that "more than one claimant" rule used to be blind to the case it matters most in.
+    `matches` was keyed on the company's TOKEN SET and filled with setdefault, so two tracked jobs at
+    the SAME company produced the same key, one was silently dropped, and len(matches) == 1 reported
+    no ambiguity at all -- the suggestion then named whichever row the queryset happened to yield
+    first (TASK-137's bug recurring with a different key). One company token set is still one
+    claimant, but it now holds a LIST of that company's jobs: one of them is answered directly, and
+    several are separated by timing (_job_by_process_timing above -- read its docstring for the rule
+    and for what it refuses) or reported as no suggestion.
+
+    `received_at` and `first_sent_at` are that timing evidence, both passed in for the same reason
+    `jobs` is: `first_sent_at` maps job id -> the earliest date the owner's OWN mail on that job's
+    thread was sent (MailboxMessage.sent_by_owner, which run_check only ever stores when the thread
+    is already matched to a tracked job, and bounded there to mail sent after the job existed -- see
+    views.unmatched for the 238-to-685-day contamination that bound removes), and the caller fetches
+    the whole map in ONE bulk query for the whole unmatched list. Both default to nothing, which
+    simply means a caller that cannot date the processes gets a suggestion only where a company has
+    exactly one tracked job.
     """
     if is_job_board(_sender_domain(sender)):
         return None
     text_tokens = _company_name_tokens(f'{subject}\n{body_text}')
     sender_tokens = _company_name_tokens(sender)
-    matches: dict[frozenset, JobLead] = {}
+    matches: dict[frozenset, list[JobLead]] = {}
     for job in jobs:
         company_tokens = _company_name_tokens(job.company)
         if not company_tokens:
             continue
         haystack = sender_tokens if len(company_tokens) == 1 else text_tokens
         if company_tokens.issubset(haystack):
-            matches.setdefault(company_tokens, job)
-    return next(iter(matches.values())) if len(matches) == 1 else None
+            matches.setdefault(company_tokens, []).append(job)
+    if len(matches) != 1:
+        return None
+    candidates = next(iter(matches.values()))
+    if len(candidates) == 1:
+        return candidates[0]
+    return _job_by_process_timing(candidates, received_at, first_sent_at or {})
 
 
 def match_job(raw: RawMessage, job_domains: dict, owner=None) -> JobLead | None:
