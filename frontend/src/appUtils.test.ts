@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -334,6 +334,58 @@ describe('dashboard panel order (TASK-117 AC3)',()=>{
 
   it('drops a saved id no longer in the panel registry instead of keeping a dangling one',()=>{
     expect(initPanelOrder(['gone','a'],['a','b'])).toEqual(['b','a'])
+  })
+})
+
+// TASK-174 AC2/AC5. The board stores only the HIDDEN set, so "never chose" and "chose to show" look
+// identical; the seeded list is what separates them. These are the two rules that decide it, and the
+// reason they live here and not in App.tsx: no DOM is needed to test either (this vitest run has no
+// jsdom), so a regression fails a test instead of waiting for someone to notice their panel came back.
+describe('default-hidden dashboard panels (TASK-174 AC2/AC5)',()=>{
+  it('hides a default-hidden panel for an owner who never chose, and records that it did',()=>{
+    const r=applyDefaultHiddenPanels([],[],['mailbox_unmatched'])
+    expect(r.hidden).toEqual(['mailbox_unmatched'])
+    expect(r.seeded).toEqual(['mailbox_unmatched'])
+    expect(r.changed).toBe(true)
+  })
+
+  it('leaves an owner who switched it back on switched on, instead of re-hiding it every load',()=>{
+    const r=applyDefaultHiddenPanels([],['mailbox_unmatched'],['mailbox_unmatched'])
+    expect(r.hidden).toEqual([])
+    expect(r.changed).toBe(false)
+  })
+
+  it('keeps it hidden for an owner who hid it themselves',()=>{
+    const r=applyDefaultHiddenPanels(['mailbox_unmatched'],['mailbox_unmatched'],['mailbox_unmatched'])
+    expect(r.hidden).toEqual(['mailbox_unmatched'])
+    expect(r.changed).toBe(false)
+  })
+
+  it('never disturbs the choices an owner already made about other panels',()=>{
+    const r=applyDefaultHiddenPanels(['funnel','source_effectiveness'],[],['mailbox_unmatched'])
+    expect(r.hidden).toEqual(['funnel','source_effectiveness','mailbox_unmatched'])
+    expect(r.changed).toBe(true)
+  })
+
+  it('is idempotent: the second load after seeding decides nothing and writes nothing',()=>{
+    const first=applyDefaultHiddenPanels([],[],['mailbox_unmatched'])
+    const second=applyDefaultHiddenPanels(first.hidden,first.seeded,['mailbox_unmatched'])
+    expect(second.hidden).toEqual(first.hidden)
+    expect(second.seeded).toEqual(first.seeded)
+    expect(second.changed).toBe(false)
+  })
+
+  it('does not duplicate an id that is somehow already in the hidden set but not seeded',()=>{
+    const r=applyDefaultHiddenPanels(['mailbox_unmatched'],[],['mailbox_unmatched'])
+    expect(r.hidden).toEqual(['mailbox_unmatched'])
+    expect(r.changed).toBe(true)
+  })
+
+  it('does nothing at all when no panel is hidden by default',()=>{
+    const r=applyDefaultHiddenPanels(['funnel'],[],[])
+    expect(r.hidden).toEqual(['funnel'])
+    expect(r.seeded).toEqual([])
+    expect(r.changed).toBe(false)
   })
 })
 

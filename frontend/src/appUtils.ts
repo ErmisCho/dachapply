@@ -291,6 +291,24 @@ export function initPanelOrder(saved:string[],allIds:string[]):string[]{
   return [...unknown,...known]
 }
 
+// TASK-174 AC2/AC5. A panel that is hidden BY DEFAULT needs a distinction the board's storage does
+// not have: `dachapply_dashboard_panel_hidden` records only the hidden SET, so "the owner never
+// chose" and "the owner deliberately switched it on" are the same absence. Re-applying the default
+// on every load would therefore re-hide a panel the owner had just turned on; applying it never
+// would mean it is only off for someone whose localStorage is empty.
+// `seeded` is the second list that resolves it - the panel ids whose default has already been
+// applied once:
+//   id NOT in seeded -> never chose -> the default applies, and the id is recorded as seeded.
+//   id IN seeded     -> whatever `hidden` says is the owner's own decision -> left exactly alone.
+// So an existing owner who had hidden (or shown) any panel keeps that choice untouched, and a
+// brand-new account gets the default once. Pure: the caller does the two localStorage writes, and
+// only when `changed` - the point of the flag is that a load which decides nothing writes nothing.
+export function applyDefaultHiddenPanels(hidden:string[],seeded:string[],defaultHidden:string[]):{hidden:string[];seeded:string[];changed:boolean}{
+  const unseeded=defaultHidden.filter(id=>!seeded.includes(id))
+  if(!unseeded.length)return {hidden,seeded,changed:false}
+  return {hidden:[...new Set([...hidden,...unseeded])],seeded:[...seeded,...unseeded],changed:true}
+}
+
 // TASK-119 AC2/AC6/AC7. build_suggestions (mailbox.py) can emit more than one MailboxSuggestion for
 // the same inbound email (e.g. a status_change alongside a feedback_clear whenever the job has a
 // feedback clock running), and MailboxSuggestion.message is a full nested copy per suggestion - so
