@@ -3,7 +3,7 @@ import {createPortal} from 'react-dom';
 import {Link,Navigate,Route,Routes,useBlocker,useLocation,useNavigate,useParams} from 'react-router-dom';
 import {api,authMe,cachedAuthUser,clearAuthCache,fileUrl} from './api/client';
 import {comboValid,modelEffort,modelSpeed,shortPath,stepText} from './cvModel';
-import {BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,mailboxActionableJobStatuses,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,nextSortKeys,orderingKeyLabels,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal,useMatchMedia} from './appUtils';
+import {BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,mailboxActionableJobStatuses,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,nextSortKeys,orderingKeyLabels,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal,useMatchMedia} from './appUtils';
 import type {Job,FollowUp,FeedbackDueRow,CandidateProfile,FunnelCounts,InviteCode,JobMailboxPayload,MailboxDraft,MailboxMessage,MailboxRun,MailboxSuggestion,PracticeSession,Stats} from './types';
 
 const empty={company:'',title:'',location:'',url:'',source:'manual',raw_description:'',salary_info:'',language_requirements:'',work_mode:'unknown'};
@@ -775,12 +775,22 @@ function MailboxReplyDialog({m,onClose}:{m:MailboxMessage;onClose:()=>void}){
     </div>
   </div>
 }
+// TASK-177: the default here is POSITIONAL and has always been - only the last message of a thread
+// (`position===total`) starts expanded, for BOTH sides of the exchange. It is not keyed on
+// `sent_by_owner`, which is used below only for alignment, bubble colour and the "You" label. The
+// owner's "3 of my 18 messages have a body" report is 3 threads whose newest message happens to be
+// theirs; a received message in the same position collapses identically. So AC3 needs no
+// owner-specific branch - what was broken is that a collapsed row rendered NOTHING (AC1/AC2).
 function MailboxConversationMessage({m,position,total}:{m:MailboxMessage;position:number;total:number}){const[expanded,setExpanded]=useState(position===total);const bodyId=`mailbox-msg-body-${m.id}`;const own=m.sent_by_owner;const bubbleTone=own?'bg-blue-600 text-white dark:bg-blue-500/80':'bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200';
   // TASK-135 AC1/AC5: a message can carry a calendar invitation and/or attachments with NO
   // text/plain body at all (the six measured ONTEC AG cases) - "(no body recorded)" is reserved
   // for a message that truly has nothing, never shown when there is an invitation or an attachment
   // manifest to render below it instead.
   const hasCalendarOrAttachments=!!(m.calendar_summary||m.calendar_start||(m.attachments&&m.attachments.length>0));
+  // TASK-177 AC2: what a COLLAPSED row shows where its bubble would be. Same three cases as the
+  // expanded bubble below, so a message with an invitation/attachment and no text still says so
+  // instead of collapsing to an empty row.
+  const collapsedPreview=messagePreviewLine(decodeHtmlEntities(m.body_text))||(hasCalendarOrAttachments?'No message text — invitation or attachment':'(no body recorded)');
   const parsedSender=own?null:parseSenderHeader(m.sender);
   const senderDisplay=own?'You':decodeHtmlEntities(parsedSender?.name||parsedSender?.address||m.sender||'Unknown sender');
   const senderTitle=own?undefined:(decodeHtmlEntities(m.sender||'')||undefined);
@@ -792,7 +802,7 @@ function MailboxConversationMessage({m,position,total}:{m:MailboxMessage;positio
   const receivedShort=m.received_at?new Date(m.received_at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'received date unknown';
   const receivedFull=m.received_at?new Date(m.received_at).toLocaleString():undefined;
   const gmailLabel=`Open this message in Gmail — ${receivedShort}`;
-  return <li className={'flex min-w-0 '+(own?'justify-end':'justify-start')}><div className={'flex max-w-[85%] min-w-0 flex-col gap-1 '+(own?'items-end':'items-start')}><div className={'flex min-w-0 max-w-full items-center gap-1 '+(own?'flex-row-reverse':'')}><button type="button" className={'flex min-h-[2.75rem] min-w-0 flex-1 items-center gap-1.5 rounded-full bg-transparent px-1 text-left text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 '+(own?'flex-row-reverse':'')} aria-expanded={expanded} aria-controls={bodyId} onClick={()=>setExpanded(x=>!x)}><Badge tone={avatarTone} aria-hidden="true">{avatarInitial}</Badge><span className="min-w-0 truncate" title={senderTitle}>{senderDisplay}</span><span aria-hidden="true">·</span><span className="shrink-0" title={receivedFull}>{receivedShort}</span><span aria-hidden="true">·</span><span className="shrink-0" title={`Message ${position} of ${total} this app has captured for this thread`}>{position}/{total}</span>{m.classification==='uncertain'&&<Badge tone="yellow">Uncertain</Badge>}<span aria-hidden="true" className="shrink-0">{expanded?'▾':'▸'}</span></button>{m.gmail_url&&<a href={m.gmail_url} target="_blank" rel="noreferrer" className="btn-muted inline-flex h-7 w-7 shrink-0 items-center justify-center p-0 text-xs" aria-label={gmailLabel} title={gmailLabel}>↗</a>}<MailboxReplyControl m={m} variant="icon"/></div>{expanded&&<div id={bodyId} className={'min-w-0 max-w-[min(96ch,100%)] whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-xs '+bubbleTone}>{m.body_text?decodeHtmlEntities(m.body_text):hasCalendarOrAttachments?<span className="italic opacity-70">No message text - see below.</span>:<span className="italic opacity-70">(no body recorded)</span>}</div>}{expanded&&<MailboxCalendarInvite m={m}/>}{expanded&&<MailboxAttachmentList m={m}/>}</div></li>}
+  return <li className={'flex min-w-0 '+(own?'justify-end':'justify-start')}><div className={'flex max-w-[85%] min-w-0 flex-col gap-1 '+(own?'items-end':'items-start')}><div className={'flex min-w-0 max-w-full items-center gap-1 '+(own?'flex-row-reverse':'')}><button type="button" className={'flex min-h-[2.75rem] min-w-0 flex-1 items-center gap-1.5 rounded-full bg-transparent px-1 text-left text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 '+(own?'flex-row-reverse':'')} aria-expanded={expanded} aria-controls={bodyId} onClick={()=>setExpanded(x=>!x)}><Badge tone={avatarTone} aria-hidden="true">{avatarInitial}</Badge><span className="min-w-0 truncate" title={senderTitle}>{senderDisplay}</span><span aria-hidden="true">·</span><span className="shrink-0" title={receivedFull}>{receivedShort}</span><span aria-hidden="true">·</span><span className="shrink-0" title={`Message ${position} of ${total} this app has captured for this thread`}>{position}/{total}</span>{m.classification==='uncertain'&&<Badge tone="yellow">Uncertain</Badge>}<span aria-hidden="true" className="shrink-0 font-semibold text-slate-500 dark:text-slate-400">{expanded?'Hide ▾':'Show ▸'}</span></button>{m.gmail_url&&<a href={m.gmail_url} target="_blank" rel="noreferrer" className="btn-muted inline-flex h-7 w-7 shrink-0 items-center justify-center p-0 text-xs" aria-label={gmailLabel} title={gmailLabel}>↗</a>}<MailboxReplyControl m={m} variant="icon"/></div>{!expanded&&<div id={bodyId} className={'min-w-0 max-w-[min(96ch,100%)] truncate rounded-2xl px-3 py-1 text-xs '+bubbleTone} title={collapsedPreview}>{collapsedPreview}</div>}{expanded&&<div id={bodyId} className={'min-w-0 max-w-[min(96ch,100%)] whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-xs '+bubbleTone}>{m.body_text?decodeHtmlEntities(m.body_text):hasCalendarOrAttachments?<span className="italic opacity-70">No message text - see below.</span>:<span className="italic opacity-70">(no body recorded)</span>}</div>}{expanded&&<MailboxCalendarInvite m={m}/>}{expanded&&<MailboxAttachmentList m={m}/>}</div></li>}
 // TASK-134 AC8/AC10: a job can hold more than one Gmail thread - the zooplus job has two ("Feedback
 // on your application…" and "Your follow-up interview…") - so grouping "Full conversation" by job
 // alone showed one combined stream with the subject repeated on every one of its seven rows, which
@@ -801,7 +811,7 @@ function MailboxConversationMessage({m,position,total}:{m:MailboxMessage;positio
 // merge two DIFFERENT threads that share a company's boilerplate subject line - a worse lie than the
 // one being fixed here. A message with no thread_id (pre-backfill edge case) becomes its own
 // singleton thread rather than being merged with every other blank-thread_id message under one key.
-function MailboxThreadGroup({messages}:{messages:MailboxMessage[]}){
+export function MailboxThreadGroup({messages}:{messages:MailboxMessage[]}){
   // AC9/AC14: chronologicalMessages (appUtils, pure/tested) turns this thread's own slice of the
   // job's newest-first array into oldest-top/newest-bottom for display - see that function's own
   // comment for why a message with no received_at must not become the top of the list. index 0 after

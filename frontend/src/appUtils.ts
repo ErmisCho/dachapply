@@ -181,6 +181,19 @@ export function parseSenderHeader(raw:string|null|undefined):ParsedSender{
   return {name,address}
 }
 
+// TASK-177 AC1/AC2. A collapsed conversation message used to render its header row and literally
+// nothing else (body bubble, calendar invite and attachment list were all gated behind `expanded`),
+// so 14 of a 15-row thread read as empty rows and the owner reported the messages as missing. The
+// collapsed row now renders this one-line snippet where its bubble would be. Whitespace is squeezed
+// to single spaces first because a mail body's first line is often blank or a lone greeting - taking
+// `slice(0,max)` off the raw text would show an empty preview and look exactly like the bug being
+// fixed. The cap is on CHARACTERS, not on CSS ellipsis alone, so the preview is bounded in the DOM
+// too (a screen reader reads a snippet, not the whole 909-character body of a collapsed message).
+export function messagePreviewLine(text:string|null|undefined,max=140):string{
+  const line=String(text||'').replace(/\s+/g,' ').trim()
+  return line.length>max?line.slice(0,max).trimEnd()+'…':line
+}
+
 // TASK-133 AC3. The reply/reply-all compose dialog (App.tsx) edits To/Cc as one comma-separated
 // text input per field rather than a token-per-address widget - no new dependency, and it keeps
 // AC3's "shown verbatim" literal: whatever text sits in the box IS what gets parsed and POSTed to

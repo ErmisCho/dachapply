@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -657,5 +657,28 @@ describe('isDesktopWidth (TASK-147)',()=>{
 
   it('ships the same 1024px breakpoint the CSS lg: prefix uses', ()=>{
     expect(BOARD_DESKTOP_QUERY).toBe('(min-width: 1024px)')
+  })
+})
+
+// TASK-177: the one-line snippet a COLLAPSED conversation message shows where its bubble would be.
+describe('messagePreviewLine',()=>{
+  it('squeezes the blank first line and the newlines a mail body is full of',()=>{
+    expect(messagePreviewLine('\n\nSehr geehrte Damen und Herren,\n\nvielen Dank.')).toBe('Sehr geehrte Damen und Herren, vielen Dank.')
+  })
+
+  it('caps a long body and marks that it was cut',()=>{
+    const out=messagePreviewLine('x'.repeat(909))
+    expect(out.length).toBe(141)
+    expect(out.endsWith('…')).toBe(true)
+  })
+
+  it('leaves a short body alone, with no ellipsis to decode',()=>{
+    expect(messagePreviewLine('Danke, bis Montag.')).toBe('Danke, bis Montag.')
+  })
+
+  it('returns an empty string for a message with no text, so the caller can fall back',()=>{
+    expect(messagePreviewLine('')).toBe('')
+    expect(messagePreviewLine(null)).toBe('')
+    expect(messagePreviewLine('   \n  ')).toBe('')
   })
 })
