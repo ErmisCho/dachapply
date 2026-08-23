@@ -276,6 +276,22 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
    returned a header sort BUTTON and clicks on the first job never reached it. Overlap equalled the
    offset at every scroll position, so raising it to the nav's real 37px height would have made the
    bug worse, not better. 0 is the only value that costs nothing here. */
+/* TASK-167 (investigated, not fixed -- filed as optional polish, and stays that way). Genuinely
+   sticking this header to the viewport means removing every ancestor between thead and <body> whose
+   overflow computes to non-`visible` on either axis, because CSS treats ANY such ancestor as a
+   scroll container and resolves `sticky` against it -- even one that never actually scrolls
+   vertically itself (unbounded height, so its own scrollTop stays 0 while the page scrolls it,
+   which is exactly why sticky is inert today; see the TASK-165 comment above for the measurement).
+   The `.overflow-x-auto` wrapper (App.tsx, TASK-139) is that ancestor. Bounding its height and
+   giving it a real `overflow-y:auto` so it becomes an actual scrolling box would make sticky work,
+   but that box also contains the row-level popup (App.tsx, `feedbackEditor===j.id`, rendered twice --
+   once for the desktop row, once for the mobile card -- as `position:absolute` with
+   `max-h-[calc(100vh-7rem)]`, sized against the viewport, not against this wrapper, and not a
+   portal). Bounding the wrapper's height would clip that popup, which is the exact TASK-139/AC4
+   regression this rule is not allowed to reintroduce. Removing the wrapper's horizontal scroll
+   instead reopens TASK-139 the other way (table scrolls the page). Both routes trade one measured
+   bug for another; a portal for the popup would sidestep it but is a larger, separately-verified
+   change than "optional polish" covers. Left as `top:0`, inert. */
 .job-table{min-width:980px;table-layout:fixed}
 .job-table thead th{position:sticky;top:0;z-index:12;background:rgba(248,250,252,.96);backdrop-filter:blur(12px);box-shadow:0 1px 0 rgba(203,213,225,.9)}
 .dark .job-table thead th{background:rgba(5,7,13,.96)!important;box-shadow:0 1px 0 rgba(255,255,255,.08)}

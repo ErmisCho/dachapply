@@ -17,12 +17,14 @@ def _console_safe(text: str) -> str:
 
 class Command(BaseCommand):
     help = (
-        'TASK-162 AC6: re-run the false-positive guard (services.mailbox._guard_status_changing -- '
-        'Rule A, platform senders; Rule B, no application-context evidence) over MailboxMessage rows '
-        'already classified rejection/interview_invitation/offer/application_confirmed before this '
-        'shipped. Only demotes what the new rules no longer allow; a confirmed decision is never '
-        'touched, and a still-pending suggestion generated from a demoted row is dismissed with it. '
-        'Dry run by default; --yes actually writes.'
+        'TASK-162 AC6 / TASK-168 AC6: re-run classification over MailboxMessage rows already stored '
+        'as rejection/interview_invitation/offer/application_confirmed. A heuristic-evaluated row is '
+        're-run through the full classifier (TASK-168: may change which of the four it lands in, not '
+        'just whether one is allowed at all); an LLM-evaluated row only has the false-positive guard '
+        '(services.mailbox._guard_status_changing -- Rule A, platform senders; Rule B, no '
+        'application-context evidence) re-applied. A confirmed decision is never touched, and a still-'
+        'pending suggestion generated from a changed row is dismissed with it. Dry run by default; '
+        '--yes actually writes.'
     )
 
     def add_arguments(self, parser):

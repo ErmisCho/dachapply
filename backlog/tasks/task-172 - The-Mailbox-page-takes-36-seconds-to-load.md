@@ -1,7 +1,7 @@
 ---
 id: TASK-172
 title: The Mailbox page takes 36 seconds to load
-status: To Do
+status: Done
 assignee: []
 labels:
   - backend
@@ -46,19 +46,48 @@ exists and is simply not used by this serializer.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `/api/mailbox-runs/` responds in under 2 seconds against the production database — stated as a measured number, before and after
-- [ ] #2 The response no longer carries full `body_text`: measured payload size is reported before and after, and no query in the request selects the unbounded column
-- [ ] #3 The per-run digest still shows what it showed before — the same messages, in the same order, with enough text to be useful; a preview is acceptable, silently dropping messages is not
-- [ ] #4 No N+1: the endpoint's query count does not scale with the number of runs or the number of messages per run, verified by counting queries rather than by reading the code
-- [ ] #5 The reuse is explicit: `MailboxMessageListSerializer` (or a stated reason it cannot serve this case) rather than a second bounded-preview implementation
-- [ ] #6 If the full body is genuinely needed for a run's digest, it is fetched on demand via TASK-142's existing `retrieve` action rather than shipped with the list
-- [ ] #7 Verified in the owner's browser at `localhost:8000/mailbox`: the page renders its content without a visible "Loading..." stall, stated as a measured time
-- [ ] #8 Backend suite green; frontend typecheck and tests green
+- [x] #1 `/api/mailbox-runs/` responds in under 2 seconds against the production database — stated as a measured number, before and after
+- [x] #2 The response no longer carries full `body_text`: measured payload size is reported before and after, and no query in the request selects the unbounded column
+- [x] #3 The per-run digest still shows what it showed before — the same messages, in the same order, with enough text to be useful; a preview is acceptable, silently dropping messages is not
+- [x] #4 No N+1: the endpoint's query count does not scale with the number of runs or the number of messages per run, verified by counting queries rather than by reading the code
+- [x] #5 The reuse is explicit: `MailboxMessageListSerializer` (or a stated reason it cannot serve this case) rather than a second bounded-preview implementation
+- [x] #6 If the full body is genuinely needed for a run's digest, it is fetched on demand via TASK-142's existing `retrieve` action rather than shipped with the list
+- [x] #7 Verified in the owner's browser at `localhost:8000/mailbox`: the page renders its content without a visible "Loading..." stall, stated as a measured time
+- [x] #8 Backend suite green; frontend typecheck and tests green
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+### 2026-08-23 close-out - 35.83 s -> 0.76 s, measured against production
+
+    metric                          before        after
+    wall clock                     35.83 s       0.76 s      (47x)
+    payload                     1,271,114 B    686,655 B
+    queries                              -           10, flat
+    queries selecting full body_text     -            0
+
+All 13 runs still return their digests, and every run's message ids match the database's own
+`-uid` order exactly (checked run by run, 472 digest messages total). Bodies are bounded to the
+301-char preview with `body_truncated` set. Nothing was dropped to buy the speed.
+
+The fix reuses TASK-142's machinery rather than a second implementation: a `_digest_queryset()`
+helper carrying the `Substr` preview + `.defer('body_text')` + `select_related`, consumed by a new
+`MailboxRunListSerializer` that batches EVERY run's digest into ONE query (`run_id__in=[...]`) and
+groups in Python, instead of one query per run. `select_related('matched_job')` is the one addition
+beyond `/unmatched/`'s shape -- that endpoint can skip it because it filters `matched_job__isnull=True`,
+while a run's digest carries real matched jobs routinely.
+
+**A second defect was found while verifying, and is worth recording.** `MailboxRunViewSet.get_queryset()`
+still chains `.prefetch_related('messages__matched_job','messages__draft')`, written for the old
+`get_digest_messages`. It never worked even then -- a filtered `.exclude().order_by()` on a related
+manager bypasses Django's prefetch cache entirely -- but it fires unconditionally the moment the run
+queryset is evaluated and pulls every stored message's full `body_text` into the app server. The list
+path now neutralises it with Django's own `prefetch_related(None)` reset. The DETAIL action
+(`GET /api/mailbox-runs/<id>/`) still pays for it, because it fires inside `get_object()` before any
+serializer runs. That is a one-line removal in `views.py`, left out of this change only because
+`views.py` belonged to another agent's territory this wave.
+
 Read TASK-142's comment block above the `unmatched` queryset in `views.py` before starting. It records
 two rounds of measurement: truncating inside `to_representation()` was NOT enough, because Django had
 already pulled every row's full `body_text` off the wire before that Python code ran — the truncation

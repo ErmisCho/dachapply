@@ -677,13 +677,22 @@ return <div className="mailbox-selectable min-w-0 rounded-xl border border-slate
 // pixel width, which is what blew `document.body.scrollWidth` past the viewport - `break-words` alone
 // would have hidden that without fixing it, since the container could still grow, it would just have
 // less reason to.
-// The bubble's own cap is `max-w-[min(65ch,100%)]`, not a flat `max-w-prose`: the column above it
+// The bubble's own cap is `max-w-[min(96ch,100%)]`, not a flat `max-w-prose`: the column above it
 // (`max-w-[85%]`) is itself a non-stretched (`items-start`) flex child sized by content, so its own
 // max-width is a constraint on ITS box, not a clip on an unstretched grandchild's fit-content sizing -
-// measured on a real narrow viewport (360px), a flat 65ch cap rendered a 420px bubble inside a 314px
-// panel because nothing tied the bubble's own width back to its actual container. `min(65ch,100%)` is
-// one `max-width` declaration doing both jobs at once: never wider than 65ch (the readable-measure
-// cap, AC5), and never wider than 100% of its own containing block either (the same pattern as
+// measured on a real narrow viewport (360px), a flat character cap rendered a 420px bubble inside a
+// 314px panel because nothing tied the bubble's own width back to its actual container.
+// `min(96ch,100%)` is one `max-width` declaration doing both jobs at once: never wider than 96ch, and
+// never wider than 100% of its own containing block either (the same pattern as
+//
+// TASK-176 (2026-08-23): the character cap was 65ch, the classic readable-measure rule. It was WRONG
+// for this content and the owner saw it as dead white space. Bodies render `whitespace-pre-wrap`, so
+// the sender's own hard line breaks survive - and measured over 4,904 non-trivial lines from 400
+// stored messages, 47% are longer than 65 characters (median 61, p75 96, p90 201). Nearly half the
+// mail was therefore wrapped a SECOND time by this cap, breaking lines mid-clause. 96ch is the
+// measured p75: above three quarters of real line lengths, still below the genuinely unwrapped
+// paragraph tail, which should keep wrapping. The readable-measure rule protects prose the browser
+// may re-flow; it does not apply to text the sender already wrapped.
 // `max-w-full`, already used two lines below on the header row) - `100%` resolves reliably here
 // because it is the only `max-width` on this box, not layered against a separate `max-w-prose`
 // utility competing for the same CSS property.
@@ -783,7 +792,7 @@ function MailboxConversationMessage({m,position,total}:{m:MailboxMessage;positio
   const receivedShort=m.received_at?new Date(m.received_at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'received date unknown';
   const receivedFull=m.received_at?new Date(m.received_at).toLocaleString():undefined;
   const gmailLabel=`Open this message in Gmail — ${receivedShort}`;
-  return <li className={'flex min-w-0 '+(own?'justify-end':'justify-start')}><div className={'flex max-w-[85%] min-w-0 flex-col gap-1 '+(own?'items-end':'items-start')}><div className={'flex min-w-0 max-w-full items-center gap-1 '+(own?'flex-row-reverse':'')}><button type="button" className={'flex min-h-[2.75rem] min-w-0 flex-1 items-center gap-1.5 rounded-full bg-transparent px-1 text-left text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 '+(own?'flex-row-reverse':'')} aria-expanded={expanded} aria-controls={bodyId} onClick={()=>setExpanded(x=>!x)}><Badge tone={avatarTone} aria-hidden="true">{avatarInitial}</Badge><span className="min-w-0 truncate" title={senderTitle}>{senderDisplay}</span><span aria-hidden="true">·</span><span className="shrink-0" title={receivedFull}>{receivedShort}</span><span aria-hidden="true">·</span><span className="shrink-0" title={`Message ${position} of ${total} this app has captured for this thread`}>{position}/{total}</span>{m.classification==='uncertain'&&<Badge tone="yellow">Uncertain</Badge>}<span aria-hidden="true" className="shrink-0">{expanded?'▾':'▸'}</span></button>{m.gmail_url&&<a href={m.gmail_url} target="_blank" rel="noreferrer" className="btn-muted inline-flex h-7 w-7 shrink-0 items-center justify-center p-0 text-xs" aria-label={gmailLabel} title={gmailLabel}>↗</a>}<MailboxReplyControl m={m} variant="icon"/></div>{expanded&&<div id={bodyId} className={'min-w-0 max-w-[min(65ch,100%)] whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-xs '+bubbleTone}>{m.body_text?decodeHtmlEntities(m.body_text):hasCalendarOrAttachments?<span className="italic opacity-70">No message text - see below.</span>:<span className="italic opacity-70">(no body recorded)</span>}</div>}{expanded&&<MailboxCalendarInvite m={m}/>}{expanded&&<MailboxAttachmentList m={m}/>}</div></li>}
+  return <li className={'flex min-w-0 '+(own?'justify-end':'justify-start')}><div className={'flex max-w-[85%] min-w-0 flex-col gap-1 '+(own?'items-end':'items-start')}><div className={'flex min-w-0 max-w-full items-center gap-1 '+(own?'flex-row-reverse':'')}><button type="button" className={'flex min-h-[2.75rem] min-w-0 flex-1 items-center gap-1.5 rounded-full bg-transparent px-1 text-left text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 '+(own?'flex-row-reverse':'')} aria-expanded={expanded} aria-controls={bodyId} onClick={()=>setExpanded(x=>!x)}><Badge tone={avatarTone} aria-hidden="true">{avatarInitial}</Badge><span className="min-w-0 truncate" title={senderTitle}>{senderDisplay}</span><span aria-hidden="true">·</span><span className="shrink-0" title={receivedFull}>{receivedShort}</span><span aria-hidden="true">·</span><span className="shrink-0" title={`Message ${position} of ${total} this app has captured for this thread`}>{position}/{total}</span>{m.classification==='uncertain'&&<Badge tone="yellow">Uncertain</Badge>}<span aria-hidden="true" className="shrink-0">{expanded?'▾':'▸'}</span></button>{m.gmail_url&&<a href={m.gmail_url} target="_blank" rel="noreferrer" className="btn-muted inline-flex h-7 w-7 shrink-0 items-center justify-center p-0 text-xs" aria-label={gmailLabel} title={gmailLabel}>↗</a>}<MailboxReplyControl m={m} variant="icon"/></div>{expanded&&<div id={bodyId} className={'min-w-0 max-w-[min(96ch,100%)] whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-xs '+bubbleTone}>{m.body_text?decodeHtmlEntities(m.body_text):hasCalendarOrAttachments?<span className="italic opacity-70">No message text - see below.</span>:<span className="italic opacity-70">(no body recorded)</span>}</div>}{expanded&&<MailboxCalendarInvite m={m}/>}{expanded&&<MailboxAttachmentList m={m}/>}</div></li>}
 // TASK-134 AC8/AC10: a job can hold more than one Gmail thread - the zooplus job has two ("Feedback
 // on your application…" and "Your follow-up interview…") - so grouping "Full conversation" by job
 // alone showed one combined stream with the subject repeated on every one of its seven rows, which

@@ -858,12 +858,37 @@ REJECTION_KEYWORDS = [
     'will not be moving forward', 'not moving forward with your application', 'decided not to proceed',
     'regret to inform', "you were not selected", 'other candidates whose', 'pursue other candidates',
     'leider', 'abgesagt', 'andere kandidat', 'entschieden, nicht fortzufahren',
+    # TASK-168 coordinator correction (measured against production, 7 join.com "Deine Bewerbung bei
+    # X" rejections, all this exact template): "...zum jetzigen Zeitpunkt nicht mit deiner Bewerbung
+    # fortfahren." -- a fully decisive refusal sentence that the original REJECTION_KEYWORDS entries
+    # miss on wording alone ('entschieden, nicht fortzufahren' requires "entschieden", not present
+    # here). Both the informal (deine) and formal (Ihre) address forms, since German business mail
+    # uses either depending on the employer's house style.
+    'nicht mit deiner bewerbung fortfahren', 'nicht mit ihrer bewerbung fortfahren',
+    # TASK-168 coordinator correction round 2 (TU Wien, 903 -- read further into the body on request):
+    # "Leider muessen wir Ihnen mitteilen, dass es die ..." -- as decisive as German rejection language
+    # gets, and missed by every existing entry (no 'entschieden'/'kandidat'/'fortfahren' anywhere in
+    # it). Both address forms, same reasoning as the join.com entry above.
+    'leider müssen wir ihnen mitteilen', 'leider müssen wir dir mitteilen',
 ]
 INTERVIEW_KEYWORDS = [
     'invite you to an interview', 'schedule a call', 'schedule an interview', 'would like to invite you',
     'phone screen', 'technical interview', 'book a time', 'available for a call',
     'vorstellungsgespräch', 'gespräch vereinbaren', 'zum gespräch einladen',
 ]
+# TASK-168 coordinator correction round 2 (Amazon 805, Allianz 877/918/930): a confirmation letter's
+# own FOOTER MARKETING -- "Ressourcen fuer Vorstellungsgespraeche", "Training fuer
+# Vorstellungsgespraeche ueber Alexa" -- was promoting the message to interview_invitation on the
+# strength of 'vorstellungsgespräch' alone. The coordinator's own linguistic read: both false positives
+# are PLURAL ("Vorstellungsgespräche") sitting in a noun phrase about interviews as a TOPIC
+# ("Ressourcen für", "Training für", "Vorbereitung auf"); a real invitation names ONE event, singular
+# ("Ihr Vorstellungsgespräch", "Einladung: Vorstellungsgespräch" -- 499, bmj.gv.at, which must keep
+# matching). A negative lookahead on the trailing 'e' is a one-line way to keep the singular/genitive
+# forms ("Vorstellungsgespräch", "...gesprächs") matching while excluding every plural inflection
+# ("...gespräche", "...gesprächen") -- chosen over a resource/training/preparation vocabulary-window
+# heuristic (the coordinator's alternative (b)) because it is a single, exact rule fully explained by
+# both measured false positives, not a fuzzy nearby-word scan for a case neither example needed.
+_VORSTELLUNGSGESPRAECH_SINGULAR_RE = re.compile(r'vorstellungsgespräch(?!e)')
 RECRUITER_KEYWORDS = [
     'thank you for your application', 'application received', 'application update', 'reviewing your application',
     'bewerbung erhalten', 'bewerbungsstatus', 'ihre bewerbung',
@@ -883,6 +908,11 @@ APPLICATION_CONFIRMATION_KEYWORDS = [
     'application submitted successfully', 'vielen dank für deine bewerbung',
     'vielen dank für ihre bewerbung', 'ihre bewerbung ist bei uns eingegangen',
     'wir haben deine bewerbung erhalten', 'bewerbung ist eingegangen',
+    # TASK-168 coordinator correction: the Allianz production wording puts the verb at the END of the
+    # clause ("...dass Ihre Bewerbung bei uns eingegangen IST"), German subordinate-clause word order
+    # -- 'ihre bewerbung ist bei uns eingegangen' above (verb in the middle, main-clause order) does
+    # not match it. This entry drops the verb entirely, so it matches both word orders.
+    'bewerbung bei uns eingegangen',
 ]
 
 # TASK-162 AC5 (Rule B): refusal WORDING alone is not evidence a message is about an application at
@@ -914,6 +944,83 @@ APPLICATION_CONTEXT_KEYWORDS = [
     'bewerbung', 'beworben', 'bewerber', 'vorstellungsgespräch',
     'application', 'applied', 'candidate', 'position', 'vacancy', 'role',
 ]
+
+# TASK-168: job mail landing in the wrong job class -- not the TASK-162 problem (non-job mail
+# reaching a status-changing class at all), but genuine job mail landing in the WRONG one of the
+# four, because _classify_heuristic below used to let the FIRST keyword hit win in a fixed
+# offer/rejection/interview/confirmed order. A confirmation whose ATS boilerplate happens to also say
+# "unfortunately we cannot reply to every applicant individually" was reaching REJECTION_KEYWORDS
+# before ever reaching its own, far more specific "thank you for applying" phrase; an interview
+# thread's reply saying "leider passt der Termin nicht, wie waer's Freitag" (a RESCHEDULE, not a
+# refusal) was reaching REJECTION_KEYWORDS before its own subject's "Vorstellungsgespraech" ever got
+# a look-in.
+#
+# The fix is NOT reordering (that only moves the failure -- see the two entries' own module docstring
+# above this one, and _guard_status_changing's Rule B, which already treats 'leider'/'unfortunately'
+# as uniquely generic: "common everywhere", unlike a genuine interview/rejection/confirmation phrase).
+# It is weighing SPECIFICITY: these two words are the ONLY entries in REJECTION_KEYWORDS that are a
+# single, everyday dictionary word carrying no job-specific meaning of its own -- every other entry is
+# already a multi-word decision phrase ('we have decided to move forward with other candidates',
+# 'regret to inform', 'entschieden, nicht fortzufahren') or a German term specific to being turned down
+# ('abgesagt', 'andere kandidat'). The INTERVIEW_KEYWORDS counterpart is the three phrases that never
+# say "interview" (or a German equivalent) at all and could describe literally any kind of call --
+# 'schedule an interview'/'invite you to an interview'/'phone screen'/'technical interview'/
+# 'vorstellungsgespräch'/... all name the interview explicitly and stay fully specific.
+#
+# _classify_heuristic treats a hit on one of these WEAK terms as evidence that loses to a hit from a
+# DIFFERENT, more specific category (application_confirmed, interview_invitation, or an explicit
+# recruiter-update phrase) appearing anywhere in the same message, and wins only when nothing more
+# specific competes -- so a genuine rejection expressed ONLY as "Leider ... Bewerbung ablehnen" (still
+# carries the application-context term) is unaffected, and so is a genuine rejection that ALSO thanks
+# the applicant for applying (both signals are then equally strong, and the original fixed
+# offer/rejection/interview/confirmed order is still what breaks that tie -- see
+# test_classify_email_genuine_rejection_also_thanking_for_applying_still_classifies).
+#
+# Coordinator correction, measured against production (17-row dry run, 11 wrong): the first version of
+# this WEAK/STRONG split demoted 7 genuine join.com rejections to application_confirmed, because their
+# whole refusal sentence -- "...zum jetzigen Zeitpunkt nicht mit deiner Bewerbung fortfahren." -- is
+# carried entirely by the bare word 'leider' plus ordinary surrounding prose, with no OTHER
+# REJECTION_KEYWORDS entry matching it, while the same message's polite "Vielen Dank für deine
+# Bewerbung" opening is an exact, STRONG APPLICATION_CONFIRMATION_KEYWORDS hit. Demoting 'leider' to
+# WEAK there let the opening pleasantry outrank the actual refusal -- precisely the trap this task's
+# own notes named ("a genuine rejection that politely thanks the applicant for applying -- which is
+# most of them"), just reached through scoring instead of check order. The fix is NOT to make 'leider'
+# broadly strong (that reopens the reverse trap -- see bmj.gv.at below, where a genuine reschedule
+# remark, "Leider passt der Termin nicht", must stay weak so the message's own interview signal wins):
+# it is giving the DECISIVE part of the join.com sentence its own, specific REJECTION_KEYWORDS entry
+# (see 'nicht mit deiner/ihrer bewerbung fortfahren' above) so THAT phrase, not the bare 'leider', is
+# what makes the message a STRONG rejection candidate.
+WEAK_REJECTION_KEYWORDS = frozenset({'unfortunately', 'leider'})
+# 'gespräch vereinbaren' moved here from the always-strong tier, same production measurement: an
+# Amazon and an Allianz confirmation (four rows total) were promoted to interview_invitation because
+# their body describes a CONDITIONAL, FUTURE contact ("if you're shortlisted, we can arrange a
+# conversation") using this exact phrase, not a concrete proposal. "vereinbaren" (arrange/schedule) is
+# administrative and tense-neutral the same way 'schedule a call'/'book a time'/'available for a call'
+# already are -- unlike 'invite you to an interview'/'zum gespräch einladen' (an actual invitation
+# verb) or 'vorstellungsgespräch' (names the interview format outright), which stay always-strong.
+WEAK_INTERVIEW_KEYWORDS = frozenset({'schedule a call', 'book a time', 'available for a call', 'gespräch vereinbaren'})
+# A WEAK interview hit is promoted back to STRONG when the message also names a concrete clock time
+# (northscope's real example: "Are you available for a call tomorrow at 16:30?") -- exactly the
+# "concrete proposal" the coordinator's fix asks for. Deliberately narrow (a bare HH:MM pattern only,
+# not "a request for availability" or "a booking link" in general -- both named in the same fix but
+# neither measured against a concrete production example): the two false positives measured (Amazon,
+# Allianz) both describe FUTURE contact with no time mentioned at all, so this one signal already
+# separates every case seen so far. ponytail: narrower than the full stated rule; widen (e.g. a
+# standalone date, a "book here" link) only against another measured example, not speculatively.
+_CONCRETE_TIME_RE = re.compile(r'\d{1,2}:\d{2}')
+# The RECRUITER_KEYWORDS counterpart, used only by _classify_heuristic's 'recruiter_fallback'
+# candidate (see there): 'ihre bewerbung' is bare German for "your application" -- structurally no
+# more informative than the APPLICATION_CONTEXT_KEYWORDS term it contains, and it sits right next to
+# ordinary German rejection wording ("...Ihre Bewerbung ablehnen...") often enough that scoring it as
+# a decisive non-rejection signal is wrong, not just weak.
+WEAK_RECRUITER_KEYWORDS = frozenset({'ihre bewerbung'})
+
+# Fixed tie-break order for two candidates of EQUAL strength (both strong, or both weak-only) --
+# unchanged from the pre-TASK-168 check order for offer/rejection/interview/confirmed, and only ever
+# consulted as a last resort now that strength decides first. 'recruiter_fallback' is not a real
+# MailboxMessage classification -- see _classify_heuristic, which resolves it to recruiter_reply/
+# uncertain exactly the way the pre-TASK-168 bottom-of-chain fallback already did.
+_HEURISTIC_PRIORITY = ('offer', 'rejection', 'interview_invitation', 'application_confirmed', 'recruiter_fallback')
 
 _DATE_TIME_PATTERNS = [
     # 2026-03-03 14:00 or 2026-03-03T14:00
@@ -1098,20 +1205,80 @@ def _guard_status_changing(classification, interview_at, subject, body_text, dom
     return 'not_job_related', None
 
 
+def _interview_strong_hit(lower: str) -> bool:
+    """STRONG INTERVIEW_KEYWORDS hit (minus WEAK_INTERVIEW_KEYWORDS), with 'vorstellungsgespräch'
+    checked via _VORSTELLUNGSGESPRAECH_SINGULAR_RE instead of a plain substring -- see that regex's
+    own comment: a plural 'Vorstellungsgespräche' sitting in interview-prep marketing copy ('Ressourcen
+    für Vorstellungsgespräche') is not an invitation, while the singular/genitive event reference
+    ('Einladung: Vorstellungsgespräch') still is.
+    """
+    other_strong = set(INTERVIEW_KEYWORDS) - WEAK_INTERVIEW_KEYWORDS - {'vorstellungsgespräch'}
+    return _hit(lower, other_strong) or bool(_VORSTELLUNGSGESPRAECH_SINGULAR_RE.search(lower))
+
+
 def _classify_heuristic(subject, body_text, domain_known, sender_domain=''):
+    """TASK-168: evidence over order. Every category that hits at all becomes a candidate, scored
+    STRONG (a decision/interview-specific phrase) or WEAK (one of the two generic rejection words, or
+    one of the three generic interview phrases -- see WEAK_REJECTION_KEYWORDS/WEAK_INTERVIEW_KEYWORDS
+    above for why only those). The strongest candidate wins; among equally-strong candidates, the
+    pre-TASK-168 fixed order (_HEURISTIC_PRIORITY) still breaks the tie -- so a genuine rejection that
+    also happens to thank the applicant for applying (both STRONG) is still a rejection, exactly as
+    before, and only a WEAK rejection/interview hit ever loses to a more specific category elsewhere
+    in the same message.
+
+    A WEAK rejection hit is additionally gated the same way _guard_status_changing's own Rule B
+    already gates rejection generally (domain_known, or an APPLICATION_CONTEXT_KEYWORDS term) --
+    evaluated here, before the specificity contest, so a bare 'leider'/'unfortunately' with NO
+    application evidence anywhere in the message never even becomes a candidate, rather than winning
+    by default because nothing else happened to compete with it. It stays WEAK even when gated in
+    (never promoted to STRONG) -- production measurement showed a genuine rejection's actual DECISIVE
+    sentence is virtually never the bare word 'leider' alone; it is a fuller phrase ('nicht mit
+    deiner/ihrer Bewerbung fortfahren', 'entschieden, nicht fortzufahren', ...) that earns its own
+    REJECTION_KEYWORDS entry and so is already STRONG on its own merits. A weak interview hit is
+    promoted to STRONG when the message names a concrete clock time (WEAK_INTERVIEW_KEYWORDS'/
+    _CONCRETE_TIME_RE's own comments), because a scheduling phrase with a specific time IS the concrete
+    proposal, unlike rejection where no comparable time-based signal distinguishes a real decision from
+    an incidental "leider" (a rejection thread and an interview thread can both mention a time).
+
+    'recruiter_fallback' folds the old bottom-of-chain `_hit(RECRUITER_KEYWORDS)` check into the same
+    scoring pass, rather than leaving it as a check that always lost to a weak rejection/interview hit
+    purely because it ran last -- an explicit recruiter-update phrase ('reviewing your application')
+    is itself a specific signal that a bare 'leider'/'schedule a call' should not out-rank. Scored off
+    RECRUITER_KEYWORDS minus 'ihre bewerbung' -- that one entry is just German for "your application",
+    no more informative than the bare APPLICATION_CONTEXT_KEYWORDS term it contains, so it is left out
+    of this contest the same way REJECTION_KEYWORDS' own two bare words are (measured: including it
+    flipped a genuine "Leider muessen wir Ihre Bewerbung ablehnen" rejection to 'uncertain', since
+    "Ihre Bewerbung" sits right next to the rejection wording in ordinary German phrasing).
+    """
     lower = f'{subject}\n{body_text}'.lower()
+    candidates = []  # (classification, is_strong)
     if _hit(lower, OFFER_KEYWORDS):
-        classification, interview_at = 'offer', None
-    elif _hit(lower, REJECTION_KEYWORDS):
-        classification, interview_at = 'rejection', None
-    elif _hit(lower, INTERVIEW_KEYWORDS):
-        classification, interview_at = 'interview_invitation', _extract_datetime(f'{subject}\n{body_text}')
-    # TASK-136 AC5: checked BEFORE the domain_known fallback below, and independently of it -- an
-    # explicit "thank you for applying" phrase is as strong and domain-independent a signal as
-    # rejection/offer/interview above, and this is exactly the message that most often arrives from a
-    # domain the app has never seen before (the FIRST message of a brand-new application).
-    elif _hit(lower, APPLICATION_CONFIRMATION_KEYWORDS):
-        classification, interview_at = 'application_confirmed', None
+        candidates.append(('offer', True))
+    rejection_strong = _hit(lower, set(REJECTION_KEYWORDS) - WEAK_REJECTION_KEYWORDS)
+    if rejection_strong:
+        candidates.append(('rejection', True))
+    elif _hit(lower, WEAK_REJECTION_KEYWORDS) and (domain_known or _hit(lower, APPLICATION_CONTEXT_KEYWORDS)):
+        candidates.append(('rejection', False))
+    if _interview_strong_hit(lower):
+        candidates.append(('interview_invitation', True))
+    elif _hit(lower, WEAK_INTERVIEW_KEYWORDS):
+        # A weak "let's arrange something" phrase is only as strong as the concrete time it comes
+        # with -- see _CONCRETE_TIME_RE's own comment for the measured Amazon/Allianz/northscope cases.
+        candidates.append(('interview_invitation', bool(_CONCRETE_TIME_RE.search(lower))))
+    # TASK-136 AC5: an explicit "thank you for applying" phrase is as strong and domain-independent a
+    # signal as rejection/offer/interview -- this is exactly the message that most often arrives from
+    # a domain the app has never seen before (the FIRST message of a brand-new application).
+    if _hit(lower, APPLICATION_CONFIRMATION_KEYWORDS):
+        candidates.append(('application_confirmed', True))
+    if _hit(lower, set(RECRUITER_KEYWORDS) - WEAK_RECRUITER_KEYWORDS):
+        candidates.append(('recruiter_fallback', True))
+
+    if candidates:
+        candidates.sort(key=lambda c: (not c[1], _HEURISTIC_PRIORITY.index(c[0])))
+        classification = candidates[0][0]
+        if classification == 'recruiter_fallback':
+            classification = 'recruiter_reply' if domain_known else 'uncertain'
+        interview_at = _extract_datetime(f'{subject}\n{body_text}') if classification == 'interview_invitation' else None
     elif _hit(lower, RECRUITER_KEYWORDS) or domain_known:
         classification, interview_at = ('recruiter_reply' if domain_known else 'uncertain'), None
     else:
@@ -2020,26 +2187,36 @@ def reclassify_messages(dry_run: bool = True, limit: int | None = None) -> list[
     asking about, and it reflects anything that has changed the match since ingestion (a manual
     attach, an ATS display-name rematch), not a stale value from the original run.
 
+    TASK-168 AC6: a heuristic-evaluated row (evaluator == 'heuristic') is now re-run through the
+    FULL _classify_heuristic() -- not just the guard -- because TASK-168's fix lives in candidate
+    SELECTION (which of rejection/interview_invitation/application_confirmed/offer wins), not in
+    whether any of the four is allowed at all. The guard alone cannot correct a message that was
+    genuinely job-related and legitimately allowed through, but landed in the WRONG one of the four
+    (the exact defect TASK-168 exists for -- a confirmation stored as rejection is not "blocked", it
+    is simply the wrong status-changing class, and only _classify_heuristic's own specificity contest
+    can pick the right one).
+
     Deliberately does NOT re-run the local-LLM path for rows an LLM originally classified (evaluator
     != 'heuristic') -- an LLM's semantic judgement is not something a keyword re-check should try to
     reproduce from scratch, would require a live, possibly-different LLM configuration to even run,
-    and is out of what this guard is for. It only demotes a classification the new rules no longer
-    allow, the same demotion classify_email() itself would now apply going forward, whichever engine
-    originally produced it.
+    and is out of what this guard is for. Those rows still only get the guard re-run (TASK-162's
+    original behaviour, unchanged): it only demotes a classification the new rules no longer allow,
+    the same demotion classify_email() itself would now apply going forward.
 
-    Any PENDING MailboxSuggestion generated from a message this demotes is dismissed with it
+    Any PENDING MailboxSuggestion generated from a message this changes is dismissed with it
     (dismiss_suggestion() -- writes no ApplicationNote, see its docstring) -- the whole point of this
-    task is that a rejection/interview_invitation false positive is one click from corrupting a real
-    job's state, and leaving that click sitting there while only the underlying message's own label
-    changes underneath it would not close that risk. A `confirmed` suggestion is left exactly as
-    decided, the same one-directional safety rule detach_ats_host_messages() uses -- nothing about an
-    owner's own past decision is ever undone by a re-classification.
+    task is that a rejection/interview_invitation false positive (TASK-162) or a wrong-class one
+    (TASK-168) is one click from corrupting a real job's state, and leaving that click sitting there
+    while only the underlying message's own label changes underneath it would not close that risk. A
+    `confirmed` suggestion is left exactly as decided, the same one-directional safety rule
+    detach_ats_host_messages() uses -- nothing about an owner's own past decision is ever undone by a
+    re-classification.
 
     Returns one dict per row that WOULD change (or did, when not dry_run):
         {'message': MailboxMessage, 'from': str, 'to': str, 'dismissed_count': int}
     `[]` when nothing would change (also true on a second run -- the query only looks at rows still in
-    a status-changing class, and the guard is idempotent). dry_run=True (the default) reports without
-    writing anything.
+    a status-changing class, and both the guard and the heuristic are idempotent). dry_run=True (the
+    default) reports without writing anything.
     """
     candidates = MailboxMessage.objects.filter(classification__in=STATUS_CHANGING_CLASSIFICATIONS).exclude(sender='').order_by('uid')
     if limit is not None:
@@ -2050,9 +2227,14 @@ def reclassify_messages(dry_run: bool = True, limit: int | None = None) -> list[
         sender_domain = _sender_domain(message.sender)
         domain_known = message.matched_job_id is not None
         old_classification = message.classification
-        new_classification, _new_interview_at = _guard_status_changing(
-            old_classification, None, message.subject, message.body_text, domain_known, sender_domain,
-        )
+        if message.evaluator == 'heuristic':
+            new_classification, _new_interview_at = _classify_heuristic(
+                message.subject, message.body_text, domain_known, sender_domain,
+            )
+        else:
+            new_classification, _new_interview_at = _guard_status_changing(
+                old_classification, None, message.subject, message.body_text, domain_known, sender_domain,
+            )
         if new_classification == old_classification:
             continue
         pending = list(MailboxSuggestion.objects.filter(message=message, status='pending'))
