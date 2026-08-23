@@ -181,6 +181,19 @@ export function parseSenderHeader(raw:string|null|undefined):ParsedSender{
   return {name,address}
 }
 
+// TASK-177 AC1/AC2. A collapsed conversation message used to render its header row and literally
+// nothing else (body bubble, calendar invite and attachment list were all gated behind `expanded`),
+// so 14 of a 15-row thread read as empty rows and the owner reported the messages as missing. The
+// collapsed row now renders this one-line snippet where its bubble would be. Whitespace is squeezed
+// to single spaces first because a mail body's first line is often blank or a lone greeting - taking
+// `slice(0,max)` off the raw text would show an empty preview and look exactly like the bug being
+// fixed. The cap is on CHARACTERS, not on CSS ellipsis alone, so the preview is bounded in the DOM
+// too (a screen reader reads a snippet, not the whole 909-character body of a collapsed message).
+export function messagePreviewLine(text:string|null|undefined,max=140):string{
+  const line=String(text||'').replace(/\s+/g,' ').trim()
+  return line.length>max?line.slice(0,max).trimEnd()+'…':line
+}
+
 // TASK-133 AC3. The reply/reply-all compose dialog (App.tsx) edits To/Cc as one comma-separated
 // text input per field rather than a token-per-address widget - no new dependency, and it keeps
 // AC3's "shown verbatim" literal: whatever text sits in the box IS what gets parsed and POSTed to
@@ -276,6 +289,24 @@ export function initPanelOrder(saved:string[],allIds:string[]):string[]{
   const known=saved.filter(x=>allIds.includes(x))
   const unknown=allIds.filter(x=>!saved.includes(x))
   return [...unknown,...known]
+}
+
+// TASK-174 AC2/AC5. A panel that is hidden BY DEFAULT needs a distinction the board's storage does
+// not have: `dachapply_dashboard_panel_hidden` records only the hidden SET, so "the owner never
+// chose" and "the owner deliberately switched it on" are the same absence. Re-applying the default
+// on every load would therefore re-hide a panel the owner had just turned on; applying it never
+// would mean it is only off for someone whose localStorage is empty.
+// `seeded` is the second list that resolves it - the panel ids whose default has already been
+// applied once:
+//   id NOT in seeded -> never chose -> the default applies, and the id is recorded as seeded.
+//   id IN seeded     -> whatever `hidden` says is the owner's own decision -> left exactly alone.
+// So an existing owner who had hidden (or shown) any panel keeps that choice untouched, and a
+// brand-new account gets the default once. Pure: the caller does the two localStorage writes, and
+// only when `changed` - the point of the flag is that a load which decides nothing writes nothing.
+export function applyDefaultHiddenPanels(hidden:string[],seeded:string[],defaultHidden:string[]):{hidden:string[];seeded:string[];changed:boolean}{
+  const unseeded=defaultHidden.filter(id=>!seeded.includes(id))
+  if(!unseeded.length)return {hidden,seeded,changed:false}
+  return {hidden:[...new Set([...hidden,...unseeded])],seeded:[...seeded,...unseeded],changed:true}
 }
 
 // TASK-119 AC2/AC6/AC7. build_suggestions (mailbox.py) can emit more than one MailboxSuggestion for

@@ -9,7 +9,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.db import connection, transaction
-from django.db.models import Avg, Case, Count, Exists, F, IntegerField, OuterRef, Q, Value, When
+from django.db.models import Avg, Case, Count, Exists, F, IntegerField, Min, OuterRef, Q, Value, When
 from django.db.models.functions import Substr
 from django.http import HttpResponse
 from django.utils import timezone
@@ -1201,6 +1201,29 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         # is still .defer()'d, so touching it would silently trigger one reload query PER ROW, exactly
         # the regression TASK-142 removed for this endpoint.
         jobs = list(owned_jobs(request.user).exclude(company=''))
+        # TASK-170: the timing evidence that separates two tracked jobs at the SAME company -- job id
+        # -> the earliest date the owner's OWN mail on that job's thread was sent, which is what
+        # actually dates an application (sent_by_owner, stored since TASK-132; run_check only ever
+        # stores a sent message when its thread already belongs to a tracked job, so a row here is
+        # always the owner writing to that job's process). ONE bulk aggregate for the whole list, in
+        # the same style and for the same reason as `jobs` above -- per-row queries on this endpoint
+        # are the regression TASK-142 already paid to remove. `.order_by()` is load-bearing, not
+        # tidying: MailboxMessage.Meta.ordering ('-uid') would otherwise be added to the GROUP BY and
+        # return one row per message instead of one per job.
+        #
+        # `received_at >= matched_job.created_at` is what makes the evidence trustworthy rather than
+        # merely present, measured against production (coordinator, 2026-08-23): of the 11 jobs with
+        # sent mail, SIX had a first-sent date BEFORE the job existed at all, by 238 to 685 days (job
+        # 462 is the 685) -- old correspondence with that company swept onto the thread by matching,
+        # which as a process start date is not just wrong but wrong in the direction that loses,
+        # dragging a real 2026 process back into 2024 and handing the window rule a fabricated
+        # ordering. Bounding it costs 3 of the 11 (coverage 11 -> 8) and is a straight trade for the
+        # 6 corrupt ones; _process_started_at's three job-date sources more than cover the loss. Still
+        # ONE query -- an F() comparison is a JOIN in the same statement, not a second round trip.
+        first_sent_at = dict(MailboxMessage.objects
+                             .filter(sent_by_owner=True, matched_job__in=jobs, received_at__isnull=False,
+                                     received_at__gte=F('matched_job__created_at'))
+                             .values_list('matched_job').annotate(Min('received_at')).order_by())
         rows = list(qs)
         for row in rows:
             # TASK-169 AC6: the identification ATTEMPT is what the window bounds, not just what gets
@@ -1211,7 +1234,7 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
             if row.received_at is not None and row.received_at < cutoff:
                 row.suggested_job = None
             else:
-                row.suggested_job = suggest_job_for_message(row.subject, row.match_text, row.sender, jobs)
+                row.suggested_job = suggest_job_for_message(row.subject, row.match_text, row.sender, jobs, row.received_at, first_sent_at)
         # TASK-163 fix 3 (coordinator re-measurement, 2026-08-21): parking every suggestion-less row
         # hid 38 of TASK-161's 41 high-consequence rows -- rank 0 (rejection/interview_invitation) is
         # never age-filtered by the recency window above for exactly the same reason it must never be

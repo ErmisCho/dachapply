@@ -54,9 +54,9 @@ def applied_job(db, owner):
     return JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', status='applied', status_date=timezone.localdate(), created_by=owner)
 
 
-def _log_message(job, classification='uncertain', sender='hr@acme.test', subject='x', body_text='', message_id='', received_at=None):
+def _log_message(job, classification='uncertain', sender='hr@acme.test', subject='x', body_text='', message_id='', received_at=None, sent_by_owner=False):
     run = MailboxRun.objects.create()
-    return MailboxMessage.objects.create(run=run, uid=MailboxMessage.objects.count() + 1, sender=sender, subject=subject, body_text=body_text, classification=classification, matched_job=job, message_id=message_id, received_at=received_at)
+    return MailboxMessage.objects.create(run=run, uid=MailboxMessage.objects.count() + 1, sender=sender, subject=subject, body_text=body_text, classification=classification, matched_job=job, message_id=message_id, received_at=received_at, sent_by_owner=sent_by_owner)
 
 
 # --- AC2: per-job mailbox endpoint --------------------------------------------------------------
@@ -582,7 +582,212 @@ def test_unmatched_messages_suggestion_computation_adds_exactly_one_bulk_query(c
     message_queries = [q['sql'] for q in ctx.captured_queries if 'FROM "jobradar_mailboxmessage"' in q['sql']]
     # TASK-171: baseline moves from 2 to 3 -- rows + hidden_count (TASK-142/TASK-161) + dismissed_count
     # (TASK-171 AC3/AC4), the same bounded-not-per-row shape hidden_count already has.
-    assert len(message_queries) == 3
+    # TASK-170: 3 to 4 -- plus the owner's-sent-mail dates that separate two jobs at one company. ONE
+    # bulk aggregate for the whole list, exactly like the tracked-job fetch asserted above, which is
+    # why this number is a constant at all; test_unmatched_messages_query_count_does_not_scale_with_
+    # row_count below is what proves it stays flat as rows are added.
+    assert len(message_queries) == 4
+
+
+# --- TASK-170: two tracked jobs at the SAME company -----------------------------------------------
+#
+# The shape measured against production 2026-08-21 (task-170's Description): Formunauts id=292
+# archived 'Senior Front End Developer' created 2026-06-20 and id=535 interview 'Senior Back End
+# Developer Python' created 2026-07-09 -- two JobLead rows whose company tokenizes IDENTICALLY, so
+# the pre-TASK-170 candidate map (a dict keyed on the token set, filled with setdefault) collapsed
+# them into ONE entry and `len(matches) == 1` reported no ambiguity at all, silently keeping whichever
+# row the queryset yielded first. Dates below are offsets from now rather than the literal 2026 dates,
+# so these rows keep sitting inside the identification window as the suite ages; the 64/45-day offsets
+# preserve the real 19-day gap between the two applications.
+
+
+def test_unmatched_two_jobs_at_one_company_are_two_candidates_resolved_by_timing(client, owner):
+    """TASK-170 AC1/AC2: the two Formunauts jobs are two CANDIDATES, and each message is attributed to
+    the process that had most recently started when it arrived -- mail from between the two
+    applications belongs to the first one, mail from after the second belongs to the second. Fails
+    against the token-set-keyed map, which sees a single candidate and answers the same job for both.
+    """
+    now = timezone.now()
+    today = timezone.localdate()
+    front_end = JobLead.objects.create(company='Formunauts', title='Senior Front End Developer', status='archived', applied_at=today - timezone.timedelta(days=64), created_by=owner)
+    back_end = JobLead.objects.create(company='Formunauts', title='Senior Back End Developer Python', status='interview', applied_at=today - timezone.timedelta(days=45), created_by=owner)
+    during_first = _log_message(None, 'uncertain', sender='hr@formunauts.test', subject='Your application', received_at=now - timezone.timedelta(days=55))
+    during_second = _log_message(None, 'uncertain', sender='hr@formunauts.test', subject='Your application', received_at=now - timezone.timedelta(days=20))
+
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+
+    rows_by_id = {row['id']: row for row in r.data['results']}
+    assert rows_by_id[during_first.id]['suggested_job'] == {'id': front_end.id, 'label': 'Formunauts — Senior Front End Developer'}
+    assert rows_by_id[during_second.id]['suggested_job'] == {'id': back_end.id, 'label': 'Formunauts — Senior Back End Developer Python'}
+
+
+def _backdate_job(job, days):
+    """JobLead.created_at is auto_now_add, so every job a test creates was created NOW and any
+    backdated sent mail on its thread necessarily predates it. TASK-170's `received_at >=
+    matched_job.created_at` bound on the sent-mail evidence (views.unmatched) would therefore throw
+    away every test's sent mail as contamination; writing created_at through the queryset is the only
+    way to build a job that legitimately existed before its own mail.
+    """
+    JobLead.objects.filter(pk=job.pk).update(created_at=timezone.now() - timezone.timedelta(days=days))
+    return job
+
+
+def test_unmatched_two_jobs_at_one_company_are_dated_by_the_owners_own_sent_mail(client, owner):
+    """TASK-170 AC3: neither job carries any date of its own and both were tracked in the same
+    instant, so the ONLY evidence of when each application happened is the owner's own sent mail on
+    each job's thread (sent_by_owner, stored since TASK-132). Take those two rows away and this
+    message has nothing to date the two processes by and gets no suggestion at all -- the AC4 test
+    below proves that half.
+    """
+    now = timezone.now()
+    front_end = _backdate_job(JobLead.objects.create(company='Formunauts', title='Senior Front End Developer', status='reviewed', created_by=owner), 70)
+    back_end = _backdate_job(JobLead.objects.create(company='Formunauts', title='Senior Back End Developer Python', status='reviewed', created_by=owner), 70)
+    _log_message(front_end, 'uncertain', sender='owner@example.test', subject='Application: Senior Front End Developer', received_at=now - timezone.timedelta(days=64), sent_by_owner=True)
+    _log_message(back_end, 'uncertain', sender='owner@example.test', subject='Application: Senior Back End Developer Python', received_at=now - timezone.timedelta(days=45), sent_by_owner=True)
+    between_the_two_applications = _log_message(None, 'uncertain', sender='hr@formunauts.test', subject='Your application', received_at=now - timezone.timedelta(days=55))
+
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+
+    row = next(row for row in r.data['results'] if row['id'] == between_the_two_applications.id)
+    assert row['suggested_job'] == {'id': front_end.id, 'label': 'Formunauts — Senior Front End Developer'}
+
+
+def test_unmatched_two_jobs_at_one_company_with_no_separating_timing_gets_no_suggestion(client, owner):
+    """TASK-170 AC4: the 'more than one claimant -> None' rule survives same-company candidates. Three
+    ways timing fails to separate two candidates, each answered with no suggestion rather than a
+    guess: both applications on the SAME day, the message arriving BEFORE either process started, and
+    (the two 'reviewed' rows) no application evidence at all -- no applied_at, no sent mail. Plus the
+    fourth, which is a crash risk rather than a judgement call: a message with NO received_at at all
+    (nullable, and such a row is treated as within the identification window, so it does reach the
+    suggestion path) has no date to place on the timeline and must answer None, not raise.
+    """
+    now = timezone.now()
+    today = timezone.localdate()
+    JobLead.objects.create(company='Formunauts', title='Senior Front End Developer', applied_at=today - timezone.timedelta(days=60), created_by=owner)
+    JobLead.objects.create(company='Formunauts', title='Senior Back End Developer Python', applied_at=today - timezone.timedelta(days=60), created_by=owner)
+    same_day_applications = _log_message(None, 'uncertain', sender='hr@formunauts.test', subject='Your application', received_at=now - timezone.timedelta(days=30))
+    JobLead.objects.create(company='Northscope Labs', title='Backend Engineer', applied_at=today - timezone.timedelta(days=40), created_by=owner)
+    JobLead.objects.create(company='Northscope Labs', title='Platform Engineer', applied_at=today - timezone.timedelta(days=20), created_by=owner)
+    before_either_application = _log_message(None, 'uncertain', sender='hr@nlabs.test', subject='Northscope Labs role', body_text='About the Northscope Labs opening.', received_at=now - timezone.timedelta(days=70))
+    JobLead.objects.create(company='Untimed Systems', title='Backend Engineer', status='reviewed', created_by=owner)
+    JobLead.objects.create(company='Untimed Systems', title='Platform Engineer', status='reviewed', created_by=owner)
+    no_application_evidence = _log_message(None, 'uncertain', sender='hr@untimed.test', subject='Untimed Systems role', body_text='About the Untimed Systems opening.', received_at=now - timezone.timedelta(days=30))
+    no_received_at = _log_message(None, 'uncertain', sender='hr@nlabs.test', subject='Northscope Labs role', body_text='About the Northscope Labs opening.', received_at=None)
+
+    default_response = client.get('/api/mailbox-messages/unmatched/')
+    revealed_response = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+
+    rows_by_id = {row['id']: row for row in revealed_response.data['results']}
+    assert rows_by_id[same_day_applications.id]['suggested_job'] is None
+    assert rows_by_id[before_either_application.id]['suggested_job'] is None
+    assert rows_by_id[no_application_evidence.id]['suggested_job'] is None
+    assert rows_by_id[no_received_at.id]['suggested_job'] is None
+    # ...and an unsuggestable rank-2 row is parked by default, exactly like one naming nothing tracked.
+    assert [row['id'] for row in default_response.data['results']] == []
+    assert default_response.data['parked_count'] == 4
+
+
+def test_unmatched_single_job_companies_still_resolve_with_no_timing_evidence_at_all(client, owner):
+    """TASK-170 AC6: no regression on the single-job companies TASK-163 verified correct. ONE tracked
+    job at a company is not ambiguous, so it is answered without asking for timing evidence at all --
+    none of these four carries applied_at or sent mail, and all four still resolve to the same jobs.
+    """
+    now = timezone.now()
+    formunauts = JobLead.objects.create(company='Formunauts', title='Senior Back End Developer Python', created_by=owner)
+    ebcont = JobLead.objects.create(company='EBCONT', title='Software Engineer', created_by=owner)
+    northscope = JobLead.objects.create(company='Northscope', title='Backend Engineer', created_by=owner)
+    pidso = JobLead.objects.create(company='PIDSO - Propagation Ideas & Solutions GmbH', title='Embedded Engineer', created_by=owner)
+    formunauts_mail = _log_message(None, 'uncertain', sender='hr@formunauts.test', subject='Your application', received_at=now)
+    ebcont_first = _log_message(None, 'uncertain', sender='hr@ebcont.test', subject='Your application', received_at=now)
+    ebcont_second = _log_message(None, 'uncertain', sender='recruiting@ebcont.test', subject='Next steps', received_at=now)
+    northscope_mail = _log_message(None, 'uncertain', sender='people@northscope.test', subject='Your application', received_at=now)
+    pidso_mail = _log_message(None, 'uncertain', sender='no-reply@ashbyhq.com', subject='Your application', body_text='PIDSO - Propagation Ideas & Solutions GmbH has received your application.', received_at=now)
+
+    r = client.get('/api/mailbox-messages/unmatched/')
+
+    suggested = {row['id']: (row['suggested_job'] or {}).get('id') for row in r.data['results']}
+    assert suggested[formunauts_mail.id] == formunauts.id
+    assert suggested[ebcont_first.id] == ebcont.id
+    assert suggested[ebcont_second.id] == ebcont.id
+    assert suggested[northscope_mail.id] == northscope.id
+    assert suggested[pidso_mail.id] == pidso.id
+
+
+def test_unmatched_formunauts_pair_is_separated_by_status_date_and_last_update_date(client, owner):
+    """TASK-170 AC1/AC2, the case the task was actually filed about, in its production shape
+    (coordinator re-measurement, 2026-08-23): NEITHER Formunauts job has applied_at. 292 is archived
+    and dated only by its last activity (2026-06-25), 535 is in interview and dated only by its
+    status_date (2026-08-13), and the genuine interview thread arrived 08-17/18. Dating a process
+    from applied_at plus sent mail alone leaves both of them undated, so all 7 of that company's
+    messages get NO suggestion at all -- worse than the arbitrary-but-lucky answer the bug used to
+    give. Offsets from today rather than literal dates so the rows keep their real 59/10/6-day
+    spacing as the suite ages.
+
+    The second message is why job STATUS is not a tiebreak (task-170's Implementation Notes): mail
+    from between the two processes is attributed to the ARCHIVED one, which is exactly right -- an
+    archived process still receives mail, and preferring the live job would be wrong on the case that
+    produces the most of it.
+    """
+    now = timezone.now()
+    today = timezone.localdate()
+    front_end = JobLead.objects.create(company='Formunauts', title='Senior Front End Developer', status='archived', last_update_date=today - timezone.timedelta(days=59), created_by=owner)
+    back_end = JobLead.objects.create(company='Formunauts', title='Senior Back End Developer Python', status='interview', status_date=today - timezone.timedelta(days=10), created_by=owner)
+    after_the_interview = _log_message(None, 'interview_invitation', sender='hr@formunauts.test', subject='Interview', received_at=now - timezone.timedelta(days=6))
+    between_the_two = _log_message(None, 'uncertain', sender='hr@formunauts.test', subject='Your application', received_at=now - timezone.timedelta(days=30))
+
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+
+    rows_by_id = {row['id']: row for row in r.data['results']}
+    assert rows_by_id[after_the_interview.id]['suggested_job'] == {'id': back_end.id, 'label': 'Formunauts — Senior Back End Developer Python'}
+    assert rows_by_id[between_the_two.id]['suggested_job'] == {'id': front_end.id, 'label': 'Formunauts — Senior Front End Developer'}
+
+
+def test_unmatched_sent_mail_from_before_the_job_existed_is_not_process_evidence(client, owner):
+    """TASK-170: the owner's sent mail only dates a process when it was sent AFTER the job existed.
+    Measured against production (coordinator, 2026-08-23), 6 of the 11 jobs with sent mail had a
+    first-sent date 238 to 685 days BEFORE the job was created -- old correspondence with that
+    company swept onto the thread. This is the DataScience Service pair in that shape: job 462's
+    685-day-early row, left unbounded, drags its process start back past its sibling's and hands the
+    after-interview-assignment thread to the archived job 461 instead. The bound is what makes the
+    interview job win.
+    """
+    now = timezone.now()
+    today = timezone.localdate()
+    JobLead.objects.create(company='Datascience', title='Data Engineer', status='archived', status_date=today - timezone.timedelta(days=52), created_by=owner)
+    interviewing = JobLead.objects.create(company='Datascience', title='Python Engineer', status='interview', status_date=today - timezone.timedelta(days=32), created_by=owner)
+    _log_message(interviewing, 'uncertain', sender='owner@example.test', subject='Re: a role two years ago', received_at=now - timezone.timedelta(days=685), sent_by_owner=True)
+    assignment = _log_message(None, 'uncertain', sender='hr@datascience.test', subject='After-interview assignment', received_at=now - timezone.timedelta(days=28))
+
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+
+    row = next(row for row in r.data['results'] if row['id'] == assignment.id)
+    assert row['suggested_job'] == {'id': interviewing.id, 'label': 'Datascience — Python Engineer'}
+
+
+def test_unmatched_attribution_is_capped_at_ninety_days_before_the_message(client, owner):
+    """TASK-170, owner's decision 2026-08-23: "the user can be applying at multiple positions for a
+    company, so if the time is too much apart, the email is probably referring to another job
+    position/interview round." A winning candidate whose process started more than
+    ATTRIBUTION_MAX_AGE_DAYS (90) before the message gets no suggestion instead. Both companies here
+    have the same shape -- an older process the message cannot belong to and a newer one it might --
+    and differ only in whether the newer one is 91 or 89 days before the message, so what this pins
+    is the cap firing on the WINNER's own age and nothing else. The message's own age is a separate
+    axis, bounded by the identification window in the view; both messages here arrive today.
+    """
+    now = timezone.now()
+    today = timezone.localdate()
+    JobLead.objects.create(company='Capstone', title='Backend Engineer', status='archived', status_date=today - timezone.timedelta(days=140), created_by=owner)
+    JobLead.objects.create(company='Capstone', title='Platform Engineer', status='interview', status_date=today - timezone.timedelta(days=91), created_by=owner)
+    JobLead.objects.create(company='Nordwind', title='Backend Engineer', status='archived', status_date=today - timezone.timedelta(days=140), created_by=owner)
+    within_cap = JobLead.objects.create(company='Nordwind', title='Platform Engineer', status='interview', status_date=today - timezone.timedelta(days=89), created_by=owner)
+    too_far_apart = _log_message(None, 'uncertain', sender='hr@capstone.test', subject='Your application', received_at=now)
+    close_enough = _log_message(None, 'uncertain', sender='hr@nordwind.test', subject='Your application', received_at=now)
+
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+
+    rows_by_id = {row['id']: row for row in r.data['results']}
+    assert rows_by_id[too_far_apart.id]['suggested_job'] is None
+    assert rows_by_id[close_enough.id]['suggested_job'] == {'id': within_cap.id, 'label': 'Nordwind — Platform Engineer'}
 
 
 # --- AC6: attach ----------------------------------------------------------------------------------
