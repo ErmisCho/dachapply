@@ -39,8 +39,13 @@ function counts(messages:MailboxMessage[]){
     ownRows:own.length,
     ownRowsWithBody:own.filter(withBody).length,
     fullBodies:(html.match(/whitespace-pre-wrap/g)||[]).length,  // the expanded bubble's own class
-    collapsedCues:(html.match(/Show ▸/g)||[]).length,
-    expandedCues:(html.match(/Hide ▾/g)||[]).length}
+    // TASK-177 360px fix: the WORD is `hidden sm:inline` so a narrow viewport falls back to the
+    // original glyph rather than overflowing the header row (measured: the word widened an
+    // already-overflowing row from 15px to 45px at 360px). Word and glyph are therefore separate
+    // nodes, and each is counted on its own instead of as one contiguous string.
+    collapsedCues:(html.match(/Show <\/span>▸/g)||[]).length,
+    expandedCues:(html.match(/Hide <\/span>▾/g)||[]).length,
+    wordsHiddenOnNarrow:(html.match(/hidden sm:inline/g)||[]).length}
 }
 
 describe('TASK-177 a collapsed conversation message',()=>{
@@ -58,6 +63,8 @@ describe('TASK-177 a collapsed conversation message',()=>{
     const c=counts(thread)
     expect(c.collapsedCues).toBe(14)
     expect(c.expandedCues).toBe(1)
+    // every one of the 15 headers carries the word, and every word is the narrow-screen-hidden one
+    expect(c.wordsHiddenOnNarrow).toBe(15)
     // The controlled region exists in BOTH states, so aria-controls never dangles.
     expect((c.html.match(/aria-expanded="false"/g)||[]).length).toBe(14)
   })
