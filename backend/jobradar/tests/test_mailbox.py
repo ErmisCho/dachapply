@@ -20,8 +20,10 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from django.contrib.auth.models import User
 from django.core.management import call_command
+from django.db import connection
 from django.db.models import Max
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -383,6 +385,309 @@ def test_classify_email_vorstellungsgespraech_invitation_needs_no_context_keywor
     )
     classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
     assert classification == 'interview_invitation'
+
+
+# --- TASK-168: genuine job mail landing in the WRONG job class -- not TASK-162's non-job mail, but
+# a confirmation/interview message that ALSO carries a bare, generic rejection/interview word
+# (REJECTION_KEYWORDS' 'unfortunately'/'leider', INTERVIEW_KEYWORDS' 'schedule a call') and used to
+# lose to it purely because that check ran first. Each of the first three tests below is a
+# reconstruction of one of the three named production examples and fails against the pre-TASK-168
+# classifier (the fixed offer/rejection/interview/confirmed order lets the generic word win before the
+# message's own, far more specific phrase is ever consulted).
+
+def test_classify_email_smartrecruiters_thanks_for_applying_beats_incidental_unfortunately():
+    """notifications@smartrecruiters.com, 'Thanks for applying at IMS Nanofabrication GmbH' -- stored
+    as rejection because the ATS boilerplate's "unfortunately we cannot reply to every applicant
+    individually" line hit REJECTION_KEYWORDS before the subject's own confirmation phrase was ever
+    checked. 'unfortunately' alone is WEAK evidence (WEAK_REJECTION_KEYWORDS) and must lose to the
+    STRONG 'thanks for applying' hit in the same message.
+    """
+    r = raw(
+        1, sender='notifications@smartrecruiters.com', subject='Thanks for applying at IMS Nanofabrication GmbH',
+        body=(
+            'We have received a large number of applications for this role and unfortunately cannot '
+            'respond to every applicant individually. We will be in touch if your profile is a match.'
+        ),
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'application_confirmed'
+
+
+def test_classify_email_xapo_application_received_beats_incidental_schedule_a_call():
+    """recruiting.xapo.com, 'Thank you, Ermis! Your application has been received' -- stored as
+    interview_invitation because a "next steps" line mentioning a call hit INTERVIEW_KEYWORDS'
+    generic 'schedule a call' before the subject's own, far more specific confirmation phrase was
+    ever checked. 'schedule a call' names no interview at all (WEAK_INTERVIEW_KEYWORDS) and must lose
+    to the STRONG 'your application has been received' hit in the same message.
+    """
+    r = raw(
+        1, sender='jobs@recruiting.xapo.com', subject='Thank you, Ermis! Your application has been received',
+        body=(
+            'Our team will review your background, and if there is a match we will reach out to '
+            'schedule a call to discuss next steps.'
+        ),
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'application_confirmed'
+
+
+def test_classify_email_interview_thread_reply_beats_incidental_leider():
+    """Philipp.Haubner@bmj.gv.at, 'AW: Einladung: Vorstellungsgespräch - Elastic Consulting' -- an
+    interview thread whose reply proposes a RESCHEDULE ('Leider passt der Termin nicht') was stored as
+    rejection because 'leider' hit REJECTION_KEYWORDS before the subject's own 'Vorstellungsgespräch'
+    was ever checked. 'leider' alone is WEAK evidence and must lose to the STRONG interview hit
+    ('vorstellungsgespräch' names the interview explicitly) in the same message.
+    """
+    r = raw(
+        1, sender='Philipp.Haubner@bmj.gv.at', subject='AW: Einladung: Vorstellungsgespräch - Elastic Consulting',
+        body='Leider passt der vorgeschlagene Termin am Montag nicht -- wäre Freitag um 10 Uhr möglich?',
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'interview_invitation'
+
+
+def test_classify_email_ambiguous_recruiter_reply_lands_in_uncertain_not_rejection():
+    """AC5, the fourth named production example (Kiraly.Boglarka@pannonjob.hu x3, 'RE: Questions'):
+    no evidence either way -- a recruiter-agency reply that carries no real news yet, only a bare
+    'unfortunately' plus a generic 'application update' phrase. Pre-TASK-168, the bare rejection word
+    won outright (Rule B was already satisfied by the recruiter's own 'application update' phrase
+    containing 'application', an APPLICATION_CONTEXT_KEYWORDS term) and forced a status-changing
+    'rejection'. TASK-168's recruiter_fallback candidate is itself a specific-enough signal that a
+    bare 'unfortunately' must not out-rank -- the result must land in 'uncertain', not be forced into
+    any status-changing class.
+    """
+    r = raw(
+        1, sender='kiraly.boglarka@pannonjob.hu', subject='RE: Questions',
+        body="Unfortunately I don't have any application update for you yet, but I will let you know as soon as I hear back.",
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'uncertain'
+    assert classification not in mailbox.STATUS_CHANGING_CLASSIFICATIONS
+
+
+def test_classify_email_genuine_rejection_also_thanking_for_applying_still_classifies():
+    """True-positive guard: a genuine rejection that ALSO opens with an application-confirmation
+    phrase (the common real shape -- "Thank you for applying... unfortunately/we have decided to move
+    forward with other candidates") still classifies as rejection. Both signals are STRONG here (the
+    rejection phrase is a full decision sentence, not the bare 'unfortunately'), so the pre-TASK-168
+    fixed order still breaks the tie in rejection's favor, exactly as before TASK-168.
+    """
+    r = raw(
+        1, sender='hr@newcompany.test', subject='Your application to Acme Corp',
+        body=(
+            'Thank you for applying to Acme Corp. After careful consideration, we have decided to move '
+            'forward with other candidates for this position.'
+        ),
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'rejection'
+
+
+# --- Coordinator correction (dry run against production, 17 proposed changes hand-inspected, 11
+# wrong): the first TASK-168 fix demoted 7 genuine join.com rejections to application_confirmed (a
+# polite "Vielen Dank für deine Bewerbung" opening outranking the actual refusal sentence -- the exact
+# trap this task's own notes warned about, reached through scoring instead of check order) and
+# promoted 4 genuine confirmations (Amazon, Allianz x3) to interview_invitation (a CONDITIONAL, FUTURE
+# "we may be in touch to arrange a conversation" line read as a present invitation). Each test below
+# reconstructs the real production wording and fails against that first fix.
+
+def test_classify_email_join_rejection_with_thank_you_opening_still_classifies_as_rejection():
+    """All 7 join.com 'Deine Bewerbung bei X' rows share this exact template: a polite opening
+    followed by the actual refusal. The refusal sentence itself ('nicht mit deiner Bewerbung
+    fortfahren') is what must win -- not the opening pleasantry.
+    """
+    r = raw(
+        1, sender='noreply@join.com', subject='Deine Bewerbung bei Acme Corp',
+        body=(
+            'Vielen Dank für deine Bewerbung bei uns. Wir haben deine Bewerbung genau geprüft. '
+            'Leider können wir aufgrund unseres gesuchten Profils und der Anzahl anderer qualifizierter '
+            'Bewerbungen zum jetzigen Zeitpunkt nicht mit deiner Bewerbung fortfahren.'
+        ),
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'rejection'
+
+
+def test_classify_email_amazon_conditional_future_contact_stays_application_confirmed():
+    """A confirmation describing what MIGHT happen later ('wenn du in die engere Auswahl kommst,
+    kontaktiert dich...') is not an interview_invitation -- an invitation proposes a concrete next
+    step now (a time, a request for availability, a booking link), not a conditional future one.
+    """
+    r = raw(
+        1, sender='no-reply@amazon.jobs', subject='Deine Bewerbung bei Amazon',
+        body=(
+            'Wir haben deine Bewerbung erhalten. Was passiert als Nächstes? Wenn du in die engere '
+            'Auswahl kommst, kontaktiert dich das Amazon Recruiting-Team und wir können ein Gespräch '
+            'vereinbaren.'
+        ),
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'application_confirmed'
+
+
+def test_classify_email_allianz_conditional_future_contact_stays_application_confirmed():
+    """Same shape as Amazon, Allianz's own real wording: a receipt confirmation followed by a
+    conditional, no-time-given mention of a possible future conversation.
+    """
+    r = raw(
+        1, sender='karriere@allianz.at', subject='Ihre Bewerbung bei Allianz',
+        body=(
+            'Gerne bestätigen wir Ihnen, dass Ihre Bewerbung bei uns eingegangen ist. Sollten wir '
+            'Interesse an einem persönlichen Austausch haben, können wir gerne ein Gespräch vereinbaren.'
+        ),
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'application_confirmed'
+
+
+def test_classify_email_concrete_time_proposal_is_a_genuine_interview_invitation():
+    """The northscope production example, inverted from the two above: 'available for a call' is a
+    WEAK, tense-neutral phrase on its own, but a concrete clock time makes it a real proposal, not a
+    future promise -- this must classify as interview_invitation, not lose to any competing signal.
+    """
+    r = raw(1, sender='hiring@northscope.test', subject='Quick chat?', body='Are you available for a call tomorrow at 16:30?')
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'interview_invitation'
+
+
+# --- Coordinator correction round 2 (dry run against production, 9 -> target 4): a keyword matching
+# inside BOILERPLATE rather than a decision. Amazon (805) and Allianz (877/918/930) confirmations
+# advertise interview-prep RESOURCES/TRAINING in their footer -- plural "Vorstellungsgesprache" as a
+# TOPIC, not a singular named event -- and were wrongly promoted to interview_invitation. TU Wien (903)
+# is a genuine rejection whose decisive sentence ("Leider muessen wir Ihnen mitteilen") had no matching
+# keyword at all and was wrongly left as a confirmation. Each test below fails against the round-1 fix.
+
+def test_classify_email_interview_prep_resources_footer_stays_application_confirmed():
+    """Amazon's real footer wording: 'Ressourcen fuer Vorstellungsgespraeche ... zur Vorbereitung' is
+    marketing about interview prep as a TOPIC (plural), not an invitation to one.
+    """
+    r = raw(
+        1, sender='no-reply@amazon.jobs', subject='Deine Bewerbung bei Amazon',
+        body=(
+            'Wir haben deine Bewerbung erhalten. In unseren Ressourcen für Vorstellungsgespräche '
+            'findest du weitere Informationen über den Einstellungsprozess und zur Vorbereitung auf '
+            'Vorstellungsgespräche.'
+        ),
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'application_confirmed'
+
+
+def test_classify_email_interview_training_product_footer_stays_application_confirmed():
+    """Allianz's real footer wording: a voice-assistant TRAINING PRODUCT for interviews in general
+    (plural), advertised inside a receipt confirmation -- not an invitation to one.
+    """
+    r = raw(
+        1, sender='karriere@allianz.at', subject='Ihre Bewerbung bei Allianz',
+        body=(
+            'Gerne bestätigen wir Ihnen, dass Ihre Bewerbung bei uns eingegangen ist. Außerdem können '
+            'Sie unser stimmbasiertes Training für Vorstellungsgespräche über Alexa Voice Assistant '
+            'absolvieren.'
+        ),
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'application_confirmed'
+
+
+def test_classify_email_singular_einladung_vorstellungsgespraech_still_classifies():
+    """The 499 (bmj.gv.at) guard: a singular, named event ("Einladung: Vorstellungsgespräch") must
+    keep matching -- the plural-exclusion fix must not demote a genuine invitation.
+    """
+    r = raw(
+        1, sender='hr@acme.test', subject='Einladung: Vorstellungsgespräch bei Acme',
+        body='Wir laden Sie herzlich zu einem Vorstellungsgespräch ein.',
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'interview_invitation'
+
+
+def test_classify_email_leider_muessen_wir_ihnen_mitteilen_classifies_as_rejection():
+    """TU Wien (903): "Leider müssen wir Ihnen mitteilen" is a decisive German rejection phrase with
+    no other matching keyword anywhere in the message.
+    """
+    r = raw(
+        1, sender='karriere@tuwien.ac.at', subject='Ihre Bewerbung',
+        body=(
+            'Wir konnten zwischenzeitlich eine Entscheidung treffen. Leider müssen wir Ihnen '
+            'mitteilen, dass die Position an einen anderen Kandidaten vergeben wurde.'
+        ),
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'rejection'
+
+
+# --- TASK-168 AC6: reclassify_messages() must correct a heuristic-evaluated row into the RIGHT
+# status-changing class, not just demote it -- the pre-existing guard-only version (TASK-162) cannot
+# do this, since a wrong-class message (e.g. a confirmation stored as rejection) is not blocked by
+# Rule A/B at all, only mis-selected by the old fixed check order.
+
+def test_reclassify_messages_corrects_a_heuristic_row_to_the_right_status_changing_class(db, owner, applied_job):
+    """The smartrecruiters production shape (see test_classify_email_smartrecruiters_thanks_for_
+    applying_beats_incidental_unfortunately): a heuristic-evaluated row stored as 'rejection' before
+    TASK-168 moves to 'application_confirmed', and its pending suggestion is dismissed with it.
+    """
+    run = MailboxRun.objects.create()
+    message = MailboxMessage.objects.create(
+        run=run, uid=1, sender='notifications@smartrecruiters.com',
+        subject='Thanks for applying at IMS Nanofabrication GmbH',
+        body_text=(
+            'We have received a large number of applications for this role and unfortunately cannot '
+            'respond to every applicant individually. We will be in touch if your profile is a match.'
+        ),
+        classification='rejection', evaluator='heuristic',
+    )
+    suggestion = MailboxSuggestion.objects.create(message=message, job=applied_job, suggestion_type='status_change', payload={'status': 'rejected'})
+
+    changes = mailbox.reclassify_messages(dry_run=False)
+
+    assert changes == [{'message': message, 'from': 'rejection', 'to': 'application_confirmed', 'dismissed_count': 1}]
+    message.refresh_from_db()
+    assert message.classification == 'application_confirmed'
+    suggestion.refresh_from_db()
+    assert suggestion.status == 'dismissed'
+
+
+def test_reclassify_messages_dry_run_reports_the_correction_without_writing(db, owner):
+    run = MailboxRun.objects.create()
+    message = MailboxMessage.objects.create(
+        run=run, uid=1, sender='notifications@smartrecruiters.com',
+        subject='Thanks for applying at IMS Nanofabrication GmbH',
+        body_text=(
+            'We have received a large number of applications for this role and unfortunately cannot '
+            'respond to every applicant individually. We will be in touch if your profile is a match.'
+        ),
+        classification='rejection', evaluator='heuristic',
+    )
+
+    changes = mailbox.reclassify_messages()  # dry_run=True is the default
+
+    assert changes == [{'message': message, 'from': 'rejection', 'to': 'application_confirmed', 'dismissed_count': 0}]
+    message.refresh_from_db()
+    assert message.classification == 'rejection'  # unchanged
+
+
+def test_reclassify_messages_llm_evaluated_row_only_gets_the_guard_not_the_full_heuristic(db, owner):
+    """An LLM-evaluated row is unaffected by TASK-168's candidate scoring -- it is still only
+    re-guarded (TASK-162's original behaviour), never re-run through _classify_heuristic, so a
+    heuristic-shaped false collision in its stored text does not retroactively second-guess the LLM's
+    own judgement.
+    """
+    run = MailboxRun.objects.create()
+    message = MailboxMessage.objects.create(
+        run=run, uid=1, sender='notifications@smartrecruiters.com',
+        subject='Thanks for applying at IMS Nanofabrication GmbH',
+        body_text=(
+            'We have received a large number of applications for this role and unfortunately cannot '
+            'respond to every applicant individually. We will be in touch if your profile is a match.'
+        ),
+        classification='rejection', evaluator='openai-compatible',
+    )
+
+    changes = mailbox.reclassify_messages(dry_run=False)
+
+    assert changes == []
+    message.refresh_from_db()
+    assert message.classification == 'rejection'
 
 
 # --- JobLead domain matching -----------------------------------------------------------------
@@ -1429,6 +1734,116 @@ def test_mailbox_run_digest_excludes_not_job_related_but_includes_uncertain(db, 
     logged_uids = set(MailboxMessage.objects.filter(run=run).exclude(classification='not_job_related').values_list('id', flat=True))
     assert uids == logged_uids
     assert len(r.data['digest_messages']) == 2
+
+
+# --- TASK-172: /api/mailbox-runs/ no longer ships every digest message's full body_text -----------
+#
+# The owner measured 35,831ms / 1,271,114 bytes against 13 runs over ~1,000 stored messages, all of
+# it MailboxRunSerializer.get_digest_messages shipping the FULL MailboxMessageSerializer (up to
+# 5,000 chars of body_text apiece) per message, once per run. These reuse TASK-142's own idiom for
+# the same defect one endpoint over (test_unmatched_messages_query_defers_body_text_and_computes_a_
+# bounded_db_side_preview / test_unmatched_messages_query_count_does_not_scale_with_row_count in
+# test_mailbox_panel.py) rather than inventing a new shape.
+
+def test_mailbox_runs_digest_defers_body_text_and_computes_a_bounded_db_side_preview(client):
+    """AC2: body_text must never reach Python as a bare SELECTed column -- only inside a bounded
+    SUBSTR(...) annotation. A bare reference anywhere (including from a stray join elsewhere in the
+    view's queryset) means the full, up-to-5,000-char column crossed the wire again regardless of
+    what the serializer does with it afterwards -- TASK-142's own measured failure mode.
+    """
+    long_body = 'Thank you for applying. ' * 200  # MailboxMessage.body_text's own 5000-char cap
+    run = MailboxRun.objects.create(fetched_count=1)
+    MailboxMessage.objects.create(run=run, uid=9001, classification='uncertain', sender='hr@acme.test', subject='x', body_text=long_body)
+
+    with CaptureQueriesContext(connection) as ctx:
+        r = client.get('/api/mailbox-runs/')
+
+    assert r.status_code == 200
+    message_queries = [q['sql'] for q in ctx.captured_queries if 'FROM "jobradar_mailboxmessage"' in q['sql']]
+    assert message_queries, 'expected at least one query against mailboxmessage'
+    for sql in message_queries:
+        total = sql.count('"jobradar_mailboxmessage"."body_text"')
+        inside_substr = sql.count('SUBSTR("jobradar_mailboxmessage"."body_text"')
+        assert total == inside_substr, sql  # every reference sits inside SUBSTR(...), none bare
+    assert len(r.data[0]['digest_messages'][0]['body_text']) <= 301  # bounded preview, not the full body
+
+
+def test_mailbox_runs_query_count_does_not_scale_with_run_count(client):
+    """AC4, run-count dimension. Same warm-up idiom as
+    test_unmatched_messages_query_count_does_not_scale_with_row_count -- the visitor-tracking
+    middleware's own INSERT-then-UPDATE would otherwise make an unwarmed first measurement cost more
+    regardless of run count."""
+    client.get('/api/mailbox-runs/')  # warm-up
+
+    def _run_with_message(uid):
+        run = MailboxRun.objects.create(fetched_count=1)
+        MailboxMessage.objects.create(run=run, uid=uid, classification='uncertain', sender='hr@acme.test', subject='x')
+        return run
+
+    for uid in range(9100, 9102):
+        _run_with_message(uid)
+    with CaptureQueriesContext(connection) as few:
+        r = client.get('/api/mailbox-runs/')
+    assert r.status_code == 200 and len(r.data) == 2
+
+    for uid in range(9102, 9106):
+        _run_with_message(uid)
+    with CaptureQueriesContext(connection) as many:
+        r = client.get('/api/mailbox-runs/')
+    assert r.status_code == 200 and len(r.data) == 6
+
+    assert len(few.captured_queries) == len(many.captured_queries), (few.captured_queries, many.captured_queries)
+
+
+def test_mailbox_runs_query_count_does_not_scale_with_messages_per_run(client):
+    """AC4, messages-per-run dimension -- the OTHER half of the same N+1 the run-count test above
+    does not exercise: a single run's own message count growing (each carrying a matched_job and a
+    draft, TASK-142's own two per-row query traps) must not add queries either.
+    """
+    run = MailboxRun.objects.create(fetched_count=1)
+    job = JobLead.objects.create(company='Acme', title='Engineer', status='applied', created_by=None)
+    client.get('/api/mailbox-runs/')  # warm-up
+
+    def _message(uid):
+        message = MailboxMessage.objects.create(run=run, uid=uid, classification='uncertain', sender='hr@acme.test', subject='x', matched_job=job)
+        MailboxDraft.objects.create(message=message, status='written', subject='Re: x', body_text='Thanks.', evaluator='template')
+
+    for uid in range(9200, 9202):
+        _message(uid)
+    with CaptureQueriesContext(connection) as few:
+        r = client.get('/api/mailbox-runs/')
+    assert r.status_code == 200 and len(r.data[0]['digest_messages']) == 2
+
+    for uid in range(9202, 9208):
+        _message(uid)
+    with CaptureQueriesContext(connection) as many:
+        r = client.get('/api/mailbox-runs/')
+    assert r.status_code == 200 and len(r.data[0]['digest_messages']) == 8
+
+    assert len(few.captured_queries) == len(many.captured_queries), (few.captured_queries, many.captured_queries)
+
+
+def test_mailbox_runs_digest_keeps_same_messages_same_order_per_run_across_a_list(client):
+    """AC3: bulk-loading every run's digest in one query (MailboxRunListSerializer) must reproduce
+    exactly what obj.messages.exclude(...).order_by('-uid') gave per run before this task -- same
+    ids, same -uid order, correctly grouped back to ITS OWN run and not some other run in the list.
+    """
+    run_a = MailboxRun.objects.create(fetched_count=2)
+    run_b = MailboxRun.objects.create(fetched_count=2)
+    MailboxMessage.objects.create(run=run_a, uid=9300, classification='uncertain', sender='a@x.test', subject='a-old')
+    MailboxMessage.objects.create(run=run_a, uid=9301, classification='uncertain', sender='a@x.test', subject='a-new')
+    MailboxMessage.objects.create(run=run_a, uid=9302, classification='not_job_related', sender='a@x.test', subject='a-excluded')
+    MailboxMessage.objects.create(run=run_b, uid=9303, classification='rejection', sender='b@x.test', subject='b-old')
+    MailboxMessage.objects.create(run=run_b, uid=9304, classification='rejection', sender='b@x.test', subject='b-new')
+
+    r = client.get('/api/mailbox-runs/')
+
+    assert r.status_code == 200
+    by_id = {row['id']: row for row in r.data}
+    a_subjects = [m['subject'] for m in by_id[run_a.id]['digest_messages']]
+    b_subjects = [m['subject'] for m in by_id[run_b.id]['digest_messages']]
+    assert a_subjects == ['a-new', 'a-old']  # -uid order, not_job_related dropped
+    assert b_subjects == ['b-new', 'b-old']  # run_b's own rows never bleed into run_a's list
 
 
 # --- Settings (AC8) ----------------------------------------------------------------------------

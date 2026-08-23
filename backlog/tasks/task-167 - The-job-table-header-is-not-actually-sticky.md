@@ -8,6 +8,7 @@ labels:
   - ux
 dependencies:
   - TASK-165
+  - TASK-173
 priority: low
 ordinal: 167000
 ---
@@ -56,6 +57,39 @@ stylesheet is not mistaken for working behaviour by the next person who reads it
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+### 2026-08-23 — investigated and deliberately NOT implemented. Blocked on a prerequisite.
+
+Status stays To Do rather than Done: AC1, AC2 and AC6 are unmet, and TW-005 forbids marking a task
+Done to tidy the board. AC3, AC4 and AC5 hold trivially because nothing behavioural was changed.
+
+**Why sticky cannot be made to work here yet.** `position: sticky` resolves against the nearest
+ancestor whose computed overflow is non-`visible` on EITHER axis, whether or not that ancestor ever
+scrolls. The `.overflow-x-auto` wrapper qualifies (its `overflow-y` auto-promotes), so it is already
+the sticky reference — but it has no bounded height, so it never scrolls internally and the page
+scroll moves the whole thing. That is exactly the measured `8373 -> -20 -> -420`.
+
+Making sticky engage requires giving that wrapper a bounded height and a real `overflow-y: auto`.
+**That clips the row-level feedback popup**, verified by the coordinator against the source rather
+than taken on the agent's word:
+
+    {feedbackEditor===j.id && <div onClick={...} className="absolute left-0 top-full mt-2 z-[9999]
+                                   max-h-[calc(100vh-7rem)] w-[22rem] ... overflow-auto ...">
+
+It is `position: absolute`, it is sized against the VIEWPORT (`calc(100vh-7rem)`), it appears 4 times
+in App.tsx, and it is NOT portalled. Bounding its scroll ancestor is precisely the clipping
+regression AC4 forbids and the reason TASK-139 split the wrapper in two. The other direction —
+removing the horizontal wrapper — reopens TASK-139 the way it originally broke.
+
+**One correction to the implementing agent's reasoning, in the encouraging direction.** It judged a
+portal rewrite "materially larger, separately-risky". `createPortal` is already imported and used
+**5 times** in this same file, so the pattern, its import and its conventions all exist. The
+remaining work is the positioning hook, not the mechanism. That makes the prerequisite meaningfully
+cheaper than the agent estimated, and it is filed as TASK-173.
+
+**Order of work:** TASK-173 (portal the feedback popup) first, then this task becomes a small CSS
+change. Attempting them in the other order trades a live bug for a worse one, which is the mistake
+TASK-165 already made once and caught only by measuring.
+
 The likely shape is to stop relying on an ancestor being non-scrolling: either give the table its own
 vertical scroll container with a bounded height (so sticky resolves against something that genuinely
 scrolls vertically), or remove the horizontal wrapper and let the table scroll the page, which

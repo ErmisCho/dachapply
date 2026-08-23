@@ -2,6 +2,7 @@ import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
+from django.db.models.functions import Substr
 from django.utils import timezone
 from rest_framework import serializers
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, InviteCode, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile
@@ -502,6 +503,64 @@ class MailboxMessageWithSuggestionsSerializer(MailboxMessageSerializer):
     def get_suggestions(self, obj):
         return MailboxSuggestionSerializer(obj.suggestions.filter(status='pending'), many=True).data
 
+# TASK-172: shared by both MailboxRunListSerializer.to_representation (the bulk, /api/mailbox-runs/
+# list path) and MailboxRunSerializer.get_digest_messages' own single-object fallback below -- the
+# exact bounded-preview query TASK-142 already built one endpoint over (MailboxMessageViewSet.
+# unmatched), never a second implementation of the same Substr(...)/.defer('body_text') idiom.
+# select_related('draft') is TASK-142's own fix for the reverse-one-to-one N+1 it measured (320
+# queries for 319 rows); select_related('matched_job') is the ADDITIONAL join `unmatched` never
+# needed -- that endpoint's own queryset filters matched_job__isnull=True, so matched_job_id is
+# always NULL there and the forward FK never touches the DB either way (see that queryset's own
+# comment in views.py) -- but a run's digest is NOT filtered that way: a job-related message here
+# routinely HAS a matched_job, and MailboxMessageSerializer.matched_job_company/_title reads
+# matched_job.company/.title, which would otherwise be one query per matched row.
+def _digest_queryset(qs, preview_len):
+    return (qs
+        .exclude(classification='not_job_related')
+        .select_related('draft', 'matched_job')
+        .annotate(body_preview=Substr('body_text', 1, preview_len))
+        .defer('body_text'))
+
+class MailboxRunListSerializer(serializers.ListSerializer):
+    """TASK-172: MailboxRunSerializer.get_digest_messages queries `obj.messages` once per run --
+    calling that once per row in a many=True list is exactly the N+1 the owner measured (35,831ms /
+    1,271,114 bytes for /api/mailbox-runs/, 13 runs over ~1,000 stored messages, each shipped with
+    the FULL MailboxMessageSerializer -- up to 5,000 chars of body_text apiece). This class runs
+    _digest_queryset ONCE, across every run in the list (a single `run_id__in=[...]` query, same
+    shape as any other bulk-prefetch fix in this codebase), and groups the rows by run_id in Python
+    -- `.order_by('run_id', '-uid')` guarantees each run's rows are contiguous AND already sorted
+    -uid within that run, so grouping by first-seen-order reproduces exactly what
+    `obj.messages.exclude(...).order_by('-uid')` gave per run before this task, never a second sort.
+    Cached on `self` (the list serializer instance, bound as `self.child.parent` by DRF's own
+    ListSerializer.__init__) so MailboxRunSerializer.get_digest_messages can read it back per row
+    without a second query.
+    """
+    def to_representation(self, data):
+        if hasattr(data, 'prefetch_related'):
+            # MailboxRunViewSet.get_queryset() (views.py) still chains
+            # .prefetch_related('messages__matched_job','messages__draft') -- built for the OLD,
+            # per-run get_digest_messages below, which never actually consumed it: a FILTERED
+            # `obj.messages.exclude(...).order_by(...)` call bypasses Django's prefetch cache
+            # entirely (that cache only answers an unfiltered `.messages.all()`), so it was already
+            # dead weight before this task. Left in place, evaluating `data` below would still run
+            # it -- prefetch_related queries fire the moment the base queryset is fetched, whether or
+            # not anything reads the attribute afterward -- and pull every stored message's FULL,
+            # un-deferred body_text into the app server on every request, exactly the unbounded
+            # column AC2 removes. `.prefetch_related(None)` is Django's own documented reset (not a
+            # private API): it returns a new queryset with every chained prefetch lookup cleared, so
+            # this stays a serializer-side fix rather than requiring a change to the view's queryset.
+            data=data.prefetch_related(None)
+        data=list(data)  # materialize once -- both the run_id collection below and the per-row
+        # pass through the parent implementation need the same rows; a queryset iterated twice would
+        # cost a second SELECT against mailboxrun for no reason.
+        preview_len=MailboxMessageListSerializer.BODY_PREVIEW_CHARS + 1
+        rows=_digest_queryset(MailboxMessage.objects.filter(run_id__in=[obj.id for obj in data]), preview_len).order_by('run_id', '-uid')
+        by_run={}
+        for row in rows:
+            by_run.setdefault(row.run_id, []).append(row)
+        self._digest_by_run=by_run
+        return super().to_representation(data)
+
 class MailboxRunSerializer(serializers.ModelSerializer):
     """TASK-109 AC4: the per-run digest. digest_messages is every message this run classified as
     job-related or uncertain -- exactly 'not_job_related' is left out, never dropped from the log
@@ -510,14 +569,32 @@ class MailboxRunSerializer(serializers.ModelSerializer):
     digest_messages=serializers.SerializerMethodField()
     class Meta:
         model=MailboxRun
+        list_serializer_class=MailboxRunListSerializer
         # drafting_skipped belongs here, not only in check_mailbox's stdout: an unattended Task
         # Scheduler run writes that stdout nowhere, so without this field a first run shows N
         # job-related messages and zero drafts in /mailbox with no explanation -- which reads as a
         # broken drafting path, the exact confusion the field was added to remove.
         fields=('id','started_at','finished_at','skipped','skip_reason','fetched_count','job_related_count','uncertain_count','suggestion_count','draft_written_count','draft_blocked_count','drafting_skipped','error','digest_messages')
     def get_digest_messages(self, obj):
-        rows=obj.messages.exclude(classification='not_job_related').order_by('-uid')
-        return MailboxMessageSerializer(rows, many=True).data
+        # TASK-172 AC3/AC6: still every message this run classified as job-related/uncertain, in the
+        # same -uid order as before -- only the per-message shape changed, from the full
+        # MailboxMessageSerializer (unbounded body_text) to MailboxMessageListSerializer's bounded
+        # preview (the same one /api/mailbox-messages/unmatched/ already ships). AC6: a full body, if
+        # ever genuinely needed here, is MailboxMessageViewSet.retrieve's job, not this list's --
+        # nothing here calls it.
+        by_run=getattr(self.parent, '_digest_by_run', None)
+        if by_run is not None:
+            # The list path: MailboxRunListSerializer.to_representation already ran ONE bulk query
+            # for every run being serialized -- reuse it rather than re-querying obj.messages here,
+            # which is exactly the per-run query this task exists to remove.
+            rows=by_run.get(obj.id, [])
+        else:
+            # Single-object serialization (MailboxRunViewSet.retrieve, .status_view) -- no sibling
+            # runs to batch with, so this queries just the one run's own messages, still through the
+            # same bounded/deferred/joined shape as the list path above.
+            preview_len=MailboxMessageListSerializer.BODY_PREVIEW_CHARS + 1
+            rows=_digest_queryset(obj.messages, preview_len).order_by('-uid')
+        return MailboxMessageListSerializer(rows, many=True, context=self.context).data
 
 class InviteCodeSerializer(serializers.ModelSerializer):
     """Owner-facing view of an invite code. `code` is generated server-side, never posted."""
