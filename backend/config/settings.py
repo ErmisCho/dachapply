@@ -129,7 +129,13 @@ CODEX_CV_OWNER_EMAIL = os.getenv('CODEX_CV_OWNER_EMAIL', 'ermis.chorinopoulos@gm
 # mailto for the owner so the link is never dead. A mailto opens the user's own mail client with an
 # empty body, so nothing about their jobs is transmitted unless they type it themselves.
 FEEDBACK_URL = os.getenv('FEEDBACK_URL') or (f'mailto:{CODEX_CV_OWNER_EMAIL}?subject=DACHApply%20feedback' if CODEX_CV_OWNER_EMAIL else '')
-CODEX_CV_WORKSPACE = os.getenv('CODEX_CV_WORKSPACE', r'C:\latex' if DEBUG else '')
+# Where generated .tex/.pdf files are written and read back from (services/cv_generator.
+# persist_generated_files, latest_generated_sources). No default: it used to fall back to C:\latex
+# under DEBUG, which is one person's laptop, so every developer's machine claimed to have a CV
+# workspace it did not have. TASK-99a moved the templates and the photograph out of here into
+# per-account CvAsset rows; what is left is an output directory, and .env names it (the owner's
+# already does). Sharing that directory between accounts is TASK-99b's problem, not this setting's.
+CODEX_CV_WORKSPACE = os.getenv('CODEX_CV_WORKSPACE', '')
 CODEX_CV_CACHE = env_bool('CODEX_CV_CACHE', True)
 CODEX_CANDIDATE_EVIDENCE_PATH = os.getenv('CODEX_CANDIDATE_EVIDENCE_PATH', str(BASE_DIR.parent/'Ermis-Chorinopoulos-Candidate-Evidence.md') if DEBUG else '')
 CODEX_APPLICATION_RULES_PATH = os.getenv('CODEX_APPLICATION_RULES_PATH', str(BASE_DIR.parent/'job-application-adaptation-rules.md'))

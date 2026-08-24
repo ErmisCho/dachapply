@@ -281,7 +281,7 @@ def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, can
     close_old_connections()
     try:
         job=JobLead.objects.get(id=job_id)
-        archive,filename,artifacts=recompile_generated_package(job,cv_key,source_cv,source_letter,lambda progress,stage:_update(task_id,status='running',progress=progress,stage=stage),cancelled=cancel_event.is_set)
+        archive,filename,artifacts=recompile_generated_package(job,cv_key,source_cv,source_letter,lambda progress,stage:_update(task_id,status='running',progress=progress,stage=stage),cancelled=cancel_event.is_set,user_id=user_id)
         if cancel_event.is_set():
             raise GenerationCancelled
         clipboard_tex=_clipboard_contents(artifacts)
