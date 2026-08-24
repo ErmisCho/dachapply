@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,movePanelInOrder,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,previewPanelDrag,ratePercent,receivedDateLabels,reorderPanels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,feedbackPopupPosition,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,movePanelInOrder,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,previewPanelDrag,ratePercent,receivedDateLabels,reorderPanels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -941,5 +941,44 @@ describe('live panel drag preview (TASK-183 AC2/AC5)',()=>{
   it('carries panels that are hidden through the preview',()=>{
     expect(drag('a','c')!.order).toContain('d')
     expect(previewPanelDrag(null,['a','hidden','b'],'a','b')!.order).toEqual(['hidden','b','a'])
+  })
+})
+
+// TASK-173. The feedback popup is portalled to <body> and laid out `fixed`, so its coordinates are
+// arithmetic rather than something an offset parent works out. These are the cases that arithmetic
+// has to get right; the popup's real bounding box against its real row is measured in a browser.
+describe('feedbackPopupPosition',()=>{
+  const vw=1440,vh=900
+
+  it('sits at the trigger left edge, 8px under its bottom - what left-0/top-full/mt-2 resolved to',()=>{
+    expect(feedbackPopupPosition({left:400,bottom:300},vw,vh)).toEqual({left:400,top:308,width:352})
+  })
+
+  it('keeps its full 22rem width when the viewport has room',()=>{
+    expect(feedbackPopupPosition({left:0,bottom:0},vw,vh).width).toBe(352)
+  })
+
+  it('pulls back from the right edge instead of overflowing it',()=>{
+    // A trigger 100px from the right edge would put 352px of popup 252px off-screen.
+    const p=feedbackPopupPosition({left:1340,bottom:300},vw,vh)
+    expect(p.left).toBe(vw-352-16)
+    expect(p.left+p.width).toBeLessThanOrEqual(vw)
+  })
+
+  it('lifts off the bottom edge instead of hanging below the fold',()=>{
+    // Nothing scrolls a `fixed` popup back into view, so the bottom clamp is not cosmetic.
+    expect(feedbackPopupPosition({left:400,bottom:880},vw,vh).top).toBe(vh-300-16)
+  })
+
+  it('never places itself off the top or left, even from a trigger scrolled out of view',()=>{
+    const p=feedbackPopupPosition({left:-500,bottom:-400},vw,vh)
+    expect(p.left).toBe(16)
+    expect(p.top).toBe(16)
+  })
+
+  it('narrows to the viewport rather than overflowing a screen thinner than 22rem',()=>{
+    const p=feedbackPopupPosition({left:10,bottom:50},320,640)
+    expect(p.width).toBe(320-32)
+    expect(p.left+p.width).toBeLessThanOrEqual(320)
   })
 })
