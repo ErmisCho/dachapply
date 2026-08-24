@@ -121,6 +121,68 @@ def test_second_probe_inside_the_cooldown_sends_nothing_more():
     assert len(mail.outbox) == 1
 
 
+# TASK-185. The cooldown existed and worked; it was borrowed from TASK-88's ERROR_ALERT_COOLDOWN_
+# SECONDS, which defaults to 300. Five minutes is right for a transient exception and wrong for a
+# condition that only alerts once it is a day old (MAILBOX_STALE_ALERT_HOURS) and then persists until
+# a human runs an interactive OAuth command -- the owner received 83 identical emails over three and
+# a half days. These pin the duration, the per-status key and the recovery clear, so the next person
+# who "simplifies" this back onto the shared setting fails a test instead of the owner's inbox.
+def test_the_mailbox_alert_uses_its_own_cooldown_not_the_error_alert_floor(settings):
+    """The whole defect in one assertion: a 5-minute error floor must not govern this alert."""
+    assert settings.MAILBOX_HEALTH_ALERT_COOLDOWN_SECONDS >= 3600
+    assert settings.MAILBOX_HEALTH_ALERT_COOLDOWN_SECONDS != settings.ERROR_ALERT_COOLDOWN_SECONDS
+
+
+def test_a_persisting_failure_is_not_re_alerted_until_the_cooldown_expires(settings):
+    """Controlled by shrinking the window and expiring the key, never by sleeping."""
+    settings.MAILBOX_HEALTH_ALERT_COOLDOWN_SECONDS = 900
+    make_run(hours_ago=0, error='boom')
+
+    probe()
+    probe()
+    assert len(mail.outbox) == 1, 'a repeat probe inside the window must send nothing'
+
+    # the window passing is the only thing that changes; the condition is untouched
+    cache.delete('mailbox_health_watchdog_alert_sent:failing')
+    probe()
+    assert len(mail.outbox) == 2, 'once the window has passed the owner is told again'
+
+
+def test_a_change_of_status_is_not_swallowed_by_the_other_status_window():
+    """stale and failing are different news; one must not silence the other."""
+    make_run(hours_ago=48)                      # a successful run, but long ago -> stale
+    probe()
+    assert len(mail.outbox) == 1
+    assert 'stale' in mail.outbox[0].subject or 'No successful run' in mail.outbox[0].body
+
+    make_run(hours_ago=0, error='boom')         # now actively failing, inside the stale window
+    probe()
+    assert len(mail.outbox) == 2, 'a failure after a staleness alert is new information'
+
+
+def test_recovery_clears_the_cooldown_so_the_next_failure_alerts_promptly():
+    make_run(hours_ago=0, error='boom')
+    probe()
+    assert len(mail.outbox) == 1
+
+    make_run(hours_ago=0)                       # recovered: no mail, deliberately
+    probe()
+    assert len(mail.outbox) == 1, 'recovery is silent - the owner just fixed it by hand'
+
+    make_run(hours_ago=0, error='boom again')   # and the next failure is not stuck behind the window
+    probe()
+    assert len(mail.outbox) == 2
+
+
+def test_the_subject_carries_the_reason_so_repeats_are_distinguishable():
+    """83 identical subject lines is what turned a real alert into noise."""
+    make_run(hours_ago=48)
+    probe()
+
+    assert 'DACHApply mailbox check needs attention' in mail.outbox[0].subject
+    assert mail.outbox[0].subject != 'DACHApply mailbox check needs attention'
+
+
 def test_nothing_sent_when_no_recipients_are_configured(settings):
     settings.ADMINS = []
     make_run(hours_ago=0, error='boom')

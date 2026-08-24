@@ -1,7 +1,7 @@
 ---
 id: TASK-183
 title: Show where a dragged panel will land, and rearrange live
-status: To Do
+status: Done
 assignee: []
 labels:
   - frontend

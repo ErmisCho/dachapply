@@ -379,10 +379,20 @@ def _send_mailbox_health_alert(status_value, detail):
     recipients = [address for _name, address in settings.ADMINS]
     if not recipients:
         return  # AC6/task notes: nothing configured means nothing to do, never a crash
-    if not cache.add(MAILBOX_HEALTH_ALERT_CACHE_KEY, True, timeout=settings.ERROR_ALERT_COOLDOWN_SECONDS):
-        return  # already alerted inside the current cooldown window
+    # TASK-185: keyed on the STATUS, not just "an alert was sent", so a check that goes from stale to
+    # actively failing still says so once instead of being swallowed by the other status's window.
+    # And on the mailbox alert's OWN cooldown (a day by default), not TASK-88's 5-minute error floor
+    # -- borrowing that sent the owner 83 identical emails over three and a half days, because this
+    # condition persists until a human re-runs an interactive OAuth command.
+    if not cache.add(f'{MAILBOX_HEALTH_ALERT_CACHE_KEY}:{status_value}', True,
+                     timeout=settings.MAILBOX_HEALTH_ALERT_COOLDOWN_SECONDS):
+        return  # already alerted for this status inside the current cooldown window
     reason = f'is failing: {detail}' if status_value == 'failing' else detail
-    subject = 'DACHApply mailbox check needs attention'
+    detail_summary = 'failing' if status_value == 'failing' else (detail.split('(')[0].strip().rstrip('.') or 'stale')
+    # TASK-185: the hours were the ONLY thing that varied across the 83 emails, and they were buried
+    # in the body, so every subject line read identically and the thread collapsed into noise. In the
+    # subject, escalation is visible without opening anything.
+    subject = f'DACHApply mailbox check needs attention ({detail_summary})' if detail_summary else 'DACHApply mailbox check needs attention'
     body = (
         f'The DACHApply mailbox check {reason}\n\n'
         'What to do:\n\n'
@@ -418,7 +428,12 @@ def mailbox_health(request):
     if status_value == 'ok':
         # AC4: clear any cooldown key left over from a prior failure, so the NEXT failure alerts
         # promptly instead of riding out a cooldown window that started before the recovery.
-        cache.delete(MAILBOX_HEALTH_ALERT_CACHE_KEY)
+        # TASK-185: both status keys, since the cooldown is now per-status. Recovery itself stays
+        # deliberately silent -- an "it works again" email to an owner who just fixed it by hand adds
+        # nothing they do not already know -- but clearing the keys means the NEXT failure alerts
+        # promptly rather than riding out a window that started before the recovery.
+        cache.delete_many([f'{MAILBOX_HEALTH_ALERT_CACHE_KEY}:failing',
+                           f'{MAILBOX_HEALTH_ALERT_CACHE_KEY}:stale'])
     else:
         _send_mailbox_health_alert(status_value, detail)
     return Response({'status': status_value})

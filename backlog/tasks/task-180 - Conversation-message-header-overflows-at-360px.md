@@ -1,7 +1,7 @@
 ---
 id: TASK-180
 title: Conversation message header overflows at 360px
-status: To Do
+status: Done
 assignee: []
 labels:
   - frontend

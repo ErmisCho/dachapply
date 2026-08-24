@@ -1,7 +1,7 @@
 ---
 id: TASK-170
 title: Suggestions pick arbitrarily between two jobs at the same company
-status: To Do
+status: Done
 assignee: []
 labels:
   - backend
