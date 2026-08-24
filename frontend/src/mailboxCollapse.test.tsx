@@ -45,7 +45,14 @@ function counts(messages:MailboxMessage[]){
     // nodes, and each is counted on its own instead of as one contiguous string.
     collapsedCues:(html.match(/Show <\/span>▸/g)||[]).length,
     expandedCues:(html.match(/Hide <\/span>▾/g)||[]).length,
-    wordsHiddenOnNarrow:(html.match(/hidden sm:inline/g)||[]).length}
+    // TASK-180 added a SECOND `hidden sm:inline` node per row - the wide date - so this counts the
+    // state word specifically rather than every occurrence of the class.
+    wordsHiddenOnNarrow:(html.match(/class="hidden sm:inline">(?:Show|Hide) </g)||[]).length,
+    // TASK-180: the two date strings, narrow (<640px) and wide (>=640px). Captured as text rather
+    // than asserted literally, because the format is the browser locale's and CI's need not be the
+    // owner's - what is pinned is that both exist, one per row, and that the narrow one is shorter.
+    narrowDates:[...html.matchAll(/class="sm:hidden">([^<]*)</g)].map(m=>m[1]),
+    wideDates:[...html.matchAll(/class="hidden sm:inline">([^<]*)</g)].map(m=>m[1]).filter(t=>!/^(Show|Hide) $/.test(t))}
 }
 
 describe('TASK-177 a collapsed conversation message',()=>{
@@ -84,6 +91,27 @@ describe('TASK-177 a collapsed conversation message',()=>{
     const a=counts(thread),b=counts(flipped)
     expect([b.rows,b.rowsWithBody,b.fullBodies]).toEqual([a.rows,a.rowsWithBody,a.fullBodies])
     expect(b.ownRowsWithBody).toBe(15-a.ownRows)   // the 9 flipped-to-own rows all render a body
+  })
+
+  // TASK-180: the header row still overflowed 360px by up to 15px on 8 of these 15 rows once the
+  // sender name had truncated away, because the date, the counter and the cue are all `shrink-0`.
+  // The date is the only compressible one, so both forms are rendered and CSS picks one at 640px.
+  it('renders a short and a full date per row, and drops nothing else at narrow widths',()=>{
+    const c=counts(thread)
+    expect(c.narrowDates.length).toBe(15)
+    expect(c.wideDates.length).toBe(15)
+    // Shorter on every single row - this is the whole point of the change, and it fails if someone
+    // reverts either side to one shared format.
+    expect(c.narrowDates.every((n,i)=>n.length<c.wideDates[i].length)).toBe(true)
+    expect(c.wideDates.every(d=>d.includes('2025'))).toBe(true)
+    expect(c.narrowDates.some(d=>d.includes('2025'))).toBe(false)
+    // AC4: nothing was deleted to buy the space. Sender name, `n/m` counter and the collapse cue
+    // are all still on every row, and the cue keeps its own `shrink-0` (AC7) instead of truncating.
+    expect((c.html.match(/·<\/span>/g)||[]).length).toBe(30)          // two separators per row
+    expect((c.html.match(/>\d+\/15</g)||[]).length).toBe(15)          // the thread counter
+    expect((c.html.match(/Recruiter|You/g)||[]).length).toBeGreaterThanOrEqual(15)
+    expect(c.collapsedCues+c.expandedCues).toBe(15)
+    expect((c.html.match(/shrink-0 font-semibold/g)||[]).length).toBe(15)
   })
 
   it('says so when a collapsed message has an invitation or attachment but no text',()=>{

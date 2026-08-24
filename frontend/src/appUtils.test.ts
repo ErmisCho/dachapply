@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,receivedDateLabels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -732,5 +732,40 @@ describe('messagePreviewLine',()=>{
     expect(messagePreviewLine('')).toBe('')
     expect(messagePreviewLine(null)).toBe('')
     expect(messagePreviewLine('   \n  ')).toBe('')
+  })
+})
+
+// TASK-180: the conversation header overflowed 360px by up to 15px with the date at its full
+// `dateStyle:'medium'` form, so a narrow viewport gets a year-less numeric date instead. These pin
+// BOTH strings: a future change that quietly renders one format at every width fails here.
+// Constructed in LOCAL time so the assertion holds whatever TZ the machine or CI runner is in, and
+// the space before AM/PM is matched with \s because ICU 72+ emits U+202F there.
+describe('receivedDateLabels',()=>{
+  const at=new Date(2025,8,16,8,36).toISOString()
+
+  it('keeps the full, year-carrying date for sm: and up',()=>{
+    expect(receivedDateLabels(at,'en-US').wide).toMatch(/^Sep 16, 2025, 8:36\sAM$/)
+    expect(receivedDateLabels(at,'de-AT').wide).toContain('2025')
+  })
+
+  it('drops the year below sm: and keeps the locale own day/month order',()=>{
+    expect(receivedDateLabels(at,'en-US').narrow).toMatch(/^9\/16, 8:36\sAM$/)   // month-first
+    expect(receivedDateLabels(at,'de-AT').narrow).toMatch(/^16\.9\., 8:36$/)      // day-first, 24h
+  })
+
+  it('is shorter narrow than wide in every locale the app is used in',()=>{
+    // The reason `month:'numeric'` was chosen over `'short'`: "16. Sep., 8:36" would have saved
+    // almost nothing against de-AT's "16.09.2025, 08:36".
+    for(const locale of ['en-US','en-GB','de-DE','de-AT']){
+      const {wide,narrow}=receivedDateLabels(at,locale)
+      expect(narrow.length).toBeLessThan(wide.length)
+      expect(narrow).not.toContain('2025')
+    }
+  })
+
+  it('says so rather than rendering "Invalid Date" when there is no usable timestamp',()=>{
+    expect(receivedDateLabels(null)).toEqual({wide:'received date unknown',narrow:'received date unknown'})
+    expect(receivedDateLabels('')).toEqual({wide:'received date unknown',narrow:'received date unknown'})
+    expect(receivedDateLabels('not a date')).toEqual({wide:'received date unknown',narrow:'received date unknown'})
   })
 })

@@ -194,6 +194,29 @@ export function messagePreviewLine(text:string|null|undefined,max=140):string{
   return line.length>max?line.slice(0,max).trimEnd()+'…':line
 }
 
+// TASK-180. The conversation header (MailboxConversationMessage, App.tsx) is a flex row whose avatar
+// badge, date, `n/m` counter and state cue are all `shrink-0`; the sender name is the only child that
+// can absorb pressure, and once it has truncated to nothing the row still overflowed 360px by up to
+// 15px (measured, 8 of 15 rows of a real thread). The date is the largest compressible contributor,
+// so a narrow viewport gets a year-less, locale-ordered numeric date and the wide one is kept from
+// `sm:` (640px) up. Both strings are rendered and CSS picks one - the same trick TASK-177 used for
+// its 'Show'/'Hide' word - because the alternative is a resize listener for a purely visual choice.
+//
+//                     wide (>=640px)              narrow (<640px)
+//   en-US   "Sep 16, 2025, 8:36 AM"       "9/16, 8:36 AM"
+//   de-AT   "16.09.2025, 08:36"           "16.9., 8:36"
+//
+// `month:'numeric'` rather than `'short'` because the German short month name is no shorter than the
+// numeric date it replaces ("16. Sep., 8:36" saves 3 characters against de-AT's wide form, "16.9.,
+// 8:36" saves 6). The exact instant stays one hover away: the header keeps `title` on the full
+// `toLocaleString()`, and `sm:` and up still show the year, so nothing is only ever abbreviated.
+export function receivedDateLabels(iso:string|null|undefined,locale?:string):{wide:string;narrow:string}{
+  const d=iso?new Date(iso):null
+  if(!d||isNaN(d.getTime()))return {wide:'received date unknown',narrow:'received date unknown'}
+  return {wide:d.toLocaleString(locale,{dateStyle:'medium',timeStyle:'short'}),
+    narrow:d.toLocaleString(locale,{month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'})}
+}
+
 // TASK-133 AC3. The reply/reply-all compose dialog (App.tsx) edits To/Cc as one comma-separated
 // text input per field rather than a token-per-address widget - no new dependency, and it keeps
 // AC3's "shown verbatim" literal: whatever text sits in the box IS what gets parsed and POSTed to
