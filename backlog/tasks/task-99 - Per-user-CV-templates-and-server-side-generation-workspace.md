@@ -1,7 +1,7 @@
 ---
 id: TASK-99
-title: Per-user CV templates and a server-side generation workspace
-status: To Do
+title: Per-user CV templates and a server-side generation workspace (SPLIT - see TASK-99a / TASK-99b)
+status: Done
 assignee: []
 created_date: '2026-08-16 00:43'
 labels:
@@ -29,6 +29,23 @@ Today the LaTeX templates and the CV photo are the owner's personal files resolv
 - [ ] #2 Templates **and the CV photo** are stored and selected per user
 - [ ] #3 Concurrent generations by different users do not serialize on a global lock
 <!-- AC:END -->
+
+## Split, 2026-08-24
+
+Owner decision, asked because this is a subsystem rather than a task and half of it cannot run where
+the app is deployed: **split it, ship the half that works anywhere, and make the infrastructure
+question its own task.**
+
+- **TASK-99a — per-user CV templates and photo.** Storage, selection and the per-user resolution that
+  replaces the machine-local workspace. Works on any deployment, needs no toolchain, and is what AC2
+  of this task asked for. Ships now.
+- **TASK-99b — server-side generation.** AC1 and AC3: generation running on the server for a
+  non-owner, and concurrency that does not serialize on a global lock. Blocked on an infrastructure
+  decision, because the container has no `codex`, no `claude` and no `pdflatex` — `CODEX_CV_ENABLED`
+  is DEBUG-only by design (settings.py:117), so there is nothing to verify against in production
+  today. Filed, not attempted.
+
+This task is closed as split. Its three ACs live on in the two children, unchanged in substance.
 
 ## Implementation Notes
 
