@@ -105,4 +105,26 @@ That is not a reason to weaken AC5 -- it is the number AC5 asks for. Whoever clo
 "6 jobs backfilled, panel renders 0 rows, because every captured invite is in the past" and that is a
 PASS. Making the panel show something today would require showing past interviews, which is a
 different feature and a different task.
+
+### AC5 closed, coordinator 2026-08-24 — production before and after
+
+`backfill_interview_dates` run against production, dry run first and then `--yes`:
+
+    jobs with interview_at            0  ->  2
+    Upcoming interviews panel rows    0  ->  0
+    jobs in interview status          7      (unchanged)
+
+    written:  job 712  EBCONT (BMJ) - ElasticSearch Consultant   20.07.2026 13:00
+              job 723  APC Business Services - DevOps Consultant  24.07.2026 13:00
+
+The panel still renders zero rows and that is the correct outcome, not a shortfall: it reads
+`interview_at__gte=now` and BOTH recovered dates are already in the past. Nothing the implementation
+could do would change that -- only a future invitation will populate the panel.
+
+Job 723's date came from a message classified `recruiter_reply`, not `interview_invitation`, which is
+the whole reason the calendar source is deliberately classification-independent.
+
+The live path remains blind to that shape: **19 of the 20 calendar-carrying messages are not
+classified as invitations**. Filed as TASK-182 rather than folded in here, because widening a
+classifier without a measured corpus is what TASK-162 and TASK-163 were both burned by.
 <!-- SECTION:NOTES:END -->
