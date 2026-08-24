@@ -30,11 +30,17 @@ In Progress, whatever the code looks like:
 
 1. **Committed** — the change is in a commit, staged file by file (TW-002), not left in the working
    tree.
-2. **Pushed** — the branch is on `origin`, not only local.
+2. **Pushed — all of it.** `git log <branch> --not origin/<branch>` must print nothing before the
+   PR is merged. A branch can be "pushed" and still be behind its local HEAD, and GitHub merges what
+   **it** has, not what you have.
 3. **Working** — verified in the real thing, not argued from the code (TW-004). Tests green, and the
    browser/CLI measurement done for anything user-facing.
 4. **Squash-merged to `main`** — via a PR, with CI green before the merge.
-5. **Branch deleted** — remote and local, once merged.
+5. **Branch deleted — remote and local, and only after step 6.** Never with
+   `gh pr merge --delete-branch`: that flag deletes at *merge* time, which is before production has
+   been verified, so it inverts steps 5 and 6. Merge with `--squash` alone, verify, then delete.
+6. **Production verified** — the deploy finished, the health endpoint answers, and the *specific*
+   change is observable in what production serves. A green workflow is not that check.
 
 Consequences worth stating, because they have already bitten in this repo:
 
@@ -47,6 +53,13 @@ Consequences worth stating, because they have already bitten in this repo:
   migration applied. Record the rollback image before merging (TW-006).
 - A task with an unverifiable criterion does NOT get marked Done to tidy the board. Leave it In
   Progress and name the blocker (TW-005).
+
+- **This cost a fix on 2026-08-24.** Wave 4's PR #79 was merged with `--delete-branch` while commit
+  `a86b8e5` (TASK-185, the mailbox alert that had emailed the owner 83 times) had never been pushed.
+  The merge silently shipped three of the four tasks, and deleting the branch orphaned the fourth —
+  recoverable only because the object was still in the local object database. Both halves of that are
+  now steps 2 and 5 above. The tell was available and unread: `gh pr merge` printed an 8-file diff
+  for a wave that touched twelve.
 
 ## TW-001: Rubric before work, never after
 
