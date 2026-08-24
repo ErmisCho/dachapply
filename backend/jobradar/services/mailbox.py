@@ -80,7 +80,7 @@ from urllib.request import Request, urlopen
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import DatabaseError, IntegrityError, transaction
-from django.db.models import Max, Q
+from django.db.models import F, Max, Q
 from django.utils import timezone
 
 from jobradar.models import ApplicationNote, JobLead, MailboxCheckRequest, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun
@@ -1976,6 +1976,39 @@ def _create_pending_suggestion(message: MailboxMessage, job: JobLead, suggestion
     return 1
 
 
+def _interview_datetime(message: MailboxMessage, classification: str, extracted=None) -> str | None:
+    """TASK-179: the interview datetime a stored MailboxMessage actually carries, as an ISO string,
+    or None when it carries none. The ONE place the date is sourced -- build_suggestions() (every
+    live path: run_check, attach_message_to_job, backfill_historical_mail) and
+    backfill_interview_dates() below both go through it.
+
+    Order, and the reason for it (AC3): an attached iCalendar VEVENT wins. TASK-135 already parses
+    and stores the first VEVENT's start on the row (`calendar_start`); it is the sender's own
+    calendaring system stating the time as structured data, so preferring it over a regex run across
+    prose is not a close call. Leaving it unused was half of why this column stayed empty: before this
+    task the only mentions of `calendar_start` in this module were the parse site and the four
+    MailboxMessage.objects.create() calls that persist it, plus MailboxMessageSerializer's field list
+    -- nothing ever read it back to decide anything.
+
+    `extracted` is whatever the caller's classifier already produced for this same message (see
+    classify_email -- an LLM_PROVIDER extraction when one is configured, else _extract_datetime's
+    two-shape regex floor); re-derived from the stored subject/body when the caller has nothing,
+    which is the backfill's case.
+
+    Gated on `interview_invitation` for the TEXT source only. A date scraped out of arbitrary prose
+    is only meaningful because the message was classified an invitation ("wir melden uns bis zum
+    03.03.2026" in a rejection is not an interview time), while a VEVENT is self-describing and is
+    therefore read from any classification -- deliberately, because the real calendar-only invitations
+    measured here classify as `recruiter_reply`: the classifier reads subject+body only, and those
+    messages have an EMPTY body (see MailboxMessage.calendar_summary's own docstring, TASK-135).
+    """
+    if message.calendar_start:
+        return message.calendar_start.isoformat()
+    if classification != 'interview_invitation':
+        return None
+    return extracted or _extract_datetime(f'{message.subject}\n{message.body_text}')
+
+
 def build_suggestions(message: MailboxMessage, job: JobLead, classification: str, interview_at, raw: RawMessage | None = None) -> int:
     """Returns the number of MailboxSuggestion rows created (unchanged contract -- every existing
     caller/test treats this as a plain count, so TASK-154 keeps that shape rather than widening it
@@ -2013,7 +2046,13 @@ def build_suggestions(message: MailboxMessage, job: JobLead, classification: str
     elif classification == 'offer' and job.status not in ('offer', 'accepted'):
         created += _create_pending_suggestion(message, job, 'status_change', {'status': 'offer'})
     elif classification == 'interview_invitation':
-        payload = {'interview_at': interview_at}
+        # TASK-179: the date is sourced HERE (calendar first -- see _interview_datetime), not taken
+        # on trust from the caller's prose extraction, and the key is OMITTED when there is no date
+        # rather than sent as None. apply_suggestion() hands this payload straight to
+        # JobLeadSerializer.update(), so an explicit null in it is an instruction to ERASE the job's
+        # interview_at -- which is what confirming an undated invitation used to do.
+        when = _interview_datetime(message, classification, interview_at)
+        payload = {'interview_at': when} if when else {}
         if job.status not in ('interview', 'offer', 'accepted', 'rejected', 'withdrawn', 'skipped', 'archived'):
             payload['status'] = 'interview'
         created += _create_pending_suggestion(message, job, 'interview_date', payload)
@@ -2085,7 +2124,9 @@ def attach_message_to_job(message: MailboxMessage, job: JobLead, user=None) -> M
     Runs the SAME suggestion generation a domain match gets in run_check(): build_suggestions() with
     the message's already-stored classification and an interview_at re-derived from the now-
     persisted body_text/subject via the existing _extract_datetime() heuristic, rather than a second
-    extraction path or a stored duplicate of what run_check already computed once.
+    extraction path or a stored duplicate of what run_check already computed once. That re-derivation
+    is the prose FALLBACK only -- since TASK-179 build_suggestions prefers the message's own parsed
+    calendar invitation over it (see _interview_datetime).
 
     Idempotent: attaching a message already attached to this same job does not create a second set
     of suggestions. TASK-130 AC1 gave build_suggestions() its own (job, suggestion_type) dedupe guard
@@ -2141,6 +2182,86 @@ def dismiss_redundant_pending_suggestions(dry_run: bool = True) -> list[dict]:
             for suggestion in redundant:
                 dismiss_suggestion(suggestion)
         results.append({'job': survivor.job, 'suggestion_type': suggestion_type, 'kept_id': survivor.id, 'dismissed_count': len(redundant)})
+    return results
+
+
+# --- TASK-179 AC4/AC5: interview dates already sitting in stored mail, never written to the job ---
+
+def interview_date_coverage(owner=None) -> dict:
+    """TASK-179 AC5: the before/after census, in one read-only pass. Run it, run the backfill, run it
+    again -- `jobs_with_interview_at` and `upcoming_interviews` are the two numbers AC5 asks for.
+
+    Scoped to the mailbox owner's OWN jobs (owned_jobs, the same rule followup_digest uses), not
+    every row in the table: the coordinator's production baseline is 82 tracked jobs, which is the
+    owner's board, while the deployment holds several accounts. The mailbox-side counts are
+    deliberately NOT scoped -- MailboxMessage/MailboxSuggestion rows only ever come from the one
+    mailbox this module reads, so there is nothing to scope them by.
+
+    The three `messages_*` counts are what says WHICH of the two measured causes is dominant in real
+    data: an invitation whose date could not be read at all, versus a parsed VEVENT sitting on a
+    message the classifier never called an invitation (see _interview_datetime's docstring).
+    """
+    owner = owner or _owner_user()
+    jobs = owned_jobs(owner) if owner is not None else JobLead.objects.none()
+    suggestions = MailboxSuggestion.objects.filter(suggestion_type='interview_date')
+    with_calendar = MailboxMessage.objects.exclude(calendar_start=None)
+    return {
+        'owner': (getattr(owner, 'email', '') or getattr(owner, 'username', '')) if owner is not None else '',
+        'jobs': jobs.count(),
+        'jobs_with_interview_at': jobs.exclude(interview_at=None).count(),
+        'jobs_in_interview_status': jobs.filter(status='interview').count(),
+        # views.stats' Upcoming interviews panel query, character for character apart from its [:10]
+        # display cap -- the cap is reported separately by the command rather than hidden in here.
+        'upcoming_interviews': jobs.filter(interview_at__gte=timezone.now()).exclude(status__in=['rejected', 'withdrawn', 'skipped', 'archived']).count(),
+        'interview_date_suggestions': suggestions.count(),
+        'interview_date_suggestions_pending': suggestions.filter(status='pending').count(),
+        'interview_date_suggestions_confirmed': suggestions.filter(status='confirmed').count(),
+        'interview_date_suggestions_carrying_a_date': sum(1 for s in suggestions if (s.payload or {}).get('interview_at')),
+        'messages_classified_interview_invitation': MailboxMessage.objects.filter(classification='interview_invitation').count(),
+        'messages_with_calendar_start': with_calendar.count(),
+        'messages_with_calendar_start_not_classified_invitation': with_calendar.exclude(classification='interview_invitation').count(),
+    }
+
+
+def backfill_interview_dates(dry_run: bool = True, owner=None) -> list[dict]:
+    """TASK-179 AC4: fill `interview_at` on the owner's jobs that already have the answer sitting in
+    their own matched mail -- a management command, dry run by default, never a migration, so the
+    proposed date and the message it came from are both inspectable before anything is written.
+
+    One row per job at most: the MOST RECENTLY RECEIVED matched message that carries a date wins
+    (later mail reschedules earlier mail), and `_interview_datetime` decides what "carries a date"
+    means -- an iCalendar VEVENT from any classification, or a regex-readable time in the prose of a
+    message classified `interview_invitation`. The owner's own sent mail is excluded for the same
+    reason run_check never generates suggestions from it: a sent "Tuesday 14:00 works for me" is the
+    owner talking, not the employer scheduling.
+
+    Only jobs whose `interview_at` IS NULL and whose status is still actionable are considered --
+    this never overwrites a date a human set, and never revives a closed-out application. Written
+    with .update() rather than .save(): one column, no JobLead.save() side effects (applied_at
+    inference, updated_at), and no status change -- a job the owner never moved to `interview` keeps
+    the status it has, because a date is evidence of a meeting, not of a board decision.
+
+    Returns one dict per job it would fill (`[]` when there is nothing to do -- also on a second run,
+    since a filled job no longer matches):
+        {'job': JobLead, 'message': MailboxMessage, 'interview_at': datetime, 'source': 'calendar'|'text'}
+    """
+    owner = owner or _owner_user()
+    jobs = owned_jobs(owner) if owner is not None else JobLead.objects.none()
+    results = []
+    for job in jobs.filter(interview_at__isnull=True, status__in=JobLead.ACTIONABLE_STATUSES).order_by('id'):
+        # nulls_last matters on Postgres, where a plain DESC sorts NULLs FIRST -- an undated row
+        # would otherwise outrank every dated one and decide the job's interview time.
+        messages = job.mailbox_messages.filter(sent_by_owner=False).order_by(F('received_at').desc(nulls_last=True), '-uid')
+        for message in messages:
+            when = _interview_datetime(message, message.classification)
+            if not when:
+                continue
+            results.append({'job': job, 'message': message, 'interview_at': datetime.fromisoformat(when),
+                            'source': 'calendar' if message.calendar_start else 'text'})
+            break
+    if not dry_run:
+        for row in results:
+            JobLead.objects.filter(pk=row['job'].pk).update(interview_at=row['interview_at'])
     return results
 
 

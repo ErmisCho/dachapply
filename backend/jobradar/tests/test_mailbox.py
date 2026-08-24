@@ -10,6 +10,7 @@ _post_json_via_windows_curl for the optional local-LLM path. No test opens a soc
 import base64
 import email
 import email.policy
+import io
 import json
 import threading
 import time
@@ -5440,3 +5441,118 @@ def test_compose_reply_draft_refuses_when_this_backend_has_no_mail_credentials(d
     assert reason, 'must refuse with a reason, never raise'
     assert 'credentials' in reason
     assert not MailboxDraft.objects.filter(message=message).exists(), 'a refused draft must write nothing'
+
+
+# --- TASK-179: an interview date has to reach the JOB, through the path, never via a fixture ------
+
+def _invitation_ics(start_local):
+    """An invitation .ics whose VEVENT starts at `start_local` (a local, aware datetime) -- the same
+    shape ONTEC_STYLE_ICS above carries, dated relative to now so the assertions below can be about
+    a FUTURE interview (the only kind the board's Upcoming interviews panel renders).
+    """
+    stamp = start_local.strftime('%Y%m%dT%H%M%S')
+    end = (start_local + timedelta(hours=1)).strftime('%Y%m%dT%H%M%S')
+    return (
+        'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\n'
+        f'DTSTART;TZID=Europe/Vienna:{stamp}\r\nDTEND;TZID=Europe/Vienna:{end}\r\n'
+        'SUMMARY:Vorstellungsgespräch\r\nLOCATION:Microsoft Teams Meeting\r\n'
+        'ORGANIZER;CN=Doris Liegenfeld:mailto:doris.liegenfeld@ontec.at\r\n'
+        'UID:task179@ontec.at\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n'
+    )
+
+
+def test_interview_invitation_writes_the_calendar_date_onto_the_job_end_to_end(client, owner, monkeypatch):
+    """TASK-179 AC2/AC6: the whole write path, from raw RFC822 bytes to the Upcoming interviews panel,
+    with `interview_at` set by NOTHING but that path.
+
+    This is the test TASK-078 never had, and its absence is why the column shipped empty: TASK-078's
+    own coverage (test_api.test_stats_list_upcoming_interviews_soonest_first_and_drop_past_ones)
+    creates its jobs with `interview_at=...` already set and then asserts the panel renders them, so
+    it passes just as happily when no code anywhere writes the field.
+
+    Nothing here hands the app a date -- it arrives only as an iCalendar VEVENT inside the message,
+    parsed by the existing TASK-135 code. Delete the calendar lookup from _interview_datetime() and
+    this fails at the payload assertion; delete build_suggestions' interview branch and it fails one
+    line earlier; stop apply_suggestion writing and it fails at the job assertion.
+    """
+    start = timezone.localtime(timezone.now() + timedelta(days=30)).replace(hour=14, minute=0, second=0, microsecond=0)
+    job = JobLead.objects.create(company='Ontec', title='Backend Engineer', url='https://ontec.at/jobs/1',
+                                 status='applied', status_date=timezone.localdate(), created_by=owner)
+    # A calendar-only invitation, the real measured shape (TASK-135): the subject names the interview,
+    # the body is empty, and the only time anywhere in the message is the VEVENT's DTSTART -- so
+    # _extract_datetime's prose regex cannot be what supplies the answer.
+    raw_b64 = _gmail_raw_b64_calendar_and_attachment(
+        'doris.liegenfeld@ontec.at', 'Einladung zum Vorstellungsgespräch', _invitation_ics(start))
+    fake_http = _FakeGmailHttp(['msg-invite'], {'msg-invite': {'internalDate': '9000000', 'threadId': 't1', 'raw': raw_b64}})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+
+    message = MailboxMessage.objects.get(gmail_id='msg-invite')
+    assert message.matched_job == job and message.classification == 'interview_invitation'
+    assert message.body_text == '', 'the fixture must not hand the app a date in prose'
+    suggestion = MailboxSuggestion.objects.get(job=job, suggestion_type='interview_date')
+    assert suggestion.payload.get('interview_at'), 'the invitation carried a date, so the suggestion must too'
+    # Compared as an INSTANT: the payload is built from the invitation's own Europe/Vienna VEVENT
+    # while the stored column reads back in UTC -- same moment, two spellings.
+    assert datetime.fromisoformat(suggestion.payload['interview_at']) == message.calendar_start
+
+    # The owner clicking Confirm in the review panel -- the real endpoint, not apply_suggestion().
+    r = client.post(f'/api/mailbox-suggestions/{suggestion.id}/confirm/')
+    assert r.status_code == 200
+
+    job.refresh_from_db()
+    assert job.interview_at == message.calendar_start
+    assert job.status == 'interview'
+    panel = client.get('/api/stats/').data['upcoming_interviews']
+    assert [row['id'] for row in panel] == [job.id]
+
+
+def test_an_undated_interview_invitation_never_erases_the_date_the_job_already_has(db, owner):
+    """TASK-179: confirming an invitation whose date could not be read must leave `interview_at`
+    alone. apply_suggestion() hands the payload straight to JobLeadSerializer.update(), so the old
+    {'interview_at': None} was not "no date" -- it was an instruction to null the column, i.e. a
+    later invitation could delete the date an earlier one had established.
+    """
+    known = timezone.localtime(timezone.now() + timedelta(days=10)).replace(minute=0, second=0, microsecond=0)
+    job = JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', status='interview',
+                                 interview_at=known, created_by=owner)
+    run = MailboxRun.objects.create()
+    message = MailboxMessage.objects.create(
+        run=run, uid=7, sender='hr@acme.test', subject='Einladung zum Vorstellungsgespräch',
+        body_text='Wir laden Sie herzlich zum Vorstellungsgespräch ein; den Termin stimmen wir noch ab.',
+        classification='interview_invitation', matched_job=job)
+
+    assert build_suggestions(message, job, 'interview_invitation', None) == 1
+    suggestion = MailboxSuggestion.objects.get(job=job, suggestion_type='interview_date')
+    assert 'interview_at' not in suggestion.payload, 'no date read means no interview_at key at all'
+
+    apply_suggestion(suggestion, user=owner)
+    job.refresh_from_db()
+    assert job.interview_at == known
+
+
+def test_backfill_interview_dates_reports_before_it_writes_and_only_writes_with_yes(db, owner):
+    """TASK-179 AC4: dry run by default. The date is already in the database (a stored message's
+    calendar_start, exactly what production has) -- the command's job is to move it onto the job.
+    """
+    start = timezone.localtime(timezone.now() + timedelta(days=20)).replace(hour=9, minute=30, second=0, microsecond=0)
+    job = JobLead.objects.create(company='Ontec', title='Backend Engineer', url='https://ontec.at/jobs/1',
+                                 status='applied', status_date=timezone.localdate(), created_by=owner)
+    run = MailboxRun.objects.create()
+    MailboxMessage.objects.create(
+        run=run, uid=11, sender='doris.liegenfeld@ontec.at', subject='Einladung zum Kennenlernen per Microsoft-Teams',
+        body_text='', received_at=timezone.now(), classification='recruiter_reply', matched_job=job,
+        calendar_summary='Einladung zum Kennenlernen per Microsoft-Teams', calendar_start=start)
+
+    out = io.StringIO()
+    call_command('backfill_interview_dates', stdout=out)
+    job.refresh_from_db()
+    assert job.interview_at is None, 'the default run must write nothing'
+    assert 'Dry run' in out.getvalue() and f'job {job.id}' in out.getvalue()
+
+    out = io.StringIO()
+    call_command('backfill_interview_dates', '--yes', stdout=out)
+    job.refresh_from_db()
+    assert job.interview_at == start
+    assert job.status == 'applied', 'a date is evidence of a meeting, not a board decision'
