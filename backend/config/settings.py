@@ -407,6 +407,15 @@ DEFAULT_EXCEPTION_REPORTER_FILTER = 'config.error_filters.DachApplyExceptionRepo
 # legitimate gaps between successful runs, and deriving the threshold from cadence is a refinement
 # for later, not a requirement now (see the task's Implementation Notes).
 MAILBOX_STALE_ALERT_HOURS = int(os.getenv('MAILBOX_STALE_ALERT_HOURS', '24'))
+# TASK-185. Deliberately NOT ERROR_ALERT_COOLDOWN_SECONDS, which the mailbox health alert used to
+# borrow. That is TASK-88's setting for ordinary error alerting, where a 5-minute floor is right
+# because a transient exception may or may not repeat. This condition is a different kind of event:
+# MAILBOX_STALE_ALERT_HOURS above means the alert only fires once the problem is already a day old,
+# and it then persists until a human runs an interactive OAuth command. The two settings disagreed
+# about the unit -- one measured in days, the other re-notifying every 5 minutes -- and the owner
+# received 83 identical emails over three and a half days (measured, 2026-08-24). Raising TASK-88's
+# setting instead would have silenced unrelated alerts that legitimately want a short floor.
+MAILBOX_HEALTH_ALERT_COOLDOWN_SECONDS = int(os.getenv('MAILBOX_HEALTH_ALERT_COOLDOWN_SECONDS', '86400'))
 
 _alert_last_sent = {}
 
