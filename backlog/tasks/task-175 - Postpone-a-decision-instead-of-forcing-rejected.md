@@ -71,4 +71,53 @@ exists precisely because the classifier's binary was wrong for this class of mes
 TASK-168 is fixing several such misclassifications, but no classifier will get "we will come back to
 you in a few weeks" reliably right, so the postpone action is worth having regardless of how good the
 classification gets.
+### What was built (2026-08-24)
+
+**No new `JobLead` status (AC6).** The design above was kept, not re-litigated. `JobLead.STATUSES` is
+a pipeline and "waiting" is an annotation ON a stage, not a stage: the owner can be waiting after
+applying and waiting again after an interview. A `pending` status would collapse two independent
+dimensions into one column and would corrupt both the funnel counts and the `DATED_STATUSES`
+staleness logic (`models.py:210`), which read `status` as "where the application actually got to".
+The reasoning is recorded in three places in the code, not only here: `MailboxSuggestion`'s model
+docstring, `services.mailbox.postpone_suggestion`'s docstring, and
+`MailboxSuggestionViewSet.postpone`'s docstring.
+
+**`postponed` is a fourth STATUS, not a fourth TYPE.** The notes above guessed at a
+`feedback_postpone` suggestion TYPE. That was not built, for two measured reasons: a postpone
+RESOLVES a proposal the classifier already made rather than being a proposal of its own, so a type
+would need a row created and immediately confirmed (two rows per postpone); and
+`services.mailbox._create_pending_suggestion` enforces one pending row per `(job, suggestion_type)`,
+which a resolution has no business competing for. `MailboxSuggestion.STATUSES` gained
+`('postponed','Postponed')` plus a `postponed_until` DateField, so the ledger says what was decided
+and until when even after the job's live clock is moved again later.
+
+**`postponed` is deliberately non-terminal (AC7).** `confirm` and `dismiss` now refuse only
+`confirmed`/`dismissed` (`MailboxSuggestionViewSet.DECIDED_STATUSES`), so a postponed suggestion can
+still be confirmed (applying the original `{'status':'rejected'}` payload), dismissed, or postponed
+again. Four tests cover this.
+
+**AC5 reuses the existing machinery, and adds none.** The only thing a postpone writes on the job is
+`feedback_due_date`. That single field is what `JobLeadViewSet.feedback_due` (the board's "Feedback
+deadlines" pane, TASK-146) lists with its own `overdue` flag, and what
+`services.followup_digest`'s overdue-feedback section mails about. Both start reporting the job on
+the day the date arrives with no change to either. The one addition is in
+`MailboxSuggestionViewSet.list`: the deferred CARD also comes back into the default pending feed once
+`job.feedback_due_date <= today`, keyed off that same field -- no second reminder store.
+
+**Frontend.** `frontend/src/App.tsx`, the deduped decision group in `JobMailboxConversationCard`,
+gained a third button ("Not yet") that opens an inline `<input type="date">` pre-filled two weeks out
+and editable (AC2 -- fixed interval buttons alone were explicitly not enough). It is plain inline
+markup, NOT a portalled popup: a native date input's picker is drawn by the browser outside the
+document, so TASK-173's clipping problem cannot arise and no second `popupBelowAnchor` caller was
+added. The card root already carries `.mailbox-selectable`, so TASK-134's drag guard covers the new
+control with no change. `defaultPostponeDate` is a pure helper in `appUtils.ts` with unit tests.
+
+**Production census, read-only, 2026-08-24** (`DACHAPPLY_ALLOW_PROD_DB=1`): 93 jobs, **16 carry a
+`feedback_due_date`**, 12 of those on actionable-status jobs (1 already overdue, 0 due today, 11
+upcoming); by status, 11 interview / 4 rejected / 1 applied. **0 pending `MailboxSuggestion`s on
+actionable jobs**, so the "Email decisions" panel renders no card at all today -- which is why AC8
+needs a synthetic fixture rather than a real card.
+
+**AC8 fixture:** `manage.py postpone_browser_fixture --create [--due-in-days N]` / `--delete`.
+Everything it creates is named `ZZ TASK-175 browser fixture` and `--delete` matches on exactly that.
 <!-- SECTION:NOTES:END -->
