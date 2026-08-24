@@ -75,7 +75,11 @@ export type MailboxAttachment={filename:string;mime_type:string;size:number}
 // away (GET /mailbox-messages/{id}/, TASK-142's retrieve). dismissed is true only when a row was
 // explicitly revealed via ?include_dismissed=1 - the default list never includes a dismissed row at all.
 export type MailboxMessage={id:number;sender:string;subject:string;body_text:string;received_at:string|null;classification:string;matched_job:number|null;matched_job_company:string;matched_job_title:string;draft:MailboxDraft|null;thread_id:string;gmail_url:string|null;sent_by_owner:boolean;created_at:string;calendar_summary:string;calendar_location:string;calendar_organizer:string;calendar_start:string|null;calendar_end:string|null;attachments:MailboxAttachment[];suggested_job?:{id:number;label:string}|null;body_truncated?:boolean;dismissed?:boolean}
-export type MailboxSuggestion={id:number;message:MailboxMessage;job:number;job_company:string;job_title:string;suggestion_type:'status_change'|'interview_date'|'feedback_clear';payload:Record<string,any>;status:'pending'|'confirmed'|'dismissed';created_at:string;decided_at:string|null}
+// TASK-175: `postponed` is a fourth STATUS, not a fourth suggestion_type - a postpone resolves a
+// proposal the classifier already made rather than being one of its own (see the backend model's
+// docstring). It is also non-terminal: a postponed suggestion can still be confirmed or dismissed.
+// `postponed_until` is the date the owner picked, null on every suggestion never postponed.
+export type MailboxSuggestion={id:number;message:MailboxMessage;job:number;job_company:string;job_title:string;suggestion_type:'status_change'|'interview_date'|'feedback_clear';payload:Record<string,any>;status:'pending'|'confirmed'|'dismissed'|'postponed';created_at:string;decided_at:string|null;postponed_until:string|null}
 // TASK-117 AC2/AC6: GET /api/jobs/{id}/mailbox/ and POST /api/mailbox-messages/{id}/attach/ both
 // answer with this shape (MailboxMessageWithSuggestionsSerializer) - each suggestion nested here is
 // a complete MailboxSuggestion (server re-serializes message->suggestion, not the reverse), so the

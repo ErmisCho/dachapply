@@ -615,6 +615,22 @@ export function popupBelowAnchor(rect:{left:number;bottom:number},viewportW:numb
   }
 }
 
+// TASK-175. The date a decision card's Postpone control starts on: `weeks` weeks after `todayIso`,
+// as the same YYYY-MM-DD string an <input type="date"> reads and writes. Two weeks is the owner's
+// own "a few weeks" default and nothing more - the input stays editable, and the server takes
+// whatever date comes back rather than re-deriving one (see MailboxSuggestionViewSet.postpone).
+// Date arithmetic in UTC on purpose: `new Date('2026-08-24')` parses as midnight UTC, so adding
+// days with setUTCDate and re-slicing the ISO string can never drift a day either way through a
+// local timezone or a DST boundary - which a local-time round trip does west of Greenwich.
+// A junk or empty `todayIso` yields '', so a caller that lost track of today gets an empty input
+// the owner must fill rather than a confidently wrong date.
+export function defaultPostponeDate(todayIso:string,weeks=2):string{
+  const d=new Date(`${todayIso}T00:00:00Z`)
+  if(isNaN(d.getTime()))return ''
+  d.setUTCDate(d.getUTCDate()+weeks*7)
+  return d.toISOString().slice(0,10)
+}
+
 // TASK-178. `note_preview` is the list API's first line of a job's non-empty `general` note, already
 // truncated at 140 characters server-side; it is the empty string when the job has no note, and the
 // board derives "this row has a note" from that emptiness - there is deliberately no second boolean.

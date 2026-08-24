@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,popupBelowAnchor,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,jobNotePreview,movePanelInOrder,NOTE_PREVIEW_WIDTH,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,previewPanelDrag,ratePercent,receivedDateLabels,reorderPanels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,defaultPostponeDate,describeOrdering,popupBelowAnchor,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,jobNotePreview,movePanelInOrder,NOTE_PREVIEW_WIDTH,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,previewPanelDrag,ratePercent,receivedDateLabels,reorderPanels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -1026,5 +1026,25 @@ describe('jobNotePreview',()=>{
 
   it('collapses a multi-line note to one line',()=>{
     expect(jobNotePreview({note_preview:'first line\nsecond line'})).toBe('first line second line')
+  })
+})
+
+// TASK-175 AC2. The Postpone control's default, not its only option - the input stays editable.
+describe('defaultPostponeDate', () => {
+  it('defaults to two weeks after today', () => {
+    expect(defaultPostponeDate('2026-08-24')).toBe('2026-09-07')
+  })
+  it('crosses a month and a year boundary without drifting a day', () => {
+    expect(defaultPostponeDate('2026-12-28')).toBe('2027-01-11')
+    // 2028 is a leap year: 14 days on from 22 Feb lands on 7 Mar only if 29 Feb is counted.
+    expect(defaultPostponeDate('2028-02-22')).toBe('2028-03-07')
+  })
+  it('takes any interval the caller asks for', () => {
+    expect(defaultPostponeDate('2026-08-24', 1)).toBe('2026-08-31')
+    expect(defaultPostponeDate('2026-08-24', 8)).toBe('2026-10-19')
+  })
+  it('returns an empty string rather than a wrong date for junk input', () => {
+    expect(defaultPostponeDate('')).toBe('')
+    expect(defaultPostponeDate('not a date')).toBe('')
   })
 })
