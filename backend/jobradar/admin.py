@@ -521,9 +521,15 @@ class UserProfileAdmin(admin.ModelAdmin):
 
 @admin.register(JobLead)
 class JobLeadAdmin(admin.ModelAdmin):
-    list_display=('company','title','location','work_mode','status','url','created_at')
-    search_fields=('company','title','url','raw_description')
-    list_filter=('status','work_mode','created_at')
+    # TASK-184 named this the place staff oversight now lives, since accessible_jobs no longer
+    # grants staff every row on the board. Ownership is therefore the question this list has to be
+    # able to answer, so created_by/submitted_for are shown and filterable here -- without them
+    # "oversight still exists" would be true only in the sense that the rows are technically
+    # reachable. list_select_related keeps the two FK columns from costing a query per row.
+    list_display=('company','title','location','work_mode','status','created_by','submitted_for','url','created_at')
+    list_select_related=('created_by','submitted_for')
+    search_fields=('company','title','url','raw_description','created_by__username','created_by__email','submitted_for__username','submitted_for__email')
+    list_filter=('status','work_mode','created_by','created_at')
 
 @admin.register(JobEvaluation)
 class JobEvaluationAdmin(admin.ModelAdmin):
