@@ -588,3 +588,24 @@ export function groupFeedbackDueRows<T extends {feedback_due_date:string}>(rows:
   const upcoming=rows.filter(r=>r.feedback_due_date>=todayIso)
   return {overdue,upcoming}
 }
+
+// TASK-173. Viewport coordinates for the row feedback popup. The popup is portalled to <body> and
+// laid out `position:fixed` now, so it is no longer positioned by the table wrapper that used to be
+// its offset parent - the clamping that ancestor gave it for free has to be arithmetic here. Pure on
+// purpose: this vitest run has no DOM, so the clamping is tested with plain numbers.
+// 352px is `w-[22rem]`, the width the popup has always had; the trigger's rect supplies the rest, so
+// `left` is the trigger's left edge and `top` its bottom edge + 8px - what `left-0 top-full mt-2`
+// resolved to while it was an absolutely-positioned child.
+// 300 is the popup's approximate height (heading + three labelled inputs + Done). It is only used to
+// stop the bottom edge falling off a short viewport; being a little wrong shifts the popup by a few
+// pixels near the bottom of the screen and nothing else, and `overflow-auto` on the popup handles the
+// case where its real content is taller.
+export const FEEDBACK_POPUP_WIDTH=352
+export function feedbackPopupPosition(rect:{left:number;bottom:number},viewportW:number,viewportH:number){
+  const width=Math.min(FEEDBACK_POPUP_WIDTH,viewportW-32)
+  return {
+    left:Math.max(16,Math.min(rect.left,viewportW-width-16)),
+    top:Math.max(16,Math.min(rect.bottom+8,viewportH-300-16)),
+    width,
+  }
+}

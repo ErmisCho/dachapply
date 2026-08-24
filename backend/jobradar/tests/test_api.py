@@ -2221,6 +2221,105 @@ def test_recipient_keeps_full_access_to_a_submission_with_no_creator(db):
     assert stranger_client.get('/api/jobs/').data==[] and stranger_client.get(f'/api/jobs/{job.id}/').status_code==404
 
 
+# --- TASK-184: the board is scoped to the signed-in user, staff included ----------------------
+
+def test_a_staff_users_board_shows_only_their_own_jobs_on_every_board_facing_endpoint(db):
+    """TASK-184 AC2/AC5. Two real users, one of them staff, and every surface the board reads.
+
+    This fails the moment accessible_jobs is widened back to `if is_staff_user(user): return qs`:
+    every assertion below names the OTHER user's rows, so a staff exemption puts them back into the
+    list, the stats total, the panels and the exports at once. It is one test rather than nine
+    because the failure it guards against is the endpoints DISAGREEING -- a partial fix leaves
+    /api/jobs/ scoped while /api/stats/ counts the whole table, which reads as data loss.
+
+    Staff-ness is the mechanism, not demo-ness: `stranger` is an ordinary account standing in for
+    the next person who signs up, not for the demo fixture.
+    """
+    from jobradar.models import MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion
+
+    today = timezone.localdate()
+    staff = User.objects.create_user('board-staff', email='staff@example.test', password='pw', is_staff=True, is_superuser=True)
+    stranger = User.objects.create_user('board-stranger', email='stranger@example.test', password='pw')
+
+    mine = JobLead.objects.create(company='Mine GmbH', title='Backend Engineer', url='https://mine.test/1', status='interview', created_by=staff, applied_at=today, feedback_due_date=today)
+    theirs = JobLead.objects.create(company='Theirs AG', title='Frontend Engineer', url='https://theirs.test/1', status='interview', created_by=stranger, applied_at=today, feedback_due_date=today)
+    # The legacy row with no owner at all (production has exactly one): nobody's board, including
+    # the staff account's. It stays reachable in Django admin and in staff /api/export/ -- see
+    # services.user_data_portability.owned_jobs and test_staff_export_includes_legacy_unowned_jobs.
+    unowned = JobLead.objects.create(company='Legacy SE', title='Nobody owns this', status='interview', applied_at=today, feedback_due_date=today)
+
+    JobEvaluation.objects.create(job=theirs, fit_score=91, priority='high', recommendation='apply', summary='Their private evaluation')
+    ApplicationNote.objects.create(job=theirs, note='Their recruiter said 85k', created_by=stranger)
+    FollowUp.objects.create(job=theirs, follow_up_date=today, reason='Their follow-up')
+    run = MailboxRun.objects.create()
+    their_message = MailboxMessage.objects.create(run=run, uid=1, sender='hr@theirs.test', subject='Their interview', body_text='Their body', classification='interview_invitation', matched_job=theirs)
+    their_suggestion = MailboxSuggestion.objects.create(message=their_message, job=theirs, suggestion_type='interview_date', payload={'interview_at': None})
+    their_draft = MailboxDraft.objects.create(message=their_message, job=theirs, status='written', subject='Re: Their interview', body_text='Their draft', evaluator='template')
+
+    c = APIClient(); c.force_authenticate(staff)
+
+    # The board list itself, and the explicit-status branch of get_queryset().
+    assert [row['id'] for row in c.get('/api/jobs/').data] == [mine.id]
+    assert [row['id'] for row in c.get('/api/jobs/?status=interview').data] == [mine.id]
+
+    # Detail and every nested resource 404 rather than 200-with-someone-else's-data.
+    for path in (f'/api/jobs/{theirs.id}/', f'/api/jobs/{theirs.id}/evaluations/', f'/api/jobs/{theirs.id}/notes/',
+                 f'/api/jobs/{theirs.id}/followups/', f'/api/jobs/{theirs.id}/mailbox/', f'/api/jobs/{unowned.id}/'):
+        assert c.get(path).status_code == 404, path
+    assert c.patch(f'/api/jobs/{theirs.id}/', {'status': 'rejected'}, format='json').status_code == 404
+
+    # /api/stats/ -- the counts under the board.
+    assert c.get('/api/stats/').data['total_jobs'] == 1
+
+    # Dashboard panels.
+    assert [row['id'] for row in c.get('/api/jobs/feedback-due/').data] == [mine.id]
+    assert [row['job'] for row in c.get('/api/evaluations/').data] == []
+    assert [row['job'] for row in c.get('/api/followups/').data] == []
+
+    # The mailbox surfaces that scope through a job (AC7: these follow ownership, not staff-ness).
+    assert [row['id'] for row in c.get('/api/mailbox-suggestions/').data] == []
+    assert their_suggestion.id not in [row['id'] for row in c.get('/api/mailbox-suggestions/?status=pending,confirmed,dismissed').data]
+    assert c.post(f'/api/mailbox-drafts/{their_draft.id}/edit/', {'body_text': 'peeking'}, format='json').status_code == 404
+
+    # Exports.
+    assert [row['id'] for row in json.loads(c.get('/api/export/jobs.json').content)] == [mine.id]
+    exported = c.get('/api/export/').data['data']
+    # AC9: staff export still carries the legacy unowned row -- the one documented staff surface for
+    # it -- and still never carries another account's.
+    assert sorted(row['id'] for row in exported['jobs']) == sorted([mine.id, unowned.id])
+    assert exported['evaluations'] == [] and exported['notes'] == [] and exported['followups'] == []
+    assert 'Their private evaluation' not in json.dumps(exported)
+
+    # The other direction: the stranger never sees the staff account's job either.
+    sc = APIClient(); sc.force_authenticate(stranger)
+    assert [row['id'] for row in sc.get('/api/jobs/').data] == [theirs.id]
+    assert sc.get(f'/api/jobs/{mine.id}/').status_code == 404
+    assert sc.get('/api/stats/').data['total_jobs'] == 1
+
+
+def test_a_staff_user_still_sees_jobs_they_submitted_for_somebody_else(db):
+    """TASK-184: submitted_away_jobs lost its staff exemption in the same change.
+
+    It used to return nothing for staff because accessible_jobs already returned everything for
+    them. Without this, a staff account's own handed-off submissions would be the one thing that
+    vanished from their board with no other route back -- so the list still projects them down to
+    the submission row, exactly as it does for everyone else.
+    """
+    recipient = User.objects.create_user('handover-recipient', password='pw')
+    staff = User.objects.create_user('handover-staff', password='pw', is_staff=True)
+    handed_off = JobLead.objects.create(company='HandedCo', title='Referral', url='https://handed.test/1', created_by=staff, submitted_for=recipient, source='friend')
+    JobLead.objects.filter(pk=handed_off.pk).update(status='interview', interview_note='The recipient panel notes')
+    own = JobLead.objects.create(company='OwnCo', title='For myself', created_by=staff)
+
+    c = APIClient(); c.force_authenticate(staff)
+    rows = {row['id']: row for row in c.get('/api/jobs/').data}
+    assert set(rows) == {handed_off.id, own.id}
+    assert rows[handed_off.id]['submission_only'] is True
+    assert rows[handed_off.id]['status'] == 'new' and rows[handed_off.id]['interview_note'] == ''
+    # Still read-only: the projection is proof of submission, not a workspace.
+    assert c.get(f'/api/jobs/{handed_off.id}/').status_code == 404
+
+
 def test_public_submit_duplicate_conflict_never_returns_the_recipients_job(db):
     # The duplicate check runs against the recipient's board, so its payload is the recipient's row.
     recipient=User.objects.create_user('board-owner', password='pw')

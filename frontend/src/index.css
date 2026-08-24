@@ -276,22 +276,20 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
    returned a header sort BUTTON and clicks on the first job never reached it. Overlap equalled the
    offset at every scroll position, so raising it to the nav's real 37px height would have made the
    bug worse, not better. 0 is the only value that costs nothing here. */
-/* TASK-167 (investigated, not fixed -- filed as optional polish, and stays that way). Genuinely
-   sticking this header to the viewport means removing every ancestor between thead and <body> whose
-   overflow computes to non-`visible` on either axis, because CSS treats ANY such ancestor as a
-   scroll container and resolves `sticky` against it -- even one that never actually scrolls
-   vertically itself (unbounded height, so its own scrollTop stays 0 while the page scrolls it,
-   which is exactly why sticky is inert today; see the TASK-165 comment above for the measurement).
-   The `.overflow-x-auto` wrapper (App.tsx, TASK-139) is that ancestor. Bounding its height and
-   giving it a real `overflow-y:auto` so it becomes an actual scrolling box would make sticky work,
-   but that box also contains the row-level popup (App.tsx, `feedbackEditor===j.id`, rendered twice --
-   once for the desktop row, once for the mobile card -- as `position:absolute` with
-   `max-h-[calc(100vh-7rem)]`, sized against the viewport, not against this wrapper, and not a
-   portal). Bounding the wrapper's height would clip that popup, which is the exact TASK-139/AC4
-   regression this rule is not allowed to reintroduce. Removing the wrapper's horizontal scroll
-   instead reopens TASK-139 the other way (table scrolls the page). Both routes trade one measured
-   bug for another; a portal for the popup would sidestep it but is a larger, separately-verified
-   change than "optional polish" covers. Left as `top:0`, inert. */
+/* TASK-167. `top:0` below is now load-bearing rather than inert, and the reason is `.job-table-scroll`
+   further down -- see that rule. The diagnosis this comment used to record still holds and is worth
+   keeping: `sticky` resolves against the nearest ancestor whose computed overflow is non-`visible` on
+   EITHER axis, which is the `.overflow-x-auto` wrapper (App.tsx, TASK-139) -- CSS auto-promotes its
+   `overflow-y` to `auto`, so it has ALWAYS been the sticky reference. What was missing was not a
+   different reference, it was a BOUNDED HEIGHT on that one: with no max-height the wrapper never
+   scrolls internally, its own scrollTop stays 0, and the page scrolls the whole box away with the
+   header inside it (measured 2026-08-21, thead top 8373 -> -20 -> -420).
+   What used to block bounding it was the row-level feedback popup, which lived inside that box as
+   `position:absolute` sized against the VIEWPORT -- bounding the box would have clipped it, the exact
+   TASK-139/AC4 regression. TASK-173 portalled that popup to <body> as `position:fixed`, and it was
+   the LAST absolutely-positioned descendant of the wrapper (grep for `absolute` inside the board's
+   row markup: everything else -- MatchGapPopup, the mailbox panel -- was already createPortal +
+   `fixed`). So the clip has nothing left to clip, and the bound is safe. */
 .job-table{min-width:980px;table-layout:fixed}
 .job-table thead th{position:sticky;top:0;z-index:12;background:rgba(248,250,252,.96);backdrop-filter:blur(12px);box-shadow:0 1px 0 rgba(203,213,225,.9)}
 .dark .job-table thead th{background:rgba(5,7,13,.96)!important;box-shadow:0 1px 0 rgba(255,255,255,.08)}
@@ -306,6 +304,25 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
      the source in App.tsx instead: the wrapper is now two elements (outer overflow-y-visible only,
      never clips; inner overflow-x-auto, scrolls the table) so nothing here needs to fight a single
      div's overflow-x/overflow-y both being non-default at once. See the comment on that div. */
+  /* TASK-167. The whole fix, and deliberately only this. `overflow-y:auto` is not a change of
+     behaviour -- this element's overflow-y ALREADY computed to `auto` via CSS's auto-promotion rule;
+     writing it out just stops the next reader having to rediscover that. The change is `max-height`,
+     which turns a box that was a scroll container in name only into one that actually scrolls, so the
+     `position:sticky` on `.job-table thead th` finally has something to stick to. `overflow-x` is not
+     touched, so TASK-139's horizontal scrolling cannot regress through this rule.
+     No `position:sticky` on this wrapper, on purpose: it is the last child of `.premium-card` and
+     fills it, so its sticky range would be zero and the declaration would be inert -- the same trap
+     the thead was in. It does not need one. The page's scrollable height no longer grows with the
+     job count, so the furthest the page can scroll is bounded, and 7rem (112px) is budgeted against
+     what sits above and below this box: the sticky `.app-nav` (measured 37px, TASK-165) plus the
+     `.app-nav`-classed footer and `<main>`'s py-5, ~95px total. That leaves the box's top -- and so
+     the header stuck to it -- below the nav at EVERY scroll offset, including the last one.
+     The 7rem is the one eyeballed number here and it is deliberately generous: too large only wastes
+     a few px of height, whereas too small would let the header slide under the nav at maximum page
+     scroll. It is also the same viewport budget the feedback popup already uses for its max-height.
+     Media-scoped so the mobile card list, which shares this wrapper below 1024px, keeps scrolling
+     with the page instead of growing a scrollbar of its own. */
+  .job-table-scroll{max-height:calc(100vh - 7rem);overflow-y:auto}
   .job-table{min-width:1280px;table-layout:auto!important}
   .job-table th,.job-table td{max-width:none}
   .job-table th:nth-child(1),.job-table td:nth-child(1){width:2.25rem}
