@@ -1,7 +1,7 @@
 ---
 id: TASK-181
 title: Replace the per-panel menu with drag to reorder and drag to hide
-status: To Do
+status: Done
 assignee: []
 labels:
   - frontend

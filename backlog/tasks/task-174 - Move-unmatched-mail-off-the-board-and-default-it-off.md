@@ -1,7 +1,7 @@
 ---
 id: TASK-174
 title: Move unmatched mail off the board and default it off
-status: To Do
+status: Done
 assignee: []
 labels:
   - frontend

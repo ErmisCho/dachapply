@@ -1,7 +1,7 @@
 ---
 id: TASK-177
 title: Own messages look missing because collapse is invisible
-status: To Do
+status: Done
 assignee: []
 labels:
   - frontend
