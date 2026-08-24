@@ -372,6 +372,44 @@ export function reorderPanels(order:string[],dragged:string|null,target:string):
   return next
 }
 
+// TASK-183 AC1/AC2/AC5. The live arrangement shown WHILE a panel is being dragged. There is exactly
+// one ordering computation in the whole gesture and it is this one: `drop` saves `order` verbatim
+// instead of calling reorderPanels a second time, so what the owner released over is byte-identical
+// to what is stored. That is not just tidiness - a second call would DISAGREE. The preview is a
+// CHAIN of moves applied to what is currently on screen, and one step recomputed from the saved
+// order gives a different answer as soon as the cursor has visited more than one panel: from
+// ['a','b','c','d'], dragging 'c' over 'b' and then over 'b' again returns the original order,
+// while a single step from the saved order would put 'c' in front of 'b'.
+//
+// Chaining off what is on screen is also what keeps it still. The grid rearranges under the cursor,
+// so the panel now sitting under the pointer is usually the DRAGGED one; measured against the saved
+// order that would undo the move, re-run on the next dragover, and oscillate at pointer speed.
+// Against the current preview it is dragged===target, which reorderPanels already returns unchanged.
+//
+// `over` is why this is a struct rather than a bare array. reorderPanels is deliberately NOT
+// idempotent (applying the same target twice moves the panel back past it), and dragover fires
+// continuously - tens of times a second - on whichever element the pointer is over. Repeating a
+// target therefore returns the SAME OBJECT, which skips the second application and lets React's
+// setState bail out without re-rendering the grid, instead of needing a throttle.
+//
+// `moved` is AC5: a drag that changes nothing (dropped back on itself, or dragged out and back)
+// must not signal a move. Compared by content, not by reference, because the chain can return to
+// the saved arrangement through a fresh array.
+export type PanelDragPreview={order:string[];over:string;moved:boolean}
+export function previewPanelDrag(current:PanelDragPreview|null,saved:string[],dragged:string|null,target:string,hidden:string[]=[]):PanelDragPreview|null{
+  if(!dragged)return current
+  if(current&&current.over===target)return current
+  const order=reorderPanels(current?current.order:saved,dragged,target)
+  // `moved` drives the "Drops here" badge and the outline, so it has to answer "will the owner SEE
+  // anything change", not "did the array change". Those differ: the saved order carries hidden
+  // panels too (TASK-174 leaves mailbox_unmatched in it), so a chain of drags can land the visible
+  // panels exactly where they started while a hidden id sits at a different index. Measured on the
+  // owner's board - dragging a panel out and back restored the visible arrangement, and the badge
+  // still promised a move that could not happen. Compare the visible projection only.
+  const seen=(list:string[])=>list.filter(x=>!hidden.includes(x)).join(',')
+  return {order,over:target,moved:seen(order)!==seen(saved)}
+}
+
 // TASK-119 AC2/AC6/AC7. build_suggestions (mailbox.py) can emit more than one MailboxSuggestion for
 // the same inbound email (e.g. a status_change alongside a feedback_clear whenever the job has a
 // feedback clock running), and MailboxSuggestion.message is a full nested copy per suggestion - so
