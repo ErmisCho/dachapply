@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,receivedDateLabels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,movePanelInOrder,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,receivedDateLabels,reorderPanels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -767,5 +767,73 @@ describe('receivedDateLabels',()=>{
     expect(receivedDateLabels(null)).toEqual({wide:'received date unknown',narrow:'received date unknown'})
     expect(receivedDateLabels('')).toEqual({wide:'received date unknown',narrow:'received date unknown'})
     expect(receivedDateLabels('not a date')).toEqual({wide:'received date unknown',narrow:'received date unknown'})
+  })
+})
+
+// TASK-181 AC2/AC4. The per-panel menu is gone, so the board is rearranged two ways only: by dragging
+// one panel onto another (reorderPanels) and by the Move left / Move right buttons in the Panels menu
+// (movePanelInOrder). Neither gesture can be driven here - this vitest run has no DOM - so these cover
+// the ordering rules the gestures call into, and the browser covers the gestures.
+describe('dashboard panel reordering (TASK-181 AC2/AC4)',()=>{
+  const all=['a','b','c','d']
+
+  it('drops a panel in front of the one it was dropped on', ()=>{
+    expect(reorderPanels(all,'d','b')).toEqual(['a','d','b','c'])
+  })
+
+  // Direction decides which side of the target the panel lands on. Dragging RIGHTWARD drops it
+  // AFTER the target, dragging LEFTWARD before it - the two together are what make a one-slot drag
+  // work in both directions. This expectation was ['b','a','c','d'] until the coordinator measured
+  // the board: inserting always-before made a forward drag onto the NEXT panel a silent no-op,
+  // because removing the dragged id shifts the target into the slot just vacated.
+  it('pushes a panel rightward to the far side of the one it was dropped on',()=>{
+    expect(reorderPanels(all,'a','c')).toEqual(['b','c','a','d'])
+  })
+
+  // The regression that shipped: `total` dragged onto its immediate right-hand neighbour left the
+  // order byte-identical on the owner's real board. Dragging one slot right is the first gesture
+  // anyone tries, so both adjacent directions are pinned here.
+  it('moves a panel one slot in either direction, the commonest gesture',()=>{
+    expect(reorderPanels(all,'a','b')).toEqual(['b','a','c','d'])
+    expect(reorderPanels(all,'c','b')).toEqual(['a','c','b','d'])
+  })
+
+  it('leaves the order alone when a panel is dropped on itself',()=>{
+    expect(reorderPanels(all,'a','a')).toEqual(all)
+  })
+
+  it('leaves the order alone when there was no drag, or the ids are unknown',()=>{
+    expect(reorderPanels(all,null,'a')).toEqual(all)
+    expect(reorderPanels(all,'zz','a')).toEqual(all)
+    expect(reorderPanels(all,'a','zz')).toEqual(all)
+  })
+
+  it('swaps neighbours when nothing is hidden',()=>{
+    expect(movePanelInOrder(all,[],'c',-1)).toEqual(['a','c','b','d'])
+    expect(movePanelInOrder(all,[],'c',1)).toEqual(['a','b','d','c'])
+  })
+
+  // The one that matters on a fresh profile: TASK-174 leaves mailbox_unmatched hidden at the END of the
+  // order, so a plain i+1 on the last VISIBLE panel would swap it with a panel nobody can see and the
+  // board would not move at all - a Move right button that reads as broken.
+  it('steps over a hidden neighbour instead of swapping with it',()=>{
+    expect(movePanelInOrder(all,['c'],'b',1)).toEqual(['a','d','c','b'])
+    expect(movePanelInOrder(all,['b'],'c',-1)).toEqual(['c','b','a','d'])
+  })
+
+  it('refuses to move the first or last VISIBLE panel past the end',()=>{
+    expect(movePanelInOrder(all,['d'],'c',1)).toEqual(all)
+    expect(movePanelInOrder(all,['a'],'b',-1)).toEqual(all)
+    expect(movePanelInOrder(all,[],'a',-1)).toEqual(all)
+    expect(movePanelInOrder(all,[],'d',1)).toEqual(all)
+  })
+
+  it('never moves a panel that is not in the order',()=>{
+    expect(movePanelInOrder(all,[],'zz',1)).toEqual(all)
+  })
+
+  it('keeps every panel exactly once, however it is moved',()=>{
+    const moved=movePanelInOrder(reorderPanels(all,'d','a'),['a'],'b',1)
+    expect([...moved].sort()).toEqual(['a','b','c','d'])
   })
 })

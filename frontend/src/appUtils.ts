@@ -332,6 +332,46 @@ export function applyDefaultHiddenPanels(hidden:string[],seeded:string[],default
   return {hidden:[...new Set([...hidden,...unseeded])],seeded:[...seeded,...unseeded],changed:true}
 }
 
+// TASK-181. The per-panel `⋮` menu is gone, so these two are the whole of "rearrange the board":
+// reorderPanels backs the pointer path (drag one panel onto another) and movePanelInOrder backs the
+// keyboard path (the Move left / Move right buttons in the Panels menu). Both are pure and live here
+// because this vitest run has no DOM, so the ordering rules get a test even though the gestures
+// themselves can only be measured in a browser.
+//
+// movePanelInOrder steps to the next VISIBLE neighbour rather than to index i±1. `order` holds hidden
+// panels too (that is how a panel keeps its place while switched off), so a plain swap can trade
+// places with a panel nobody can see - the board would not move and the button would read as broken.
+// TASK-174 makes that the default state, not an edge case: mailbox_unmatched sits hidden at the end
+// of a fresh order, so a bare i+1 on source_effectiveness would visibly do nothing on day one.
+export function movePanelInOrder(order:string[],hidden:string[],id:string,dir:number):string[]{
+  const i=order.indexOf(id)
+  if(i<0)return order
+  const visible=order.filter(x=>!hidden.includes(x))
+  const vj=visible.indexOf(id)+dir
+  if(visible.indexOf(id)<0||vj<0||vj>=visible.length)return order
+  const j=order.indexOf(visible[vj])
+  const next=[...order]
+  ;[next[i],next[j]]=[next[j],next[i]]
+  return next
+}
+
+// Drop semantics, unchanged from the inline version this replaces: the dragged panel is lifted out
+// and re-inserted BEFORE the panel it was dropped on. Dropping a panel on itself, or either id being
+// unknown, returns the order untouched rather than throwing - a drag can end on anything.
+export function reorderPanels(order:string[],dragged:string|null,target:string):string[]{
+  if(!dragged||dragged===target||!order.includes(dragged)||!order.includes(target))return order
+  // Direction matters, and getting it wrong makes the commonest gesture do nothing. Inserting
+  // ALWAYS before the target is a no-op for a forward drag onto the very next panel: removing the
+  // dragged id shifts the target left into the slot just vacated, so "before the target" is where
+  // the panel already was. Measured on the owner's board - dragging `total` onto its right-hand
+  // neighbour left the order byte-identical. Dragging one slot right is the first thing anyone
+  // tries, so it has to land: moving FORWARD inserts after the target, moving BACKWARD before it.
+  const forward=order.indexOf(dragged)<order.indexOf(target)
+  const next=order.filter(x=>x!==dragged)
+  next.splice(next.indexOf(target)+(forward?1:0),0,dragged)
+  return next
+}
+
 // TASK-119 AC2/AC6/AC7. build_suggestions (mailbox.py) can emit more than one MailboxSuggestion for
 // the same inbound email (e.g. a status_change alongside a feedback_clear whenever the job has a
 // feedback clock running), and MailboxSuggestion.message is a full nested copy per suggestion - so
