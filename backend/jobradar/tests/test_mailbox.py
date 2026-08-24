@@ -5445,7 +5445,7 @@ def test_compose_reply_draft_refuses_when_this_backend_has_no_mail_credentials(d
 
 # --- TASK-179: an interview date has to reach the JOB, through the path, never via a fixture ------
 
-def _invitation_ics(start_local):
+def _invitation_ics(start_local, summary='Vorstellungsgespräch'):
     """An invitation .ics whose VEVENT starts at `start_local` (a local, aware datetime) -- the same
     shape ONTEC_STYLE_ICS above carries, dated relative to now so the assertions below can be about
     a FUTURE interview (the only kind the board's Upcoming interviews panel renders).
@@ -5455,7 +5455,7 @@ def _invitation_ics(start_local):
     return (
         'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\n'
         f'DTSTART;TZID=Europe/Vienna:{stamp}\r\nDTEND;TZID=Europe/Vienna:{end}\r\n'
-        'SUMMARY:Vorstellungsgespräch\r\nLOCATION:Microsoft Teams Meeting\r\n'
+        f'SUMMARY:{summary}\r\nLOCATION:Microsoft Teams Meeting\r\n'
         'ORGANIZER;CN=Doris Liegenfeld:mailto:doris.liegenfeld@ontec.at\r\n'
         'UID:task179@ontec.at\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n'
     )
@@ -5556,3 +5556,121 @@ def test_backfill_interview_dates_reports_before_it_writes_and_only_writes_with_
     job.refresh_from_db()
     assert job.interview_at == start
     assert job.status == 'applied', 'a date is evidence of a meeting, not a board decision'
+
+
+# --- TASK-182: a calendar-only invitation carries its meaning in the VEVENT summary ----------------
+#
+# Measured against production 2026-08-24 (21 messages carry a calendar_start, 20 of them NOT classified
+# interview_invitation), in two steps, both dry-run before either shipped:
+#   1. Reading `calendar_summary` for the EXISTING interview keywords moved 0 of the 21 -- 15 summaries
+#      are already repeated verbatim in the subject or body, and the 6 that are not carry no keyword
+#      INTERVIEW_KEYWORDS knows (it has no bare 'interview').
+#   2. So the coordinator extended the scope by ONE summary-scoped term
+#      (CALENDAR_SUMMARY_INTERVIEW_KEYWORDS). Re-measured: 5 of the 21 move to interview_invitation
+#      (175, 179, 391, 421, 578 -- every one a genuine invitation) and nothing else in the 1133-row
+#      table moves at all.
+# These tests pin that outcome and the three widenings deliberately NOT made: no meetup, no other
+# keyword family reading the summary, and no bare 'interview' ever reading a subject or a body.
+
+def test_classify_email_reads_the_calendar_summary_for_the_existing_interview_keywords():
+    """The Teams/Outlook shape: an administrative subject ("Terminbestaetigung"), a body that is
+    nothing but joining boilerplate, and the interview named ONLY in the VEVENT summary. Before
+    TASK-182 the classifier read subject+body only, so this landed on recruiter_reply and the live
+    path never built an interview_date suggestion for it.
+    """
+    r = raw(1, sender='jobs@squer.test', subject='SQUER <> Ermis | Terminbestätigung',
+            body='Microsoft Teams-Besprechung\r\nTeilnehmen: https://teams.microsoft.com/meet/35598497442886',
+            calendar_summary='Vorstellungsgespräch - Senior Software Engineer / SQUER')
+    assert 'vorstellungsgespräch' not in f'{r.subject} {r.body_text}'.lower(), 'the keyword must be in the SUMMARY only'
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=True)
+    assert classification == 'interview_invitation'
+
+
+def test_run_check_builds_an_interview_date_suggestion_from_a_summary_only_invitation(db, owner, monkeypatch):
+    """AC2, on the LIVE path (run_check -> classify_email -> build_suggestions), not on a classification
+    string: the subject and body name no interview anywhere, the date exists only as the VEVENT's
+    DTSTART, and the suggestion must still carry that instant.
+    """
+    start = timezone.localtime(timezone.now() + timedelta(days=25)).replace(hour=11, minute=0, second=0, microsecond=0)
+    job = JobLead.objects.create(company='Ontec', title='Backend Engineer', url='https://ontec.at/jobs/1',
+                                 status='applied', status_date=timezone.localdate(), created_by=owner)
+    raw_b64 = _gmail_raw_b64_calendar_and_attachment(
+        'doris.liegenfeld@ontec.at', 'Ontec <> Ermis | Terminbestätigung',
+        _invitation_ics(start, summary='Vorstellungsgespräch - Backend Engineer - Ermis Chorinopoulos'))
+    fake_http = _FakeGmailHttp(['msg-summary-invite'], {'msg-summary-invite': {'internalDate': '9000000', 'threadId': 't1', 'raw': raw_b64}})
+    _patch_gmail_oauth(monkeypatch, fake_http)
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        run_check(transport=mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path'), force=True)
+
+    message = MailboxMessage.objects.get(gmail_id='msg-summary-invite')
+    assert message.body_text == '' and 'gespräch' not in message.subject.lower(), 'only the summary may name the interview'
+    assert message.matched_job == job and message.classification == 'interview_invitation'
+    suggestion = MailboxSuggestion.objects.get(job=job, suggestion_type='interview_date')
+    assert datetime.fromisoformat(suggestion.payload['interview_at']) == message.calendar_start
+
+
+@pytest.mark.parametrize('summary', [
+    'Codex Community Build Meetup - Vienna',
+    'OpenAI Build Week Community Meetup - Vienna',
+    'NoCrastination · Build Sprint · Group 1',
+    'Meet Ermis',
+])
+def test_a_community_meetup_invite_never_becomes_an_interview_invitation(summary):
+    """The four real production summaries (messages 365, 484, 601/602, 122) a "any calendar invite is
+    an interview" rule would have promoted. This is the test that fails if the TASK-182 read is ever
+    widened from "the existing interview keywords" to "the message has a VEVENT".
+    """
+    r = raw(1, sender='events@nocrastination.test', subject=f'Invitation: {summary}',
+            body='You have got a spot. Location: In Person.', calendar_summary=summary,
+            calendar_start=timezone.now() + timedelta(days=3))
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification != 'interview_invitation'
+
+
+def test_the_calendar_summary_is_read_by_the_interview_keywords_only():
+    """The second widening not made: a VEVENT summary is a meeting TITLE, not prose, so the
+    rejection/offer/confirmation keyword families still read subject+body only. Folding the summary
+    into the shared `lower` text instead would classify this cancellation as a rejection and put a
+    one-click "mark this job rejected" suggestion in front of the owner.
+    """
+    r = raw(1, sender='hr@acme.test', subject='Termin', body='Microsoft Teams-Besprechung',
+            calendar_summary='Absage - wir haben uns entschieden, nicht fortzufahren')
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=True)
+    assert classification != 'rejection'
+
+
+def test_the_bare_interview_term_never_reads_the_subject_or_the_body():
+    """The widening that must never happen: CALENDAR_SUMMARY_INTERVIEW_KEYWORDS' bare 'interview' is
+    admissible only as a meeting TITLE. Put it in INTERVIEW_KEYWORDS instead and it fires on subject
+    and body across the whole mailbox -- ATS boilerplate, interview-prep marketing and rejection
+    letters all say the word (the measured Amazon/Allianz footers that already forced
+    _VORSTELLUNGSGESPRAECH_SINGULAR_RE to be narrowed are the same defect in German).
+
+    Both halves matter: (a) prose alone is not an invitation, and (b) prose alone is still not an
+    invitation when the message genuinely carries a VEVENT -- the term is scoped to the summary text,
+    not unlocked by the presence of a calendar.
+    """
+    prep = dict(sender='no-reply@acme.test', subject='Interview preparation resources for candidates',
+                body='Our weekly note on how an interview usually runs at Acme.')
+    assert classify_email(raw(1, **prep), domain_known=True)[0] != 'interview_invitation'
+    with_vevent = raw(2, calendar_summary='Weekly team sync',
+                      calendar_start=timezone.now() + timedelta(days=2), **prep)
+    assert classify_email(with_vevent, domain_known=True)[0] != 'interview_invitation'
+
+
+@pytest.mark.parametrize('subject,summary', [
+    # The real production rows the summary-scoped term exists for (175/179, 391, 421, 578).
+    ('SQUER <> Ermis | Terminbestätigung', 'Interview - Senior Software Engineer - Applied AI & Data Products / SQUER'),
+    ('Your follow-up interview with zooplus', 'Your follow-up interview with zooplus @ Jun 25, 2026, 2:00:00 PM - 2:45:00 PM (GMT+2)'),
+    ('Personal Interview with Ironhack between Daniel and Ermis', 'Personal Interview with Ironhack between Daniel and Ermis'),
+    ('Einladung zum Online-Interview - GenAI Engineer', 'Einladung zum Online-Interview - GenAI Engineer (all genders) - Data & Analytics'),
+])
+def test_a_vevent_titled_interview_is_an_invitation(subject, summary):
+    """CALENDAR_SUMMARY_INTERVIEW_KEYWORDS, on the four measured production shapes: none of these
+    carries a phrase INTERVIEW_KEYWORDS knows, which is why all four sat in recruiter_reply /
+    not_job_related while their VEVENT title said "Interview" outright.
+    """
+    r = raw(1, sender='jobs@squer.test', subject=subject, body='Microsoft Teams-Besprechung',
+            calendar_summary=summary, calendar_start=timezone.now() + timedelta(days=5))
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=True)
+    assert classification == 'interview_invitation'
