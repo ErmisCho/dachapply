@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,ratePercent,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,movePanelInOrder,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,previewPanelDrag,ratePercent,receivedDateLabels,reorderPanels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -732,5 +732,214 @@ describe('messagePreviewLine',()=>{
     expect(messagePreviewLine('')).toBe('')
     expect(messagePreviewLine(null)).toBe('')
     expect(messagePreviewLine('   \n  ')).toBe('')
+  })
+})
+
+// TASK-180: the conversation header overflowed 360px by up to 15px with the date at its full
+// `dateStyle:'medium'` form, so a narrow viewport gets a year-less numeric date instead. These pin
+// BOTH strings: a future change that quietly renders one format at every width fails here.
+// Constructed in LOCAL time so the assertion holds whatever TZ the machine or CI runner is in, and
+// the space before AM/PM is matched with \s because ICU 72+ emits U+202F there.
+describe('receivedDateLabels',()=>{
+  const at=new Date(2025,8,16,8,36).toISOString()
+
+  it('keeps the full, year-carrying date for sm: and up',()=>{
+    expect(receivedDateLabels(at,'en-US').wide).toMatch(/^Sep 16, 2025, 8:36\sAM$/)
+    expect(receivedDateLabels(at,'de-AT').wide).toContain('2025')
+  })
+
+  it('drops the year below sm: and keeps the locale own day/month order',()=>{
+    expect(receivedDateLabels(at,'en-US').narrow).toMatch(/^9\/16, 8:36\sAM$/)   // month-first
+    expect(receivedDateLabels(at,'de-AT').narrow).toMatch(/^16\.9\., 8:36$/)      // day-first, 24h
+  })
+
+  it('is shorter narrow than wide in every locale the app is used in',()=>{
+    // The reason `month:'numeric'` was chosen over `'short'`: "16. Sep., 8:36" would have saved
+    // almost nothing against de-AT's "16.09.2025, 08:36".
+    for(const locale of ['en-US','en-GB','de-DE','de-AT']){
+      const {wide,narrow}=receivedDateLabels(at,locale)
+      expect(narrow.length).toBeLessThan(wide.length)
+      expect(narrow).not.toContain('2025')
+    }
+  })
+
+  it('says so rather than rendering "Invalid Date" when there is no usable timestamp',()=>{
+    expect(receivedDateLabels(null)).toEqual({wide:'received date unknown',narrow:'received date unknown'})
+    expect(receivedDateLabels('')).toEqual({wide:'received date unknown',narrow:'received date unknown'})
+    expect(receivedDateLabels('not a date')).toEqual({wide:'received date unknown',narrow:'received date unknown'})
+  })
+})
+
+// TASK-181 AC2/AC4. The per-panel menu is gone, so the board is rearranged two ways only: by dragging
+// one panel onto another (reorderPanels) and by the Move left / Move right buttons in the Panels menu
+// (movePanelInOrder). Neither gesture can be driven here - this vitest run has no DOM - so these cover
+// the ordering rules the gestures call into, and the browser covers the gestures.
+// TASK-183 AC5, found by measuring the owner's board rather than by review. `moved` drives the
+// "Drops here" badge and the landing outline, so it must answer "will anything the owner can SEE
+// change". The saved order carries hidden panels (TASK-174 keeps mailbox_unmatched in it), so a
+// chain of drags can restore the visible arrangement exactly while a hidden id ends up at a
+// different index - the badge then promises a move that cannot happen.
+describe('drag preview signals only visible movement (TASK-183 AC5)',()=>{
+  const saved=['a','hidden1','b','c']
+  const hidden=['hidden1']
+
+  it('reports no move when the visible order is unchanged but a hidden id shifted',()=>{
+    // drag `a` right past b and c, then back before b: visible ends [a,b,c] as it began
+    let p=previewPanelDrag(null,saved,'a','b',hidden)
+    p=previewPanelDrag(p,saved,'a','c',hidden)
+    p=previewPanelDrag(p,saved,'a','b',hidden)
+    expect(p!.order.filter(x=>!hidden.includes(x))).toEqual(['a','b','c'])
+    expect(p!.moved).toBe(false)
+  })
+
+  it('still reports a move when the visible order really does change',()=>{
+    const p=previewPanelDrag(null,saved,'a','b',hidden)
+    expect(p!.moved).toBe(true)
+  })
+
+  it('reports no move when a panel is dragged onto itself',()=>{
+    const p=previewPanelDrag(null,saved,'a','a',hidden)
+    expect(p!.moved).toBe(false)
+  })
+})
+
+describe('dashboard panel reordering (TASK-181 AC2/AC4)',()=>{
+  const all=['a','b','c','d']
+
+  it('drops a panel in front of the one it was dropped on', ()=>{
+    expect(reorderPanels(all,'d','b')).toEqual(['a','d','b','c'])
+  })
+
+  // Direction decides which side of the target the panel lands on. Dragging RIGHTWARD drops it
+  // AFTER the target, dragging LEFTWARD before it - the two together are what make a one-slot drag
+  // work in both directions. This expectation was ['b','a','c','d'] until the coordinator measured
+  // the board: inserting always-before made a forward drag onto the NEXT panel a silent no-op,
+  // because removing the dragged id shifts the target into the slot just vacated.
+  it('pushes a panel rightward to the far side of the one it was dropped on',()=>{
+    expect(reorderPanels(all,'a','c')).toEqual(['b','c','a','d'])
+  })
+
+  // The regression that shipped: `total` dragged onto its immediate right-hand neighbour left the
+  // order byte-identical on the owner's real board. Dragging one slot right is the first gesture
+  // anyone tries, so both adjacent directions are pinned here.
+  it('moves a panel one slot in either direction, the commonest gesture',()=>{
+    expect(reorderPanels(all,'a','b')).toEqual(['b','a','c','d'])
+    expect(reorderPanels(all,'c','b')).toEqual(['a','c','b','d'])
+  })
+
+  it('leaves the order alone when a panel is dropped on itself',()=>{
+    expect(reorderPanels(all,'a','a')).toEqual(all)
+  })
+
+  it('leaves the order alone when there was no drag, or the ids are unknown',()=>{
+    expect(reorderPanels(all,null,'a')).toEqual(all)
+    expect(reorderPanels(all,'zz','a')).toEqual(all)
+    expect(reorderPanels(all,'a','zz')).toEqual(all)
+  })
+
+  it('swaps neighbours when nothing is hidden',()=>{
+    expect(movePanelInOrder(all,[],'c',-1)).toEqual(['a','c','b','d'])
+    expect(movePanelInOrder(all,[],'c',1)).toEqual(['a','b','d','c'])
+  })
+
+  // The one that matters on a fresh profile: TASK-174 leaves mailbox_unmatched hidden at the END of the
+  // order, so a plain i+1 on the last VISIBLE panel would swap it with a panel nobody can see and the
+  // board would not move at all - a Move right button that reads as broken.
+  it('steps over a hidden neighbour instead of swapping with it',()=>{
+    expect(movePanelInOrder(all,['c'],'b',1)).toEqual(['a','d','c','b'])
+    expect(movePanelInOrder(all,['b'],'c',-1)).toEqual(['c','b','a','d'])
+  })
+
+  it('refuses to move the first or last VISIBLE panel past the end',()=>{
+    expect(movePanelInOrder(all,['d'],'c',1)).toEqual(all)
+    expect(movePanelInOrder(all,['a'],'b',-1)).toEqual(all)
+    expect(movePanelInOrder(all,[],'a',-1)).toEqual(all)
+    expect(movePanelInOrder(all,[],'d',1)).toEqual(all)
+  })
+
+  it('never moves a panel that is not in the order',()=>{
+    expect(movePanelInOrder(all,[],'zz',1)).toEqual(all)
+  })
+
+  it('keeps every panel exactly once, however it is moved',()=>{
+    const moved=movePanelInOrder(reorderPanels(all,'d','a'),['a'],'b',1)
+    expect([...moved].sort()).toEqual(['a','b','c','d'])
+  })
+})
+
+
+// TASK-183 AC2/AC5. The live preview shown during a panel drag. reorderPanels is reused for it
+// rather than a second ordering rule, and the drop handler in App.tsx saves `preview.order` verbatim
+// instead of recomputing - so "the preview matches what a release produces" is not a coincidence
+// these tests police, it is the same array. What IS worth policing is the two rules that make the
+// chain safe to feed a dragover firing tens of times a second, and the no-op signal AC5 asks for.
+describe('live panel drag preview (TASK-183 AC2/AC5)',()=>{
+  const saved=['a','b','c','d']
+  // Folds a sequence of hovered panels exactly the way the dragover handler does, and returns what
+  // the drop handler would then save. Committing preview.order IS the commit path in App.tsx.
+  const drag=(dragged:string,...targets:string[])=>targets.reduce<any>((p,t)=>previewPanelDrag(p,saved,dragged,t),null)
+
+  it('previews a forward drag as the arrangement a release would produce',()=>{
+    expect(drag('a','c')!.order).toEqual(reorderPanels(saved,'a','c'))
+    expect(drag('a','c')!.order).toEqual(['b','c','a','d'])
+  })
+
+  it('previews a backward drag the same way',()=>{
+    expect(drag('d','b')!.order).toEqual(reorderPanels(saved,'d','b'))
+    expect(drag('d','b')!.order).toEqual(['a','d','b','c'])
+  })
+
+  // The reason drop must NOT call reorderPanels again. Hovering b, then c, then b lands 'a' back
+  // where it started; recomputing one step from the saved order against the last target would give
+  // ['b','a','c','d'] instead. Two rules, two answers - which is the bug this test exists to stop.
+  it('chains over every panel the cursor visits, not just the last one',()=>{
+    const preview=drag('a','b','c','b')!
+    expect(preview.order).toEqual(saved)
+    expect(preview.order).not.toEqual(reorderPanels(saved,'a','b'))
+  })
+
+  // dragover fires continuously on whichever element the pointer is over, and reorderPanels is not
+  // idempotent - applying the same target twice would push the panel back past it, so the board
+  // would flicker between two arrangements while the cursor sat perfectly still. Same object back
+  // means the second application never happens AND React's setState bails out without re-rendering.
+  it('returns the identical object when the pointer has not moved to a new panel',()=>{
+    const first=previewPanelDrag(null,saved,'a','c')
+    expect(previewPanelDrag(first,saved,'a','c')).toBe(first)
+    expect(previewPanelDrag(previewPanelDrag(first,saved,'a','c'),saved,'a','c')!.order).toEqual(['b','c','a','d'])
+  })
+
+  // Rearranging puts the dragged panel under the cursor, so the next dragover targets the panel
+  // being dragged. Measured against the SAVED order that would undo the move; against the preview it
+  // is dragged===target, which reorderPanels leaves alone.
+  it('holds still when the cursor ends up over the dragged panel itself',()=>{
+    expect(drag('a','c','a')!.order).toEqual(['b','c','a','d'])
+  })
+
+  it('signals a move when the arrangement actually changes',()=>{
+    expect(drag('a','b')!.moved).toBe(true)
+    expect(drag('d','b')!.moved).toBe(true)
+  })
+
+  // AC5. Dropping a panel on itself, or dragging it away and back, must not read as a move.
+  it('signals no move when the previewed order is the saved order',()=>{
+    expect(drag('a','a')!.moved).toBe(false)
+    expect(drag('a','b','c','b')!.moved).toBe(false)
+  })
+
+  it('previews nothing when no panel is being dragged',()=>{
+    expect(previewPanelDrag(null,saved,null,'b')).toBeNull()
+  })
+
+  it('keeps every panel exactly once however far the cursor wanders',()=>{
+    const preview=drag('b','d','a','c','b','d')!
+    expect([...preview.order].sort()).toEqual(saved)
+  })
+
+  // Hidden panels are not drop targets but they still hold their place in the order, so they must
+  // ride along in the preview and be there to save on drop (TASK-174 keeps mailbox_unmatched hidden
+  // at the end of a fresh order).
+  it('carries panels that are hidden through the preview',()=>{
+    expect(drag('a','c')!.order).toContain('d')
+    expect(previewPanelDrag(null,['a','hidden','b'],'a','b')!.order).toEqual(['hidden','b','a'])
   })
 })

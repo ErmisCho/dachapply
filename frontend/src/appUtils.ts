@@ -194,6 +194,29 @@ export function messagePreviewLine(text:string|null|undefined,max=140):string{
   return line.length>max?line.slice(0,max).trimEnd()+'…':line
 }
 
+// TASK-180. The conversation header (MailboxConversationMessage, App.tsx) is a flex row whose avatar
+// badge, date, `n/m` counter and state cue are all `shrink-0`; the sender name is the only child that
+// can absorb pressure, and once it has truncated to nothing the row still overflowed 360px by up to
+// 15px (measured, 8 of 15 rows of a real thread). The date is the largest compressible contributor,
+// so a narrow viewport gets a year-less, locale-ordered numeric date and the wide one is kept from
+// `sm:` (640px) up. Both strings are rendered and CSS picks one - the same trick TASK-177 used for
+// its 'Show'/'Hide' word - because the alternative is a resize listener for a purely visual choice.
+//
+//                     wide (>=640px)              narrow (<640px)
+//   en-US   "Sep 16, 2025, 8:36 AM"       "9/16, 8:36 AM"
+//   de-AT   "16.09.2025, 08:36"           "16.9., 8:36"
+//
+// `month:'numeric'` rather than `'short'` because the German short month name is no shorter than the
+// numeric date it replaces ("16. Sep., 8:36" saves 3 characters against de-AT's wide form, "16.9.,
+// 8:36" saves 6). The exact instant stays one hover away: the header keeps `title` on the full
+// `toLocaleString()`, and `sm:` and up still show the year, so nothing is only ever abbreviated.
+export function receivedDateLabels(iso:string|null|undefined,locale?:string):{wide:string;narrow:string}{
+  const d=iso?new Date(iso):null
+  if(!d||isNaN(d.getTime()))return {wide:'received date unknown',narrow:'received date unknown'}
+  return {wide:d.toLocaleString(locale,{dateStyle:'medium',timeStyle:'short'}),
+    narrow:d.toLocaleString(locale,{month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'})}
+}
+
 // TASK-133 AC3. The reply/reply-all compose dialog (App.tsx) edits To/Cc as one comma-separated
 // text input per field rather than a token-per-address widget - no new dependency, and it keeps
 // AC3's "shown verbatim" literal: whatever text sits in the box IS what gets parsed and POSTed to
@@ -307,6 +330,84 @@ export function applyDefaultHiddenPanels(hidden:string[],seeded:string[],default
   const unseeded=defaultHidden.filter(id=>!seeded.includes(id))
   if(!unseeded.length)return {hidden,seeded,changed:false}
   return {hidden:[...new Set([...hidden,...unseeded])],seeded:[...seeded,...unseeded],changed:true}
+}
+
+// TASK-181. The per-panel `⋮` menu is gone, so these two are the whole of "rearrange the board":
+// reorderPanels backs the pointer path (drag one panel onto another) and movePanelInOrder backs the
+// keyboard path (the Move left / Move right buttons in the Panels menu). Both are pure and live here
+// because this vitest run has no DOM, so the ordering rules get a test even though the gestures
+// themselves can only be measured in a browser.
+//
+// movePanelInOrder steps to the next VISIBLE neighbour rather than to index i±1. `order` holds hidden
+// panels too (that is how a panel keeps its place while switched off), so a plain swap can trade
+// places with a panel nobody can see - the board would not move and the button would read as broken.
+// TASK-174 makes that the default state, not an edge case: mailbox_unmatched sits hidden at the end
+// of a fresh order, so a bare i+1 on source_effectiveness would visibly do nothing on day one.
+export function movePanelInOrder(order:string[],hidden:string[],id:string,dir:number):string[]{
+  const i=order.indexOf(id)
+  if(i<0)return order
+  const visible=order.filter(x=>!hidden.includes(x))
+  const vj=visible.indexOf(id)+dir
+  if(visible.indexOf(id)<0||vj<0||vj>=visible.length)return order
+  const j=order.indexOf(visible[vj])
+  const next=[...order]
+  ;[next[i],next[j]]=[next[j],next[i]]
+  return next
+}
+
+// Drop semantics, unchanged from the inline version this replaces: the dragged panel is lifted out
+// and re-inserted BEFORE the panel it was dropped on. Dropping a panel on itself, or either id being
+// unknown, returns the order untouched rather than throwing - a drag can end on anything.
+export function reorderPanels(order:string[],dragged:string|null,target:string):string[]{
+  if(!dragged||dragged===target||!order.includes(dragged)||!order.includes(target))return order
+  // Direction matters, and getting it wrong makes the commonest gesture do nothing. Inserting
+  // ALWAYS before the target is a no-op for a forward drag onto the very next panel: removing the
+  // dragged id shifts the target left into the slot just vacated, so "before the target" is where
+  // the panel already was. Measured on the owner's board - dragging `total` onto its right-hand
+  // neighbour left the order byte-identical. Dragging one slot right is the first thing anyone
+  // tries, so it has to land: moving FORWARD inserts after the target, moving BACKWARD before it.
+  const forward=order.indexOf(dragged)<order.indexOf(target)
+  const next=order.filter(x=>x!==dragged)
+  next.splice(next.indexOf(target)+(forward?1:0),0,dragged)
+  return next
+}
+
+// TASK-183 AC1/AC2/AC5. The live arrangement shown WHILE a panel is being dragged. There is exactly
+// one ordering computation in the whole gesture and it is this one: `drop` saves `order` verbatim
+// instead of calling reorderPanels a second time, so what the owner released over is byte-identical
+// to what is stored. That is not just tidiness - a second call would DISAGREE. The preview is a
+// CHAIN of moves applied to what is currently on screen, and one step recomputed from the saved
+// order gives a different answer as soon as the cursor has visited more than one panel: from
+// ['a','b','c','d'], dragging 'c' over 'b' and then over 'b' again returns the original order,
+// while a single step from the saved order would put 'c' in front of 'b'.
+//
+// Chaining off what is on screen is also what keeps it still. The grid rearranges under the cursor,
+// so the panel now sitting under the pointer is usually the DRAGGED one; measured against the saved
+// order that would undo the move, re-run on the next dragover, and oscillate at pointer speed.
+// Against the current preview it is dragged===target, which reorderPanels already returns unchanged.
+//
+// `over` is why this is a struct rather than a bare array. reorderPanels is deliberately NOT
+// idempotent (applying the same target twice moves the panel back past it), and dragover fires
+// continuously - tens of times a second - on whichever element the pointer is over. Repeating a
+// target therefore returns the SAME OBJECT, which skips the second application and lets React's
+// setState bail out without re-rendering the grid, instead of needing a throttle.
+//
+// `moved` is AC5: a drag that changes nothing (dropped back on itself, or dragged out and back)
+// must not signal a move. Compared by content, not by reference, because the chain can return to
+// the saved arrangement through a fresh array.
+export type PanelDragPreview={order:string[];over:string;moved:boolean}
+export function previewPanelDrag(current:PanelDragPreview|null,saved:string[],dragged:string|null,target:string,hidden:string[]=[]):PanelDragPreview|null{
+  if(!dragged)return current
+  if(current&&current.over===target)return current
+  const order=reorderPanels(current?current.order:saved,dragged,target)
+  // `moved` drives the "Drops here" badge and the outline, so it has to answer "will the owner SEE
+  // anything change", not "did the array change". Those differ: the saved order carries hidden
+  // panels too (TASK-174 leaves mailbox_unmatched in it), so a chain of drags can land the visible
+  // panels exactly where they started while a hidden id sits at a different index. Measured on the
+  // owner's board - dragging a panel out and back restored the visible arrangement, and the badge
+  // still promised a move that could not happen. Compare the visible projection only.
+  const seen=(list:string[])=>list.filter(x=>!hidden.includes(x)).join(',')
+  return {order,over:target,moved:seen(order)!==seen(saved)}
 }
 
 // TASK-119 AC2/AC6/AC7. build_suggestions (mailbox.py) can emit more than one MailboxSuggestion for
