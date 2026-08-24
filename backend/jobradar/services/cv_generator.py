@@ -17,6 +17,8 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.utils.text import slugify
 
+from jobradar.models import CvAsset
+
 
 FALLBACK_MODELS = [
     {'key':'gpt-5.6-sol','label':'GPT-5.6-Sol','efforts':['low','medium','high','xhigh','max','ultra'],'default_effort':'low','fast_tier':'priority'},
@@ -100,22 +102,12 @@ def _run_command(command, cancelled=None, **kwargs):
                 raise subprocess.TimeoutExpired(command, timeout)
 
 
-TEMPLATES = {
-    'en': {
-        'cv': ('CVs/English - AI Engineer (base)_v_1.3.tex', 'English AI Engineer CV'),
-        'letters': {
-            'motivation_letter': ('Motivation_letter.tex', 'English motivation letter'),
-        },
-    },
-    'de': {
-        'cv': ('CVs/German - AI Engineer (base)_v_1.3.tex', 'German AI Engineer CV'),
-        'letters': {
-            'motivationsschreiben': ('Motivationsschreiben.tex', 'Motivationsschreiben'),
-            'bewerbungsschreiben': ('Bewerbungsschreiben.tex', 'Bewerbungsschreiben'),
-            'anschreiben': ('Anschreiben.tex', 'Anschreiben'),
-        },
-    },
-}
+# TASK-99a: templates and the photograph are CvAsset rows owned by one account. The module-level
+# TEMPLATES dict that used to live here named four files in settings.CODEX_CV_WORKSPACE, a
+# directory that exists on exactly one laptop -- so every enabled account generated from the
+# owner's templates. The historic filenames now live in the import_cv_assets management command,
+# which is where reading that workspace belongs: a one-off import, not a per-request lookup.
+PHOTO_FILENAME='Picture.jpg'
 
 
 CLAUDE_EFFORTS=['low','medium','high','xhigh','max']
@@ -139,27 +131,6 @@ def claude_model_options():
          'fast_tier':'fast' if any(name in key.lower() for name in fast) else ''}
         for key, label in (('sonnet','Claude Sonnet'), ('opus','Claude Opus'), ('haiku','Claude Haiku'))
     ]
-
-
-def _template_version(path):
-    match=re.search(r'_v_(\d+(?:\.\d+)*)$', path.stem)
-    return tuple(int(part) for part in match.group(1).split('.')) if match else ()
-
-
-def latest_cv_template(key):
-    # Base CVs are versioned as "<name>_v_<major>.<minor>.tex". Resolve the newest on disk so a new
-    # version is picked up by dropping the file in, instead of editing TEMPLATES. Compared as an int
-    # tuple, so _v_1.10 correctly beats _v_1.9.
-    default=TEMPLATES[key]['cv'][0]
-    if not settings.CODEX_CV_WORKSPACE:
-        return default
-    base=Path(default)
-    stem=re.sub(r'_v_[\d.]+$', '', base.stem)
-    directory=Path(settings.CODEX_CV_WORKSPACE)/base.parent
-    candidates=[path for path in directory.glob(f'{stem}_v_*.tex') if _template_version(path)]
-    if not candidates:
-        return default
-    return f'{base.parent.as_posix()}/{max(candidates, key=_template_version).name}'
 
 
 def codex_model_options():
@@ -334,6 +305,50 @@ def applicant_name(user):
     return '-'.join(part.capitalize() for part in slug.split('-') if part) or 'Candidate'
 
 
+def user_cv_assets(user):
+    """Every template and photograph belonging to exactly this account, and nothing else.
+
+    THE single place a template or photo is resolved (TASK-99a AC1/AC2/AC4). It is a plain filter on
+    the owning user with no fallback of any kind: not to CODEX_CV_OWNER_EMAIL, not to "the only
+    account that has one", not to a CODEX_CV_WORKSPACE glob. Widening it -- an `or` on the owner, a
+    default template, a workspace fall-through -- is exactly what
+    tests/test_cv_assets.py::test_one_accounts_templates_and_photo_are_unreachable_by_another
+    exists to fail on, and an account with nothing stored is meant to get nothing.
+    """
+    if not getattr(user, 'pk', None):
+        return []
+    return list(CvAsset.objects.filter(user=user))
+
+
+def user_templates(user, assets=None):
+    """{'de': {'cv': CvAsset, 'letters': {key: CvAsset}}} for this account.
+
+    Same shape the module-level TEMPLATES dict had before TASK-99a, so callers read the same way.
+    A language with letters but no CV is dropped: letters are chosen inside a CV's language, so
+    without one there is nothing to choose them under -- which is also how the old dict behaved,
+    since every language in it always had a CV.
+    """
+    templates={}
+    for asset in user_cv_assets(user) if assets is None else assets:
+        if asset.kind == CvAsset.KIND_CV:
+            templates.setdefault(asset.language or asset.key, {'cv':None,'letters':{}})['cv']=asset
+        elif asset.kind == CvAsset.KIND_LETTER:
+            templates.setdefault(asset.language, {'cv':None,'letters':{}})['letters'][asset.key]=asset
+    return {language:entry for language,entry in templates.items() if entry['cv']}
+
+
+def user_photo(user, assets=None):
+    """This account's photograph, or None. None is a documented outcome, not an error.
+
+    A user with no photo stored generates normally as long as their own CV template does not ask
+    for one; nothing is written into the compile directory and nothing is substituted from another
+    account. If the template does reference an image, generate_cv_package refuses up front with a
+    message naming the problem, rather than letting pdflatex fail on a missing file and burning two
+    automatic model repair attempts on something no repair can fix.
+    """
+    return next((asset for asset in (user_cv_assets(user) if assets is None else assets) if asset.kind == CvAsset.KIND_PHOTO), None)
+
+
 def detect_job_language(job):
     text=' '.join([job.title or '', job.language_requirements or '', job.source_text or '']).lower()
     german=len(re.findall(r'\b(?:der|die|das|den|dem|ein|eine|und|oder|mit|für|wir|sie|ihre|deutsch|kenntnisse|erfahrung|aufgaben|anforderungen|bewerbung)\b', text))
@@ -344,25 +359,34 @@ def detect_job_language(job):
 def generation_preview(job, user=None):
     language=detect_job_language(job)
     workspace=Path(settings.CODEX_CV_WORKSPACE) if settings.CODEX_CV_WORKSPACE else None
+    templates=user_templates(user)
     letters=[]
-    for option_language, template in TEMPLATES.items():
-        letters += [{'key': key, 'language': option_language, 'label': value[1], 'filename': Path(value[0]).name} for key, value in template['letters'].items()]
-    cvs=[]
-    for key, value in TEMPLATES.items():
-        relative=latest_cv_template(key)
-        # Absolute, to match the generated-artifact paths: both are shown side by side in the UI and
-        # are meant to be copied and pasted straight into an editor or file manager.
-        path=str(workspace/relative) if workspace else relative
-        cvs.append({'key': key, 'language': key, 'label': value['cv'][1], 'filename': Path(relative).name, 'path': path})
+    for option_language, template in templates.items():
+        letters += [{'key': key, 'language': option_language, 'label': asset.label, 'filename': asset.filename} for key, asset in template['letters'].items()]
+    # `path` is the file this template was imported from, shown so the owner can still open what
+    # they edit. It is provenance, not resolution -- the source that gets generated from is the
+    # stored row, and an account whose row was never imported from a file simply shows nothing.
+    cvs=[{'key': key, 'language': key, 'label': entry['cv'].label, 'filename': entry['cv'].filename, 'path': entry['cv'].source_path} for key, entry in templates.items()]
+    # The detected language only preselects a template the account actually has; with templates in
+    # one language only, the other language is not an option to land on.
+    selected_cv=language if language in templates else next(iter(templates), '')
+    selected_letter=next(iter(templates[selected_cv]['letters']), '') if selected_cv else ''
     return {
         'language': language,
         'language_label': 'German' if language == 'de' else 'English',
-        'selected_cv': language,
-        'selected_letter': next(iter(TEMPLATES[language]['letters'])),
+        'selected_cv': selected_cv,
+        'selected_letter': selected_letter,
         'cvs': cvs,
         'letters': letters,
         'models': available_model_options(),
-        'configured': bool(settings.CODEX_CV_ENABLED and workspace and workspace.is_dir()),
+        'configured': bool(settings.CODEX_CV_ENABLED and workspace and workspace.is_dir() and templates),
+        # TASK-99a AC6: why the Generate button is off, in the order the user can act on. The
+        # capability flag is checked by the endpoint itself, so reaching here means it is granted.
+        'unavailable_reason': (
+            '' if settings.CODEX_CV_ENABLED and workspace and workspace.is_dir() and templates
+            else 'No CV template is stored on this account. An administrator adds one with manage.py import_cv_assets.' if settings.CODEX_CV_ENABLED and workspace and workspace.is_dir()
+            else 'CV generation runs on the machine that holds the LaTeX toolchain and is unavailable on this server.'
+        ),
         'artifacts': latest_generated_artifacts(job, user),
         # Lets the client show a short workspace-relative path while still copying the absolute one.
         'workspace': str(workspace) if workspace else '',
@@ -522,16 +546,23 @@ def _compile_pdf(output, filename, is_cv, cancelled=None):
         raise RecoverableGenerationError(f'The {"CV" if is_cv else "motivation letter"} exceeds its {limit}-page limit.', f'{filename} compiled to {pages} pages; limit: {limit}.')
 
 
-def _package_cache(workspace, job, profile, paths, options):
+def _package_cache(workspace, job, profile, sources, options, user_id=None):
+    # The cache directory is shared by every account on the machine, so the account is part of the
+    # key (version 3, TASK-99a). Two accounts with byte-identical templates and the same job hashed
+    # to the same entry before, and the cached zip carries the FIRST account's name in its
+    # filenames -- so the second one downloaded an application titled with a stranger's surname.
+    # The template and photo bytes are hashed in directly now that they are rows rather than files,
+    # which also means editing a template invalidates the entry the way touching the file used to.
     digest=hashlib.sha256(json.dumps({
-        'version':2,
+        'version':3,
+        'user':user_id,
         'job':[job.company,job.title,job.location,job.language_requirements,job.source_text],
         'evaluation':list(job.evaluations.values('fit_score','summary','main_match_reasons','main_gaps','cv_adjustment_notes')[:1]),
         'profile':profile,
         'options':options,
     }, ensure_ascii=False, sort_keys=True).encode('utf-8'))
-    for path in paths:
-        digest.update(path.read_bytes())
+    for source in sources:
+        digest.update(source)
     root=workspace/'.dachapply-cache'/digest.hexdigest()
     return root.with_suffix('.zip'),root.with_suffix('.json')
 
@@ -663,6 +694,18 @@ def validate_model_capability(provider, model, effort, speed):
     return model_option
 
 
+def _read_generated(path, label):
+    """A previously generated document being readjusted, read back off the workspace.
+
+    Named errors rather than a raw FileNotFoundError, because the file can genuinely be gone: the
+    workspace is an ordinary directory the owner also files documents in by hand.
+    """
+    try:
+        return Path(path).read_text(encoding='utf-8')
+    except OSError:
+        raise RuntimeError(f'The current generated {label} is no longer on disk; generate it again rather than readjusting it.') from None
+
+
 def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed='normal', progress=None, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, cancelled=None, user_id=None):
     _ensure_active(cancelled)
 
@@ -682,34 +725,44 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
     if not create_cv and not create_letter:
         raise ValueError('Select at least a CV or a letter.')
     model_option=validate_model_capability(provider, model, effort, speed)
-    if cv_key not in TEMPLATES:
+
+    # Resolved here rather than passed as a name, so the running task cannot be told to use
+    # somebody else's templates or write their name onto a document: only the id of the user the
+    # task was started for. Every template, the photograph and the output filenames come from it.
+    requesting_user=get_user_model().objects.filter(pk=user_id).first() if user_id else None
+    assets=user_cv_assets(requesting_user)
+    templates=user_templates(requesting_user, assets)
+    if cv_key not in templates:
         raise ValueError('Select a CV template.')
-    cv_template=TEMPLATES[cv_key]
+    cv_template=templates[cv_key]
     if create_letter and letter_key not in cv_template['letters']:
         raise ValueError('Select a letter template matching the CV language.')
     letter_language=cv_key
-    letter_template=cv_template['letters'].get(letter_key)
+    letter_asset=cv_template['letters'].get(letter_key)
+    photo=user_photo(requesting_user, assets)
 
     workspace=Path(settings.CODEX_CV_WORKSPACE) if settings.CODEX_CV_WORKSPACE else None
     if not workspace or not workspace.is_dir():
         raise RuntimeError('CV workspace is not configured on this server.')
 
-    cv_source=(Path(source_cv) if source_cv else workspace / latest_cv_template(cv_key)) if create_cv else None
-    letter_source=Path(source_letter) if source_letter else (workspace / letter_template[0] if create_letter else None)
-    picture_source=workspace / 'CVs/Picture.jpg'
-    required=([cv_source,picture_source] if create_cv else []) + ([letter_source] if create_letter else [])
-    missing=[path.name for path in required if not path.is_file()]
-    if missing:
-        raise RuntimeError('Missing private CV template files: ' + ', '.join(missing))
-
-    # Resolved here rather than passed as a name, so the running task cannot be told to write
-    # somebody else's name onto a document: only the id of the user the task was started for.
-    requesting_user=get_user_model().objects.filter(pk=user_id).first() if user_id else None
+    # A revision keeps working from the already-generated file on the workspace; a fresh generation
+    # starts from this account's stored template.
+    cv_text=(_read_generated(source_cv, 'CV') if source_cv else cv_template['cv'].source) if create_cv else ''
+    letter_text=(_read_generated(source_letter, 'motivation letter') if source_letter else letter_asset.source) if create_letter else ''
+    # AC2: what an account with no photograph gets, stated. Nothing is substituted from another
+    # account and nothing crashes -- generation runs without a photo file unless the account's own
+    # template asks for one, and then it is refused here with the reason. Letting pdflatex discover
+    # the missing file instead would spend two automatic model repair attempts (minutes, and real
+    # money) on a failure no rewrite of the LaTeX can fix.
+    if create_cv and not photo and r'\includegraphics' in cv_text:
+        raise RuntimeError('This CV template includes a photograph but no photo is stored on this account. Add one with manage.py import_cv_assets, or use a template without \\includegraphics.')
     cv_name, letter_name=_target_names(job, applicant_name(requesting_user))
     filename=f'application-{job.id}-{cv_key}.zip'
     cache_paths=None
     if settings.CODEX_CV_CACHE and not is_revision:
-        cache_paths=_package_cache(workspace,job,profile,required,[cv_key,letter_key,create_cv,create_letter,provider,model,effort,speed])
+        sources=[cv_text.encode('utf-8'),bytes(photo.image) if photo else b''] if create_cv else []
+        sources += [letter_text.encode('utf-8')] if create_letter else []
+        cache_paths=_package_cache(workspace,job,profile,sources,[cv_key,letter_key,create_cv,create_letter,provider,model,effort,speed],user_id)
         cached=_cached_package(*cache_paths,create_cv,create_letter)
         if cached:
             report(97,'Using saved package')
@@ -723,10 +776,14 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
     with tempfile.TemporaryDirectory(prefix='dachapply-cv-') as temp:
         output=Path(temp)
         if create_cv:
-            shutil.copy2(cv_source, output / cv_name)
-            shutil.copy2(picture_source, output / 'Picture.jpg')
+            # newline='\n' because these used to be shutil.copy2'd: without it Windows rewrites
+            # every LF as CRLF, and the owner's templates are LF-only, so the model would be handed
+            # a file that differs byte-for-byte from the one it was handed before TASK-99a.
+            (output/cv_name).write_text(cv_text, encoding='utf-8', newline='\n')
+            if photo:
+                (output/(photo.filename or PHOTO_FILENAME)).write_bytes(bytes(photo.image))
         if create_letter:
-            shutil.copy2(letter_source, output / letter_name)
+            (output/letter_name).write_text(letter_text, encoding='utf-8', newline='\n')
         correction_image_name=''
         if correction_image:
             content,suffix=correction_image
@@ -857,18 +914,20 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
         return package,filename,saved
 
 
-def recompile_generated_package(job, cv_key, source_cv=None, source_letter=None, progress=None, cancelled=None):
+def recompile_generated_package(job, cv_key, source_cv=None, source_letter=None, progress=None, cancelled=None, user_id=None):
     sources=[('cv',Path(source_cv))] if source_cv else []
     if source_letter:
         sources.append(('letter',Path(source_letter)))
     if not sources or any(not source.is_file() for _,source in sources):
         raise RuntimeError('No previous generated TeX files were found for this job.')
-    workspace=Path(settings.CODEX_CV_WORKSPACE)
-    picture=workspace/'CVs/Picture.jpg'
+    # The photograph comes from the account this recompile was started for, never from the
+    # workspace -- the previously generated .tex still says \includegraphics{./Picture.jpg}, and
+    # before TASK-99a that one file was whoever's photo happened to be on the machine.
+    photo=user_photo(get_user_model().objects.filter(pk=user_id).first() if user_id else None)
     with tempfile.TemporaryDirectory(prefix='dachapply-compile-') as temp:
         output=Path(temp)
-        if picture.is_file():
-            shutil.copy2(picture,output/'Picture.jpg')
+        if photo:
+            (output/(photo.filename or PHOTO_FILENAME)).write_bytes(bytes(photo.image))
         saved={}
         archive=io.BytesIO()
         for index,(kind,source) in enumerate(sources):

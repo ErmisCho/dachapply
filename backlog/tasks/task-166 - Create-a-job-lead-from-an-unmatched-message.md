@@ -49,6 +49,32 @@ owner feeds and starts being one that catches what they missed.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+## Coordinator re-measurement, 2026-08-24 — the 204 and the 30 are stale
+
+The notes below predicted this exactly: *"the 204 is today's number against today's classifier, and
+TASK-162 will change what is in that bucket."* TASK-162, TASK-163 and TASK-169 have all shipped
+since, and the mailbox has roughly tripled. Measured against production on 2026-08-24:
+
+```
+total messages                                    1133   (was 321)
+unmatched (no matched_job)                         968
+unmatched AND status-changing  <- the population   160
+    application_confirmed                          132
+    rejection                                       19
+    interview_invitation                             9
+```
+
+Top sender domains among those 160: onlyfy.jobs 21, join.com 15, ashbyhq.com 10,
+smartrecruiters.com 9, us.greenhouse-mail.io 9, eu.greenhouse.io 8, candidates.workablemail.com 6,
+hr.allianz.com 5, myworkday.com 4.
+
+**AC5 is graded against 160, not 204.** The 968 figure is not the target population: it is dominated
+by 659 `not_job_related` rows, which by definition should not become job leads — TASK-169 exists to
+keep them out of status-changing classifications and this task must not undo that.
+
+Owner decision, 2026-08-24: **one at a time, pre-filled, the user confirms.** Not bulk, not
+automatic. AC4 already required "never automatic"; this settles that there is no batch mode either.
+
 Do not start this before TASK-163 has shipped and the owner has used the parked view — the 204 is
 today's number against today's classifier, and TASK-162 (non-job mail landing in job classifications)
 will change what is in that bucket. Building extraction against a population that is about to shift

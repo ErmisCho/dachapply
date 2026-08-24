@@ -145,13 +145,64 @@ class UserProfile(models.Model):
     # out to a model CLI and LaTeX on the server, so it is granted per account in the admin, never
     # by signing up. services.cv_generator.is_cv_owner still honours CODEX_CV_OWNER_EMAIL as a
     # fallback so the owner's access cannot be lost by a flag that was never set.
-    can_generate_cv=models.BooleanField(default=False, help_text="Generates CVs and cover letters from the site owner's private LaTeX templates and the owner's own photograph, and writes them into a shared output directory on the server -- not this account's own templates or photo.")
+    # The help text changed with TASK-99a and the change is the point: templates and the photo are
+    # now this account's own CvAsset rows, so the flag no longer hands anyone the owner's files. The
+    # shared output directory is still shared -- that half is TASK-99b and is not fixed here.
+    can_generate_cv=models.BooleanField(default=False, help_text="Generates CVs and cover letters from this account's own LaTeX templates and photograph, and writes them into a shared output directory on the server. An account with no templates of its own cannot generate anything.")
     evaluation_prompt_template=models.TextField(blank=True, default='')
     combined_prompt_template=models.TextField(blank=True, default='')
     enrichment_prompt_template=models.TextField(blank=True, default='')
     bulk_links_prompt_template=models.TextField(blank=True, default='')
     created_at=models.DateTimeField(auto_now_add=True)
     def __str__(self): return f'{self.user} -> {self.submit_for or self.requested_submit_for or "self"}'
+
+class CvAsset(models.Model):
+    """One LaTeX template, or the photograph, belonging to exactly one account.
+
+    TASK-99a. Until this existed, "which template" and "whose photo" were answered by
+    settings.CODEX_CV_WORKSPACE -- a directory that exists on one laptop -- so every account with
+    can_generate_cv shipped applications built from the owner's templates and wearing the owner's
+    face. services.cv_generator resolves both from these rows now, filtered on the owning user with
+    no fallback: no env-owner default, no "the only template anyone has", no workspace glob.
+
+    In the database rather than on disk on purpose. There is no MEDIA_ROOT in this project and the
+    deployed container's filesystem is ephemeral, so a FileField would mean "a file that survives
+    until the next restart". Templates are ~12 KB of text and a photograph is ~1 MB; both fit a row.
+
+    Deliberately NOT columns on UserProfile: that row is loaded on nearly every authenticated
+    request, and a megabyte of JPEG would ride along with each one.
+    """
+    KIND_CV='cv'
+    KIND_LETTER='letter'
+    KIND_PHOTO='photo'
+    KINDS=[(KIND_CV,'CV template'),(KIND_LETTER,'Letter template'),(KIND_PHOTO,'Photograph')]
+    user=models.ForeignKey(settings.AUTH_USER_MODEL, related_name='cv_assets', on_delete=models.CASCADE)
+    kind=models.CharField(max_length=10, choices=KINDS)
+    # 'en'/'de' for a CV, the letter's own key ('anschreiben', 'motivation_letter', ...) for a
+    # letter, '' for the photograph -- one photo per account, which is what unique_together below
+    # enforces by giving every photo row the same empty key.
+    key=models.CharField(max_length=40, blank=True, default='')
+    # Which language's option list this appears under. Letters are chosen inside the CV's language
+    # (see cv_generator.user_templates), so a letter's language is what binds it to a CV.
+    language=models.CharField(max_length=5, blank=True, default='')
+    label=models.CharField(max_length=120, blank=True, default='')
+    # The name this gets in the compile directory. For the photograph it defaults to Picture.jpg
+    # because that is the name the CV templates' own \includegraphics line already uses; changing
+    # it means changing that line too.
+    filename=models.CharField(max_length=200, blank=True, default='')
+    source=models.TextField(blank=True, default='')
+    # Empty for a template. editable=False keeps a megabyte of JPEG out of admin forms; the photo
+    # is written by the import_cv_assets management command, not typed into a textarea.
+    image=models.BinaryField(blank=True, default=b'', editable=False)
+    # Where the import came from, for display only -- the preview endpoint shows it so the owner can
+    # still open the file they edit in C:\latex. Never read to resolve anything: this row is the
+    # source of truth, and a path here that no longer exists changes nothing about generation.
+    source_path=models.CharField(max_length=400, blank=True, default='')
+    updated_at=models.DateTimeField(auto_now=True)
+    class Meta:
+        unique_together=[('user','kind','key')]
+        ordering=['user','kind','key']
+    def __str__(self): return f'{self.user}: {self.get_kind_display()} {self.key or self.filename}'.strip()
 
 class JobLead(models.Model):
     WORK_MODES=[('onsite','Onsite'),('hybrid','Hybrid'),('remote','Remote'),('unknown','Unknown')]

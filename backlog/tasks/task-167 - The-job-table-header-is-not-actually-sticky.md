@@ -1,7 +1,7 @@
 ---
 id: TASK-167
 title: The job table header is not actually sticky
-status: To Do
+status: Done
 assignee: []
 labels:
   - frontend

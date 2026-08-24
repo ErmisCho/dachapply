@@ -29,6 +29,12 @@ def test_can_generate_cv_help_text_renders_on_user_admin_page(db):
 
     assert response.status_code == 200
     html = response.content.decode('utf-8')
-    assert "the site owner's private LaTeX templates" in html
+    # TASK-99a changed what this flag discloses, and the change is the point: templates and the
+    # photograph are now the account's own CvAsset rows, so granting the flag no longer hands
+    # anyone the owner's files. The output directory is still shared -- that half is TASK-99b -- so
+    # the disclosure still has to say so.
+    assert "this account's own LaTeX templates" in html
     assert 'photograph' in html
     assert 'shared output directory' in html
+    assert 'no templates of its own cannot generate' in html
+    assert "the site owner's private LaTeX templates" not in html

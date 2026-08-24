@@ -1,7 +1,7 @@
 ---
 id: TASK-173
 title: Portal the row feedback popup out of the table wrapper
-status: To Do
+status: Done
 assignee: []
 labels:
   - frontend

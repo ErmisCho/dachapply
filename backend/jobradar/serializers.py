@@ -313,9 +313,41 @@ class JobLeadListSerializer(JobLeadSerializer):
     # too (option 3). Read-only: sourced from the Exists() annotation JobLeadViewSet.get_queryset()
     # adds for every row already in this one list query, not a per-row lookup.
     has_mailbox_history=serializers.BooleanField(read_only=True, default=False)
+    # TASK-178: the same shape, one field down, for the same reason. The board renders a `notes`
+    # button on every row -- measured byte-identical on all 69 visible rows -- while only 12 of the
+    # owner's 83 jobs carry a general note, so the affordance told the owner nothing. note_preview
+    # is what both halves of the fix read: non-empty IS "this job has a note" (no second boolean to
+    # keep in sync with it), and the string itself is the row's hover text. The full note still
+    # comes from /jobs/<id>/notes/ when the modal opens, so no long-form prose joins this
+    # deliberately trimmed payload. Sourced from the annotation JobLeadViewSet.get_queryset() adds
+    # to this one list query, never a per-row request (option 2, which TASK-91 was filed to avoid).
+    NOTE_PREVIEW_CHARS = 140
+    # Bounded in SQL (the view's Substr annotation), never sliced out of the whole column here:
+    # TASK-142 measured that mistake truncating the RESPONSE while the QUERY had already paid for
+    # every row's full body. 2x + 1 rather than MailboxMessageListSerializer's exact CHARS + 1
+    # because of the whitespace squeeze below -- a note's newlines and markdown-table padding
+    # collapse to single spaces, so 141 raw chars can be fewer than 140 displayed ones. The trick
+    # is the same either way: a raw value at the full fetch length means there is more note, which
+    # is what earns the ellipsis when the squeeze came up short of the cap on its own.
+    NOTE_PREVIEW_FETCH_CHARS = 2 * NOTE_PREVIEW_CHARS + 1
+    note_preview=serializers.SerializerMethodField()
     class Meta(JobLeadSerializer.Meta):
         fields=None  # DRF forbids fields and exclude together; the parent sets fields='__all__'
         exclude=('raw_description','original_source_text')
+    def get_note_preview(self, obj):
+        """Server-side twin of appUtils.messagePreviewLine (TASK-177): same 140-char cap and the
+        same whitespace squeeze, so a note preview and a mail preview never disagree about length.
+        Squeezing first matters more here than there -- JobNotes composes a note as text + blank
+        line + markdown tables, so a table-only note's literal first line is empty and a raw slice
+        would preview it as nothing at all, which looks exactly like the "no note" case this field
+        exists to tell apart. '' for a job with no general note; getattr keeps a stray direct
+        instantiation without the annotation (a test, a reused serializer) from raising.
+        """
+        raw=getattr(obj, 'note_preview_raw', '') or ''
+        line=re.sub(r'\s+', ' ', raw).strip()
+        if len(line) > self.NOTE_PREVIEW_CHARS:
+            return line[:self.NOTE_PREVIEW_CHARS].rstrip() + '…'
+        return line + '…' if line and len(raw) >= self.NOTE_PREVIEW_FETCH_CHARS else line
     def get_latest_evaluation(self, obj):
         ev=obj.evaluations.first()
         return JobEvaluationListSerializer(ev).data if ev else None

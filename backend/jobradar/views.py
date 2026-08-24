@@ -9,7 +9,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.db import connection, transaction
-from django.db.models import Avg, Case, Count, Exists, F, IntegerField, Min, OuterRef, Q, Value, When
+from django.db.models import Avg, Case, Count, Exists, F, IntegerField, Min, OuterRef, Q, Subquery, Value, When
 from django.db.models.functions import Substr
 from django.http import HttpResponse
 from django.utils import timezone
@@ -780,6 +780,21 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             # correlated subquery per row and is exposed only on JobLeadListSerializer (the /jobs/
             # list), never widening the detail response.
             has_mailbox_history=Exists(MailboxMessage.objects.filter(matched_job=OuterRef('pk'))),
+            # TASK-178: the board's `notes` button is byte-identical on all 69 visible rows while
+            # only 12 of the owner's 83 jobs carry a general note, so it told the owner nothing. One
+            # field carries both halves of the fix -- non-empty means "this row has a note" and the
+            # string itself is the hover preview -- and it rides the list query that already runs,
+            # never a per-row request (option 2, the thing TASK-91 was filed to avoid).
+            #
+            # Bounded in SQL for TASK-142's recorded reason: slicing a preview out of the response
+            # instead leaves the query paying for the whole column, which made that endpoint slower
+            # rather than faster. Newest note wins, matching what the button opens (appUtils.
+            # selectGeneralNote takes the newest note_type='general'); an empty note is excluded
+            # here, so a job whose note was blanked reads as no note at all rather than as a row
+            # with an invisible one. Subquery rather than the Exists() above because this one has to
+            # return text, and it stays correlated on OuterRef('pk') exactly like that one -- the
+            # row's OWN note or nothing, on a queryset accessible_jobs has already scoped.
+            note_preview_raw=Subquery(ApplicationNote.objects.filter(job=OuterRef('pk'), note_type='general').exclude(note='').order_by('-created_at').values(preview=Substr('note', 1, JobLeadListSerializer.NOTE_PREVIEW_FETCH_CHARS))[:1]),
         ).order_by(*parse_board_ordering(raw_ordering))
         return qs.distinct()
     def list(self, request, *args, **kwargs):

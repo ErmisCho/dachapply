@@ -492,9 +492,10 @@ def test_latest_generated_sources_survive_task_state_loss(job, tmp_path, setting
 
 
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
-def test_cv_generation_preview_is_owner_only(client, owner, job):
+def test_cv_generation_preview_is_owner_only(client, owner, job, cv_assets):
     assert client.get(f'/api/jobs/{job.id}/cv-generation/').status_code==404
     owner.email='owner@example.test'; owner.save(update_fields=['email'])
+    cv_assets(owner)
     JobLead.objects.filter(pk=job.pk).update(original_source_text='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben und die Bewerbung.', raw_description='English role and requirements')
     r=client.get(f'/api/jobs/{job.id}/cv-generation/')
     assert r.status_code==200 and r.data['language']=='de'
@@ -651,16 +652,16 @@ def test_cv_model_discovery_includes_anthropic_and_installed_local_models(monkey
     assert not any('embed' in option['key'] for option in options if option['provider']=='ollama')
 
 
-def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings):
+def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings, cv_assets):
     import zipfile
     from io import BytesIO
     from types import SimpleNamespace
     from jobradar.services import cv_generator
     from jobradar.services.cv_generator import generate_cv_package, recompile_generated_package
 
-    cv=tmp_path/'CVs'/'German - AI Engineer (base)_v_1.3.tex'; cv.parent.mkdir()
-    letter=tmp_path/'Motivationsschreiben.tex'; picture=tmp_path/'CVs'/'Picture.jpg'
-    cv.write_text('original cv'); letter.write_text('original letter'); picture.write_bytes(b'jpg')
+    # The workspace is still where generated documents land; the templates and photo it used to
+    # hold are CvAsset rows on the generating account now (TASK-99a), seeded below.
+    (tmp_path/'CVs').mkdir()
     settings.CODEX_CV_WORKSPACE=str(tmp_path); settings.CODEX_CV_OPEN_OUTPUT_FOLDER=True; settings.CODEX_CV_CACHE=False
     opened=[]; monkeypatch.setattr(cv_generator.os, 'startfile', lambda path: opened.append(__import__('pathlib').Path(path)), raising=False)
     monkeypatch.setattr('jobradar.services.cv_generator.shutil.which', lambda command: command)
@@ -711,89 +712,93 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
 
     monkeypatch.setattr('jobradar.services.cv_generator.subprocess.run', fake_run)
     user=User.objects.create_user('cv-owner')
+    cv_assets(user)
     job=JobLead.objects.create(company='Firma', title='Entwickler', raw_description='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben.', created_by=user)
     with pytest.raises(ValueError, match='matching the CV language'):
-        generate_cv_package(job, 'Factual profile', 'en', 'anschreiben', True, 'openai', 'gpt-5.5', 'high', 'fast')
+        generate_cv_package(job, 'Factual profile', 'en', 'anschreiben', True, 'openai', 'gpt-5.5', 'high', 'fast', user_id=user.id)
     with pytest.raises(ValueError, match='speed supported'):
-        generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'turbo')
+        generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'turbo', user_id=user.id)
     with pytest.raises(RuntimeError, match='Current target TeX files'):
-        generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', revision_instructions='change layout')
+        generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', revision_instructions='change layout', user_id=user.id)
     # Anthropic runs through the same pipeline; fake_run asserts --effort xhigh reaches the CLI.
-    generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'anthropic', 'sonnet', 'xhigh')
+    generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'anthropic', 'sonnet', 'xhigh', user_id=user.id)
     assert any(command[0]=='claude' and '--effort' in command and command[command.index('--effort')+1]=='xhigh' for command in commands)
     progress=[]
-    archive,_,saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'fast', lambda percent,stage: progress.append((percent,stage)))
+    archive,_,saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'fast', lambda percent,stage: progress.append((percent,stage)), user_id=user.id)
     names=zipfile.ZipFile(BytesIO(archive)).namelist()
     assert len([name for name in names if name.endswith('.pdf')])==2
     assert [stage for _,stage in progress]==['Preparing templates','Generating CV and motivation letter','CV and letter generated','Compiling CV','CV compiled','Compiling motivation letter','Motivation letter compiled','Saving files']
     settings.CODEX_CV_CACHE=True
     before=sum(command[0]=='codex' for command in commands)
-    cached_first=generate_cv_package(job, 'Cached profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high')
+    cached_first=generate_cv_package(job, 'Cached profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high', user_id=user.id)
     cached_progress=[]
-    cached_second=generate_cv_package(job, 'Cached profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high', progress=lambda percent,stage: cached_progress.append(stage))
+    cached_second=generate_cv_package(job, 'Cached profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high', progress=lambda percent,stage: cached_progress.append(stage), user_id=user.id)
     assert cached_second==cached_first and sum(command[0]=='codex' for command in commands)==before+1
     assert cached_progress==['Preparing templates','Using saved package']
     settings.CODEX_CV_CACHE=False
     repairs=sum('AUTOMATIC REPAIR ATTEMPT' in prompt for prompt in prompts)
     compile_failures.append(True)
-    generate_cv_package(job, 'Factual profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high')
+    generate_cv_package(job, 'Factual profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high', user_id=user.id)
     invalid_outputs.append(True)
-    generate_cv_package(job, 'Factual profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high')
+    generate_cv_package(job, 'Factual profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high', user_id=user.id)
     assert sum('AUTOMATIC REPAIR ATTEMPT' in prompt for prompt in prompts)==repairs+2
-    generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'anthropic', 'sonnet', 'medium', 'normal')
-    generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'ollama', 'qwen', 'default', 'normal')
+    generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'anthropic', 'sonnet', 'medium', 'normal', user_id=user.id)
+    generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'ollama', 'qwen', 'default', 'normal', user_id=user.id)
     cv_only_progress=[]
-    cv_only,_,cv_only_saved=generate_cv_package(job, 'Factual profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high', 'normal', lambda percent,stage: cv_only_progress.append((percent,stage)))
+    cv_only,_,cv_only_saved=generate_cv_package(job, 'Factual profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high', 'normal', lambda percent,stage: cv_only_progress.append((percent,stage)), user_id=user.id)
     assert len([name for name in zipfile.ZipFile(BytesIO(cv_only)).namelist() if name.endswith('.pdf')])==1
     assert __import__('pathlib').Path(saved['cv_tex']).parent==tmp_path/'CVs'
     assert __import__('pathlib').Path(saved['cv_pdf']).parent==tmp_path/'CVs'
     assert __import__('pathlib').Path(saved['letter_tex']).parent==tmp_path/'output'
     assert __import__('pathlib').Path(saved['letter_pdf']).parent==tmp_path/'output'
     model_calls=sum(command[0] in ('codex','claude') for command in commands)
-    recompiled,_,recompiled_saved=recompile_generated_package(job,'de',saved['cv_tex'],saved['letter_tex'])
+    recompiled,_,recompiled_saved=recompile_generated_package(job,'de',saved['cv_tex'],saved['letter_tex'], user_id=user.id)
     assert len([name for name in zipfile.ZipFile(BytesIO(recompiled)).namelist() if name.endswith('.pdf')])==2
     assert recompiled_saved['cv_tex']==saved['cv_tex'] and sum(command[0] in ('codex','claude') for command in commands)==model_calls
-    _,_,revised_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], revision_instructions='Fix the page break and overlap')
+    _,_,revised_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], revision_instructions='Fix the page break and overlap', user_id=user.id)
     assert revised_saved==saved
-    _,_,image_revised_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], correction_image=correction_image)
+    _,_,image_revised_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], correction_image=correction_image, user_id=user.id)
     assert image_revised_saved==saved and not correction_dirs[-1].exists()
     assert any('CURRENT GENERATED PDF LAYOUT CONTEXT' in prompt and 'current-CV-page-1.png' in prompt and 'SOURCE PRIORITY' in prompt for prompt in prompts)
     assert any('USER-PROVIDED CORRECTION IMAGE' in prompt and 'user-correction-reference.png' in prompt for prompt in prompts)
     assert __import__('pathlib').Path(cv_only_saved['cv_pdf']).name != __import__('pathlib').Path(saved['cv_pdf']).name
     assert opened and all(path==tmp_path/'CVs' for path in opened)
     assert not any('letter' in stage.lower() for _,stage in cv_only_progress)
-    letter_only,_,letter_only_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', create_cv=False)
+    letter_only,_,letter_only_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', create_cv=False, user_id=user.id)
     assert len([name for name in zipfile.ZipFile(BytesIO(letter_only)).namelist() if name.endswith('.pdf')])==1
     assert set(letter_only_saved)=={'letter_tex','letter_pdf','report'} and opened[-1]==tmp_path/'output'
     assert letter_only_saved['report']['unsupported_requirements_not_claimed']==['Unsupported tool']
     with pytest.raises(ValueError, match='at least'):
-        generate_cv_package(job, 'profile', 'de', '', False, 'openai', 'gpt-5.5', 'high', create_cv=False)
+        generate_cv_package(job, 'profile', 'de', '', False, 'openai', 'gpt-5.5', 'high', create_cv=False, user_id=user.id)
     page_counts['CV']=3
     with pytest.raises(RuntimeError, match='CV.*2-page limit.*repair') as failure:
-        generate_cv_package(job, 'Factual profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high')
+        generate_cv_package(job, 'Factual profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high', user_id=user.id)
     assert failure.value.repair_attempts==2 and 'compiled to 3 pages' in failure.value.diagnostics
     page_counts['CV']=2; page_counts['Letter']=2
     with pytest.raises(RuntimeError, match='motivation letter.*1-page limit.*repair'):
-        generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', create_cv=False)
+        generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', create_cv=False, user_id=user.id)
     assert not any(command[0]=='latexmk' for command in commands)
     assert any(command[0]=='claude' and '--json-schema' in command for command in commands)
     assert any(command[0]=='codex' and '--oss' in command and command[command.index('--local-provider')+1]=='ollama' for command in commands)
-    assert cv.read_text()=='original cv' and letter.read_text()=='original letter'
+    # The stored templates are read-only inputs: nothing in a generation writes back over the
+    # account's own CV or letter source.
+    from jobradar.models import CvAsset
+    assert {asset.source for asset in CvAsset.objects.filter(user=user, kind=CvAsset.KIND_CV)}=={'original cv'}
+    assert {asset.source for asset in CvAsset.objects.filter(user=user, kind=CvAsset.KIND_LETTER)}=={'original letter'}
 
 
-def test_cv_revision_uses_minimal_prompt_and_preserves_unrelated_tex(db, tmp_path, monkeypatch, settings):
+def test_cv_revision_uses_minimal_prompt_and_preserves_unrelated_tex(db, tmp_path, monkeypatch, settings, cv_assets):
     from types import SimpleNamespace
     from jobradar.services.cv_generator import generate_cv_package
 
-    cv=tmp_path/'CVs'/'German - AI Engineer (base)_v_1.3.tex'; cv.parent.mkdir()
-    picture=tmp_path/'CVs'/'Picture.jpg'
-    cv.write_text('original cv'); picture.write_bytes(b'jpg')
+    (tmp_path/'CVs').mkdir()
     settings.CODEX_CV_WORKSPACE=str(tmp_path); settings.CODEX_CV_OPEN_OUTPUT_FOLDER=False; settings.CODEX_CV_CACHE=False
     monkeypatch.setattr('jobradar.services.cv_generator.shutil.which', lambda command: command)
     monkeypatch.setattr('jobradar.services.cv_generator.available_model_options', lambda: [
         {'provider':'openai','key':'gpt-5.5','label':'GPT-5.5','efforts':['low','medium','high','xhigh'],'default_effort':'medium','fast_tier':'priority'},
     ])
     user=User.objects.create_user('revision-owner')
+    cv_assets(user)
     job=JobLead.objects.create(company='Firma', title='Entwickler', raw_description='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben.', created_by=user)
 
     unrelated='\\section{Experience}\nUnrelated bullet that must survive.'
@@ -820,11 +825,11 @@ def test_cv_revision_uses_minimal_prompt_and_preserves_unrelated_tex(db, tmp_pat
 
     monkeypatch.setattr('jobradar.services.cv_generator.subprocess.run', fake_run)
     profile='CANDIDATE FACTS AND RULES marker profile'
-    _,_,saved=generate_cv_package(job, profile, 'de', '', False, 'openai', 'gpt-5.5', 'medium', create_cv=True)
+    _,_,saved=generate_cv_package(job, profile, 'de', '', False, 'openai', 'gpt-5.5', 'medium', create_cv=True, user_id=user.id)
     initial_prompt=prompts[-1]
     assert 'CANDIDATE FACTS AND RULES' in initial_prompt
 
-    _,_,revised=generate_cv_package(job, profile, 'de', '', False, 'openai', 'gpt-5.5', 'medium', create_cv=True, source_cv=saved['cv_tex'], revision_instructions='Shorten the headline')
+    _,_,revised=generate_cv_package(job, profile, 'de', '', False, 'openai', 'gpt-5.5', 'medium', create_cv=True, source_cv=saved['cv_tex'], revision_instructions='Shorten the headline', user_id=user.id)
     revision_prompt=prompts[-1]
     # requested text changes while unrelated TeX content survives
     saved_text=__import__('pathlib').Path(saved['cv_tex']).read_text()
@@ -876,7 +881,7 @@ def test_cv_task_completes_and_is_user_scoped(job, monkeypatch, tmp_path):
     assert cv_tasks.get_cv_task_download(task_id, job.created_by_id)==(b'zip','application.zip')
     assert task['artifacts']['cv_pdf']=='ready.pdf' and task['clipboard_tex']==clipboard
     assert task['clipboard_copied'] is True and copied==[clipboard]
-    monkeypatch.setattr(cv_tasks,'recompile_generated_package',lambda job,cv,source_cv,source_letter,progress,cancelled=None:(progress(95,'Motivation letter compiled') or (b'recompiled','recompiled.zip',{'cv_tex':str(latest),'letter_tex':str(latest_letter)})))
+    monkeypatch.setattr(cv_tasks,'recompile_generated_package',lambda job,cv,source_cv,source_letter,progress,cancelled=None,user_id=None:(progress(95,'Motivation letter compiled') or (b'recompiled','recompiled.zip',{'cv_tex':str(latest),'letter_tex':str(latest_letter)})))
     compile_id=cv_tasks.start_cv_compile_task(job.id,job.created_by_id,'en',str(latest),str(latest_letter))
     for _ in range(100):
         compiled=cv_tasks.get_cv_task(compile_id,job.created_by_id)
@@ -1049,28 +1054,31 @@ def test_long_generation_recycles_the_db_connection_before_learning_a_preference
     assert order.index('recycle', order.index('generate')) < order.index('db-write'), order
 
 
-def test_latest_cv_template_picks_the_newest_version_on_disk(tmp_path, settings):
-    from jobradar.services import cv_generator
+def test_import_picks_the_newest_template_version_on_disk(tmp_path):
+    # TASK-99a moved this from cv_generator.latest_cv_template (a glob on every preview request)
+    # into the import command, which is the only thing that reads the workspace now. The version
+    # rules it enforces are unchanged.
+    from jobradar.management.commands.import_cv_assets import WORKSPACE_LAYOUT, latest_versioned
 
-    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    relative=WORKSPACE_LAYOUT['en']['cv'][0]
     cvs=tmp_path/'CVs'; cvs.mkdir(parents=True)
     for name in ('English - AI Engineer (base)_v_1.2.tex','English - AI Engineer (base)_v_1.3.tex','English - AI Engineer (base)_v_1.4.tex'):
         (cvs/name).write_text('cv', encoding='utf-8')
-    assert cv_generator.latest_cv_template('en')=='CVs/English - AI Engineer (base)_v_1.4.tex'
+    assert latest_versioned(tmp_path, relative).name=='English - AI Engineer (base)_v_1.4.tex'
 
     # Numeric compare, not lexical: _v_1.10 must beat _v_1.9.
     (cvs/'English - AI Engineer (base)_v_1.9.tex').write_text('cv', encoding='utf-8')
     (cvs/'English - AI Engineer (base)_v_1.10.tex').write_text('cv', encoding='utf-8')
-    assert cv_generator.latest_cv_template('en')=='CVs/English - AI Engineer (base)_v_1.10.tex'
+    assert latest_versioned(tmp_path, relative).name=='English - AI Engineer (base)_v_1.10.tex'
 
     # A different role's template must not be mistaken for a newer base CV.
     (cvs/'English - Backend Engineer_v_9.9.tex').write_text('cv', encoding='utf-8')
-    assert cv_generator.latest_cv_template('en')=='CVs/English - AI Engineer (base)_v_1.10.tex'
+    assert latest_versioned(tmp_path, relative).name=='English - AI Engineer (base)_v_1.10.tex'
 
-    # Nothing on disk: fall back to the declared template rather than crashing.
-    settings.CODEX_CV_WORKSPACE=str(tmp_path/'empty')
-    assert cv_generator.latest_cv_template('en')==cv_generator.TEMPLATES['en']['cv'][0]
-    assert cv_generator.latest_cv_template('de')==cv_generator.TEMPLATES['de']['cv'][0]
+    # Nothing on disk: name the declared template rather than crashing. It does not exist, so the
+    # command reports it missing instead of importing it.
+    empty=tmp_path/'empty'
+    assert latest_versioned(empty, relative)==empty/relative and not latest_versioned(empty, relative).is_file()
 
 
 def test_available_model_options_are_cached_between_calls(monkeypatch):
@@ -1452,26 +1460,29 @@ def test_cv_task_step_completed_never_exceeds_step_total_across_cache_collapse(j
 
 
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
-def test_cv_generation_preview_exposes_absolute_template_paths(client, owner, job):
-    # The template path sits next to the generated-artifact paths in the UI and is meant to be
-    # copied into an editor or file manager, so it is absolute for the same reason they are.
+def test_cv_generation_preview_exposes_the_path_each_template_was_imported_from(client, owner, job, cv_assets, tmp_path):
+    # The path sits next to the generated-artifact paths in the UI and is meant to be copied into
+    # an editor or file manager, so it is absolute for the same reason they are. Since TASK-99a it
+    # is provenance rather than resolution: generation reads the stored row, and this only tells
+    # the owner which file on their disk that row came from.
     from pathlib import Path
 
-    from django.conf import settings as django_settings
-
     owner.email='owner@example.test'; owner.save(update_fields=['email'])
+    cv_assets(owner, source_path=str(tmp_path/'CVs'/'imported.tex'))
     JobLead.objects.filter(pk=job.pk).update(original_source_text='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben und die Bewerbung.', raw_description='English role and requirements')
     r=client.get(f'/api/jobs/{job.id}/cv-generation/')
     assert r.status_code==200
     paths={cv['key']:cv['path'] for cv in r.data['cvs']}
     names={cv['key']:cv['filename'] for cv in r.data['cvs']}
-    # Asserted against the configured workspace rather than a literal drive letter: 'C:/missing' is
-    # not an absolute path on Linux, so a hardcoded check passes on Windows and fails in CI.
-    workspace=str(Path(django_settings.CODEX_CV_WORKSPACE))
     for key, expected in (('en','English - AI Engineer (base)'), ('de','German - AI Engineer (base)')):
-        assert paths[key].startswith(workspace), (paths[key], workspace)
-        assert expected in paths[key] and paths[key].endswith('.tex')
-        assert names[key]==Path(paths[key]).name  # filename stays the basename, not the full path
+        assert Path(paths[key]).is_absolute() and paths[key].endswith('.tex')
+        assert names[key].startswith(expected)
+    # An account whose template was typed in rather than imported has no path, and the UI hides the
+    # row rather than showing a file that does not exist.
+    from jobradar.services.cv_generator import generation_preview
+    other=User.objects.create_user('no-path@example.test', email='no-path@example.test')
+    cv_assets(other)
+    assert [cv['path'] for cv in generation_preview(job, other)['cvs']]==['','']
 
 
 def test_start_cv_revision_inherits_parent_config_without_reverifying_capability(job, monkeypatch):
@@ -3345,3 +3356,124 @@ def test_feedback_due_query_count_does_not_scale_with_row_count(client):
         r=client.get('/api/jobs/feedback-due/')
     assert r.status_code==200 and len(r.data)==6
     assert len(few)==len(many), (few.captured_queries, many.captured_queries)
+
+
+# --- TASK-178: note_preview on /api/jobs/ (the board's list) --------------------------------------
+# The measured bug: the board renders a byte-identical `notes` button on all 69 visible rows while
+# only 12 of the owner's 83 jobs carry a general note, so the affordance said nothing and the only
+# way to find a note was to click every row. One field fixes both halves of what the owner asked
+# for -- a non-empty preview IS "this row has a note" (the dot), and the string is the hover text --
+# sourced from an annotation on the list query that already runs, the same shape TASK-126's
+# has_mailbox_history uses, never a per-row request.
+
+def test_jobs_list_note_preview_is_empty_unless_the_notes_button_would_show_something(client):
+    """The predicate, one job per case.
+
+    "Has a note" is defined as what the board's modal actually opens: appUtils.selectGeneralNote
+    takes note_type='general' only, and the modal starts in write-your-first-note state when that
+    note's text is empty -- so an empty-string note is not a note here either.
+    """
+    with_note=make_job(client, company='WithNote', title='x')
+    ApplicationNote.objects.create(job=with_note, note='Recruiter said the budget is 85k')
+    empty_note=make_job(client, company='EmptyNote', title='x')
+    ApplicationNote.objects.create(job=empty_note, note='')
+    other_type=make_job(client, company='OtherType', title='x')
+    ApplicationNote.objects.create(job=other_type, note='Sent the CV rewrite', note_type='cv_change')
+    no_note=make_job(client, company='NoNote', title='x')
+
+    rows={row['id']: row['note_preview'] for row in client.get('/api/jobs/').data}
+
+    assert rows[with_note.id]=='Recruiter said the budget is 85k'
+    assert rows[empty_note.id]==''
+    assert rows[other_type.id]==''
+    assert rows[no_note.id]==''
+
+
+def test_jobs_list_note_preview_is_one_squeezed_line_capped_at_140_chars(client):
+    """A hover preview, not the note: same 140-char cap and same whitespace squeeze as the
+    frontend's own appUtils.messagePreviewLine, so the two previews cannot disagree about length.
+
+    The multi-line case is the real one -- JobNotes composes a note as text + blank line + markdown
+    tables, so a raw first-line slice would preview a table-only note as nothing, which is
+    indistinguishable from the no-note case this field exists to tell apart.
+    """
+    long_note=make_job(client, company='LongNote', title='x')
+    ApplicationNote.objects.create(job=long_note, note='Call with the hiring manager. ' + 'They walked through the platform team roadmap in detail. ' * 20)
+    table_note=make_job(client, company='TableNote', title='x')
+    ApplicationNote.objects.create(job=table_note, note='\n\n| Stage | Date |\n| --- | --- |\n| Phone screen | 4 Jan |\n')
+
+    rows={row['id']: row['note_preview'] for row in client.get('/api/jobs/').data}
+
+    preview=rows[long_note.id]
+    assert preview.startswith('Call with the hiring manager. They walked through')
+    assert len(preview)==141 and preview.endswith('…')  # 140 characters plus the ellipsis
+    assert '\n' not in preview
+    assert rows[table_note.id]=='| Stage | Date | | --- | --- | | Phone screen | 4 Jan |'
+
+
+def test_jobs_list_note_preview_never_carries_another_users_note(client):
+    """Ownership is not widened by the new field, and a leaking string is worse than a leaking bool.
+
+    The Subquery is correlated to the row's own job (OuterRef('pk')) on a queryset already scoped by
+    services.access.accessible_jobs, which TASK-184 stripped of its staff exemption. A stranger's
+    noted job must neither appear on this board nor put its text on this board's own note-free row
+    -- the latter is exactly what dropping that correlation would do. Asserted on the rendered
+    response body too, not only on the parsed row.
+    """
+    mine=make_job(client, company='Mine', title='x')
+    stranger=User.objects.create_user('stranger', password='pw')
+    theirs=JobLead.objects.create(company='Theirs', title='x', created_by=stranger)
+    ApplicationNote.objects.create(job=theirs, note='their private salary negotiation floor is 92k')
+
+    r=client.get('/api/jobs/')
+    rows={row['id']: row for row in r.data}
+
+    assert theirs.id not in rows
+    assert rows[mine.id]['note_preview']==''
+    assert 'salary negotiation floor' not in r.content.decode('utf-8')
+
+
+def test_jobs_list_hides_note_preview_on_a_job_handed_to_somebody_else(db):
+    """A submitter sees a handed-off job only as a receipt (submission_row's default-deny
+    projection, which empties every field outside SUBMISSION_VISIBLE_FIELDS). What the recipient
+    wrote in their own notes is not part of that receipt.
+    """
+    submitter=User.objects.create_user('submitter', password='pw')
+    recipient=User.objects.create_user('recipient', password='pw')
+    job=JobLead.objects.create(company='Handed', title='x', created_by=submitter, submitted_for=recipient, source='friend')
+    ApplicationNote.objects.create(job=job, note='The recipient wrote this for themselves')
+    submitter_client=APIClient(); submitter_client.force_authenticate(submitter)
+
+    r=submitter_client.get('/api/jobs/')
+    row=next(item for item in r.data if item['id']==job.id)
+
+    assert row['submission_only'] is True
+    assert row['note_preview']==''
+    assert 'wrote this for themselves' not in r.content.decode('utf-8')
+
+
+def test_jobs_list_note_preview_costs_no_extra_query(client):
+    """No N+1: the preview costs nothing per row and nothing per note.
+
+    Measured at a FIXED row count, notes absent then present, because this endpoint has a
+    pre-existing per-row query of its own (one auth_user SELECT per row, from the created_by /
+    submitted_for username+email SerializerMethodFields) that a rows-scaling comparison would end up
+    measuring instead of this field -- reported separately, not fixed here. Warm-up first, same
+    idiom as test_feedback_due_query_count_does_not_scale_with_row_count above: the visitor-tracking
+    middleware INSERTs on a request's first-ever hit and UPDATEs after.
+    """
+    from django.test.utils import CaptureQueriesContext
+    client.get('/api/jobs/')
+    jobs=[make_job(client, company=f'Row{i}', title='x') for i in range(6)]
+    with CaptureQueriesContext(connection) as bare:
+        r=client.get('/api/jobs/')
+    assert r.status_code==200 and len(r.data)==6 and all(row['note_preview']=='' for row in r.data)
+    for job in jobs:
+        ApplicationNote.objects.create(job=job, note='a note on every single row')
+    with CaptureQueriesContext(connection) as noted:
+        r=client.get('/api/jobs/')
+    assert r.status_code==200 and len(r.data)==6 and all(row['note_preview']=='a note on every single row' for row in r.data)
+    assert len(bare)==len(noted), (bare.captured_queries, noted.captured_queries)
+    # And the notes are read inside that one job SELECT rather than by a query of their own: a
+    # standalone note SELECT would list jobradar_applicationnote's own columns first.
+    assert not [q for q in noted.captured_queries if q['sql'].startswith('SELECT "jobradar_applicationnote"')]

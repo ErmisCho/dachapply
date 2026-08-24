@@ -59,3 +59,37 @@ def _reset_model_options_cache():
     cv_generator._model_options_cache.update(at=0.0, options=None)
     yield
     cv_generator._model_options_cache.update(at=0.0, options=None)
+
+
+@pytest.fixture
+def cv_assets(db):
+    """Give an account its own CV templates and photograph (TASK-99a).
+
+    Every test that generates needs assets now, because cv_generator resolves them from the
+    requesting account's CvAsset rows and from nowhere else. The photograph is three bytes of
+    fixture, not the owner's real one: that file is personal data (CLAUDE.md) and no test may
+    depend on it existing.
+    """
+    from jobradar.models import CvAsset
+
+    def seed(user, *, cv_source='original cv', letter_source='original letter', photo=b'jpg', languages=('en', 'de'), source_path=''):
+        letters = {'en': [('motivation_letter', 'English motivation letter')],
+                   'de': [('motivationsschreiben', 'Motivationsschreiben'), ('bewerbungsschreiben', 'Bewerbungsschreiben'), ('anschreiben', 'Anschreiben')]}
+        created = []
+        for language in languages:
+            created.append(CvAsset.objects.create(
+                user=user, kind=CvAsset.KIND_CV, key=language, language=language,
+                label=f'{"English" if language == "en" else "German"} AI Engineer CV',
+                filename=f'{"English" if language == "en" else "German"} - AI Engineer (base)_v_1.3.tex',
+                source=cv_source, source_path=source_path,
+            ))
+            for key, label in letters[language]:
+                created.append(CvAsset.objects.create(
+                    user=user, kind=CvAsset.KIND_LETTER, key=key, language=language, label=label,
+                    filename=f'{key}.tex', source=letter_source,
+                ))
+        if photo is not None:
+            created.append(CvAsset.objects.create(user=user, kind=CvAsset.KIND_PHOTO, filename='Picture.jpg', image=photo))
+        return created
+
+    return seed

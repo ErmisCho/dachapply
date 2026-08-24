@@ -1008,6 +1008,28 @@ WEAK_INTERVIEW_KEYWORDS = frozenset({'schedule a call', 'book a time', 'availabl
 # separates every case seen so far. ponytail: narrower than the full stated rule; widen (e.g. a
 # standalone date, a "book here" link) only against another measured example, not speculatively.
 _CONCRETE_TIME_RE = re.compile(r'\d{1,2}:\d{2}')
+# TASK-182 (coordinator, measured against production 2026-08-24, then re-measured independently):
+# the bare word 'interview', readable from the iCalendar VEVENT SUMMARY and from NOWHERE else. It is
+# a separate list rather than an INTERVIEW_KEYWORDS entry precisely because it must be structurally
+# unable to reach subject or body: across all 1133 stored messages the word turns up in ATS
+# boilerplate ('prepare for your interview'), interview-prep marketing and rejection letters, which is
+# the same false-positive class the WEAK/STRONG block above exists to prevent (and which
+# _VORSTELLUNGSGESPRAECH_SINGULAR_RE already had to be narrowed for).
+#
+# A SUMMARY is different evidence and a bounded risk: it is the meeting's own title, chosen by the
+# organiser's calendaring system, and only 21 of those 1133 rows carry one at all. Measured over
+# those 21: 'interview' appears in 5 summaries (175, 179, 391, 421, 578 -- every one a genuine
+# invitation), and in 0 of the 4 community meetups (365 'Codex Community Build Meetup', 484 'OpenAI
+# Build Week Community Meetup', 601/602 'NoCrastination - Build Sprint'). Overlap: zero.
+#
+# Deliberately the ONLY term here. The same census measured 'meet' in 3 summaries: two ARE meetups
+# (365, 484) and the third (122, 'Meet Ermis') is another the owner required to stay out, so adding
+# it would promote exactly what this task must not.
+# 'on site' (641/664), 'austausch' (701/702), 'call' (682), 'kennenlernen' (679) and 'IV' (139) each
+# name a genuine meeting too, but none was measured against a case that separates it from an
+# ordinary business appointment, so they stay out until one is.
+CALENDAR_SUMMARY_INTERVIEW_KEYWORDS = frozenset({'interview'})
+
 # The RECRUITER_KEYWORDS counterpart, used only by _classify_heuristic's 'recruiter_fallback'
 # candidate (see there): 'ihre bewerbung' is bare German for "your application" -- structurally no
 # more informative than the APPLICATION_CONTEXT_KEYWORDS term it contains, and it sits right next to
@@ -1216,7 +1238,7 @@ def _interview_strong_hit(lower: str) -> bool:
     return _hit(lower, other_strong) or bool(_VORSTELLUNGSGESPRAECH_SINGULAR_RE.search(lower))
 
 
-def _classify_heuristic(subject, body_text, domain_known, sender_domain=''):
+def _classify_heuristic(subject, body_text, domain_known, sender_domain='', calendar_summary=''):
     """TASK-168: evidence over order. Every category that hits at all becomes a candidate, scored
     STRONG (a decision/interview-specific phrase) or WEAK (one of the two generic rejection words, or
     one of the three generic interview phrases -- see WEAK_REJECTION_KEYWORDS/WEAK_INTERVIEW_KEYWORDS
@@ -1251,6 +1273,17 @@ def _classify_heuristic(subject, body_text, domain_known, sender_domain=''):
     "Ihre Bewerbung" sits right next to the rejection wording in ordinary German phrasing).
     """
     lower = f'{subject}\n{body_text}'.lower()
+    # TASK-182: the interview keywords -- and ONLY those -- also read the iCalendar VEVENT summary
+    # (MailboxMessage.calendar_summary), because a Teams/Outlook invitation puts its meaning there and
+    # can arrive with a body that is nothing but joining boilerplate. No other keyword family reads it:
+    # a meeting TITLE is not prose, and letting rejection/offer/confirmation wording match on it would
+    # be a second, unmeasured widening. The concrete-time promotion below deliberately keeps reading
+    # `lower` (subject+body) only -- EVERY VEVENT carries a time, so scanning the summary there would
+    # promote every weak hit on every invitation, which no measured case asked for.
+    interview_lower = f'{lower}\n{calendar_summary.lower()}' if calendar_summary else lower
+    # CALENDAR_SUMMARY_INTERVIEW_KEYWORDS reads THIS and nothing else -- see its own comment for why a
+    # bare 'interview' is admissible in a meeting title and inadmissible in a subject or a body.
+    summary_lower = calendar_summary.lower()
     candidates = []  # (classification, is_strong)
     if _hit(lower, OFFER_KEYWORDS):
         candidates.append(('offer', True))
@@ -1259,9 +1292,9 @@ def _classify_heuristic(subject, body_text, domain_known, sender_domain=''):
         candidates.append(('rejection', True))
     elif _hit(lower, WEAK_REJECTION_KEYWORDS) and (domain_known or _hit(lower, APPLICATION_CONTEXT_KEYWORDS)):
         candidates.append(('rejection', False))
-    if _interview_strong_hit(lower):
+    if _interview_strong_hit(interview_lower) or _hit(summary_lower, CALENDAR_SUMMARY_INTERVIEW_KEYWORDS):
         candidates.append(('interview_invitation', True))
-    elif _hit(lower, WEAK_INTERVIEW_KEYWORDS):
+    elif _hit(interview_lower, WEAK_INTERVIEW_KEYWORDS):
         # A weak "let's arrange something" phrase is only as strong as the concrete time it comes
         # with -- see _CONCRETE_TIME_RE's own comment for the measured Amazon/Allianz/northscope cases.
         candidates.append(('interview_invitation', bool(_CONCRETE_TIME_RE.search(lower))))
@@ -1357,7 +1390,7 @@ def classify_email(raw: RawMessage, domain_known: bool):
             if config.strict:
                 raise
             logger.warning('Local-LLM mailbox classification failed; falling back to heuristic', exc_info=True)
-    classification, interview_at = _classify_heuristic(raw.subject, raw.body_text, domain_known, sender_domain)
+    classification, interview_at = _classify_heuristic(raw.subject, raw.body_text, domain_known, sender_domain, raw.calendar_summary)
     return classification, interview_at, 'heuristic'
 
 
@@ -2470,7 +2503,7 @@ def reclassify_messages(dry_run: bool = True, limit: int | None = None) -> list[
         old_classification = message.classification
         if message.evaluator == 'heuristic':
             new_classification, _new_interview_at = _classify_heuristic(
-                message.subject, message.body_text, domain_known, sender_domain,
+                message.subject, message.body_text, domain_known, sender_domain, message.calendar_summary,
             )
         else:
             new_classification, _new_interview_at = _guard_status_changing(

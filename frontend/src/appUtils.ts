@@ -589,9 +589,9 @@ export function groupFeedbackDueRows<T extends {feedback_due_date:string}>(rows:
   return {overdue,upcoming}
 }
 
-// TASK-173. Viewport coordinates for the row feedback popup. The popup is portalled to <body> and
-// laid out `position:fixed` now, so it is no longer positioned by the table wrapper that used to be
-// its offset parent - the clamping that ancestor gave it for free has to be arithmetic here. Pure on
+// TASK-173. Viewport coordinates for a popup laid out below its trigger - the row feedback editor,
+// and TASK-178's note preview. The popup is portalled to <body> and laid out `position:fixed` now,
+// so it is no longer positioned by the table wrapper that used to be its offset parent - the clamping that ancestor gave it for free has to be arithmetic here. Pure on
 // purpose: this vitest run has no DOM, so the clamping is tested with plain numbers.
 // 352px is `w-[22rem]`, the width the popup has always had; the trigger's rect supplies the rest, so
 // `left` is the trigger's left edge and `top` its bottom edge + 8px - what `left-0 top-full mt-2`
@@ -600,12 +600,29 @@ export function groupFeedbackDueRows<T extends {feedback_due_date:string}>(rows:
 // stop the bottom edge falling off a short viewport; being a little wrong shifts the popup by a few
 // pixels near the bottom of the screen and nothing else, and `overflow-auto` on the popup handles the
 // case where its real content is taller.
+// TASK-178 reuses this for the note preview rather than copying the clamp: same box-below-an-anchor
+// geometry, different box (320x96 instead of 352x300), so the size became two defaulted parameters
+// and the name stopped naming one caller. The defaults are the feedback popup's original constants,
+// so its behaviour is unchanged.
 export const FEEDBACK_POPUP_WIDTH=352
-export function feedbackPopupPosition(rect:{left:number;bottom:number},viewportW:number,viewportH:number){
-  const width=Math.min(FEEDBACK_POPUP_WIDTH,viewportW-32)
+export const NOTE_PREVIEW_WIDTH=320
+export function popupBelowAnchor(rect:{left:number;bottom:number},viewportW:number,viewportH:number,boxW=FEEDBACK_POPUP_WIDTH,boxH=300){
+  const width=Math.min(boxW,viewportW-32)
   return {
     left:Math.max(16,Math.min(rect.left,viewportW-width-16)),
-    top:Math.max(16,Math.min(rect.bottom+8,viewportH-300-16)),
+    top:Math.max(16,Math.min(rect.bottom+8,viewportH-boxH-16)),
     width,
   }
+}
+
+// TASK-178. `note_preview` is the list API's first line of a job's non-empty `general` note, already
+// truncated at 140 characters server-side; it is the empty string when the job has no note, and the
+// board derives "this row has a note" from that emptiness - there is deliberately no second boolean.
+// Run through messagePreviewLine anyway (same 140 cap, TASK-177) so a note whose first line is
+// whitespace, or a response from a backend that has not shipped the truncation yet, still yields one
+// bounded line rather than a blank tooltip or a wall of text. Missing field -> '' -> no indicator,
+// which is what an older backend should produce: the pre-TASK-178 board showed the button on all 69
+// rows while only 12 of 83 jobs had a note, so silence is the safer of the two wrong answers.
+export function jobNotePreview(job:{note_preview?:string|null}):string{
+  return messagePreviewLine(job.note_preview)
 }

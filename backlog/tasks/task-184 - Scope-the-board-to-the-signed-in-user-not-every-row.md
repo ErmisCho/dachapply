@@ -1,7 +1,7 @@
 ---
 id: TASK-184
 title: Scope the board to the signed-in user, not every row
-status: To Do
+status: Done
 assignee: []
 labels:
   - backend
