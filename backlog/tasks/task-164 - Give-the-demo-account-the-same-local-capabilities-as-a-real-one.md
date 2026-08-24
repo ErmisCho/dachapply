@@ -60,6 +60,33 @@ made, and one of its legitimate outcomes is "keep generation local and say so ho
 
 An implementation that includes CV generation for the demo account **fails** this criterion; it is
 out of scope, not extra credit.
+
+### Owner decision, 2026-08-24 — supersedes the paragraph above
+
+The owner asked whether demo generation could use their own profile, so they could show it during
+interviews. Answer given, and the reasoning matters more than the verdict:
+
+- `demo@dachapply.com` is what **anyone** clicking "Try demo" on the public deployment signs into. A
+  demo profile sourced from the owner's account would publish their real name, photograph, employment
+  history and `Ermis-Chorinopoulos-Candidate-Evidence.md` to any visitor. That is the same privacy
+  incident this task's Description already refuses for the mailbox, reached by a different route.
+- It would not work anyway: the container has no `pdflatex`, so a demo-account generation produces
+  nothing on the deployed site regardless of whose data backs it.
+- For the owner's actual goal — demonstrating the product in an interview — signing in as themselves
+  on their own machine already works today and needs nothing built.
+
+**Chosen: the demo account gets a complete, realistic, clearly FICTIONAL candidate profile.** It
+demonstrates the capability identically, is safe to expose publicly, and reads better in an interview
+than showing a stranger real personal data.
+
+Consequence for AC6, which the paragraph above got wrong: demo CV **data** is now IN scope as
+fictional `CvAsset` rows (the per-user model TASK-99a introduces), while server-side **generation**
+stays out and remains TASK-99b's blocked question. So AC6 is satisfied by: fictional templates and a
+fictional photograph seeded for the demo user by `ensure_demo_user`, and a recorded statement that
+generation itself does not run where the demo is deployed.
+
+Under no circumstances may the demo profile read from `CODEX_CV_WORKSPACE`, the owner's `CvAsset`
+rows, or the owner's candidate-evidence file. A test should fail if it does.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

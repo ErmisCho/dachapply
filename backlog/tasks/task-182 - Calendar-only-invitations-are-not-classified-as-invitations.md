@@ -41,6 +41,37 @@ hits no keyword and lands on `recruiter_reply`. One of the two jobs the TASK-179
 Consequence: every future interview invitation of this shape still produces no `interview_date`
 suggestion, so the owner is never offered the date and the Upcoming interviews panel stays empty for
 it. The backfill papers over the history; it does not fix tomorrow.
+
+## Measured outcome, 2026-08-24 — the chosen option alone was a no-op
+
+The owner's chosen option (read `calendar_summary` for the classifier's EXISTING interview keywords)
+was implemented first and measured against production. It changed **0 of 21** calendar-carrying
+messages, for two reasons neither the brief nor the coordinator had checked:
+
+- **15 of the 21 summaries are already contained verbatim in the subject or body**, so feeding the
+  summary to the classifier a second time cannot change anything by construction. The brief's premise
+  that these invitations have an empty body is true of only some of them (139, 701, 702, 1034);
+  message 122's body is 1720 chars, 578's is 2912.
+- The remaining 6 carry **no keyword `INTERVIEW_KEYWORDS` knows.** That list contains no bare
+  `interview` — its entries are phrases: `invite you to an interview`, `schedule an interview`,
+  `phone screen`, `technical interview`, `vorstellungsgespräch`.
+
+The implementing agent reported this rather than quietly widening the rule, and the coordinator
+re-measured it independently and got the same numbers.
+
+**Scope extended by the coordinator, 2026-08-24:** one new term, a bare `interview`, **structurally
+scoped to `calendar_summary`** so it cannot match a subject or a body. Reading it from the body was
+rejected outright — ATS boilerplate, newsletters and rejection letters all contain the word, and that
+would be exactly the unmeasured widening the WEAK/STRONG comment block exists to prevent.
+
+Measured result across all 1133 messages: exactly **5** move to `interview_invitation` — 175, 179
+(SQUER), 391 (zooplus follow-up), 421 (Ironhack), 578 (Online-Interview) — and nothing else.
+All four community meetups stay out, as does `Meet Ermis`. The owner's constraint is preserved:
+`meet` was deliberately NOT added, because it would catch three of the four meetups.
+
+Still not caught, and correctly so under the owner's conservative choice: `Hays - Austausch
+Jobmöglichkeit`, `Formunauts - On Site`, `Initial call`, `Kennenlernen`, `IV:`. The Formunauts case
+turned out to be a **matching** defect rather than a keyword one and is filed as TASK-186.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
