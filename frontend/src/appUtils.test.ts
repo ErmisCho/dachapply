@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,feedbackPopupPosition,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,movePanelInOrder,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,previewPanelDrag,ratePercent,receivedDateLabels,reorderPanels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,describeOrdering,popupBelowAnchor,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,jobNotePreview,movePanelInOrder,NOTE_PREVIEW_WIDTH,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,previewPanelDrag,ratePercent,receivedDateLabels,reorderPanels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Every copy button in the app now goes through copyToClipboard, so a denied or
@@ -947,38 +947,84 @@ describe('live panel drag preview (TASK-183 AC2/AC5)',()=>{
 // TASK-173. The feedback popup is portalled to <body> and laid out `fixed`, so its coordinates are
 // arithmetic rather than something an offset parent works out. These are the cases that arithmetic
 // has to get right; the popup's real bounding box against its real row is measured in a browser.
-describe('feedbackPopupPosition',()=>{
+describe('popupBelowAnchor',()=>{
   const vw=1440,vh=900
 
   it('sits at the trigger left edge, 8px under its bottom - what left-0/top-full/mt-2 resolved to',()=>{
-    expect(feedbackPopupPosition({left:400,bottom:300},vw,vh)).toEqual({left:400,top:308,width:352})
+    expect(popupBelowAnchor({left:400,bottom:300},vw,vh)).toEqual({left:400,top:308,width:352})
   })
 
   it('keeps its full 22rem width when the viewport has room',()=>{
-    expect(feedbackPopupPosition({left:0,bottom:0},vw,vh).width).toBe(352)
+    expect(popupBelowAnchor({left:0,bottom:0},vw,vh).width).toBe(352)
   })
 
   it('pulls back from the right edge instead of overflowing it',()=>{
     // A trigger 100px from the right edge would put 352px of popup 252px off-screen.
-    const p=feedbackPopupPosition({left:1340,bottom:300},vw,vh)
+    const p=popupBelowAnchor({left:1340,bottom:300},vw,vh)
     expect(p.left).toBe(vw-352-16)
     expect(p.left+p.width).toBeLessThanOrEqual(vw)
   })
 
   it('lifts off the bottom edge instead of hanging below the fold',()=>{
     // Nothing scrolls a `fixed` popup back into view, so the bottom clamp is not cosmetic.
-    expect(feedbackPopupPosition({left:400,bottom:880},vw,vh).top).toBe(vh-300-16)
+    expect(popupBelowAnchor({left:400,bottom:880},vw,vh).top).toBe(vh-300-16)
   })
 
   it('never places itself off the top or left, even from a trigger scrolled out of view',()=>{
-    const p=feedbackPopupPosition({left:-500,bottom:-400},vw,vh)
+    const p=popupBelowAnchor({left:-500,bottom:-400},vw,vh)
     expect(p.left).toBe(16)
     expect(p.top).toBe(16)
   })
 
   it('narrows to the viewport rather than overflowing a screen thinner than 22rem',()=>{
-    const p=feedbackPopupPosition({left:10,bottom:50},320,640)
+    const p=popupBelowAnchor({left:10,bottom:50},320,640)
     expect(p.width).toBe(320-32)
     expect(p.left+p.width).toBeLessThanOrEqual(320)
+  })
+})
+
+// TASK-178. The note preview shares this helper with a smaller box, so the two defaults have to stay
+// the feedback popup's and the overrides have to actually reach the clamps.
+describe('popupBelowAnchor with a caller-sized box',()=>{
+  it('clamps the right edge against the note preview width, not the feedback width',()=>{
+    const p=popupBelowAnchor({left:1300,bottom:300},1440,900,NOTE_PREVIEW_WIDTH)
+    expect(p.width).toBe(NOTE_PREVIEW_WIDTH)
+    expect(p.left).toBe(1440-NOTE_PREVIEW_WIDTH-16)
+  })
+
+  it('lets a short box sit lower than a 300px one before the bottom clamp bites',()=>{
+    // At the same anchor the 300px feedback popup is already clamped; a 96px preview still fits.
+    expect(popupBelowAnchor({left:400,bottom:700},1440,900,NOTE_PREVIEW_WIDTH,96).top).toBe(708)
+    expect(popupBelowAnchor({left:400,bottom:700},1440,900).top).toBe(900-300-16)
+  })
+})
+
+// TASK-178. Every one of the board's 69 visible rows rendered a `notes` button while only 12 of 83
+// jobs had a general note; the indicator now keys off this string being non-empty, so what counts as
+// empty is the whole feature.
+describe('jobNotePreview',()=>{
+  it('is empty for a job the backend sent no note for - no indicator on that row',()=>{
+    expect(jobNotePreview({})).toBe('')
+    expect(jobNotePreview({note_preview:''})).toBe('')
+    expect(jobNotePreview({note_preview:null})).toBe('')
+  })
+
+  it('treats a whitespace-only note as no note rather than showing a blank tooltip',()=>{
+    expect(jobNotePreview({note_preview:'   \n  '})).toBe('')
+  })
+
+  it('returns the note line as-is when the backend already truncated it',()=>{
+    expect(jobNotePreview({note_preview:'Recruiter said the role is hybrid, 2 days in Vienna'})).toBe('Recruiter said the role is hybrid, 2 days in Vienna')
+  })
+
+  it('caps an untruncated note at 140 characters, so a backend that has not shipped the cap cannot flood the tooltip',()=>{
+    const long='x'.repeat(400)
+    const out=jobNotePreview({note_preview:long})
+    expect(out.length).toBe(141)
+    expect(out.endsWith('…')).toBe(true)
+  })
+
+  it('collapses a multi-line note to one line',()=>{
+    expect(jobNotePreview({note_preview:'first line\nsecond line'})).toBe('first line second line')
   })
 })
