@@ -41,6 +41,52 @@ earns its place by being asked for.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+## Coordinator measurement, 2026-08-24 — the premise above is WRONG
+
+Measured on the owner's own board at localhost:8000 before dispatching anyone, and against the
+production database. Recorded rather than quietly fixed, because the brief's opening sentence is what
+the acceptance criteria were written from:
+
+- **Notes do NOT render inline.** All 69 visible rows render a `notes` BUTTON (`title="Notes"`,
+  `text-[10px] text-slate-400`) that opens a modal. No note prose is on the board. **AC1 is already
+  satisfied** and must be verified, not rebuilt.
+- **The row height difference is not notes.** Rows measure 78px (43 of them) and 102px (14); the tall
+  ones are carrying a `Stale lead` badge, not a note. The notes button is 17px inside a line that
+  exists anyway.
+- **AC5 cannot be satisfied as written.** There is no inline note text to remove, so the space
+  reclaimed by hiding it is **zero**. The honest measurement is the one AC2 implies instead: the
+  affordance disappearing from the 57 rows that have nothing behind it.
+- **AC2 is the whole real defect.** All 69 buttons are byte-identical -- same classes, same title, no
+  variant -- while only **12 of the owner's 83 jobs** carry a non-empty `general` note. The board
+  currently claims every job has notes.
+- **AC2 needs a backend change, so this is not a frontend-only task.** `/api/jobs/` exposes
+  `interview_note` and nothing about general notes; the modal fetches `/jobs/<id>/notes/` per job.
+  The list response cannot tell the board which rows have notes. TASK-126 already solved exactly this
+  for the mail indicator: `has_mailbox_history`, a serializer boolean sourced from an `Exists()`
+  annotation added in `JobLeadViewSet.get_queryset()` -- explicitly chosen over a per-row request.
+  Follow that, do not invent a second pattern.
+
+Incidental, not this task: job 450 carries the same general note twice.
+
+## Owner decision, 2026-08-24 — supersedes the 2026-08-24 "expand inline" choice
+
+The earlier choice (indicator, click expands the note in place) was made while the brief's premise was
+believed true. Once the measurement above showed notes are ALREADY behind a click, and behind a modal
+that already reads and edits them, the owner was asked again with the corrected facts and chose:
+
+**Indicator on rows that have a note; hovering shows the note's first line; clicking still opens the
+existing modal for the full read and edit.**
+
+This is a change of brief made BEFORE implementation, not a criterion relaxed after seeing output.
+Recorded here and in the sealed rubric's supersession block rather than by editing the original
+criterion, per TW-005.
+
+Consequence: the list API must return a short preview string, not a boolean. One field,
+`note_preview`, first line of the non-empty `general` note truncated at 140 characters to match
+`messagePreviewLine` (frontend/src/appUtils.ts, TASK-177), empty string when there is no note. The
+frontend derives "has a note" from non-empty, so there is deliberately no second boolean field.
+
+
 The board already has a row-level popup pattern (the feedback editor) and it is the wrong one to copy
 verbatim: TASK-173 exists precisely because that popup is a non-portalled absolutely-positioned child
 of the table's scroll wrapper, which is what blocks TASK-167. If notes need a popup, portal it, or

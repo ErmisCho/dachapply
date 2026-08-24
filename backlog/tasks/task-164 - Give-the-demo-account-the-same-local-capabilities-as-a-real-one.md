@@ -43,6 +43,23 @@ sees a demo mailbox, demo conversations and demo suggestions, generated the same
 `ensure_demo_user` already generates demo job leads. Whether CV generation is included is a separate
 question, because it additionally depends on `CODEX_CV_ENABLED` and a LaTeX toolchain that is not in
 the container at all (see TASK-99) — hence AC6 below.
+
+## Coordinator resolution of AC6, 2026-08-24 — decided BEFORE dispatch, not after
+
+AC6 deliberately allows either branch as long as the answer is not left ambiguous. It is resolved
+here so no agent has to guess and no implementation can drift into it:
+
+**CV generation is EXCLUDED from the demo account.** The reason is not policy, it is that the
+capability does not exist where the demo runs: the deployed container has no `pdflatex`, and
+`CODEX_CV_ENABLED` defaults to DEBUG-only by design (`settings.py:126`). Demonstrating CV generation
+to a demo user on the public deployment is not something an application change can achieve.
+
+The filed task AC6 requires is **TASK-99b**, created on 2026-08-24 when TASK-99 was split. It is
+blocked on the infrastructure decision — where a LaTeX toolchain lives — which the owner has not
+made, and one of its legitimate outcomes is "keep generation local and say so honestly".
+
+An implementation that includes CV generation for the demo account **fails** this criterion; it is
+out of scope, not extra credit.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
