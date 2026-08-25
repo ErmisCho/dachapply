@@ -18,6 +18,7 @@ from django.contrib.auth import get_user_model
 from django.utils.text import slugify
 
 from jobradar.models import CvAsset
+from jobradar.services import cv_workspace
 
 
 FALLBACK_MODELS = [
@@ -103,10 +104,12 @@ def _run_command(command, cancelled=None, **kwargs):
 
 
 # TASK-99a: templates and the photograph are CvAsset rows owned by one account. The module-level
-# TEMPLATES dict that used to live here named four files in settings.CODEX_CV_WORKSPACE, a
-# directory that exists on exactly one laptop -- so every enabled account generated from the
-# owner's templates. The historic filenames now live in the import_cv_assets management command,
-# which is where reading that workspace belongs: a one-off import, not a per-request lookup.
+# TEMPLATES dict that used to live here named four files in settings.CODEX_CV_WORKSPACE with no
+# user involved at all -- so every enabled account generated from the owner's templates and wore
+# the owner's face. The workspace layout lives in services/cv_workspace.py now, and is only ever
+# read FOR a named account (user_cv_assets); nothing resolves a template without one.
+# Last-resort name for a stored photo row that has none of its own; a workspace photo carries the
+# filename it has on disk.
 PHOTO_FILENAME='Picture.jpg'
 
 
@@ -305,19 +308,52 @@ def applicant_name(user):
     return '-'.join(part.capitalize() for part in slug.split('-') if part) or 'Candidate'
 
 
+def _workspace_cv_assets(user):
+    """This account's templates and photograph read off CODEX_CV_WORKSPACE, and saved nowhere.
+
+    TASK-189. A local-only capability reads a local-only source: there is no LaTeX in the deployed
+    image and CODEX_CV_ENABLED is DEBUG-only, so generation runs on one machine, and the inputs to
+    it have no reason to be in a database that is hosted and backed up somewhere else. Importing
+    them would have written the owner's name, address, phone, profile links and a 1.2 MB photograph
+    of their face into production to enable nothing (TASK-189 AC2).
+
+    Still per-account, which is the whole of TASK-99a's fix. CODEX_CV_WORKSPACE is one directory on
+    one machine, and whose files it holds is answered by the same environment that names that
+    machine's account: CODEX_CV_OWNER_EMAIL. Every other account gets [] from here, so no account
+    can reach another's templates, photograph or workspace -- widen this gate and
+    tests/test_cv_assets.py::test_one_accounts_templates_and_photo_are_unreachable_by_another still
+    fails, exactly as it did for the row lookup.
+
+    The returned rows are unsaved and are never saved (services/cv_workspace.py). Caching them into
+    CvAsset for speed would put the personal data back in the database and defeat the point.
+    """
+    if not is_env_cv_owner(user) or not settings.CODEX_CV_WORKSPACE:
+        return []
+    workspace=Path(settings.CODEX_CV_WORKSPACE)
+    return cv_workspace.discover(workspace, user)[0] if workspace.is_dir() else []
+
+
 def user_cv_assets(user):
     """Every template and photograph belonging to exactly this account, and nothing else.
 
-    THE single place a template or photo is resolved (TASK-99a AC1/AC2/AC4). It is a plain filter on
-    the owning user with no fallback of any kind: not to CODEX_CV_OWNER_EMAIL, not to "the only
-    account that has one", not to a CODEX_CV_WORKSPACE glob. Widening it -- an `or` on the owner, a
-    default template, a workspace fall-through -- is exactly what
+    THE single place a template or photo is resolved (TASK-99a AC1/AC2/AC4). Two sources, in this
+    order, and never mixed:
+
+    1. This account's stored CvAsset rows. Primary (TASK-189 AC4): one stored row makes the whole
+       account stored, so an admin who imports templates gets exactly what they imported rather
+       than a blend of rows and whatever files happen to sit in the workspace.
+    2. Failing that, this account's own machine-local workspace -- see _workspace_cv_assets.
+
+    What has no fallback, and must keep having none, is the ACCOUNT: not to CODEX_CV_OWNER_EMAIL's
+    rows, not to "the only account that has one", not to a workspace belonging to somebody else.
+    Widening this past `filter(user=user)` -- an `or` on the owner, a default template, a shared
+    workspace for everyone -- is exactly what
     tests/test_cv_assets.py::test_one_accounts_templates_and_photo_are_unreachable_by_another
-    exists to fail on, and an account with nothing stored is meant to get nothing.
+    exists to fail on, and an account with neither rows nor a workspace of its own gets nothing.
     """
     if not getattr(user, 'pk', None):
         return []
-    return list(CvAsset.objects.filter(user=user))
+    return list(CvAsset.objects.filter(user=user)) or _workspace_cv_assets(user)
 
 
 def user_templates(user, assets=None):

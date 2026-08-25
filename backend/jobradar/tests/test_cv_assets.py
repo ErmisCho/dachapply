@@ -271,3 +271,54 @@ def test_readjusting_a_document_that_is_gone_from_the_workspace_says_so(db, tmp_
         generate_cv_package(german_job, 'profile', 'de', '', False, 'openai', 'gpt-5.5', 'medium',
                             source_cv=str(tmp_path / 'CVs' / 'deleted.tex'), revision_instructions='shorten',
                             user_id=user.id)
+
+
+def test_the_owners_workspace_is_a_per_account_fallback_that_writes_no_rows(db, tmp_path, settings, german_job):
+    """TASK-189: generation on the owner's machine works with zero CvAsset rows in the database.
+
+    The regression this covers: the owner's local server reads the PRODUCTION database, which has
+    no rows, so TASK-99a's no-fallback lookup returned nothing and CV generation was dead on the
+    only machine it can run on. Importing the templates would have fixed it by copying the owner's
+    name, address, phone and a 1.2 MB photograph of their face into a hosted database to enable
+    generation that cannot happen there anyway (no LaTeX in the image, CODEX_CV_ENABLED off).
+    """
+    workspace = tmp_path / 'latex'
+    (workspace / 'CVs').mkdir(parents=True)
+    (workspace / 'CVs' / 'English - AI Engineer (base)_v_1.5.tex').write_text('WORKSPACE EN CV', encoding='utf-8')
+    (workspace / 'CVs' / 'German - AI Engineer (base)_v_1.3.tex').write_text('WORKSPACE DE CV', encoding='utf-8')
+    (workspace / 'CVs' / 'Picture.jpg').write_bytes(b'workspace-photo')
+    (workspace / 'Motivation_letter.tex').write_text('WORKSPACE EN LETTER', encoding='utf-8')
+    settings.CODEX_CV_WORKSPACE = str(workspace)
+    settings.CODEX_CV_OWNER_EMAIL = 'owner@example.test'
+    owner = User.objects.create_user('owner@example.test', email='owner@example.test')
+
+    templates = user_templates(owner)
+    assert templates['en']['cv'].source == 'WORKSPACE EN CV'
+    assert templates['en']['cv'].filename == 'English - AI Engineer (base)_v_1.5.tex', 'newest version on disk'
+    assert templates['en']['letters']['motivation_letter'].source == 'WORKSPACE EN LETTER'
+    assert bytes(user_photo(owner).image) == b'workspace-photo'
+    assert generation_preview(german_job, owner)['configured'] is True
+    # AC2, the point of the task: reading the workspace persists nothing, ever.
+    assert CvAsset.objects.count() == 0
+
+    # AC3. The workspace belongs to the account the environment names, not to whoever asks. A
+    # second account on the same machine sees none of it -- widen the gate and this fails.
+    stranger = User.objects.create_user('stranger@example.test', email='stranger@example.test')
+    assert cv_generator.user_cv_assets(stranger) == [] and user_photo(stranger) is None
+    assert user_templates(stranger) == {} and generation_preview(german_job, stranger)['cvs'] == []
+    assert cv_generator.user_cv_assets(None) == []
+
+    # AC4. One stored row wins for the whole account: the workspace is a fallback, not a merge.
+    CvAsset.objects.create(user=owner, kind=CvAsset.KIND_CV, key='en', language='en',
+                           label='Stored', filename='stored.tex', source='STORED EN CV')
+    assert user_templates(owner)['en']['cv'].source == 'STORED EN CV'
+    assert user_photo(owner) is None and 'de' not in user_templates(owner)
+    assert CvAsset.objects.count() == 1, 'still only the row the import wrote'
+
+    # AC5. No workspace configured and no rows: told what is missing, not crashed at.
+    CvAsset.objects.filter(user=owner).delete()
+    settings.CODEX_CV_WORKSPACE = ''
+    assert cv_generator.user_cv_assets(owner) == []
+    preview = generation_preview(german_job, owner)
+    assert preview['configured'] is False and preview['cvs'] == []
+    assert preview['unavailable_reason'] == 'CV generation runs on the machine that holds the LaTeX toolchain and is unavailable on this server.'

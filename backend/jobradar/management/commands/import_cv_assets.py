@@ -10,12 +10,16 @@ including production, where CODEX_CV_WORKSPACE is empty and none of these files 
 have to guess which account the files belong to, which is the exact question this task exists to
 stop guessing. The account is named on the command line.
 
-The historic workspace layout below is the only place it still lives. cv_generator no longer knows
-these filenames -- reading that directory is a one-off import now, not a per-request lookup.
+TASK-189 made running this optional rather than necessary: cv_generator reads the same workspace,
+for the same one account, when that account has no rows -- so the owner no longer has to put their
+photograph in a hosted database to generate locally. This command stays because storing the assets
+is still the only thing that works for an account without a workspace of its own, and because a
+stored row wins over the workspace, so importing is how you pin a template against later edits.
+The layout both readers share lives in services/cv_workspace.py.
 """
 import hashlib
-import re
 import sys
+
 from pathlib import Path
 
 from django.conf import settings
@@ -24,41 +28,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 
 from jobradar.models import CvAsset
-
-# (relative path in the workspace, label). Base CVs are versioned as "<name>_v_<major>.<minor>.tex"
-# and the newest on disk wins, which is what cv_generator.latest_cv_template used to do on every
-# request; the path here is only the pattern's starting point.
-WORKSPACE_LAYOUT = {
-    'en': {
-        'cv': ('CVs/English - AI Engineer (base)_v_1.3.tex', 'English AI Engineer CV'),
-        'letters': {
-            'motivation_letter': ('Motivation_letter.tex', 'English motivation letter'),
-        },
-    },
-    'de': {
-        'cv': ('CVs/German - AI Engineer (base)_v_1.3.tex', 'German AI Engineer CV'),
-        'letters': {
-            'motivationsschreiben': ('Motivationsschreiben.tex', 'Motivationsschreiben'),
-            'bewerbungsschreiben': ('Bewerbungsschreiben.tex', 'Bewerbungsschreiben'),
-            'anschreiben': ('Anschreiben.tex', 'Anschreiben'),
-        },
-    },
-}
-PHOTO_PATH = 'CVs/Picture.jpg'
-
-
-def _version(path):
-    match = re.search(r'_v_(\d+(?:\.\d+)*)$', path.stem)
-    # An int tuple, so _v_1.10 correctly beats _v_1.9.
-    return tuple(int(part) for part in match.group(1).split('.')) if match else ()
-
-
-def latest_versioned(workspace, relative):
-    """The newest _v_ sibling of `relative`, or `relative` itself when none is on disk."""
-    base = Path(relative)
-    stem = re.sub(r'_v_[\d.]+$', '', base.stem)
-    candidates = [path for path in (workspace / base.parent).glob(f'{stem}_v_*.tex') if _version(path)]
-    return workspace / base.parent / max(candidates, key=_version).name if candidates else workspace / base
+from jobradar.services.cv_workspace import asset_payload, discover
 
 
 def _digest(payload):
@@ -101,7 +71,7 @@ class Command(BaseCommand):
         if not workspace.is_dir():
             raise CommandError(f'Workspace {workspace} is not a directory.')
 
-        found, missing = self._discover(workspace)
+        found, missing = discover(workspace, user)
         before = {(asset.kind, asset.key): asset for asset in CvAsset.objects.filter(user=user)}
 
         self.stdout.write(f'Account: {user.get_username()} (id {user.pk})')
@@ -109,12 +79,11 @@ class Command(BaseCommand):
         self.stdout.write('')
         self.stdout.write(f'{"kind":<7} {"key":<22} {"before":<26} {"after":<26} file')
         for candidate in found:
-            key = (candidate['kind'], candidate['key'])
-            existing = before.pop(key, None)
+            existing = before.pop((candidate.kind, candidate.key), None)
             self.stdout.write(_console_safe(
-                f'{candidate["kind"]:<7} {candidate["key"] or "-":<22} '
-                f'{self._census(existing):<26} {len(candidate["payload"])} B {_digest(candidate["payload"]):<12} '
-                f'{candidate["path"].relative_to(workspace)}'
+                f'{candidate.kind:<7} {candidate.key or "-":<22} '
+                f'{self._census(existing):<26} {self._census(candidate):<26} '
+                f'{Path(candidate.source_path).relative_to(workspace)}'
             ))
         for (kind, key), existing in before.items():
             # Stored rows the workspace has nothing for. Left exactly as they are -- this command
@@ -130,58 +99,26 @@ class Command(BaseCommand):
 
         written = 0
         for candidate in found:
+            # The discovered rows are unsaved instances; this is the one place they are persisted,
+            # and it is per account, named on the command line, and never automatic.
             _, created = CvAsset.objects.update_or_create(
-                user=user, kind=candidate['kind'], key=candidate['key'],
+                user=user, kind=candidate.kind, key=candidate.key,
                 defaults={
-                    'language': candidate['language'],
-                    'label': candidate['label'],
-                    'filename': candidate['filename'],
-                    'source': candidate['source'],
-                    'image': candidate['image'],
-                    'source_path': str(candidate['path']),
+                    'language': candidate.language,
+                    'label': candidate.label,
+                    'filename': candidate.filename,
+                    'source': candidate.source,
+                    'image': candidate.image,
+                    'source_path': candidate.source_path,
                 },
             )
             written += 1
-            self.stdout.write(_console_safe(f'{"created" if created else "updated"} {candidate["kind"]}/{candidate["key"] or "-"} from {candidate["path"].name}'))
+            self.stdout.write(_console_safe(f'{"created" if created else "updated"} {candidate.kind}/{candidate.key or "-"} from {Path(candidate.source_path).name}'))
         after = CvAsset.objects.filter(user=user).count()
         self.stdout.write(self.style.SUCCESS(f'Wrote {written} asset(s); {user.get_username()} now has {after}.'))
 
     def _census(self, asset):
         if not asset:
             return '(none)'
-        payload = asset.source.encode('utf-8') if asset.kind != CvAsset.KIND_PHOTO else bytes(asset.image)
+        payload = asset_payload(asset)
         return f'{len(payload)} B {_digest(payload)}'
-
-    def _discover(self, workspace):
-        """Every template and photo present in the workspace, plus the labels of those that are not."""
-        found, missing = [], []
-        for language, layout in WORKSPACE_LAYOUT.items():
-            relative, label = layout['cv']
-            path = latest_versioned(workspace, relative)
-            if path.is_file():
-                source = path.read_text(encoding='utf-8')
-                found.append({'kind': CvAsset.KIND_CV, 'key': language, 'language': language, 'label': label,
-                              'filename': path.name, 'source': source, 'image': b'', 'path': path,
-                              'payload': source.encode('utf-8')})
-            else:
-                missing.append(f'{label} ({relative})')
-            for key, (letter_relative, letter_label) in layout['letters'].items():
-                letter_path = workspace / letter_relative
-                if letter_path.is_file():
-                    source = letter_path.read_text(encoding='utf-8')
-                    found.append({'kind': CvAsset.KIND_LETTER, 'key': key, 'language': language, 'label': letter_label,
-                                  'filename': letter_path.name, 'source': source, 'image': b'', 'path': letter_path,
-                                  'payload': source.encode('utf-8')})
-                else:
-                    missing.append(f'{letter_label} ({letter_relative})')
-        photo = workspace / PHOTO_PATH
-        if photo.is_file():
-            image = photo.read_bytes()
-            found.append({'kind': CvAsset.KIND_PHOTO, 'key': '', 'language': '', 'label': 'Photograph',
-                          # Kept as Picture.jpg because that is the name the CV templates'
-                          # \includegraphics line already uses; renaming it means editing them.
-                          'filename': photo.name, 'source': '', 'image': image, 'path': photo,
-                          'payload': image})
-        else:
-            missing.append(f'Photograph ({PHOTO_PATH})')
-        return found, missing

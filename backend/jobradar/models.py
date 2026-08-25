@@ -163,7 +163,14 @@ class CvAsset(models.Model):
     settings.CODEX_CV_WORKSPACE -- a directory that exists on one laptop -- so every account with
     can_generate_cv shipped applications built from the owner's templates and wearing the owner's
     face. services.cv_generator resolves both from these rows now, filtered on the owning user with
-    no fallback: no env-owner default, no "the only template anyone has", no workspace glob.
+    no fallback to another account: no env-owner default, no "the only template anyone has".
+
+    Rows are the primary source, not the only one. TASK-189 added one fallback BEHIND them, for an
+    account that has none: its own machine-local CODEX_CV_WORKSPACE, resolved for the single
+    account CODEX_CV_OWNER_EMAIL names and for nobody else (cv_generator.user_cv_assets). That
+    exists so a capability which only runs locally -- there is no pdflatex in the deployed image --
+    does not require the owner's photograph and postal address to be uploaded to a hosted database
+    first. Nothing on that path writes a row.
 
     In the database rather than on disk on purpose. There is no MEDIA_ROOT in this project and the
     deployed container's filesystem is ephemeral, so a FileField would mean "a file that survives
