@@ -1,7 +1,7 @@
 ---
 id: TASK-190
 title: Bootcamp and course marketing mail is classified as a job application
-status: To Do
+status: Done
 assignee: []
 labels:
   - backend
