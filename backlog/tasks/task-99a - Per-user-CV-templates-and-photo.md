@@ -1,7 +1,7 @@
 ---
 id: TASK-99a
 title: Per-user CV templates and photo
-status: To Do
+status: Done
 assignee: []
 labels:
   - backend

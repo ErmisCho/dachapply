@@ -1,7 +1,7 @@
 ---
 id: TASK-189
 title: Read CV templates from the local workspace so personal data need never reach the database
-status: To Do
+status: Done
 assignee: []
 labels:
   - backend

@@ -1,7 +1,7 @@
 ---
 id: TASK-182
 title: Calendar-only invitations are not classified as invitations
-status: To Do
+status: Done
 assignee: []
 labels:
   - backend

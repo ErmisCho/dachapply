@@ -1,7 +1,7 @@
 ---
 id: TASK-178
 title: Hide notes behind a click on the board
-status: To Do
+status: Done
 assignee: []
 labels:
   - frontend

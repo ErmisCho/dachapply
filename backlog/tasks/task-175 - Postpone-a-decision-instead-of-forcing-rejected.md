@@ -1,7 +1,7 @@
 ---
 id: TASK-175
 title: Postpone a decision instead of forcing rejected
-status: To Do
+status: Done
 assignee: []
 labels:
   - backend
