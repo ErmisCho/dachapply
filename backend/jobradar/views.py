@@ -1346,6 +1346,45 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         message.refresh_from_db()
         return Response(MailboxMessageWithSuggestionsSerializer(message).data)
 
+    @action(detail=True, methods=['post'], url_path='create-job')
+    def create_job(self, request, pk=None):
+        """TASK-166 AC1/AC4: the THIRD honest ending for an unmatched message, alongside `attach`
+        (it belongs to a job you already track) and `dismiss` (it belongs to no job at all) -- this
+        one is "you applied for this and never entered it", so the job it refers to gets created and
+        the message is attached to it in one step.
+
+        AC4, never automatic and never a duplicate. Nothing calls this but an explicit POST from the
+        owner, one message at a time (the owner's 2026-08-24 decision: there is deliberately no bulk
+        mode and no batch endpoint). Re-taking it on a message that already produced a lead returns
+        THAT lead's message payload with 200 instead of creating a second one -- the message's own
+        matched_job is the idempotence key, so this is idempotent even across sessions and devices,
+        not merely within one request.
+
+        `company`/`title` are what the owner confirmed in the panel, pre-filled from
+        services.mailbox.lead_fields_from_message (shipped per row on `unmatched` as `lead_prefill`,
+        so confirming costs no extra request). They are the ONLY owner-supplied fields: status and
+        dates are re-derived from the message inside create_job_from_message, never taken from the
+        request, so a lead's starting state always matches the mail that made it.
+
+        A company is required, and deliberately not defaulted to JobLead's 'Unknown company': AC2
+        forbids guessing one, so when neither the subject nor the display name names an employer
+        (measured: 25 of the 160-row production population) the owner types it, and until they do
+        there is nothing to create.
+        """
+        message=self.get_object()
+        if message.matched_job_id:
+            return Response(MailboxMessageWithSuggestionsSerializer(message).data)
+        prefill=mailbox.lead_fields_from_message(message)
+        if prefill is None:
+            return Response({'detail':'This message cannot become a job lead.'}, status=400)
+        company=str(request.data.get('company') or prefill['company'] or '').strip()[:200]
+        title=str(request.data.get('title') or prefill['title'] or '').strip()[:250]
+        if not company:
+            return Response({'detail':'company is required — this message does not name one.'}, status=400)
+        mailbox.create_job_from_message(message, company, title, user=request.user)
+        message.refresh_from_db()
+        return Response(MailboxMessageWithSuggestionsSerializer(message).data, status=201)
+
     @action(detail=True, methods=['post'])
     def dismiss(self, request, pk=None):
         """TASK-171 AC3/AC5/AC6: marks a message "not attachable to any job" -- excluded from

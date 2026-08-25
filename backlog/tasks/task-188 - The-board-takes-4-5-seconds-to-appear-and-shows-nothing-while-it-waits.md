@@ -76,6 +76,31 @@ since.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+## Coordinator measurement, 2026-08-25 — the latency hypothesis is now a number
+
+The notes below called the remote-database theory a hypothesis with a number attached and said to
+test it. Tested, read-only against production:
+
+```
+trivial SELECT 1 round trip, 30 samples, warm connection:
+  min 24.2 ms | median 25.7 ms | p90 32.8 ms | max 36.2 ms
+
+  72 round trips at the median ..:  1853 ms
+   3 round trips at the median ..:    77 ms
+measured /api/jobs/ wall clock ..:  3513 ms
+```
+
+**Per-query latency explains 53% of the board query, not all of it.** TASK-187's fix -- collapsing
+72 round trips to 3 with `select_related` -- is worth about **1.78 s**, taking `/api/jobs/` from
+3513 ms to roughly 1730 ms. That alone does NOT reach AC2's under-1.5 s target.
+
+The remaining ~1.66 s is the real queries plus serializing 393 KB over 69 rows. So this task needs
+BOTH halves: the N+1 and the payload. An implementation that lands `select_related`, measures a
+large improvement and stops has done half the work and will miss AC2.
+
+Neither half is the `auth/me/` serial gate (AC3), which is a further ~1 s before the board request
+is even issued, and is independent of both.
+
 **Measure before choosing a fix.** The 3.5 s is not yet attributed: TASK-187's 69 `auth_user` queries
 are known, but nobody has measured how much of the wall clock they actually cost against a remote
 Neon database versus how much is serialization of a 393 KB payload. Those two have completely

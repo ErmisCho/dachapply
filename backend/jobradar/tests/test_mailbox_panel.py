@@ -12,6 +12,7 @@ from rest_framework.test import APIClient
 
 from jobradar.models import ApplicationNote, JobLead, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion
 from jobradar.services import mailbox
+from jobradar.services.access import accessible_jobs
 from jobradar.services.prompt_builder import user_profile_settings
 from jobradar.views import UNMATCHED_RECENCY_WINDOW_DAYS
 
@@ -1965,3 +1966,227 @@ def test_cv_generation_still_refuses_an_is_staff_user_when_codex_cv_disabled(cli
         r = client.get(f'/api/jobs/{applied_job.id}/cv-generation/')
 
     assert r.status_code == 404
+
+
+# --- TASK-166: create a job lead from an unmatched message ----------------------------------------
+# Every case below is a real (subject, sender) shape from the production population this task was
+# measured against on 2026-08-25 -- see the task file's AC5 table. The "leave it empty" rows are as
+# load-bearing as the extracting ones: AC2 makes a guessed company a failure, not a convenience.
+
+@pytest.mark.parametrize('subject,sender,company,title', [
+    # The employer is in the subject, the ATS is in the domain -- extracting the domain would answer
+    # "greenhouse-mail.io"/"join.com", which is exactly the wrong answer (AC2).
+    ('Thank you for applying to Miro!', 'no-reply@us.greenhouse-mail.io', 'Miro', ''),
+    ('Wir haben deine Bewerbung für die Position bei EMOLUTION KG erhalten', 'EMOLUTION KG <noreply@JOIN.com>', 'EMOLUTION KG', ''),
+    ('Your Application at Taktile - Senior Backend Engineer', 'Taktile Hiring Team <no-reply@ashbyhq.com>', 'Taktile', 'Senior Backend Engineer'),
+    ('Thanks for applying for the Senior Data Engineer role at Investing.com', 'Investing <no-reply@investing.comeet-notifications.com>', 'Investing.com', 'Senior Data Engineer'),
+    ('Thank you for applying for Associate, Software Engineer at BlackRock', 'blackrock@myworkday.com', 'BlackRock', 'Associate, Software Engineer'),
+    ('Deloitte - Vielen Dank für deine Bewerbung!', 'Deloitte <notification@deloitte.at>', 'Deloitte', ''),
+    ('Glacis Application Update', 'Glacis Hiring Team <no-reply@ashbyhq.com>', 'Glacis', ''),
+    # A trailing sentence/emoji is not part of the company name.
+    ('Thanks for Applying to envelio! Quick Question for You', 'envelio <jobs@envelio.de>', 'envelio', ''),
+    # No company in the subject -> the From display name, minus its ATS role phrase.
+    ('Thank you for applying!', 'Windranger Labs Hiring Team <no-reply@ashbyhq.com>', 'Windranger Labs', ''),
+    ('Vielen Dank für Ihre Bewerbung', 'Hiring-Team von REWE International IT <notifications@smartrecruiters.com>', 'REWE International IT', ''),
+    # ... but "applying to become a Sentaur" names no company, so the display name still wins.
+    ('Thank you for applying to become a Sentaur!', 'Sentry <no-reply@ashbyhq.com>', 'Sentry', ''),
+    # AC2's empty cases. A recruiter's own name is not the employer's; nor is an unattended-mailbox
+    # label; nor is a bare ATS domain with nothing else to go on.
+    ('Vielen Dank für Ihre Bewerbung', 'Zhu Huang <z.huang@eberail.at>', '', ''),
+    ('Vielen Dank für Ihre Bewerbung / Thank you for your application', '"Fabian Jahn, BA" <fjahn@itec.at>', '', ''),
+    ('Vielen Dank für Ihre Bewerbung für die Stelle "DevSecOps Architekt*in"', 'noreplybewerbung <noreplybewerbung@jobs-wien.gv.at>', '', 'DevSecOps Architekt*in'),
+    ('Vielen Dank für Ihre Bewerbung!', 'humanresources@mediaprint.at', '', ''),
+    ('Thank you, Ermis! Your application has been received', 'no-reply@recruiting.xapo.com', '', ''),
+])
+def test_lead_prefill_extracts_only_what_the_message_actually_names(db, subject, sender, company, title):
+    message = _log_message(None, 'application_confirmed', sender=sender, subject=subject, received_at=timezone.now())
+
+    fields = mailbox.lead_fields_from_message(message)
+
+    assert (fields['company'], fields['title']) == (company, title)
+
+
+def test_create_job_prefills_status_and_dates_from_the_message_not_today(client, owner):
+    """AC3: this mail is routinely months old, so 'today' would misdate the application by however
+    late it was found -- the same rule build_suggestions already applies to applied_at.
+    """
+    received = timezone.now() - timezone.timedelta(days=200)
+    message = _log_message(None, 'application_confirmed', sender='Squirro <notifications@app.bamboohr.com>',
+                           subject='Thank you for applying to Squirro!', received_at=received)
+
+    r = client.post(f'/api/mailbox-messages/{message.id}/create-job/', {}, format='json')
+
+    assert r.status_code == 201
+    job = JobLead.objects.get(company='Squirro')
+    assert job.status == 'applied'
+    assert job.applied_at == timezone.localtime(received).date()
+    assert job.status_date == timezone.localtime(received).date()
+    assert job.applied_at != timezone.localdate()
+
+
+def test_create_job_attaches_the_message_and_records_where_the_lead_came_from(client, owner):
+    """AC1 (one step: created AND attached) and AC6 (distinguishable from a lead the owner entered)."""
+    message = _log_message(None, 'rejection', sender='Glacis Hiring Team <hiring@ashbyhq.com>',
+                           subject='Glacis Application Update', received_at=timezone.now())
+
+    r = client.post(f'/api/mailbox-messages/{message.id}/create-job/', {}, format='json')
+
+    assert r.status_code == 201
+    job = JobLead.objects.get(company='Glacis')
+    assert job.status == 'rejected'
+    assert job.source == mailbox.LEAD_FROM_MAIL_SOURCE == 'mailbox'
+    message.refresh_from_db()
+    assert message.matched_job_id == job.id
+    note = ApplicationNote.objects.get(job=job)
+    assert note.note_type == 'recruiter_message'
+    assert 'Glacis Application Update' in note.note and note.created_by == owner
+
+
+def test_creating_a_lead_from_the_same_message_twice_does_not_duplicate_it(client, owner):
+    """AC4. The message's own matched_job is the idempotence key, so this holds across sessions."""
+    message = _log_message(None, 'application_confirmed', sender='Tabby <tabby@pinpoint.email>',
+                           subject='Thank you for applying to Tabby', received_at=timezone.now())
+
+    first = client.post(f'/api/mailbox-messages/{message.id}/create-job/', {}, format='json')
+    second = client.post(f'/api/mailbox-messages/{message.id}/create-job/', {}, format='json')
+
+    assert (first.status_code, second.status_code) == (201, 200)
+    assert JobLead.objects.filter(company='Tabby').count() == 1
+    assert second.data['matched_job'] == first.data['matched_job']
+
+
+def test_the_owner_can_correct_the_prefill_before_confirming(client, owner):
+    """AC2/AC4: pre-filled, the owner confirms -- and what they confirm is what gets written."""
+    message = _log_message(None, 'application_confirmed', sender='Workable <noreply@candidates.workablemail.com>',
+                           subject='Thanks for applying to Sinch', received_at=timezone.now())
+
+    r = client.post(f'/api/mailbox-messages/{message.id}/create-job/',
+                    {'company': 'Sinch AB', 'title': 'Backend Engineer'}, format='json')
+
+    assert r.status_code == 201
+    job = JobLead.objects.get(pk=r.data['matched_job'])
+    assert (job.company, job.title) == ('Sinch AB', 'Backend Engineer')
+
+
+def test_a_message_naming_no_company_will_not_create_a_lead_on_its_own(client):
+    """AC2: 25 of the 160 measured production rows name no employer the extraction may look at. A
+    guessed one is a failure of this task, so the endpoint refuses instead of inventing a placeholder.
+    """
+    message = _log_message(None, 'application_confirmed', sender='humanresources@mediaprint.at',
+                           subject='Vielen Dank für Ihre Bewerbung!', received_at=timezone.now())
+
+    r = client.post(f'/api/mailbox-messages/{message.id}/create-job/', {}, format='json')
+
+    assert r.status_code == 400
+    assert JobLead.objects.count() == 0
+
+
+@pytest.mark.parametrize('classification,sender,subject', [
+    # TASK-169's whole point: non-job mail must not become a job lead.
+    ('not_job_related', 'newsletter@substack.com', 'Thank you for applying to Nobody'),
+    ('uncertain', 'someone@agency.test', 'Thank you for applying to Nobody'),
+    ('recruiter_reply', 'someone@agency.test', 'Thank you for applying to Nobody'),
+    # TASK-163: a job-board digest is not an application, whatever its wording says.
+    ('rejection', 'jobs@xing.com', 'Thank you for applying to Nobody'),
+    ('application_confirmed', 'alerts@stepstone.de', 'Thank you for applying to Nobody'),
+    # The owner's own sent mail would name the OWNER as the employer.
+    ('application_confirmed', 'Ermis <owner@example.test>', 'Re: Thank you for applying to Nobody'),
+])
+def test_mail_that_must_never_become_a_lead_offers_no_prefill_and_refuses_creation(client, classification, sender, subject):
+    message = _log_message(None, classification, sender=sender, subject=subject, received_at=timezone.now())
+
+    assert mailbox.lead_fields_from_message(message) is None
+    r = client.post(f'/api/mailbox-messages/{message.id}/create-job/', {'company': 'Forced'}, format='json')
+
+    assert r.status_code == 400
+    assert JobLead.objects.count() == 0
+
+
+def test_unmatched_rows_carry_the_prefill_and_null_where_there_can_be_none(client):
+    creatable = _log_message(None, 'rejection', sender='Deel Hiring Team <hiring@ashbyhq.com>',
+                             subject='Update on your application at Deel', received_at=timezone.now())
+    not_creatable = _log_message(None, 'uncertain', sender='someone@agency.test', subject='Hello',
+                                 received_at=timezone.now())
+
+    r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+
+    rows = {row['id']: row for row in r.data['results']}
+    assert rows[creatable.id]['lead_prefill'] == {'company': 'Deel', 'title': '', 'status': 'rejected'}
+    assert rows[not_creatable.id]['lead_prefill'] is None
+
+
+def test_the_prefill_costs_no_extra_query_per_row(client):
+    """The regression TASK-142 paid to remove, guarded for the new field: body_text is .defer()'d on
+    this endpoint, so an extraction that reached for it would fire one reload query PER ROW. Same
+    query-count-vs-row-count idiom as the draft/select_related test above, but with rows that
+    actually PRODUCE a prefill -- an `uncertain` row returns None before the extraction runs at all.
+    """
+    client.get('/api/mailbox-messages/unmatched/')  # warm-up: visitor-tracking middleware, as above
+
+    def _creatable(n):
+        return _log_message(None, 'application_confirmed', sender=f'Acme{n} Hiring Team <hiring@ashbyhq.com>',
+                            subject=f'Thank you for applying to Acme{n}', body_text='x' * 900,
+                            received_at=timezone.now())
+
+    for i in range(2):
+        _creatable(i)
+    with CaptureQueriesContext(connection) as few:
+        r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+    assert r.status_code == 200 and all(row['lead_prefill'] for row in r.data['results'])
+
+    for i in range(2, 8):
+        _creatable(i)
+    with CaptureQueriesContext(connection) as many:
+        r = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+    assert len(r.data['results']) == 8
+
+    assert len(few.captured_queries) == len(many.captured_queries), (few.captured_queries, many.captured_queries)
+
+
+def test_a_lead_created_from_mail_belongs_to_the_acting_user_and_nobody_else(client, owner, django_user_model):
+    """AC8: TASK-184 removed accessible_jobs' staff exemption; a new creation path is exactly where
+    that regresses. The second user here is is_staff precisely so the test would fail if it came back.
+    """
+    message = _log_message(None, 'application_confirmed', sender='Docker Recruiting Team <hiring@ashbyhq.com>',
+                           subject='Thank you for applying to Docker!', received_at=timezone.now())
+    client.post(f'/api/mailbox-messages/{message.id}/create-job/', {}, format='json')
+    job = JobLead.objects.get(company='Docker')
+    other = django_user_model.objects.create_user('other166@example.test', email='other166@example.test',
+                                                  password='pw', is_staff=True)
+    other_client = APIClient(); other_client.force_authenticate(other)
+
+    assert job.created_by == owner and job.submitted_for is None
+    assert list(accessible_jobs(owner).filter(pk=job.pk)) == [job]
+    assert list(accessible_jobs(other)) == []
+    assert other_client.get(f'/api/jobs/{job.id}/').status_code == 404
+
+
+def test_creating_a_lead_from_mail_is_refused_for_a_non_mailbox_owner(db):
+    other = User.objects.create_user('other167@example.test', email='other167@example.test', password='pw')
+    message = _log_message(None, 'application_confirmed', sender='Docker Recruiting Team <hiring@ashbyhq.com>',
+                           subject='Thank you for applying to Docker!', received_at=timezone.now())
+    other_client = APIClient(); other_client.force_authenticate(other)
+
+    r = other_client.post(f'/api/mailbox-messages/{message.id}/create-job/', {}, format='json')
+
+    assert r.status_code == 404
+    assert JobLead.objects.count() == 0
+
+
+def test_an_interview_invitation_lead_still_gets_its_date_proposed_for_confirmation(client, owner):
+    """The one classification where the message carries something the lead's STATE cannot hold: the
+    interview time lives in the prose, so it arrives as the reviewable suggestion it always was.
+    """
+    message = _log_message(None, 'interview_invitation', sender='Recruiting <hiring@ashbyhq.com>',
+                           subject='Your application at Deel', body_text='Interview am 03.03.2026 um 10:00',
+                           received_at=timezone.now())
+
+    r = client.post(f'/api/mailbox-messages/{message.id}/create-job/', {}, format='json')
+
+    assert r.status_code == 201
+    job = JobLead.objects.get(company='Deel')
+    assert job.status == 'interview'
+    assert job.applied_at is None  # nothing in this message dates the application itself (AC2)
+    suggestion = MailboxSuggestion.objects.get(message=message, job=job)
+    assert suggestion.suggestion_type == 'interview_date'
+    assert suggestion.payload['interview_at'].startswith('2026-03-03')
