@@ -59,12 +59,14 @@ from jobradar.services.mailbox import (
     mailbox_check_estimate,
     maybe_draft_reply,
     match_job,
+    matched_sender_domains,
     next_check_is_cold_start,
     owned_job_domains,
     pending_mailbox_check_request,
     purge_app_drafts,
     queue_mailbox_check_request,
     rematch_ats_display_name_messages,
+    rematch_sender_domain_messages,
     run_check,
     sanitize_inbound_text,
     seed_fake_run,
@@ -5807,3 +5809,265 @@ def test_a_vevent_titled_interview_is_an_invitation(subject, summary):
             calendar_summary=summary, calendar_start=timezone.now() + timedelta(days=5))
     classification, _interview_at, _evaluator = classify_email(r, domain_known=True)
     assert classification == 'interview_invitation'
+
+
+# --- TASK-190: a training provider selling a course is not an employer -----------------------------
+#
+# Measured against production 2026-08-25 (all 1133 stored messages, read-only, before/after): exactly
+# 2 rows change classification, 419 and 421, both Ironhack, both interview_invitation ->
+# not_job_related. No other row in the table moves, and the course-vocabulary predicate itself fires
+# on 2 of 1133 rows in total. TASK-182's five calendar-named interviews were re-measured: 175, 179,
+# 391 and 578 are unchanged; 421 is the one that moves, which is this task's own AC3.
+
+def test_a_bootcamps_admissions_mail_is_not_an_interview_invitation():
+    """Production message 419 (noreply@ironhack.com, "Thanks for your interest in Ironhack!"). Its
+    body invites the reader to schedule a call, which is a real INTERVIEW_KEYWORDS hit -- but the
+    call is an admissions sales call about a course, and reaching interview_invitation is what let
+    TASK-166's create-a-lead path offer to put "Ironhack" on the board in `interview` status.
+    """
+    r = raw(1, sender='Ironhack NoReply <noreply@ironhack.com>', subject='Thanks for your interest in Ironhack!',
+            body=('Thanks for your interest in our course! To continue your tech journey we would like to '
+                  'invite you to schedule a call with our Admissions team. Course Syllabus. Financing Options. '
+                  'During the call we will answer questions about the curriculum.'))
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification == 'not_job_related'
+
+
+def test_a_bootcamp_admissions_booking_from_a_scheduling_platform_is_not_an_interview_invitation():
+    """Production message 421, and the reason this rule reads the message instead of the sender: the
+    From address is `hello@cal.com`, a general-purpose scheduling platform, so no bootcamp domain
+    denylist could ever have seen it. The VEVENT summary genuinely says "Personal Interview with
+    Ironhack" (TASK-182 reads it correctly and is not weakened here) -- the body is what says the
+    interview is about enrolling on a course.
+    """
+    r = raw(1, sender='Daniel Elias Spagna <hello@cal.com>',
+            subject='Personal Interview with Ironhack between Daniel Elias Spagna and Ermis Chorinopoulos',
+            calendar_summary='Personal Interview with Ironhack between Daniel Elias Spagna and Ermis Chorinopoulos',
+            calendar_start=timezone.now() + timedelta(days=4),
+            body=('Thank you for scheduling your personal interview! This call is to discuss your background '
+                  'and goals regarding your application to study at Ironhack. It is also a chance to ask your '
+                  'questions about the course, financing options, and the next steps to enroll.'))
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+    assert classification != 'interview_invitation'
+    assert not any('ironhack' in term for term in mailbox.COURSE_SALE_KEYWORDS), (
+        'AC6: the rule must not name the one provider it was measured on'
+    )
+
+
+def test_a_genuine_employer_using_one_course_word_still_reaches_its_status_changing_class():
+    """The test that fails if this rule is ever widened to a single term. A university, a research
+    institute or any employer with a graduate programme is a genuine employer in this data (TU Wien,
+    production message 903) and writes "curriculum", "admissions" or "scholarship" in mail about a
+    JOB. One incidental course word is not a course being sold, so COURSE_SALE_MIN_TERMS is 2 and
+    each of these invitations must survive it.
+    """
+    for word in ('curriculum', 'admissions', 'scholarship', 'tuition', 'enrolled'):
+        r = raw(1, sender='berufung@tuwien.test', subject='Invitation: Vorstellungsgespräch - Senior Engineer',
+                body=f'We would like to invite you to an interview for the position. Our {word} team will join.')
+        classification, _interview_at, _evaluator = classify_email(r, domain_known=False)
+        assert classification == 'interview_invitation', f'a genuine employer was blocked by the single word {word!r}'
+
+
+def test_the_course_rule_only_ever_blocks_a_status_changing_class():
+    """AC5: added ALONGSIDE TASK-162/TASK-169's guards, inside the same single enforcement point, so
+    it inherits their shape -- it can only ever DEMOTE one of the four status-changing classes, never
+    touch recruiter_reply/uncertain/not_job_related, and never promote anything.
+    """
+    for classification in ('recruiter_reply', 'uncertain', 'not_job_related'):
+        result, _interview_at = mailbox._guard_status_changing(
+            classification, None, 'Our bootcamp', 'Tuition, curriculum and enrolment details inside.',
+            False, 'ironhack.test')
+        assert result == classification
+
+
+# --- TASK-186: an invitation from a tracked job's own sender must not land unmatched ---------------
+#
+# The production case, measured 2026-08-25: job 535 (Formunauts) sat in `interview` status with
+# interview_at=None while BOTH messages carrying the appointment (641, 664) matched nothing. The
+# brief's own hypothesis -- match on an exact sender ADDRESS that already has a matched_job -- was
+# measured and rejected: Formunauts writes from two people (jobs@ matched, matthias.gira@ did not),
+# and the address rule yields 16 hits table-wide, all not_job_related, none carrying a calendar_start.
+#
+# Domain matching, learned from mail the owner has already confirmed, is the only signal that reaches
+# it, and it is tightly bounded: of 966 unmatched inbound rows, 5 have a non-ATS sender domain mapping
+# to exactly one job, 25 more are excluded because their domain is an ATS (join.com), and 61 are
+# refused for naming several jobs (gmail.com, 11 jobs). Of the 5, TASK-170's timing rule then refuses
+# one (745, 213 days older than its job's process). 4 attach.
+
+@pytest.fixture
+def board_url_job(db, owner):
+    """Job 535's real shape, and the reason owned_job_domains() cannot help: the lead was saved off
+    devjobs.at, a JOB BOARD, so `formunauts.at` appears in no tracked job's URL anywhere."""
+    return JobLead.objects.create(company='Formunauts', title='Senior Back End Developer Python',
+                                  url='https://devjobs.at/job/5328d0dc', status='interview',
+                                  status_date=timezone.localdate() - timedelta(days=4), created_by=owner)
+
+
+def _matched_message(job, sender, uid=1, classification='interview_invitation', received_at=None, **fields):
+    run = MailboxRun.objects.create()
+    return MailboxMessage.objects.create(
+        run=run, uid=uid, sender=sender, subject=fields.pop('subject', 'Invite for 1. Interview'),
+        classification=classification, matched_job=job, evaluator='heuristic',
+        received_at=received_at or timezone.now() - timedelta(days=2), **fields)
+
+
+def test_a_second_person_at_a_tracked_employer_matches_the_same_job(db, owner, board_url_job):
+    """AC1, the measured case. `jobs@formunauts.at` matched job 535 on message 638; the three that
+    followed came from `matthias.gira@formunauts.at` and matched nothing. The job's own URL is a job
+    board, so owned_job_domains() supplies this domain from nowhere -- the employer's domain is
+    knowable only from mail the owner already confirmed.
+    """
+    assert owned_job_domains(owner) == {}, 'a board URL must contribute no domain -- TASK-114'
+    _matched_message(board_url_job, 'Nadja Steinboeck <jobs@formunauts.at>')
+    domains = matched_sender_domains(owner)
+    assert domains == {'formunauts.at': board_url_job}
+    later = raw(2, sender='Matthias Gira <matthias.gira@formunauts.at>',
+                subject='Updated invitation: Formunauts - On Site', received_at=timezone.now())
+    assert match_job(later, {}, owner=owner, sender_domains=domains) == board_url_job
+
+
+@pytest.mark.parametrize('sender_domain', ['join.com', 'msg.join.com', 'ashbyhq.com', 'eu.greenhouse.io',
+                                           'candidates.workablemail.com', 'e-mail.xing.com', 'slack.com'])
+def test_the_sender_domain_rule_never_learns_a_multi_employer_host(db, owner, applied_job, sender_domain):
+    """The test that fails the moment this rule is allowed to match an ATS (or board, or platform)
+    domain. 25 unmatched production rows are sent by join.com and their domain maps to exactly ONE
+    tracked job (599) -- attaching them would be TASK-137's bug rebuilt from the other side (job
+    36/PIDSO took all 25 JOIN-sent messages, none of them its own mail). An ATS is a real
+    correspondent but never a single EMPLOYER, which is exactly the opposite of what
+    _guard_status_changing's Rule A needs from the same predicate.
+    """
+    _matched_message(applied_job, 'Recruiting <no-reply@' + sender_domain + '>', classification='application_confirmed')
+    domains = matched_sender_domains(owner)
+    assert sender_domain not in domains
+    later = raw(2, sender='Someone Else <hello@' + sender_domain + '>', received_at=timezone.now())
+    assert match_job(later, {}, owner=owner, sender_domains=domains) is None
+
+
+def test_the_owners_own_domain_never_becomes_an_employer_domain(db, owner, applied_job):
+    """Two exclusions, one measurement: the owner's OWN sent mail is matched to a job by thread
+    (_match_by_thread), and the owner's address is gmail.com, behind which sit 61 unmatched personal
+    messages. Either exclusion alone would hold today; both are here because the day one recruiter
+    writes from gmail.com and the owner attaches it, the one-claimant rule stops covering for the
+    missing one.
+    """
+    _matched_message(applied_job, 'Ermis <owner@example.test>', classification='recruiter_reply', sent_by_owner=True)
+    assert 'example.test' not in matched_sender_domains(owner)
+    _matched_message(applied_job, 'A Recruiter <recruiter@owner-mail.test>', uid=2, classification='recruiter_reply')
+    with override_settings(CODEX_CV_OWNER_EMAIL='ermis@owner-mail.test', GMAIL_IMAP_USER='ermis@owner-mail.test'):
+        assert 'owner-mail.test' not in matched_sender_domains(owner)
+
+
+def test_a_domain_two_jobs_claim_matches_neither(db, owner, applied_job):
+    """The same "more than one claimant -> None" refusal owned_job_domains(),
+    _match_by_ats_display_name() and _job_by_process_timing() all already make. Measured: gmail.com
+    maps to 11 different jobs once the owner's own sent mail is counted.
+    """
+    other = JobLead.objects.create(company='Acme Labs', title='Data Engineer', url='https://acme-labs.test/2',
+                                   status='applied', status_date=timezone.localdate(), created_by=owner)
+    _matched_message(applied_job, 'HR <hr@shared.test>')
+    _matched_message(other, 'HR <recruiting@shared.test>', uid=2)
+    assert 'shared.test' not in matched_sender_domains(owner)
+
+
+def test_a_message_older_than_the_job_it_would_attach_to_is_refused(db, owner):
+    """AC3, and the one attribution the measured population gets wrong without it: production message
+    745, "Vielen Dank fuer Ihre Bewerbung bei EBCONT!", arrived 2025-12-22, while the EBCONT job its
+    domain names has no evidence of being alive before 2026-07-23. TASK-170's _job_by_process_timing
+    is what refuses it -- a message cannot belong to a process that had not begun -- and this rule
+    calls that function rather than restating it.
+    """
+    job = JobLead.objects.create(company='EBCONT', title='ElasticSearch Consultant', url='https://devjobs.at/job/x',
+                                 status='interview', status_date=timezone.localdate(), created_by=owner)
+    _matched_message(job, 'Christian <christian.tesch@ebcont.test>')
+    domains = matched_sender_domains(owner)
+    assert domains == {'ebcont.test': job}
+    old = raw(2, sender='Christopher <christopher.anderlik@ebcont.test>',
+              subject='Vielen Dank fuer Ihre Bewerbung bei EBCONT!',
+              received_at=timezone.now() - timedelta(days=213))
+    assert match_job(old, {}, owner=owner, sender_domains=domains) is None
+    recent = raw(3, sender='Christopher <christopher.anderlik@ebcont.test>', received_at=timezone.now())
+    assert match_job(recent, {}, owner=owner, sender_domains=domains) == job
+
+
+def test_matching_by_sender_domain_does_not_make_a_message_status_changing(db, owner, board_url_job):
+    """AC5: matching is not a licence. A sender-domain match sets domain_known=True, which is exactly
+    what TASK-162's Rule B accepts as application evidence -- so the guard has to be shown still
+    running on these rows, not bypassed by them. Measured on the three real Formunauts rows: all
+    three move not_job_related -> recruiter_reply, none reaches a status-changing class.
+    """
+    _matched_message(board_url_job, 'Nadja <jobs@formunauts.at>')
+    domains = matched_sender_domains(owner)
+    invitation = raw(2, sender='Matthias Gira <matthias.gira@formunauts.at>',
+                     subject='Appointment booked: Formunauts - On Site (Ermis Chorinopoulos)',
+                     body='Your event has been scheduled.',
+                     calendar_summary='Formunauts - On Site (Ermis Chorinopoulos)',
+                     calendar_start=timezone.now() + timedelta(days=2), received_at=timezone.now())
+    matched = match_job(invitation, {}, owner=owner, sender_domains=domains)
+    assert matched == board_url_job
+    classification, _interview_at, _evaluator = classify_email(invitation, domain_known=matched is not None)
+    assert classification == 'recruiter_reply'
+    assert classification not in mailbox.STATUS_CHANGING_CLASSIFICATIONS
+
+
+def test_rematch_sender_domain_messages_attaches_the_back_catalogue_and_is_dry_by_default(db, owner, board_url_job):
+    """AC6's first half, on the back-catalogue path: rows fetched before this rule existed are exactly
+    the rows this task was filed about (641/662/664 were already stored unmatched). Dry by default,
+    the same one-directional shape rematch_ats_display_name_messages uses -- it only ever fills an
+    EMPTY match.
+    """
+    _matched_message(board_url_job, 'Nadja <jobs@formunauts.at>')
+    run = MailboxRun.objects.create()
+    stored = MailboxMessage.objects.create(run=run, uid=5, sender='Matthias Gira <matthias.gira@formunauts.at>',
+                                           subject='Interview Slot Tomorrow', classification='not_job_related',
+                                           evaluator='heuristic', received_at=timezone.now())
+    assert [(r['job'], r['message_count']) for r in rematch_sender_domain_messages(dry_run=True)] == [(board_url_job, 1)]
+    stored.refresh_from_db()
+    assert stored.matched_job is None, 'a dry run must write nothing'
+    rematch_sender_domain_messages(dry_run=False)
+    stored.refresh_from_db()
+    assert stored.matched_job == board_url_job
+    assert rematch_sender_domain_messages(dry_run=True) == [], 'a second run finds nothing left to do'
+
+
+def test_an_updated_invitation_moves_the_appointment_instead_of_queueing_a_second(db, owner, board_url_job):
+    """AC4: messages 641 and 664 are the SAME Formunauts meeting, moved from 19 Aug to 26 Aug. Both
+    now match job 535, so both reach build_suggestions -- and _create_pending_suggestion's
+    one-pending-per-(job, type) dedupe (right for TASK-130's three identical proposals) would drop the
+    second and leave the owner looking at the date the meeting moved AWAY from.
+    """
+    first_at = timezone.now() + timedelta(days=2)
+    second_at = timezone.now() + timedelta(days=9)
+    booked = _matched_message(board_url_job, 'Matthias <matthias.gira@formunauts.at>', uid=6,
+                              classification='recruiter_reply', calendar_start=first_at,
+                              subject='Appointment booked', received_at=timezone.now() - timedelta(days=1))
+    build_suggestions(booked, board_url_job, 'interview_invitation', None)
+    pending = MailboxSuggestion.objects.get(job=board_url_job, suggestion_type='interview_date', status='pending')
+    assert datetime.fromisoformat(pending.payload['interview_at']) == first_at
+
+    updated = _matched_message(board_url_job, 'Matthias <matthias.gira@formunauts.at>', uid=7,
+                               classification='recruiter_reply', calendar_start=second_at,
+                               subject='Updated invitation', received_at=timezone.now())
+    build_suggestions(updated, board_url_job, 'interview_invitation', None)
+    live = MailboxSuggestion.objects.filter(job=board_url_job, suggestion_type='interview_date', status='pending')
+    assert live.count() == 1, 'one appointment, not two'
+    assert datetime.fromisoformat(live.get().payload['interview_at']) == second_at
+    pending.refresh_from_db()
+    assert pending.status == 'dismissed'
+
+
+def test_an_older_invitation_attached_later_does_not_undo_the_newer_one(db, owner, board_url_job):
+    """The other half of AC4, and the reason superseding is bounded by the message's own received_at
+    rather than by processing order: attach_message_to_job() lets the owner attach an OLD message by
+    hand at any time, and "the last row touched wins" is not the rule.
+    """
+    newest = _matched_message(board_url_job, 'Matthias <matthias.gira@formunauts.at>', uid=8,
+                              classification='recruiter_reply', calendar_start=timezone.now() + timedelta(days=9),
+                              subject='Updated invitation', received_at=timezone.now())
+    build_suggestions(newest, board_url_job, 'interview_invitation', None)
+    stale = _matched_message(board_url_job, 'Matthias <matthias.gira@formunauts.at>', uid=9,
+                             classification='recruiter_reply', calendar_start=timezone.now() + timedelta(days=2),
+                             subject='Appointment booked', received_at=timezone.now() - timedelta(days=1))
+    build_suggestions(stale, board_url_job, 'interview_invitation', None)
+    live = MailboxSuggestion.objects.filter(job=board_url_job, suggestion_type='interview_date', status='pending')
+    assert live.count() == 1
+    assert live.get().message == newest
