@@ -98,6 +98,39 @@ The remaining ~1.66 s is the real queries plus serializing 393 KB over 69 rows. 
 BOTH halves: the N+1 and the payload. An implementation that lands `select_related`, measures a
 large improvement and stops has done half the work and will miss AC2.
 
+### And the payload half, measured 2026-08-25
+
+AC6 asks for the payload measured per row. Done, from the real response:
+
+```
+/api/jobs/            393 KB over 69 rows      5835 B per row
+  latest_evaluation   324 KB                   82.5% of everything
+    skill_statuses    180.6 KB                 57.6% of the evaluation, 46% of the WHOLE payload
+    main_match_reasons 31.6 KB                 10.1%
+    main_gaps          28.2 KB                  9.0%
+    required_skills    21.7 KB                  6.9%
+    summary            19.8 KB                  6.3%
+    matched_skills     16.3 KB                  5.2%
+    missing_skills     13.9 KB                  4.4%
+  everything else      ~69 KB                  salary_info 5.3, url 4.6, the rest under 3 KB each
+```
+
+**`skill_statuses` is the single biggest thing on the wire and most of it is never rendered.**
+Measured: 67 rows carry it, averaging **37 entries per row** and peaking at **89**, at 2,760 bytes per
+row. The board draws a median of **12** chips per row, and `SkillLabels` takes `limit=8` by default.
+So roughly two thirds to three quarters of it is shipped and discarded.
+
+Each entry is `{status, display}`, and `display` is frequently just the title-cased key --
+`"Experienced software engineering"` -> `{status: "unknown", display: "Experienced Software
+Engineering"}`. That is redundancy on top of over-sending.
+
+This is the same class of decision `JobEvaluationListSerializer` already made when it dropped
+`structured_json_raw` (~3.7 KB per evaluation) for being detail-page-only. The list response is
+supposed to carry exactly what the board renders; `skill_statuses` stopped honouring that.
+
+Do NOT simply truncate to the first 8: `SkillLabels` sorts by tone before slicing, so the eight it
+shows depend on status. Whatever is sent must preserve the board's own ordering, or the chips change.
+
 Neither half is the `auth/me/` serial gate (AC3), which is a further ~1 s before the board request
 is even issued, and is independent of both.
 

@@ -946,6 +946,58 @@ APPLICATION_CONTEXT_KEYWORDS = [
     'application', 'applied', 'candidate', 'position', 'vacancy', 'role',
 ]
 
+# TASK-190 AC1/AC6 (Rule C, _guard_status_changing below): a TRAINING PROVIDER is not an employer, and
+# the "interview" its admissions funnel books is a sales call about a course the owner would PAY for.
+# Ironhack's two production messages are the measured case (419 "Thanks for your interest in Ironhack!",
+# 421 the cal.com booking whose VEVENT summary reads "Personal Interview with Ironhack"), and both
+# reached `interview_invitation`, which is status-changing -- so TASK-166's create-a-lead path offered
+# to put "Ironhack" on the board in `interview` status.
+#
+# The signal is the message's OWN COURSE-SALE VOCABULARY, not a list of bootcamp domains, and that
+# choice is measured rather than preferred (AC6). A sender denylist does not even solve the case it
+# would be written for: message 421's sender is `hello@cal.com`, a general-purpose scheduling
+# platform, and the only place "ironhack.com" appears on that row is `calendar_organizer`, a field
+# _guard_status_changing is not given and that any other booking tool is free not to populate. A
+# vocabulary rule needs no name at all: a provider SELLING a course has to describe the course, the
+# admission and the money, so Le Wagon, neue fische, WBS Coding School, Masterschool, Codecademy or
+# any bootcamp nobody has named yet is caught by the same terms that catch this one, on its first
+# message, with no code change. "Ironhack" appears nowhere in this module.
+#
+# TWO DISTINCT terms are required (COURSE_SALE_MIN_TERMS) -- not for the measured rows, which clear it
+# comfortably (419 hits curriculum/syllabus/admissions/financing option; 421 hits enrol/financing
+# option/study at), but because a genuine employer CAN own one of these words in passing: a university
+# or a research institute is a real employer in this data (TU Wien, message 903) and legitimately
+# writes "curriculum", "admissions" or "scholarship" in mail about a JOB. One incidental term is not a
+# course being sold; two co-occurring ones are.
+#
+# Measured against production before choosing the list (all 1133 stored messages, read-only): of the
+# 212 messages the current classifier puts in a status-changing class, 419 and 421 are the ONLY two
+# containing even ONE term from a deliberately WIDER candidate list than the one below (which also
+# tried 'academy', 'campus', 'alumni', 'career services', 'cohort', 'certification', 'our course').
+# So the words this rule can see are, in this corpus, exclusively a bootcamp's. The wider candidates
+# were still dropped: 'academy'/'campus'/'alumni' are name-shaped words an employer can simply BE
+# ("Wiener Akademie"), and an unmeasured word is a false positive waiting for the next mailbox.
+COURSE_SALE_KEYWORDS = frozenset({
+    # what is being sold
+    'bootcamp', 'boot camp', 'curriculum', 'lehrplan', 'syllabus', 'lehrgang', 'weiterbildung',
+    # getting in
+    'admissions', 'enrol',  # 'enrol' as a substring covers enroll/enrolled/enrolment/enrollment
+    'study at',
+    # paying for it -- the signal an EMPLOYER's mail structurally cannot carry: an employer pays you
+    'tuition', 'studiengebühr', 'kursgebühr', 'scholarship', 'stipendium',
+    'financing option', 'finanzierungsmöglichkeit',
+})
+COURSE_SALE_MIN_TERMS = 2
+
+
+def _is_course_marketing(lower_text: str) -> bool:
+    """Rule C's predicate: COURSE_SALE_MIN_TERMS distinct COURSE_SALE_KEYWORDS terms in the message's
+    own subject+body. Distinct TERMS, not occurrences -- a single word repeated by a template footer
+    is still one signal.
+    """
+    return sum(1 for term in COURSE_SALE_KEYWORDS if term in lower_text) >= COURSE_SALE_MIN_TERMS
+
+
 # TASK-168: job mail landing in the wrong job class -- not the TASK-162 problem (non-job mail
 # reaching a status-changing class at all), but genuine job mail landing in the WRONG one of the
 # four, because _classify_heuristic below used to let the FIRST keyword hit win in a fixed
@@ -1219,6 +1271,13 @@ def _guard_status_changing(classification, interview_at, subject, body_text, dom
         return classification, interview_at
     lower = f'{subject}\n{body_text}'.lower()
     blocked = (is_job_board(sender_domain) or is_platform_notification(sender_domain)) and not _is_ats_correspondence(sender_domain)
+    # Rule C (TASK-190): OR'd in alongside Rule A rather than folded into it -- Rule A asks who SENT
+    # the message, Rule C asks what the message is SELLING, and 421 is the measured row that needs
+    # the second question (its sender is cal.com, a scheduling platform that is neither a job board
+    # nor a bootcamp). Deliberately NOT exempted for ATS correspondence the way Rule A is: an ATS
+    # sends one employer's hiring mail, which by construction is not a course being sold, so that
+    # exemption has nothing to protect here.
+    blocked = blocked or _is_course_marketing(lower)
     if not blocked and classification == 'rejection':
         blocked = not (domain_known or _hit(lower, APPLICATION_CONTEXT_KEYWORDS))
     if not blocked:
@@ -1444,7 +1503,18 @@ def is_platform_notification(domain: str) -> bool:
 # leave it alone anyway (join.zooplus.com does not end in '.join.com' -- it ends in '.zooplus.com'),
 # but registrable-domain matching states the rule directly instead of relying on that being true by
 # accident: join.zooplus.com's registrable domain is zooplus.com, never join.com.
-ATS_DOMAINS = frozenset({'ashbyhq.com', 'join.com', 'workable.com', 'personio.com'})
+# TASK-186: 'workablemail.com' added. It is Workable's own OUTBOUND mail domain -- the same vendor
+# as 'workable.com', which has been here since TASK-137 -- and 6 unmatched production rows come
+# from candidates.workablemail.com, all of them 'Workable <noreply@...>'. Without it,
+# matched_sender_domains() (TASK-186) would treat Workable as a single employer the moment one
+# of those 6 is attached to a job by hand, and hand the other 5 to it. Blast radius measured
+# against production before adding it, across all four consumers of this set: owned_job_domains
+# 28 entries before and after (no tracked job's URL is on it), detach_ats_host_messages 1 row
+# before and after, rematch_ats_display_name_messages the same 3 messages (697, 761, 762)
+# before and after, and _match_by_ats_display_name answers None for all 6 rows (their display
+# name is the ATS's own, naming no tracked company). A one-word no-op today that closes a hole
+# that is one manual attach away.
+ATS_DOMAINS = frozenset({'ashbyhq.com', 'join.com', 'workable.com', 'workablemail.com', 'personio.com'})
 
 
 def _registrable_domain(domain: str) -> str:
@@ -1525,6 +1595,76 @@ def owned_job_domains(owner):
         if domain and not is_job_board(domain) and not is_ats_host(domain):
             domain_jobs.setdefault(domain, []).append(job)
     return {domain: jobs[0] for domain, jobs in domain_jobs.items() if len(jobs) == 1}
+
+
+def _is_multi_employer_sender(domain: str) -> bool:
+    """True when `domain` sends mail for MANY unrelated employers, so its sender address identifies no
+    single company. No new list: it is the union of the three predicates this module already owns --
+    is_job_board() (TASK-114), is_platform_notification() (TASK-162 Rule A) and
+    _is_ats_correspondence() (TASK-137's is_ats_host() plus the five ATS products filed inside
+    JOB_BOARD_DOMAINS). The polarity is the opposite of Rule A's, which EXEMPTS ATS correspondence so
+    a genuine "thanks for applying to Bitpanda" still classifies: an ATS is a real correspondent but
+    never a single EMPLOYER, so what Rule A must let through is exactly what a domain->job map must
+    refuse.
+    """
+    return is_job_board(domain) or is_platform_notification(domain) or _is_ats_correspondence(domain)
+
+
+def matched_sender_domains(owner) -> dict[str, JobLead]:
+    """TASK-186: {normalized sender domain: JobLead} learned from the mail ALREADY matched to one of
+    this owner's jobs, for domains that identify exactly ONE job -- the sibling of owned_job_domains()
+    above, built from the message table instead of the job's URL, and the only signal that reaches the
+    case this task exists for.
+
+    Measured against production 2026-08-25, which is also why the brief's own narrower hypothesis
+    ("the same exact sender ADDRESS already matched a job") was not built: Formunauts writes from two
+    different people. `jobs@formunauts.at` sent message 638, which matched job 535 and classified
+    correctly; `matthias.gira@formunauts.at` sent 641, 662 and 664 -- including BOTH messages carrying
+    the actual appointment -- and matched nothing. An exact-address rule yields 16 hits across the
+    whole table, all of them `not_job_related`, none carrying a calendar_start: it fixes nothing.
+
+    Neither job's URL can supply this domain, which is why owned_job_domains() cannot: both Formunauts
+    leads were saved off devjobs.at, a job board it (correctly) refuses, so `formunauts.at` appears in
+    NO job URL anywhere on the board. The employer's own domain is knowable only from mail the owner
+    already confirmed belongs to that job.
+
+    Three exclusions, each measured over the 966 unmatched inbound rows rather than assumed:
+
+    * `sent_by_owner`. The owner's OWN sent mail is matched to a job by thread (_match_by_thread), so
+      including it would teach the map that the owner's personal domain identifies a job. Measured:
+      with sent mail included, gmail.com maps to 11 different jobs; the map's own one-claimant rule
+      would refuse it TODAY, but only by accident of that count, and 61 unmatched personal messages
+      sit behind it. A sender domain says who the EMPLOYER is only when the employer sent it.
+    * The owner's own mail domains (_owner_email_addresses()). The belt to that braces, derived rather
+      than listed: the day one recruiter writes from gmail.com and the owner attaches it, the
+      one-claimant rule alone would hand those same 61 personal messages to that job.
+    * _is_multi_employer_sender() -- boards, platform senders and ATS hosts. Measured: this is what
+      excludes 25 unmatched rows whose join.com sender maps to exactly one tracked job (job 599). They
+      are excluded because JOIN is not the employer -- attaching them would be TASK-137's bug (job
+      36/PIDSO taking all 25 JOIN-sent messages) rebuilt from the other side.
+
+    A domain claimed by more than one job is refused, exactly as owned_job_domains()/
+    _match_by_ats_display_name()/_job_by_process_timing() all refuse their own ambiguity: measured,
+    that is 61 further rows (all gmail.com, 11 jobs) once sent mail IS counted.
+
+    What survives all of that, over the whole production table: 5 rows, 3 jobs -- 641/662/664
+    (formunauts.at -> 535), 745 (ebcont.com -> 712), 1005 (dynatrace.com -> 656). A tightly bounded
+    rule is the point, not a side effect.
+
+    Known ceiling, stated rather than hidden: a recruiter writing from a freemail domain the owner
+    does not use (gmx.at, 1 unmatched row today) is not covered by the owner-domain exclusion. It
+    would need a freemail list, which no measured row asks for yet.
+    """
+    owner_domains = {address.rsplit('@', 1)[-1] for address in _owner_email_addresses() if '@' in address}
+    domain_jobs: dict[str, set] = {}
+    jobs_by_id = {job.id: job for job in owned_jobs(owner)}
+    rows = (MailboxMessage.objects.filter(matched_job_id__in=jobs_by_id, sent_by_owner=False)
+            .exclude(sender='').values_list('sender', 'matched_job_id'))
+    for sender, job_id in rows:
+        domain = _normalize_domain(_sender_domain(sender))
+        if domain and domain not in owner_domains and not _is_multi_employer_sender(domain):
+            domain_jobs.setdefault(domain, set()).add(job_id)
+    return {domain: jobs_by_id[next(iter(ids))] for domain, ids in domain_jobs.items() if len(ids) == 1}
 
 
 # TASK-140: legal-form suffixes and ATS-side role phrases stripped before tokenizing a company/display
@@ -1768,7 +1908,35 @@ def suggest_job_for_message(subject: str, body_text: str, sender: str, jobs, rec
     return _job_by_process_timing(candidates, received_at, first_sent_at or {})
 
 
-def match_job(raw: RawMessage, job_domains: dict, owner=None) -> JobLead | None:
+def _job_by_sender_domain(sender: str, received_at, sender_domains: dict | None) -> JobLead | None:
+    """TASK-186: the tracked job whose EMPLOYER DOMAIN sent this message, bounded by TASK-170's
+    attribution timing. The single place the rule lives -- match_job() (live) and
+    rematch_sender_domain_messages() (back catalogue) both come through here, so there is no second
+    copy of it to drift.
+
+    The timing bound is not a new rule and is not a precaution: it is _job_by_process_timing(), called
+    with this one candidate, and it is what refuses the one dubious attribution in the measured
+    production population (AC3). Message 745, "Vielen Dank fuer Ihre Bewerbung bei EBCONT!", arrived
+    2025-12-22; the EBCONT job the domain names (712) has no evidence of being alive before
+    2026-07-23, 213 days LATER. A message cannot belong to a process that had not begun, which is
+    exactly the refusal _job_by_process_timing already makes, and the owner's own reason for the
+    90-day cap -- "the user can be applying at multiple positions for a company, so if the time is
+    too much apart, the email is probably referring to another job position/interview round" -- is
+    this case verbatim. Measured: 5 rows reach this function, 4 attach (641/662/664 -> 535 at 4-5
+    days, 1005 -> 656 at 8 days) and 745 is refused.
+
+    `first_sent_at` is deliberately passed empty rather than queried. It is the owner's own sent mail
+    on a job's thread, and _process_started_at's other three sources (applied_at, status_date,
+    last_update_date) already date every job in the measured population; building the map here would
+    cost a query per message on the live ingest path for evidence that changes no measured row. The
+    consequence of leaving it out is stated rather than hidden: a job dated ONLY by the owner's own
+    sent mail looks undated to this rule and gets no domain match, which is the safe direction.
+    """
+    job = (sender_domains or {}).get(_normalize_domain(_sender_domain(sender)))
+    return _job_by_process_timing([job], received_at, {}) if job is not None else None
+
+
+def match_job(raw: RawMessage, job_domains: dict, owner=None, sender_domains: dict | None = None) -> JobLead | None:
     """Domain match first (job_domains, from owned_job_domains() -- see its docstring for why general
     company-name matching is not attempted). TASK-140: owned_job_domains() has already excluded every
     ATS host from job_domains entirely, so an ATS-host sender can never reach a domain match below --
@@ -1788,7 +1956,13 @@ def match_job(raw: RawMessage, job_domains: dict, owner=None) -> JobLead | None:
             return job
     if owner is not None and is_ats_host(domain):
         return _match_by_ats_display_name(raw.sender, owner)
-    return None
+    # TASK-186, last and narrowest: the employer's own domain learned from mail the owner already has
+    # matched (matched_sender_domains -- see its docstring for the three exclusions and the 5-row
+    # production population that survives them). Optional and defaulting to nothing, the same shape
+    # `owner` got in TASK-140, so every existing pure-domain caller keeps its exact behaviour; a
+    # caller that does not build the map simply never gets this fallback. Unreachable for an ATS
+    # sender either way -- the branch above returns first, and the map excludes those domains anyway.
+    return _job_by_sender_domain(raw.sender, raw.received_at, sender_domains)
 
 
 def _match_by_thread(thread_id: str) -> JobLead | None:
@@ -2043,6 +2217,45 @@ def _interview_datetime(message: MailboxMessage, classification: str, extracted=
     return extracted or _extract_datetime(f'{message.subject}\n{message.body_text}')
 
 
+def _supersede_stale_interview_date(message: MailboxMessage, job: JobLead, when: str | None) -> None:
+    """TASK-186 AC4: a RESCHEDULED invitation must move the appointment, not queue a second one.
+
+    The measured pair is production messages 641 and 664 -- the same Formunauts on-site meeting,
+    "Appointment booked: ... @ Wed 19 Aug" and then "Updated invitation: ... @ Wed 26 Aug". Both now
+    match job 535 (TASK-186's sender-domain rule), so both reach this branch, and
+    _create_pending_suggestion's one-pending-per-(job, type) dedupe -- correct for TASK-130's case,
+    three messages independently proposing the SAME thing -- would silently drop the second. That is
+    worse than a duplicate: the STALE date wins and the owner is shown 19 Aug for a meeting that
+    moved to the 26th, which is this task's own bug in a new place.
+
+    So a pending interview_date proposal for this job is DISMISSED when the newer message proposes a
+    DIFFERENT date, leaving _create_pending_suggestion to make the replacement immediately after.
+    Three deliberate limits:
+
+    * Only when the new message actually carries a date (`when`). An undated invitation says nothing
+      about when the meeting is and must not erase a dated proposal.
+    * Only when the date actually differs -- an identical re-proposal is TASK-130's case exactly, and
+      still dedupes to nothing.
+    * Only when the new message is not OLDER than the one behind the pending proposal. Live ingestion
+      processes mail in arrival order so this never fires there, but attach_message_to_job() lets the
+      owner attach an old message by hand at any time, and "the last row touched wins" is not the
+      same rule as "the latest invitation wins".
+
+    A CONFIRMED or DISMISSED proposal is never touched, the same one-directional safety rule
+    reclassify_messages() and detach_ats_host_messages() already follow: nothing about a decision the
+    owner already made is undone here.
+    """
+    if not when:
+        return
+    for pending in MailboxSuggestion.objects.filter(job=job, suggestion_type='interview_date', status='pending').select_related('message'):
+        if (pending.payload or {}).get('interview_at') == when:
+            continue
+        earlier = pending.message.received_at
+        if earlier and message.received_at and message.received_at < earlier:
+            continue
+        dismiss_suggestion(pending)
+
+
 def build_suggestions(message: MailboxMessage, job: JobLead, classification: str, interview_at, raw: RawMessage | None = None) -> int:
     """Returns the number of MailboxSuggestion rows created (unchanged contract -- every existing
     caller/test treats this as a plain count, so TASK-154 keeps that shape rather than widening it
@@ -2086,6 +2299,7 @@ def build_suggestions(message: MailboxMessage, job: JobLead, classification: str
         # JobLeadSerializer.update(), so an explicit null in it is an instruction to ERASE the job's
         # interview_at -- which is what confirming an undated invitation used to do.
         when = _interview_datetime(message, classification, interview_at)
+        _supersede_stale_interview_date(message, job, when)
         payload = {'interview_at': when} if when else {}
         if job.status not in ('interview', 'offer', 'accepted', 'rejected', 'withdrawn', 'skipped', 'archived'):
             payload['status'] = 'interview'
@@ -2788,6 +3002,50 @@ def rematch_ats_display_name_messages(dry_run: bool = True) -> list[dict]:
         if not is_ats_host(_normalize_domain(_sender_domain(message.sender))):
             continue
         job = _match_by_ats_display_name(message.sender, owner)
+        if job is not None:
+            by_job.setdefault(job, []).append(message)
+
+    if not dry_run:
+        for job, messages in by_job.items():
+            MailboxMessage.objects.filter(pk__in=[m.pk for m in messages]).update(matched_job=job)
+
+    return [{'job': job, 'message_count': len(messages), 'messages': messages} for job, messages in by_job.items()]
+
+
+# --- TASK-186 AC6: attach already-stored mail from an employer domain the board already knows -----
+
+def rematch_sender_domain_messages(dry_run: bool = True) -> list[dict]:
+    """Back-catalogue pass for TASK-186's sender-domain rule, the same shape (and the same
+    one-directional safety) as rematch_ats_display_name_messages above: every already-stored
+    MailboxMessage with `matched_job` still NULL is run through the exact map the live path now uses
+    (matched_sender_domains() -- no second rule), and nothing that already carries a matched_job is
+    ever touched.
+
+    Needed because the rows this task was filed about are already in the table: messages 641/662/664
+    were fetched, classified and stored unmatched long before this rule existed, and job 535 carried
+    the coordinator's hand-applied interview date as a stopgap. Running this makes the code, not a
+    human, the thing that knows those three messages belong to job 535.
+
+    Deliberately does NOT call build_suggestions(), for the same reason its sibling does not: these
+    are historical messages, and generating suggestions or reply drafts for old threads is the
+    "112 drafts to dead threads" incident class. `backfill_interview_dates` (TASK-179) is what turns
+    a newly-attached calendar invitation into the job's `interview_at`, is likewise dry-run by
+    default, and already prefers the most recently received message -- so an updated invitation
+    supersedes the one it replaced there too (AC4).
+
+    Returns one dict per job at least one message newly attaches to, same shape as its sibling:
+        {'job': JobLead, 'message_count': int, 'messages': [MailboxMessage, ...]}
+    dry_run=True (the default) reports without writing.
+    """
+    owner = _owner_user()
+    if owner is None:
+        return []
+    sender_domains = matched_sender_domains(owner)
+    if not sender_domains:
+        return []
+    by_job: dict = {}
+    for message in MailboxMessage.objects.filter(matched_job__isnull=True, sent_by_owner=False).exclude(sender='').order_by('uid'):
+        job = _job_by_sender_domain(message.sender, message.received_at, sender_domains)
         if job is not None:
             by_job.setdefault(job, []).append(message)
 
@@ -3904,6 +4162,10 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         # (ImapTransport.fetch_new only ever reads the INBOX mailbox forward from last_uid).
         raw_messages = active_transport.fetch_new(last_marker, lookback_days=_lookback_days(profile)) if is_gmail_api else active_transport.fetch_new(last_marker)
         job_domains = owned_job_domains(owner)
+        # TASK-186: built ONCE per run, next to job_domains and for the same reason -- it is a query
+        # over the whole message table, and rebuilding it per message would be the per-row cost
+        # TASK-142 already paid to remove from this path's sibling endpoint.
+        sender_domains = matched_sender_domains(owner)
 
         # Gmail-sourced messages get a locally-assigned uid (MailboxMessage.uid is a required, unique,
         # IMAP-shaped int; Gmail's own id is a hex string that does not fit it) -- assigned here in
@@ -3935,7 +4197,7 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
                 if matched is None:
                     continue
             else:
-                matched = match_job(raw, job_domains, owner=owner)
+                matched = match_job(raw, job_domains, owner=owner, sender_domains=sender_domains)
             classification, interview_at, evaluator = classify_email(raw, domain_known=matched is not None)
             if is_gmail_api:
                 next_uid += 1
@@ -4550,6 +4812,7 @@ def backfill_historical_mail(dry_run: bool = True, limit: int | None = None, flo
         return {**empty, 'refused': 'no owner account configured (CODEX_CV_OWNER_EMAIL matches no user)'}
 
     job_domains = owned_job_domains(owner)
+    sender_domains = matched_sender_domains(owner)  # TASK-186 -- built once, same as job_domains
     after_seconds = int((timezone.now() - timedelta(days=FETCH_HISTORY_FLOOR_DAYS if floor_days is None else floor_days)).timestamp())
     if all_mail:
         queries, batched = [f'after:{after_seconds}'], False
@@ -4588,7 +4851,7 @@ def backfill_historical_mail(dry_run: bool = True, limit: int | None = None, flo
             if run is None:
                 run = MailboxRun.objects.create(finished_at=timezone.now())
                 next_uid = (MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0) + 1
-            matched = match_job(raw, job_domains, owner=owner)
+            matched = match_job(raw, job_domains, owner=owner, sender_domains=sender_domains)
             classification, interview_at, evaluator = classify_email(raw, domain_known=matched is not None)
             message = MailboxMessage.objects.create(
                 run=run, uid=next_uid, gmail_id=raw.gmail_id, internal_date_ms=None,
