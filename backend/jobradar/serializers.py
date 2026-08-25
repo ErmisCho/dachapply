@@ -505,10 +505,26 @@ class MailboxMessageListSerializer(MailboxMessageSerializer):
     # row (the default queryset excludes dismissed rows entirely) -- lets the client render a
     # "Restore" control instead of the attach picker for a revealed row, without a second request.
     dismissed = serializers.SerializerMethodField()
+    # TASK-166 AC1/AC2: {'company', 'title', 'status'} the message itself supports, or null when this
+    # message may not become a job lead at all (already attached, the owner's own mail, or a
+    # classification that says nothing about an application's state -- see
+    # services.mailbox.lead_fields_from_message, which owns every one of those rules). Shipped with
+    # the row so the panel can pre-fill and the owner can confirm in one click without a second
+    # request, exactly like suggested_job above. Costs no query and no body read: the extraction
+    # looks at `subject`, `sender` and `classification` only, never body_text (still .defer()'d by
+    # the view -- touching it here would trigger one reload query PER ROW, the regression TASK-142
+    # removed). EMPTY company or title is a real, expected answer, not a failure: 25 of the 160
+    # measured production rows name no employer anywhere the extraction is allowed to look, and AC2
+    # requires those to arrive blank rather than guessed.
+    lead_prefill = serializers.SerializerMethodField()
     class Meta(MailboxMessageSerializer.Meta):
-        fields = MailboxMessageSerializer.Meta.fields + ('body_truncated', 'suggested_job', 'dismissed')
+        fields = MailboxMessageSerializer.Meta.fields + ('body_truncated', 'suggested_job', 'dismissed', 'lead_prefill')
     def get_dismissed(self, obj):
         return obj.dismissed_at is not None
+    def get_lead_prefill(self, obj):
+        from .services.mailbox import lead_fields_from_message  # local: see _gmail_url above
+        fields = lead_fields_from_message(obj)
+        return {k: fields[k] for k in ('company', 'title', 'status')} if fields else None
     def _preview(self, obj):
         # body_preview is the view's Substr(...) annotation -- (BODY_PREVIEW_CHARS + 1) chars, so its
         # own length (not a second query) is what tells truncated apart from whole-body-happened-to-

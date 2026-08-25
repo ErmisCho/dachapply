@@ -66,6 +66,7 @@ import base64
 import json
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time, timedelta
 from datetime import timezone as dt_timezone
@@ -2192,6 +2193,309 @@ def postpone_suggestion(suggestion: MailboxSuggestion, due, user=None) -> Mailbo
             note=f'Postponed until {due.isoformat()} from an email from {message.sender}, subject "{message.subject}".',
         )
     return suggestion
+
+
+# --- TASK-166: a job lead created from a message that matches no tracked job ----------------------
+
+# JobLead.source for AC6. `source` is already this app's provenance field ('friend', 'demo', 'seed',
+# 'bulk_links' -- see services.access.job_create_defaults and services.json_importer), it is already
+# what /api/stats/'s "Source effectiveness" panel groups by and what every export carries, so a lead
+# caught from mail is auditable later without a new column, a new migration, or a guess. It is not
+# the ONLY trace: create_job_from_message below also writes an ApplicationNote naming the message and
+# attaches the message itself (matched_job), so provenance survives even if the owner edits `source`.
+LEAD_FROM_MAIL_SOURCE = 'mailbox'
+
+# AC3: what each status-changing classification says the application's state ALREADY is. This is not
+# build_suggestions' "propose a change to a tracked job" -- there is no job yet, and the message is
+# the only evidence there ever was one. A rejection means the owner applied AND was turned down, so
+# the lead is born 'rejected'; an application confirmation means it is 'applied'. Restricted to
+# STATUS_CHANGING_CLASSIFICATIONS on purpose: recruiter_reply/uncertain/not_job_related say nothing
+# about an application's state (and not_job_related must never become a lead at all -- TASK-169), so
+# they get no entry here and lead_fields_from_message refuses them.
+_LEAD_STATUS_BY_CLASSIFICATION = {
+    'rejection': 'rejected',
+    'interview_invitation': 'interview',
+    'offer': 'offer',
+    'application_confirmed': 'applied',
+}
+
+# AC2's hard rule -- "every field the message does not support is left EMPTY rather than guessed" --
+# is why company/title come from SUBJECT patterns first and the From DISPLAY NAME second, and from
+# nothing else at all. Two sources deliberately NOT used:
+#
+#   * The sender DOMAIN. Measured over the 160-row production population this task targets, the top
+#     sender domains are onlyfy.jobs, join.com, ashbyhq.com, smartrecruiters.com, greenhouse-mail.io,
+#     workablemail.com, myworkday.com, bamboohr.com, teamtailor.com, dvinci.de, icims.eu,
+#     successfactors.eu, pinpoint.email, recruiterflowmail.com, talentsconnect.com -- every one an
+#     ATS, none of them the employer. A domain-derived company would answer "join.com" or "Bamboohr"
+#     for mail whose employer is named in plain text two fields away, which is the exact wrong answer
+#     this task exists to avoid.
+#   * The BODY. Inspected: the bodies in this population are marketing copy, legal footers and quoted
+#     reply chains naming several unrelated companies. The subject and the display name are short,
+#     structured fields an ATS populates with exactly one company; a body is not.
+#
+# TASK-140's owned_job_domains() docstring already made the same argument for MATCHING, and
+# _match_by_ats_display_name is the same "the ATS puts the real client company in the display name"
+# observation used the other way round. This is that observation applied to extraction.
+_LEAD_TRAILING_ROLE_RE = re.compile(
+    r"\s+(?:talent\s+acquisition|sourcing\s+team|hiring[\s-]team|recruiting[\s-]team|recruitment\s+team|"
+    r"talent\s+team|careers?\s+team|recruiting|recruitment|careers|karriere|no[\s-]?reply|team)\s*$",
+    re.IGNORECASE)
+_LEAD_POSSESSIVE_ROLE_RE = re.compile(r"['\u2019]s\s+(?:\w+\s+)?team\s*$", re.IGNORECASE)
+_LEAD_LEADING_ROLE_RE = re.compile(
+    r"^(?:hiring[\s-]team|recruiting[\s-]team|talent\s+acquisition|recruiting|office)\s*(?:von|from|[-\u2013|,:])\s*",
+    re.IGNORECASE)
+# Trailing punctuation, emoji and the zero-width/format junk real ATS subjects carry ("Thanks for
+# applying at \u200bIMS Nanofabrication GmbH\u200b", "Thank you for applying!\U0001f4e7").
+_LEAD_TRIM_RE = re.compile(
+    '^[\\s"\'\u200b-\u200f\u2060\ufeff]+|'
+    '[\\s"\'!?.,;:\u200b-\u200f\u2060\ufeff\ufe00-\ufe0f\u2190-\u2bff\U0001f000-\U0001faff]+$')
+# A company captured out of a subject frequently carries the ROLE after a dash/pipe ("Your Application
+# at Taktile - Senior Backend Engineer - Team Decide"). Split once, keep the head as the company and
+# hand the tail to the title -- never split a title, which legitimately contains dashes.
+_LEAD_COMPANY_TAIL_RE = re.compile('\\s+[-\u2013|]\\s+')
+# 'Thanks for Applying to envelio! Quick Question for You' -- a capture runs to the end of the
+# subject, so the sentence AFTER the company comes with it. Cut at the first sentence end.
+_LEAD_SENTENCE_END_RE = re.compile(r'[!?]\s')
+
+_LEAD_SUBJECT_COMPANY_PATTERNS = [
+    # English ATS boilerplate. `applying to X` is guarded by _LEAD_SUBJECT_STOPWORDS below: "Thank you
+    # for applying to become a Sentaur!" names no company at all and must fall through to the display
+    # name ("Sentry"), not answer "become a Sentaur".
+    re.compile(r'thank(?:s| you)\s+for\s+applying\s+for\s+(?:the\s+(?:role|position)\s+of\s+|the\s+)?(?P<title>.+?)\s+(?:role\s+)?at\s+(?P<company>.+)$', re.I),
+    re.compile(r'thank(?:s| you)\s+for\s+applying\s+(?:to|at|with)\s+(?P<company>.+)$', re.I),
+    re.compile(r'thanks?\s+for\s+your\s+interest\s+in\s+(?P<company>.+)$', re.I),
+    re.compile(r'(?:update\s+on\s+)?your\s+application\s+at\s+(?P<company>.+)$', re.I),
+    re.compile(r'^(?P<company>.+?)\s+application\s+update\b', re.I),
+    # German ATS boilerplate.
+    re.compile('bewerbung\\s+als\\s+(?P<title>.+?)\\s+bei\\s+(?P<company>.+)$', re.I),
+    re.compile('wir\\s+haben\\s+(?:ihre|deine)\\s+bewerbung\\s+f\u00fcr\\s+die\\s+position\\s+bei\\s+(?P<company>.+?)\\s+erhalten', re.I),
+    re.compile('bewerbung\\s+(?:bei|f\u00fcr\\s+die\\s+position\\s+bei)\\s+(?:der\\s+)?(?P<company>.+?)(?:\\s+erhalten)?$', re.I),
+]
+# First word of an `applying to ...` capture that proves the capture is prose, not a company name.
+_LEAD_SUBJECT_STOPWORDS = frozenset({'become', 'join', 'work', 'us', 'the', 'a', 'an', 'our', 'this', 'be'})
+# Words that prove a "<prefix> - <thanks>" prefix is boilerplate rather than the employer's name
+# ("We have received your application - Thank you!", "Deine Bewerbung ist eingegangen CRM:0001267").
+_LEAD_NOT_A_COMPANY_RE = re.compile(
+    r'(?:bewerb|applic|applying|thank|dank|received|erhalten|eingegangen|information|update|invitation|^re$|^aw$|^fwd?$)', re.I)
+_LEAD_SUBJECT_PREFIX_RE = re.compile(
+    '^(?P<company>[^\\-\u2013\u00b7:|]{2,60}?)\\s*[-\u2013\u00b7:]\\s+(?=.*(?:bewerbung|applic|applying|thank|dank))', re.I)
+
+_LEAD_SUBJECT_TITLE_PATTERNS = [
+    re.compile(r'applying\s+for\s+the\s+(?:role|position)\s+of\s+(?P<title>.+)$', re.I),
+    re.compile(r'applying\s+(?:for\s+)?the\s+job:\s*(?P<title>.+)$', re.I),
+    re.compile('bewerbung\\s+f\u00fcr\\s+die\\s+stelle\\s*[\u201e"\u00ab\u2018\']?\\s*(?P<title>[^"\u201c\u201d\u00bb\']+)', re.I),
+    re.compile('r\u00fcckmeldung\\s+zu\\s+(?:ihrer|deiner)\\s+bewerbung:\\s*(?P<title>.+)$', re.I),
+    re.compile('^(?:re:\\s*|aw:\\s*)?bewerbung\\s*[-\u2013]\\s*(?P<title>.+)$', re.I),
+    re.compile(r'bewerbung\s+auf\s+(?:die\s+stelle\s+)?(?P<title>.+)$', re.I),
+    re.compile(r'bewerbung\s+als\s+(?P<title>.+?)\s+bei\s+', re.I),
+]
+
+
+def _lead_clean_name(value: str) -> str:
+    """A candidate company/title as the message wrote it, minus the boilerplate wrapped around it.
+
+    Deliberately conservative: it only ever REMOVES known ATS/role decoration and punctuation, never
+    re-cases, expands or otherwise invents text, so whatever survives is still the message's own
+    words. Empty (or a single character, or pure punctuation/digits) means "the message does not
+    support this field" -- AC2's required answer, and the caller leaves the field blank rather than
+    reaching for a weaker source.
+    """
+    text = re.sub(r'\s+', ' ', (value or '').replace('\u00a0', ' ')).strip()
+    text = re.sub(r'^\d{4,}\s+', '', text)  # a leading ATS requisition number is not part of a name
+    for _ in range(3):  # 'X Hiring Team' -> 'X'; 'X Recruiting Team' -> 'X'. Bounded, not while True.
+        stripped = _LEAD_TRAILING_ROLE_RE.sub('', _LEAD_POSSESSIVE_ROLE_RE.sub('', text))
+        stripped = _LEAD_TRIM_RE.sub('', _LEAD_LEADING_ROLE_RE.sub('', stripped))
+        if stripped == text:
+            break
+        text = stripped
+    return text if len(text) >= 2 and re.search(r'[^\W\d_]', text) else ''
+
+
+def _lead_ascii_tokens(value: str) -> frozenset:
+    """Accent-folded word tokens of 3+ characters. 'Kiraly.Boglarka' and 'Kir\u00e1ly Bogl\u00e1rka' have to
+    tokenize the same way for _lead_is_personal_mailbox below to see them as the same human.
+    """
+    folded = unicodedata.normalize('NFKD', (value or '').lower())
+    folded = ''.join(c for c in folded if not unicodedata.combining(c))
+    return frozenset(t for t in re.split(r'[^a-z0-9]+', folded) if len(t) >= 3)
+
+
+def _lead_is_personal_mailbox(display_name: str, sender: str) -> bool:
+    """True when the From display name is a PERSON's name rather than an employer's -- measured
+    signature: the display name's own words also make up the address's local part
+    ('Zhu Huang <z.huang@eberail.at>', 'Christopher Anderlik <christopher.anderlik@ebcont.com>',
+    'Konstanze Ebner - talentbird GmbH <konstanze.ebner@talentbird.teamtailor.com>').
+
+    Two or more name tokens is load-bearing, not caution: a ONE-token display name that matches its
+    own local part is the opposite case -- a company mailing from its own name
+    ('Dedalus <dedalus@myworkday.com>', 'Tabby <tabby@pinpoint.email>') -- and must stay usable.
+    """
+    name_tokens = _lead_ascii_tokens(display_name)
+    if len(name_tokens) < 2:
+        return False
+    local = (sender or '').split('<')[-1].split('@')[0]
+    if name_tokens & _lead_ascii_tokens(local):
+        return True
+    flat = re.sub(r'[^a-z0-9]', '', unicodedata.normalize('NFKD', local.lower()))
+    return any(flat in (a[0] + b, b[0] + a, a + b[0], b + a[0])
+               for a in name_tokens for b in name_tokens if a != b)
+
+
+def _lead_company_from_sender(sender: str) -> str:
+    """The employer named in the From DISPLAY NAME, or '' when that field names no employer.
+
+    Second choice, never first (see lead_fields_from_message): a display name is a messier field
+    than the ATS subject boilerplate, so it is only read when the subject gave nothing. Refused
+    outright for a personal mailbox (a recruiter's own name is not the employer's) and for an
+    unattended-mailbox label ('noreplybewerbung <noreplybewerbung@jobs-wien.gv.at>'), which
+    _NO_REPLY_RE -- this module's existing definition of one, see bulk_mail_reason -- already knows
+    how to recognise.
+    """
+    display_name = _lead_clean_name(_sender_display_name(sender or ''))
+    if not display_name or _NO_REPLY_RE.search(display_name):
+        return ''
+    return '' if _lead_is_personal_mailbox(display_name, sender or '') else display_name
+
+
+def _lead_company_and_title_from_subject(subject: str) -> tuple[str, str]:
+    company = title = ''
+    for pattern in _LEAD_SUBJECT_COMPANY_PATTERNS:
+        match = pattern.search(subject or '')
+        if not match:
+            continue
+        candidate = _LEAD_SENTENCE_END_RE.split((match.groupdict().get('company') or '').strip(), maxsplit=1)[0]
+        first_word = re.split(r'[^\w]+', candidate.lower(), maxsplit=1)[0]
+        if not candidate or first_word in _LEAD_SUBJECT_STOPWORDS:
+            continue
+        title = _lead_clean_name(match.groupdict().get('title') or '')
+        if not title:
+            # 'Your Application at Taktile - Senior Backend Engineer': the capture ran past the
+            # company into the role. Split ONCE and keep the tail as the title rather than dropping it.
+            parts = _LEAD_COMPANY_TAIL_RE.split(candidate, maxsplit=1)
+            candidate, title = parts[0], _lead_clean_name(parts[1] if len(parts) > 1 else '')
+        company = _lead_clean_name(candidate)
+        if company:
+            break
+    if not company:
+        # '<Company> - Vielen Dank fuer Ihre Bewerbung', 'momox - Thank you for applying with us!'.
+        # Checked LAST and only when the prefix is free of application vocabulary, so
+        # 'Deine Bewerbung ist eingegangen CRM:0001267' and 'We have received your application -
+        # Thank you!' name no company instead of naming their own boilerplate.
+        match = _LEAD_SUBJECT_PREFIX_RE.match(subject or '')
+        if match and not _LEAD_NOT_A_COMPANY_RE.search(match.group('company').strip()):
+            company = _lead_clean_name(match.group('company'))
+    if not title:
+        for pattern in _LEAD_SUBJECT_TITLE_PATTERNS:
+            match = pattern.search(subject or '')
+            if match:
+                title = _lead_clean_name(match.group('title'))
+                if title:
+                    break
+    return company, title
+
+
+def lead_fields_from_message(message: MailboxMessage) -> dict | None:
+    """TASK-166 AC2/AC3: the JobLead fields THIS message actually supports, or None when the message
+    may not become a lead at all.
+
+    None (never a lead), and each refusal measured against the production population on 2026-08-25
+    rather than assumed:
+
+    * A message already attached to a job. This is also AC4's idempotence key -- see
+      MailboxMessageViewSet.create_job, which hands the already-attached job back instead of making
+      a second one.
+    * The owner's OWN mail. `sent_by_owner` alone is NOT enough: of the 3 rows in that population
+      whose From is one of the owner's own addresses, only 1 carries the stored flag (the other two
+      predate it), and a lead built from one would name the OWNER as the employer. So the stored flag
+      and _is_owner_address() -- this module's existing definition of "one of the owner's addresses",
+      shared with derive_reply_recipients -- are both checked.
+    * Any classification outside STATUS_CHANGING_CLASSIFICATIONS, which is what inherits
+      TASK-162/TASK-169's guards rather than re-implementing them: _guard_status_changing() already
+      refuses to let a job-board digest or non-job mail REACH a status-changing classification, so
+      the 659 unmatched `not_job_related` rows and every board digest are excluded here by
+      construction. Measured: re-running that function's own Rule A over the 160-row population
+      blocks 0 additional rows, i.e. the classification gate already carries it in full.
+    * A board/platform sender that is not ATS correspondence -- Rule A again, applied directly. Zero
+      rows today (above), and kept anyway because `classification` is a STORED column: a row
+      classified before TASK-162 shipped keeps whatever the old classifier decided until
+      reclassify_messages() runs, and this is a creation path that puts rows on the board.
+
+    Otherwise: company/title from the subject first and the From display name second (AC2 -- see
+    _LEAD_SUBJECT_COMPANY_PATTERNS' comment for the two sources deliberately not used, and note that
+    EITHER may legitimately come back ''), status from the classification, and every date from the
+    MESSAGE's own received date (AC3), never today's -- the same rule build_suggestions already
+    applies to `applied_at` for `application_confirmed`, and for the same reason: this mail is
+    routinely months old, so "today" would misdate the application by however late it was found.
+    """
+    if message.matched_job_id or message.sent_by_owner or _is_owner_address(message.sender):
+        return None
+    status = _LEAD_STATUS_BY_CLASSIFICATION.get(message.classification)
+    if not status:
+        return None
+    domain = _sender_domain(message.sender)
+    if (is_job_board(domain) or is_platform_notification(domain)) and not _is_ats_correspondence(domain):
+        return None
+    company, title = _lead_company_and_title_from_subject(message.subject or '')
+    company = company or _lead_company_from_sender(message.sender or '')
+    received = timezone.localtime(message.received_at).date() if message.received_at else None
+    return {
+        'company': company[:200], 'title': title[:250], 'status': status,
+        'status_date': received,
+        # applied_at only where the message is itself the evidence an application exists. A rejection
+        # or an interview invitation proves one happened but dates NOTHING about when it was sent, so
+        # the field stays empty rather than being back-dated to the day the reply arrived (AC2).
+        'applied_at': received if status == 'applied' else None,
+    }
+
+
+def create_job_from_message(message: MailboxMessage, company: str, title: str, user=None) -> JobLead:
+    """TASK-166 AC1/AC4/AC6/AC8. Creates the job this message refers to and attaches the message to
+    it, in one owner-confirmed step. Never called automatically -- MailboxMessageViewSet.create_job
+    is its only caller and only ever runs on an explicit POST (AC4), exactly like apply_suggestion.
+
+    `company`/`title` are what the OWNER confirmed, defaulted from lead_fields_from_message's
+    extraction by the view. Status and dates are NOT owner-supplied: they are re-derived here from
+    the message itself, so the state a lead is born in always matches the mail that created it.
+
+    AC8 (ownership is not widened): created_by=user with submitted_for left null, which is exactly
+    the left half of services.access.owned_by -- so the lead is reachable through accessible_jobs()
+    by this user and by nobody else, staff included (TASK-184 removed that exemption). Deliberately
+    NOT job_create_defaults(user): that helper hands a lead to the user's friend-submission target,
+    and mail in the owner's own mailbox is about the OWNER's application -- handing it away would
+    make the lead unreachable to the person whose mailbox produced it.
+
+    AC6 (provenance): source=LEAD_FROM_MAIL_SOURCE plus an ApplicationNote naming the message, the
+    same trace apply_suggestion() already leaves when confirming a suggestion, plus the attached
+    message itself. Three independent records, no new column and no migration.
+
+    AC4 (no duplicate on a re-take) is enforced by the CALLER, which returns the already-attached job
+    instead of reaching this function a second time -- the message's own matched_job is the natural
+    idempotence key, and lead_fields_from_message refuses an already-matched message anyway.
+    """
+    fields = lead_fields_from_message(message)
+    if fields is None:
+        raise ValueError('This message cannot become a job lead.')
+    with transaction.atomic():
+        job = JobLead.objects.create(
+            company=company, title=title, source=LEAD_FROM_MAIL_SOURCE,
+            status=fields['status'], status_date=fields['status_date'], applied_at=fields['applied_at'],
+            created_by=user,
+        )
+        received = message.received_at or message.created_at
+        when = timezone.localtime(received).strftime('%d.%m.%Y %H:%M') if received else 'an unknown date'
+        ApplicationNote.objects.create(
+            job=job, note_type='recruiter_message', created_by=user,
+            note=f'Created from an unmatched email from {message.sender}, subject "{message.subject}", '
+                 f'received {when}. Status set to {fields["status"]} from that message.',
+        )
+        # The same suggestion generation a manual attach gets, and for the same reason -- this is not
+        # a second matched_job writer. With the status already taken from the classification above,
+        # build_suggestions has nothing left to propose for rejection/offer/application_confirmed
+        # (each of its branches is already satisfied); an interview_invitation still legitimately
+        # proposes the interview DATE, which lives in the message's prose rather than in its state.
+        attach_message_to_job(message, job, user=user)
+    return job
 
 
 def attach_message_to_job(message: MailboxMessage, job: JobLead, user=None) -> MailboxMessage:
