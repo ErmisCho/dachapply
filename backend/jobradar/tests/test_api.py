@@ -1055,10 +1055,11 @@ def test_long_generation_recycles_the_db_connection_before_learning_a_preference
 
 
 def test_import_picks_the_newest_template_version_on_disk(tmp_path):
-    # TASK-99a moved this from cv_generator.latest_cv_template (a glob on every preview request)
-    # into the import command, which is the only thing that reads the workspace now. The version
-    # rules it enforces are unchanged.
-    from jobradar.management.commands.import_cv_assets import WORKSPACE_LAYOUT, latest_versioned
+    # TASK-99a moved this out of cv_generator.latest_cv_template, which globbed the workspace with
+    # no user involved on every preview request; TASK-189 moved it again, from the import command
+    # into services/cv_workspace, so the import and the per-account fallback share one layout. The
+    # version rules it enforces are unchanged through both moves.
+    from jobradar.services.cv_workspace import WORKSPACE_LAYOUT, latest_versioned
 
     relative=WORKSPACE_LAYOUT['en']['cv'][0]
     cvs=tmp_path/'CVs'; cvs.mkdir(parents=True)

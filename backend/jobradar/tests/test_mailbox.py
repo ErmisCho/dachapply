@@ -1697,6 +1697,139 @@ def test_confirm_already_decided_suggestion_returns_400(client, applied_job):
     assert applied_job.status == 'applied'
 
 
+# --- TASK-175: postpone a decision instead of forcing rejected -----------------------------------
+
+def _rejection_suggestion(job, uid=1):
+    message = _log_message(job, 'rejection', uid=uid)
+    return MailboxSuggestion.objects.create(message=message, job=job, suggestion_type='status_change', payload={'status': 'rejected'})
+
+
+def test_postpone_moves_the_feedback_clock_and_never_the_status(client, applied_job):
+    """AC1/AC2/AC6. The owner's date is what lands on the job, and `status` is untouched -- the
+    whole point of not adding a `pending` JobLead status (see MailboxSuggestion's docstring).
+    """
+    suggestion = _rejection_suggestion(applied_job)
+    due = timezone.localdate() + timedelta(days=14)
+    r = client.post(f'/api/mailbox-suggestions/{suggestion.id}/postpone/', {'feedback_due_date': due.isoformat()}, format='json')
+    assert r.status_code == 200, r.data
+    assert r.data['status'] == 'postponed'
+    assert r.data['postponed_until'] == due.isoformat()
+    applied_job.refresh_from_db()
+    assert applied_job.feedback_due_date == due
+    assert applied_job.status == 'applied'
+
+
+def test_postpone_honours_a_date_that_is_not_two_weeks_out(client, applied_job):
+    """AC2: the interval is the OWNER's, not a hardcoded one -- the server never rounds or replaces
+    the date it was given.
+    """
+    suggestion = _rejection_suggestion(applied_job)
+    due = timezone.localdate() + timedelta(days=61)
+    client.post(f'/api/mailbox-suggestions/{suggestion.id}/postpone/', {'feedback_due_date': due.isoformat()}, format='json')
+    applied_job.refresh_from_db()
+    assert applied_job.feedback_due_date == due
+
+
+def test_postpone_rejects_a_missing_or_malformed_date(client, applied_job):
+    """The one trust boundary this action has. Neither shape may reach JobLead."""
+    suggestion = _rejection_suggestion(applied_job)
+    for body in ({}, {'feedback_due_date': 'next week'}, {'feedback_due_date': None}):
+        r = client.post(f'/api/mailbox-suggestions/{suggestion.id}/postpone/', body, format='json')
+        assert r.status_code == 400, body
+    suggestion.refresh_from_db(); applied_job.refresh_from_db()
+    assert suggestion.status == 'pending'
+    assert applied_job.feedback_due_date is None
+
+
+def test_postpone_resolves_the_card_and_is_distinguishable_from_confirm_and_dismiss(client, applied_job):
+    """AC3. The card leaves the default (pending) feed, and the ledger says `postponed` -- not
+    `confirmed`, not `dismissed`.
+    """
+    suggestion = _rejection_suggestion(applied_job)
+    due = timezone.localdate() + timedelta(days=14)
+    client.post(f'/api/mailbox-suggestions/{suggestion.id}/postpone/', {'feedback_due_date': due.isoformat()}, format='json')
+    suggestion.refresh_from_db()
+    assert suggestion.status == 'postponed' and suggestion.decided_at is not None
+    assert suggestion.id not in [row['id'] for row in client.get('/api/mailbox-suggestions/').data]
+    assert suggestion.id not in [row['id'] for row in client.get('/api/mailbox-suggestions/?status=confirmed,dismissed').data]
+    assert suggestion.id in [row['id'] for row in client.get('/api/mailbox-suggestions/?status=postponed').data]
+
+
+def test_a_postponed_card_comes_back_when_its_own_clock_runs_out(client, applied_job):
+    """AC5/AC7. Same JobLead.feedback_due_date the postpone wrote -- no second reminder store."""
+    suggestion = _rejection_suggestion(applied_job)
+    client.post(f'/api/mailbox-suggestions/{suggestion.id}/postpone/',
+                {'feedback_due_date': (timezone.localdate() + timedelta(days=14)).isoformat()}, format='json')
+    assert suggestion.id not in [row['id'] for row in client.get('/api/mailbox-suggestions/').data]
+    JobLead.objects.filter(pk=applied_job.pk).update(feedback_due_date=timezone.localdate())
+    assert suggestion.id in [row['id'] for row in client.get('/api/mailbox-suggestions/').data]
+
+
+def test_a_postponed_job_surfaces_through_the_existing_feedback_due_endpoint(client, applied_job):
+    """AC5. /api/jobs/feedback-due/ is the board's own "Feedback deadlines" pane and predates this
+    task (TASK-146); postponing feeds it with no change to it at all.
+    """
+    suggestion = _rejection_suggestion(applied_job)
+    client.post(f'/api/mailbox-suggestions/{suggestion.id}/postpone/',
+                {'feedback_due_date': (timezone.localdate() + timedelta(days=14)).isoformat()}, format='json')
+    rows = {row['id']: row for row in client.get('/api/jobs/feedback-due/').data}
+    assert rows[applied_job.id]['overdue'] is False
+    JobLead.objects.filter(pk=applied_job.pk).update(feedback_due_date=timezone.localdate() - timedelta(days=1))
+    assert client.get('/api/jobs/feedback-due/').data[0]['overdue'] is True
+
+
+def test_a_postponed_suggestion_can_still_be_confirmed_later(client, applied_job):
+    """AC7. "Ask me again later" must not lock the decision away -- confirming still applies the
+    original payload, which is what makes this reversible rather than a third terminal state.
+    """
+    suggestion = _rejection_suggestion(applied_job)
+    client.post(f'/api/mailbox-suggestions/{suggestion.id}/postpone/',
+                {'feedback_due_date': (timezone.localdate() + timedelta(days=14)).isoformat()}, format='json')
+    r = client.post(f'/api/mailbox-suggestions/{suggestion.id}/confirm/')
+    assert r.status_code == 200, r.data
+    assert r.data['status'] == 'confirmed'
+    applied_job.refresh_from_db()
+    assert applied_job.status == 'rejected'
+
+
+def test_a_postponed_suggestion_can_still_be_dismissed_or_postponed_again(client, applied_job):
+    """AC7, the other two exits. Postponing twice is how "another two weeks" is expressed."""
+    suggestion = _rejection_suggestion(applied_job)
+    first = timezone.localdate() + timedelta(days=14)
+    second = timezone.localdate() + timedelta(days=28)
+    client.post(f'/api/mailbox-suggestions/{suggestion.id}/postpone/', {'feedback_due_date': first.isoformat()}, format='json')
+    r = client.post(f'/api/mailbox-suggestions/{suggestion.id}/postpone/', {'feedback_due_date': second.isoformat()}, format='json')
+    assert r.status_code == 200
+    applied_job.refresh_from_db()
+    assert applied_job.feedback_due_date == second
+    assert client.post(f'/api/mailbox-suggestions/{suggestion.id}/dismiss/').status_code == 200
+
+
+def test_a_confirmed_or_dismissed_suggestion_still_refuses_a_postpone(client, applied_job):
+    """The postpone action inherits confirm/dismiss's already-decided guard; only `postponed`
+    itself is exempt from it.
+    """
+    for uid, decided in enumerate(('confirmed', 'dismissed'), start=1):
+        suggestion = _rejection_suggestion(applied_job, uid=uid)
+        MailboxSuggestion.objects.filter(pk=suggestion.pk).update(status=decided, decided_at=timezone.now())
+        r = client.post(f'/api/mailbox-suggestions/{suggestion.id}/postpone/',
+                        {'feedback_due_date': (timezone.localdate() + timedelta(days=14)).isoformat()}, format='json')
+        assert r.status_code == 400, decided
+
+
+def test_postpone_leaves_a_dated_note_on_the_jobs_own_history(client, applied_job):
+    """AC4's audit half: the job's history says who deferred it and until when. note_type is
+    'follow_up', deliberately not 'general' -- the board's note button and TASK-178's note_preview
+    read general notes only, so this never overwrites or hijacks the owner's own note.
+    """
+    suggestion = _rejection_suggestion(applied_job)
+    due = timezone.localdate() + timedelta(days=14)
+    client.post(f'/api/mailbox-suggestions/{suggestion.id}/postpone/', {'feedback_due_date': due.isoformat()}, format='json')
+    note = applied_job.notes.get(note_type='follow_up')
+    assert due.isoformat() in note.note and note.created_by == client.user
+    assert not applied_job.notes.filter(note_type='general').exists()
+
+
 def test_mailbox_suggestions_are_scoped_to_accessible_jobs(db, applied_job):
     other = User.objects.create_user('other2@example.test', password='pw')
     other_client = APIClient(); other_client.force_authenticate(other)

@@ -163,7 +163,14 @@ class CvAsset(models.Model):
     settings.CODEX_CV_WORKSPACE -- a directory that exists on one laptop -- so every account with
     can_generate_cv shipped applications built from the owner's templates and wearing the owner's
     face. services.cv_generator resolves both from these rows now, filtered on the owning user with
-    no fallback: no env-owner default, no "the only template anyone has", no workspace glob.
+    no fallback to another account: no env-owner default, no "the only template anyone has".
+
+    Rows are the primary source, not the only one. TASK-189 added one fallback BEHIND them, for an
+    account that has none: its own machine-local CODEX_CV_WORKSPACE, resolved for the single
+    account CODEX_CV_OWNER_EMAIL names and for nobody else (cv_generator.user_cv_assets). That
+    exists so a capability which only runs locally -- there is no pdflatex in the deployed image --
+    does not require the owner's photograph and postal address to be uploaded to a hosted database
+    first. Nothing on that path writes a row.
 
     In the database rather than on disk on purpose. There is no MEDIA_ROOT in this project and the
     deployed container's filesystem is ephemeral, so a FileField would mean "a file that survives
@@ -617,11 +624,25 @@ class MailboxSuggestion(models.Model):
 
     `payload` carries what confirming will apply (e.g. {'status':'rejected'} or
     {'interview_at': iso}) via JobLeadSerializer.update(), so confirm() never has to re-derive it
-    from the message. Created once; only `status`/`decided_at` change afterward, and only through
-    the confirm/dismiss actions below -- never a generic field edit, and never automatically.
+    from the message. Created once; only `status`/`decided_at`/`postponed_until` change afterward,
+    and only through the confirm/dismiss/postpone actions below -- never a generic field edit, and
+    never automatically.
+
+    TASK-175 widened that contract by exactly one action, `postpone`, for the mail that says "we
+    will come back to you in a few weeks": confirming a rejection suggestion would mark a live
+    application `rejected` and dismissing it would record the waiting nowhere. Two things about it
+    are deliberate:
+
+    * It is a fourth STATUS, not a fourth TYPE. A postpone is a RESOLUTION of a proposal the
+      classifier already made, not a new proposal -- a `feedback_postpone` type would have to be
+      created and immediately confirmed (two rows per postpone) and would collide with
+      services.mailbox._create_pending_suggestion's one-pending-per-(job, type) dedupe.
+    * `postponed` is NOT terminal. confirm/dismiss still accept a postponed suggestion (TASK-175
+      AC7) -- "ask me again later" must not lock the original decision away -- so the ONLY status
+      those two actions refuse is one that is already confirmed or dismissed.
     """
     TYPES=[('status_change','Status change'),('interview_date','Interview date'),('feedback_clear','Feedback clock clear')]
-    STATUSES=[('pending','Pending'),('confirmed','Confirmed'),('dismissed','Dismissed')]
+    STATUSES=[('pending','Pending'),('confirmed','Confirmed'),('dismissed','Dismissed'),('postponed','Postponed')]
     message=models.ForeignKey(MailboxMessage, related_name='suggestions', on_delete=models.CASCADE)
     job=models.ForeignKey(JobLead, related_name='mailbox_suggestions', on_delete=models.CASCADE)
     suggestion_type=models.CharField(max_length=20, choices=TYPES)
@@ -629,6 +650,12 @@ class MailboxSuggestion(models.Model):
     status=models.CharField(max_length=10, choices=STATUSES, default='pending')
     created_at=models.DateTimeField(auto_now_add=True)
     decided_at=models.DateTimeField(null=True, blank=True)
+    # TASK-175: the date the owner picked when postponing, kept HERE as well as on
+    # JobLead.feedback_due_date. The job's field is the live clock and is legitimately moved again
+    # later (the feedback pane's Reschedule input, a confirmed feedback_clear); this one is what the
+    # decision log said at the time, so a postpone stays explicable after the clock has moved on.
+    # Null on every row that was never postponed.
+    postponed_until=models.DateField(null=True, blank=True)
     class Meta: ordering=['-created_at']
     def __str__(self): return f'{self.get_suggestion_type_display()} for {self.job} ({self.status})'
 

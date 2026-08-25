@@ -2147,6 +2147,53 @@ def dismiss_suggestion(suggestion: MailboxSuggestion) -> MailboxSuggestion:
     return suggestion
 
 
+def postpone_suggestion(suggestion: MailboxSuggestion, due, user=None) -> MailboxSuggestion:
+    """TASK-175: the third answer to a decision card -- "this is alive, ask me again later".
+
+    Owner, 2026-08-23: some mail says the company will come back in a few weeks, and neither Yes
+    (which marks a live application `rejected`) nor No (which records the waiting nowhere) is true.
+
+    What this writes, and what it deliberately does NOT write:
+
+    * `job.feedback_due_date = due`, and NOTHING else on the job -- explicitly not `status` (AC1).
+      "Waiting" is an annotation ON a pipeline stage, not a stage: the owner can be waiting after
+      applying and waiting again after an interview, so a `pending` JobLead status would collapse
+      two independent dimensions into one column and would corrupt both the funnel counts and
+      JobLead.DATED_STATUSES' staleness logic, which read `status` as "where the application
+      actually got to". Keeping the status and moving the clock says exactly what happened (AC6).
+    * The suggestion moves to `postponed` (AC3) -- distinguishable from both confirm and dismiss,
+      and non-terminal, so the owner can still confirm or reject later (AC7).
+    * NO second reminder system (AC5). `feedback_due_date` is the clock the app already has: it is
+      what services.followup_digest's overdue-feedback section mails about and what
+      JobLeadViewSet.feedback_due (the board's "Feedback deadlines" pane) lists, and both start
+      surfacing this job the moment the date arrives, with no new machinery.
+
+    Written through JobLeadSerializer, not `job.feedback_due_date = due; job.save()`, so it obeys
+    the same partial-update rules confirm() does -- a payload with no `status` key never trips that
+    serializer's status-change branches, which is what keeps the job's status untouched.
+
+    The ApplicationNote is the same trace apply_suggestion leaves on a confirm (dismiss deliberately
+    leaves none): postponing IS a decision, so the job's own history says who deferred it, until
+    when, and which mail caused it. note_type='follow_up' rather than 'general' keeps it clear of
+    the board's note button and TASK-178's note_preview, both of which read general notes only.
+    """
+    from jobradar.serializers import JobLeadSerializer
+
+    with transaction.atomic():
+        job = JobLead.objects.select_for_update().get(pk=suggestion.job_id)
+        JobLeadSerializer().update(job, {'feedback_due_date': due})
+        suggestion.status = 'postponed'
+        suggestion.postponed_until = due
+        suggestion.decided_at = timezone.now()
+        suggestion.save(update_fields=['status', 'postponed_until', 'decided_at'])
+        message = suggestion.message
+        ApplicationNote.objects.create(
+            job=job, note_type='follow_up', created_by=user,
+            note=f'Postponed until {due.isoformat()} from an email from {message.sender}, subject "{message.subject}".',
+        )
+    return suggestion
+
+
 def attach_message_to_job(message: MailboxMessage, job: JobLead, user=None) -> MailboxMessage:
     """TASK-117 AC6: manual match for mail whose sender domain matched nothing at all -- an agency,
     a personal address, or an employer mailing from a domain the tracked listing was never saved

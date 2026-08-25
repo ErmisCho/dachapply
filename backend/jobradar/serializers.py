@@ -454,15 +454,19 @@ class MailboxMessageSerializer(serializers.ModelSerializer):
         return _gmail_url(obj.message_id)
 
 class MailboxSuggestionSerializer(serializers.ModelSerializer):
-    """TASK-109 AC3. Read-only: the only writes this model allows are the confirm/dismiss actions
-    on MailboxSuggestionViewSet, never a generic PATCH of `status` or `payload`.
+    """TASK-109 AC3. Read-only: the only writes this model allows are the confirm/dismiss/postpone
+    actions on MailboxSuggestionViewSet, never a generic PATCH of `status` or `payload`.
+
+    TASK-175: `postponed_until` is read-only here too -- the postpone action takes its date from the
+    request body and validates it itself (see that action), so this serializer stays a pure
+    projection.
     """
     message=MailboxMessageSerializer(read_only=True)
     job_company=serializers.CharField(source='job.company', read_only=True)
     job_title=serializers.CharField(source='job.title', read_only=True)
     class Meta:
         model=MailboxSuggestion
-        fields=('id','message','job','job_company','job_title','suggestion_type','payload','status','created_at','decided_at')
+        fields=('id','message','job','job_company','job_title','suggestion_type','payload','status','created_at','decided_at','postponed_until')
         read_only_fields=fields
 
 class MailboxMessageListSerializer(MailboxMessageSerializer):

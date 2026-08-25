@@ -17,7 +17,8 @@ from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from django.utils.encoding import force_bytes
 from django.views.decorators.csrf import ensure_csrf_cookie
-from rest_framework import viewsets, status
+from rest_framework import serializers, viewsets, status
+from rest_framework.exceptions import ValidationError as RestValidationError
 from rest_framework.decorators import api_view, permission_classes, action, throttle_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
@@ -33,7 +34,7 @@ from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
 from .services.interview_coach import analyze_answer, suggest_questions
 from .services import mailbox, mailbox_tasks
-from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_suggestion, suggest_job_for_message
+from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_suggestion, postpone_suggestion, suggest_job_for_message
 from .services.followup_digest import owned_jobs
 from .services.draft_chat import ChatTurn, run_chat_turn
 from .services.analytics import record_demo_click
@@ -937,16 +938,31 @@ class FollowUpViewSet(viewsets.ModelViewSet):
 
 class MailboxSuggestionViewSet(viewsets.GenericViewSet):
     """TASK-109 AC3. List defaults to pending (?status=confirmed,dismissed to see decided ones);
-    confirm/dismiss are the only two mutations, and both refuse an already-decided suggestion
-    rather than silently re-applying or re-dismissing it.
+    confirm/dismiss/postpone are the only three mutations, and all three refuse an already-DECIDED
+    suggestion rather than silently re-applying or re-dismissing it.
+
+    TASK-175: `postponed` is deliberately not in DECIDED_STATUSES. A postpone defers the question
+    instead of answering it, so confirming or rejecting it later must still work (AC7) -- see
+    MailboxSuggestion's own docstring.
     """
+    DECIDED_STATUSES=('confirmed','dismissed')
     serializer_class=MailboxSuggestionSerializer
     def get_queryset(self):
         return MailboxSuggestion.objects.select_related('job','message','message__matched_job').filter(job__in=accessible_jobs(self.request.user))
     def list(self, request, *args, **kwargs):
         qs=self.get_queryset()
         statuses=[s for s in (request.query_params.get('status') or 'pending').split(',') if s]
-        if statuses: qs=qs.filter(status__in=statuses)
+        if statuses:
+            match=Q(status__in=statuses)
+            # TASK-175 AC5/AC7: a postponed decision is deferred, not answered, so it comes back into
+            # the default (pending) feed the day its own clock runs out -- keyed off the SAME
+            # JobLead.feedback_due_date the postpone wrote and the feedback-due pane reads, never a
+            # second reminder store. Before that date it stays out of the panel (AC3: the card does
+            # not reappear unresolved on the next load), and an explicit ?status=... keeps meaning
+            # exactly the statuses it names.
+            if 'pending' in statuses and 'postponed' not in statuses:
+                match|=Q(status='postponed', job__feedback_due_date__lte=timezone.localdate())
+            qs=qs.filter(match)
         # TASK-143 AC2/AC5/AC7: this is the mailbox review panel's own feed (the frontend builds one
         # JobMailboxConversationCard per job that shows up here), so a job the owner has already
         # closed out (rejected/withdrawn/skipped/archived) is filtered OUT here -- job 760
@@ -963,7 +979,7 @@ class MailboxSuggestionViewSet(viewsets.GenericViewSet):
     @action(detail=True, methods=['post'])
     def confirm(self, request, pk=None):
         suggestion=self.get_object()
-        if suggestion.status != 'pending': return Response({'detail':'Suggestion already decided.'}, status=400)
+        if suggestion.status in self.DECIDED_STATUSES: return Response({'detail':'Suggestion already decided.'}, status=400)
         # TASK-117 AC4: apply_suggestion writes the confirming user onto the ApplicationNote it
         # creates, so the job's history says who agreed, not only that the app proposed it.
         apply_suggestion(suggestion, user=request.user)
@@ -971,8 +987,32 @@ class MailboxSuggestionViewSet(viewsets.GenericViewSet):
     @action(detail=True, methods=['post'])
     def dismiss(self, request, pk=None):
         suggestion=self.get_object()
-        if suggestion.status != 'pending': return Response({'detail':'Suggestion already decided.'}, status=400)
+        if suggestion.status in self.DECIDED_STATUSES: return Response({'detail':'Suggestion already decided.'}, status=400)
         dismiss_suggestion(suggestion)
+        return Response(self.get_serializer(suggestion).data)
+    @action(detail=True, methods=['post'])
+    def postpone(self, request, pk=None):
+        """TASK-175 AC1/AC2: the third answer -- push the job's feedback clock out to a date the
+        OWNER picks, and change nothing else about the job.
+
+        The date is required and comes from the request, never from a hardcoded interval here: the
+        frontend's control is an editable <input type="date"> pre-filled two weeks out, so "a few
+        weeks" is a default the owner can overrule, not a rule the server imposes (AC2). Parsed by
+        DRF's own DateField so a malformed or missing value is a 400 with a field error rather than
+        a 500 or a silently-null clock -- this is a trust boundary, the one place a client-supplied
+        date reaches JobLead.
+
+        A past date is accepted deliberately: it means "this is already overdue", which is a
+        coherent thing to say and is exactly what the feedback-due surfaces then report.
+        """
+        suggestion=self.get_object()
+        if suggestion.status in self.DECIDED_STATUSES: return Response({'detail':'Suggestion already decided.'}, status=400)
+        field=serializers.DateField()
+        try:
+            due=field.run_validation(request.data.get('feedback_due_date'))
+        except RestValidationError as exc:
+            return Response({'feedback_due_date': exc.detail}, status=400)
+        postpone_suggestion(suggestion, due, user=request.user)
         return Response(self.get_serializer(suggestion).data)
 
 def is_mailbox_owner(user):
