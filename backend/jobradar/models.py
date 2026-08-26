@@ -470,7 +470,7 @@ class MailboxRun(models.Model):
 
 class MailboxCheckRequest(models.Model):
     """TASK-124 AC2/AC3: a manual "run now" request recorded on a backend with no mail credentials
-    (the deployed site), for the owner's own machine to pick up on its next check_mailbox tick.
+    (the deployed site), for the hourly cloud workflow to pick up on its next check_mailbox tick.
 
     Deliberately its own model rather than overloading ScheduledTaskRun, which tracks a recurring
     SCHEDULE's last-run-at, not a one-off ask -- see the task notes. `handled_at` is the once-only
@@ -490,14 +490,16 @@ class MailboxMessage(models.Model):
     """TASK-109 AC5: the append-only log of every message check_mailbox read.
 
     Rows are created once and never updated by check_mailbox itself -- no view in this app exposes a
-    generic PATCH/DELETE for this model. There are now TWO deliberate exceptions. The first is
+    generic PATCH/DELETE for this model. There are now THREE deliberate exceptions. The first is
     `matched_job`: TASK-117 AC6 lets the owner attach a message that matched no job to one by hand
     (services.mailbox.attach_message_to_job), which mutates a row after creation, and (before TASK-171)
     was the only thing anywhere that did. The second is `dismissed_at` -- see its own field comment
-    below (TASK-171 AC3/AC5/AC6). Both are owner-initiated, single-field mutations; neither is
-    something check_mailbox/ingest_threads/backfill_historical_mail ever touch, so re-ingestion can
-    never undo either one (those functions' own gmail_id-existence dedup guards mean a message already
-    in this table is never recreated at all, whatever its matched_job/dismissed_at say).
+    below (TASK-171 AC3/AC5/AC6). The third is TASK-195's explicit local Codex review, which changes
+    only an uncertain heuristic row's classification/evaluator after the complete structured batch
+    validates; it creates no suggestion, draft, Gmail call, or job change. None is something
+    check_mailbox/ingest_threads/backfill_historical_mail ever touch, so re-ingestion can never undo
+    them (those functions' own gmail_id-existence dedup guards mean a message already
+    in this table is never recreated at all, whatever those reviewed fields say).
 
     TASK-117 AC1 (2026-08-18): the owner reversed this model's earlier minimal-metadata default.
     `body_text` now stores the received body, capped at the 5000 chars the wire read already applies

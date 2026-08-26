@@ -1015,6 +1015,10 @@ class MailboxSuggestionViewSet(viewsets.GenericViewSet):
         postpone_suggestion(suggestion, due, user=request.user)
         return Response(self.get_serializer(suggestion).data)
 
+def _is_loopback_debug_request(request):
+    return settings.DEBUG and request.META.get('REMOTE_ADDR') in {'127.0.0.1', '::1'}
+
+
 def is_mailbox_owner(user):
     """TASK-151 AC1: the gate every MAILBOX endpoint below uses -- deliberately NOT is_cv_owner.
 
@@ -1043,6 +1047,37 @@ class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         if not is_mailbox_owner(self.request.user): return MailboxRun.objects.none()
         return MailboxRun.objects.all().prefetch_related('messages__matched_job','messages__draft')
+    @action(detail=False, methods=['get', 'post'], url_path='local-ai-review')
+    def local_ai_review(self, request):
+        """Explicit local Codex pass over cloud-ingested heuristic-uncertain messages."""
+        if not is_mailbox_owner(request.user):
+            return Response({'detail': 'Not found.'}, status=404)
+        if not _is_loopback_debug_request(request):
+            data = {'local': False, 'supported': False, 'pending': 0, 'detail': 'Codex review is available only from the local app.'}
+            return Response(data, status=404 if request.method == 'POST' else 200)
+
+        from .services import mailbox_ai
+        options = [option for option in available_model_options() if option['provider'] == 'openai']
+        profile = user_profile_settings(request.user)
+        option = next((item for item in options if item['key'] == profile.mailbox_chat_model), None) or (options[0] if options else None)
+        supported = bool(option and mailbox_ai.codex_available())
+        pending = mailbox.pending_codex_review_count()
+        if request.method == 'GET':
+            return Response({
+                'local': True, 'supported': supported, 'pending': pending,
+                'model': option['label'] if supported else '',
+                'detail': '' if supported else 'The Codex CLI is not available on this machine.',
+            })
+        if not supported:
+            return Response({'detail': 'The Codex CLI is not available on this machine.'}, status=400)
+        efforts = option.get('efforts') or []
+        effort = option.get('default_effort') if option.get('default_effort') in efforts else (efforts[0] if efforts else 'medium')
+        try:
+            result = mailbox.review_uncertain_with_codex(option['key'], effort)
+        except RuntimeError as exc:
+            return Response({'detail': str(exc)}, status=400)
+        return Response({**result, 'local': True, 'supported': True, 'pending': result['remaining'], 'model': option['label'], 'detail': ''})
+
     @action(detail=False, methods=['post'], url_path='run-now')
     def run_now(self, request):
         """TASK-124 AC1/AC2/AC9: same owner gate as the rest of this viewset -- this triggers real

@@ -5,7 +5,7 @@ module's own docstring/task notes call out its limitation: the registry dies wit
 is fine here too, since a check started on a machine that is watching it lives and dies with that
 same process. That is exactly why AC2 does NOT use this registry at all on a backend with no mail
 credentials (the deployed site) -- there, services.mailbox.queue_mailbox_check_request() writes a
-real MailboxCheckRequest row instead, for the owner's own machine to pick up later, possibly long
+real MailboxCheckRequest row instead, for the hourly cloud workflow to pick up later, possibly long
 after this process (and any in-memory task) is gone.
 """
 import time

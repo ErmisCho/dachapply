@@ -85,12 +85,17 @@ Brevo requires authorized sending IPs for SMTP keys. For Azure, add the Azure ou
 - Azure App Service: App Service > Properties > Outbound IP addresses.
 - Azure Container Apps: use a static egress/NAT setup if you need stable outbound IPs.
 
-## Owner-only mailbox check (TASK-109/TASK-110)
+## Hybrid mailbox check (TASK-109/TASK-110/TASK-195)
 
-This is a separate feature from the password-reset email above: `manage.py check_mailbox` reads the
-owner's own Gmail inbox on a schedule to surface job-search suggestions and draft guarded replies
-into Gmail's Drafts folder. It never sends mail -- sending is exclusively the owner acting in Gmail
-itself. Two ways to authorize it; pick whichever the owner's Google account can actually do.
+This is separate from password-reset email. The hourly `.github/workflows/mailbox-check.yml` job
+fetches Gmail and runs deterministic classification against the shared database even while the
+owner's PC is off. It never uses an LLM and never sends mail; sending remains exclusively the owner
+acting in Gmail. When the app is opened locally, the Mailbox page can explicitly ask the owner's
+Codex CLI subscription to review up to ten messages the heuristic left `uncertain`. That local pass
+changes only the stored classification/evaluator -- never a job, suggestion, Gmail draft, or message.
+
+Gmail-API OAuth is the cloud-supported transport. IMAP remains available for a manual local
+`manage.py check_mailbox`, but the scheduled workflow uses OAuth repository secrets.
 
 ### Option A: IMAP app password (needs 2-Step Verification)
 
@@ -141,14 +146,37 @@ to permanently delete anything or send mail.
    writes only that token to a local, gitignored file (`GMAIL_OAUTH_TOKEN_PATH`, defaulting to
    `dachapply-gmail-oauth-token.json` at the repo root) -- never printed to the terminal, never
    committed. `manage.py check_mailbox` then uses it automatically; IMAP wins if both Option A and
-   Option B are configured.
+   Option B are configured locally.
+
+### Configure hourly cloud ingestion
+
+In GitHub repository Settings -> Secrets and variables -> Actions, configure these repository
+secrets (never commit their values):
+
+- `DATABASE_URL`
+- `GMAIL_OAUTH_CLIENT_ID`
+- `GMAIL_OAUTH_CLIENT_SECRET`
+- `GMAIL_OAUTH_REFRESH_TOKEN` (the `refresh_token` value from the local token JSON, not the JSON)
+- `CODEX_CV_OWNER_EMAIL`
+
+The workflow runs at minute 17 of every hour and can also be started from Actions -> Mailbox check ->
+Run workflow. It sets `LLM_PROVIDER=heuristic` explicitly. The local Codex review endpoint is guarded
+by owner authentication, `DEBUG=True`, and a loopback client address; it is unavailable from the
+hosted site and does nothing until the owner clicks the button.
+
+After re-authorizing, update the cloud secret without printing the token into shell history (run from
+`backend/`):
+
+```bash
+python -c "import json; print(json.load(open('../dachapply-gmail-oauth-token.json'))['refresh_token'])" | gh secret set GMAIL_OAUTH_REFRESH_TOKEN
+```
 
 **Testing-mode token expiry: re-authorize every 7 days, or publish the app to stop it.** While the
 OAuth consent screen is in "Testing" publishing status, Google expires the refresh token after about 7
 days of testing-mode use, regardless of whether it's actually being used. When that happens,
-`check_mailbox` will fail every run with a Gmail OAuth error recorded on the `MailboxRun` it creates
-(visible in the /mailbox digest, same as any other check failure) -- it does not fail silently. To
-recover, just run `manage.py gmail_oauth_setup` again.
+the cloud `check_mailbox` workflow will fail with a Gmail OAuth error recorded on the `MailboxRun`
+(visible in the /mailbox digest), and GitHub will also mark the workflow failed. To recover, run
+`manage.py gmail_oauth_setup` locally and then update `GMAIL_OAUTH_REFRESH_TOKEN` as shown above.
 
 **Publishing to stop the 7-day cycle was tried on 2026-08-21 and is NOT available to this app.** The
 advice this paragraph used to give -- publish the consent screen, no verification review needed for a
@@ -165,9 +193,9 @@ publishing needs a purchased domain hosting a privacy policy. "Make internal" is
 needs a Google Workspace account, not a gmail.com one.
 
 So the 7-day re-authorization stands, and TASK-160 covers it instead: the deployed site watches the
-shared database and emails the owner when the check is failing or has not succeeded within
-`MAILBOX_STALE_ALERT_HOURS` (default 24). Re-authorizing is two commands and takes about 30 seconds;
-the point of the watchdog is that nobody has to remember to check.
+shared database and emails the owner when the cloud workflow is failing or has not succeeded within
+`MAILBOX_STALE_ALERT_HOURS` (default 24). Re-authorize locally, update the GitHub secret, and the next
+hourly/manual workflow run recovers; the watchdog means nobody has to remember to check.
 
 ## Which file to use
 

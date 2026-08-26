@@ -26,15 +26,13 @@ see run_check()/_default_transport()): ImapTransport (app password, needs 2-Step
 GmailApiTransport (OAuth, TASK-109 AC1 -- the route for an owner who has declined 2SV, since Google
 only issues app passwords with 2SV on and retired "less secure app access" entirely).
 
-Local mode only, like CV generation (services/cv_generator.py): the owner's mail credentials and
-message content never reach the Azure deployment. In practice that boundary already holds by
-construction here, not just by policy -- GMAIL_IMAP_USER/APP_PASSWORD and
-GMAIL_OAUTH_CLIENT_ID/SECRET only ever live in a local .env (the OAuth refresh token lives in its own
-local, gitignored file -- see config.settings.GMAIL_OAUTH_TOKEN_PATH), so run_check() simply no-ops
-(returns None before touching the database) whenever neither transport is configured, and this module
-is wired into nothing that starts automatically with the web process (see
-management/commands/check_mailbox.py: it runs only when something -- Windows Task Scheduler, or a
-developer -- explicitly invokes it).
+TASK-195 splits execution by capability. `.github/workflows/mailbox-check.yml` runs this deterministic
+fetch/classify pipeline hourly in GitHub Actions with Gmail/Database repository secrets and
+`LLM_PROVIDER=heuristic`; it works while the owner's PC is off. Stored heuristic-uncertain messages
+can later be reclassified explicitly from the local Mailbox page by services.mailbox_ai using the
+owner's Codex CLI subscription. That local pass updates only MailboxMessage.classification/evaluator:
+it never changes a job, creates a suggestion/draft, or contacts Gmail. CV generation and every other
+subscription-backed model feature remain local as before.
 
 Architecture note for testability: every IMAP/Gmail-API call is behind the `transport` parameter of
 run_check() (ImapTransport/GmailApiTransport), so every test in tests/test_mailbox.py injects either a
@@ -1426,6 +1424,59 @@ def _classify_with_local_llm(raw, domain_known, config):
         classification = 'uncertain'
     interview_at = parsed.get('interview_at') or None
     return classification, interview_at
+
+
+def pending_codex_review_count():
+    return MailboxMessage.objects.filter(
+        classification='uncertain', evaluator='heuristic', sent_by_owner=False,
+        dismissed_at__isnull=True,
+    ).count()
+
+
+def review_uncertain_with_codex(model, effort, limit=10):
+    """Locally re-label a bounded uncertain batch; never creates suggestions, drafts, or Gmail I/O."""
+    from jobradar.services.mailbox_ai import classify_batch
+
+    messages = list(MailboxMessage.objects.filter(
+        classification='uncertain', evaluator='heuristic', sent_by_owner=False,
+        dismissed_at__isnull=True,
+    ).select_related('matched_job').order_by('-uid')[:max(1, min(int(limit), 10))])
+    if not messages:
+        return {'reviewed': 0, 'changed': 0, 'remaining': 0}
+    entries = [{
+        'id': message.id,
+        'sender': message.sender,
+        'subject': message.subject,
+        'body': sanitize_inbound_text(message.body_text),
+        'calendar_summary': message.calendar_summary,
+        'sender_matches_tracked_job': message.matched_job_id is not None,
+    } for message in messages]
+    classifications = classify_batch(entries, model, effort, _load_llm_config().timeout_seconds)
+    guarded = {}
+    for message in messages:
+        classification, _ = _guard_status_changing(
+            classifications[message.id], None, message.subject, message.body_text,
+            message.matched_job_id is not None, _sender_domain(message.sender),
+        )
+        guarded[message.id] = classification
+
+    with transaction.atomic():
+        locked = {message.id: message for message in MailboxMessage.objects.select_for_update().filter(id__in=guarded)}
+        if len(locked) != len(messages) or any(
+            message.classification != 'uncertain' or message.evaluator != 'heuristic'
+            for message in locked.values()
+        ):
+            raise RuntimeError('One of these messages changed while Codex was reviewing it; run the review again.')
+        for message_id, classification in guarded.items():
+            message = locked[message_id]
+            message.classification = classification
+            message.evaluator = 'codex'
+            message.save(update_fields=['classification', 'evaluator'])
+    return {
+        'reviewed': len(messages),
+        'changed': sum(classification != 'uncertain' for classification in guarded.values()),
+        'remaining': pending_codex_review_count(),
+    }
 
 
 def classify_email(raw: RawMessage, domain_known: bool):
@@ -4034,13 +4085,13 @@ def mailbox_check_estimate() -> dict:
 # --- TASK-124 AC2/AC3: queued requests on a backend with no credentials --------------------------
 
 def queue_mailbox_check_request(user) -> MailboxCheckRequest:
-    """AC2: recorded instead of failing when has_mailbox_credentials() is False -- picked up by
-    pending_mailbox_check_request() on the owner's own machine's next check_mailbox tick."""
+    """AC2: recorded instead of failing when this backend has no credentials -- picked up by
+    pending_mailbox_check_request() on the hourly cloud workflow's next check_mailbox tick."""
     return MailboxCheckRequest.objects.create(requested_by=user)
 
 
 def pending_mailbox_check_request() -> MailboxCheckRequest | None:
-    """AC3: the oldest not-yet-handled request, if any -- check_mailbox.py picks this up ahead of its
+    """AC3: the oldest not-yet-handled request, if any -- the cloud check_mailbox command picks this up ahead of its
     own cadence-gated tick and runs it regardless of whether the cadence is due."""
     return MailboxCheckRequest.objects.filter(handled_at__isnull=True).order_by('requested_at').first()
 
