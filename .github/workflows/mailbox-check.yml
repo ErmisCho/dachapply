@@ -1,0 +1,61 @@
+name: Mailbox check
+
+on:
+  schedule:
+    # The owner's selected cadence is hourly; :17 avoids GitHub's busiest minute.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dachapply-mailbox-check
+  cancel-in-progress: false
+
+jobs:
+  check-mailbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      GMAIL_OAUTH_CLIENT_ID: ${{ secrets.GMAIL_OAUTH_CLIENT_ID }}
+      GMAIL_OAUTH_CLIENT_SECRET: ${{ secrets.GMAIL_OAUTH_CLIENT_SECRET }}
+      GMAIL_OAUTH_REFRESH_TOKEN: ${{ secrets.GMAIL_OAUTH_REFRESH_TOKEN }}
+      GMAIL_OAUTH_TOKEN_PATH: ${{ runner.temp }}/dachapply-gmail-oauth-token.json
+      CODEX_CV_OWNER_EMAIL: ${{ secrets.CODEX_CV_OWNER_EMAIL }}
+      SECRET_KEY: cloud-mailbox-command-only
+      LLM_PROVIDER: heuristic
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: '0.11.28'
+
+      - name: Check required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in DATABASE_URL GMAIL_OAUTH_CLIENT_ID GMAIL_OAUTH_CLIENT_SECRET GMAIL_OAUTH_REFRESH_TOKEN CODEX_CV_OWNER_EMAIL; do
+            [ -n "${!name:-}" ] || { echo "::error::repository secret $name is not set"; exit 1; }
+          done
+
+      - name: Write the temporary Gmail token file
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path(os.environ['GMAIL_OAUTH_TOKEN_PATH']).write_text(
+              json.dumps({'refresh_token': os.environ['GMAIL_OAUTH_REFRESH_TOKEN']}),
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Fetch and deterministically classify mail
+        working-directory: backend
+        # --force makes this hourly workflow the only cadence timer. Profile on/off, time-window,
+        # and calendar quiet-hours gates still run inside check_mailbox.
+        run: uv run --locked --no-dev python manage.py check_mailbox --force
