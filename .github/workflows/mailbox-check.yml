@@ -22,7 +22,7 @@ jobs:
       GMAIL_OAUTH_CLIENT_ID: ${{ secrets.GMAIL_OAUTH_CLIENT_ID }}
       GMAIL_OAUTH_CLIENT_SECRET: ${{ secrets.GMAIL_OAUTH_CLIENT_SECRET }}
       GMAIL_OAUTH_REFRESH_TOKEN: ${{ secrets.GMAIL_OAUTH_REFRESH_TOKEN }}
-      GMAIL_OAUTH_TOKEN_PATH: ${{ runner.temp }}/dachapply-gmail-oauth-token.json
+      GMAIL_OAUTH_TOKEN_PATH: /tmp/dachapply-gmail-oauth-token.json
       CODEX_CV_OWNER_EMAIL: ${{ secrets.CODEX_CV_OWNER_EMAIL }}
       SECRET_KEY: cloud-mailbox-command-only
       LLM_PROVIDER: heuristic
