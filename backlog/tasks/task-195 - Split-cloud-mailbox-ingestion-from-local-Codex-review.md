@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-08-26 05:44'
-updated_date: '2026-08-26 11:00'
+updated_date: '2026-08-26 11:06'
 labels:
   - mailbox
   - backend
@@ -20,13 +20,16 @@ references:
   - .github/workflows
 modified_files:
   - .github/workflows/mailbox-check.yml
+  - backend/config/settings.py
+  - backend/jobradar/management/commands/check_mailbox.py
+  - backend/jobradar/models.py
   - backend/jobradar/services/mailbox.py
   - backend/jobradar/services/mailbox_ai.py
-  - backend/jobradar/views.py
+  - backend/jobradar/services/mailbox_tasks.py
   - backend/jobradar/tests/test_mailbox_ai.py
+  - backend/jobradar/views.py
   - frontend/src/App.tsx
   - docs/email-setup.md
-  - backend/jobradar/models.py
 priority: high
 ordinal: 195000
 ---

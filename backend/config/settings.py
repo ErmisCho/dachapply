@@ -141,12 +141,10 @@ CODEX_CANDIDATE_EVIDENCE_PATH = os.getenv('CODEX_CANDIDATE_EVIDENCE_PATH', str(B
 CODEX_APPLICATION_RULES_PATH = os.getenv('CODEX_APPLICATION_RULES_PATH', str(BASE_DIR.parent/'job-application-adaptation-rules.md'))
 CODEX_CV_OPEN_OUTPUT_FOLDER = env_bool('CODEX_CV_OPEN_OUTPUT_FOLDER', DEBUG)
 
-# TASK-109: local-only Gmail mailbox check. Same idiom as CODEX_CV_* above -- read only from
-# env/.env (which never ships to Azure or this repo), no credential default, and every consumer
-# treats an unset GMAIL_IMAP_USER/APP_PASSWORD as "not configured" rather than raising, so the
-# feature is simply absent everywhere except the owner's own machine. Gmail app passwords are shown
-# in four space-separated groups; IMAP AUTH wants the compact form, same fix as
-# normalize_smtp_password above but unconditional since this var is Gmail-only by name.
+# TASK-109/TASK-195: Gmail credentials have no code default. Locally they come from .env; the hourly
+# cloud ingestion workflow passes OAuth values as GitHub repository secrets. An unset transport still
+# means "not configured" rather than raising. Gmail app passwords are local-only and shown in four
+# space-separated groups; IMAP AUTH wants the compact form, same fix as normalize_smtp_password.
 GMAIL_IMAP_HOST = os.getenv('GMAIL_IMAP_HOST', 'imap.gmail.com')
 GMAIL_IMAP_USER = os.getenv('GMAIL_IMAP_USER', '')
 GMAIL_IMAP_APP_PASSWORD = ''.join((os.getenv('GMAIL_IMAP_APP_PASSWORD') or '').split())
@@ -404,10 +402,9 @@ ERROR_ALERT_COOLDOWN_SECONDS = int(os.getenv('ERROR_ALERT_COOLDOWN_SECONDS', '30
 # extra list and for which settings were checked and deliberately left visible.
 DEFAULT_EXCEPTION_REPORTER_FILTER = 'config.error_filters.DachApplyExceptionReporterFilter'
 
-# TASK-160: the mailbox check itself runs on the owner's own machine (that is where the Gmail
-# credentials live), so it can never alert on its own -- DEBUG=True there blocks the mail_admins
-# handler above, and there is no SMTP configured locally either. jobradar.views.mailbox_health, on
-# the DEPLOYED site, reads the same database the local check writes to and alerts instead. This
+# TASK-160/TASK-195: jobradar.views.mailbox_health on the deployed site reads the same database the
+# hourly GitHub Actions mailbox workflow writes to. If that external scheduler or Gmail OAuth fails,
+# the deployed app remains the independent component able to notice and alert. This
 # threshold is a fixed, generous default rather than derived from
 # UserProfile.mailbox_check_cadence_minutes: quiet hours and a closed check window already create
 # legitimate gaps between successful runs, and deriving the threshold from cadence is a refinement

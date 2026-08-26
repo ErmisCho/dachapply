@@ -332,9 +332,9 @@ UNMATCHED_MATCH_TEXT_CHARS = 2000
 
 
 def _mailbox_health():
-    """TASK-160 AC1: health computed from MailboxRun rows alone -- no call to Gmail or to the
-    owner's machine, which is the entire point (the deployed site reads the same database the
-    local check writes to, but can reach neither Gmail nor the laptop itself).
+    """TASK-160/TASK-195: health computed from MailboxRun rows alone -- no call to Gmail or to
+    GitHub Actions. The deployed site and the hourly cloud ingestion workflow share the database,
+    so this remains an independent watchdog for a stopped workflow or broken OAuth token.
 
     Returns (status, detail): `status` is the coarse value AC6 allows the endpoint to expose
     ('ok' | 'failing' | 'stale'); `detail` is for the alert email only, never for the response body.
@@ -397,9 +397,11 @@ def _send_mailbox_health_alert(status_value, detail):
     body = (
         f'The DACHApply mailbox check {reason}\n\n'
         'What to do:\n\n'
-        '1. Re-authorize the Gmail connection on the machine that runs the check:\n\n'
+        '1. Re-authorize Gmail from the local backend directory:\n\n'
         '   python manage.py gmail_oauth_setup\n\n'
-        '2. If this keeps recurring roughly every 7 days, publish the OAuth consent screen '
+        '2. Update the cloud workflow secret from the refreshed local token:\n\n'
+        '   python -c "import json; print(json.load(open(\'../dachapply-gmail-oauth-token.json\'))[\'refresh_token\'])" | gh secret set GMAIL_OAUTH_REFRESH_TOKEN\n\n'
+        '3. If this keeps recurring roughly every 7 days, publish the OAuth consent screen '
         '(Google Cloud Console -> APIs & Services -> OAuth consent screen -> Publish App). While '
         'the app stays in "Testing" publishing status, Google expires the refresh token after '
         'about 7 days of use regardless of whether it is actually being used; publishing the '
@@ -414,10 +416,9 @@ def _send_mailbox_health_alert(status_value, detail):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def mailbox_health(request):
-    """TASK-160: lets the DEPLOYED site notice when the mailbox check has stopped working, even
-    though the deployed site never runs that check itself -- see backlog/tasks/task-160 for why
-    TASK-88's alerting cannot cover this (it runs on the owner's own machine, where DEBUG=True
-    blocks the mail_admins handler and there is no SMTP configured anyway).
+    """TASK-160/TASK-195: lets the deployed site notice when the independent hourly GitHub Actions
+    mailbox workflow has stopped writing successful runs. The deployed app owns SMTP alerting while
+    the workflow owns Gmail ingestion, so failure of one does not silence the other.
 
     AC6: always 200 and a coarse status only, unauthenticated -- /api/health/ stays the uptime
     workflow's up/down signal (do not overload it, per the task notes); this is a separate,
