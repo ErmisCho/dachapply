@@ -9,13 +9,45 @@ from threading import Event, Lock, Thread
 from django.conf import settings
 from django.db import close_old_connections
 
-from jobradar.models import JobLead, UserProfile
+from jobradar.models import ApplicationNote, JobLead, UserProfile
 from jobradar.services.cv_generator import GenerationCancelled, generate_cv_package, recompile_generated_package
 
 
 _tasks={}
 _stage_history={}
 _lock=Lock()
+
+BASE_TEMPLATE_NOTE_PREFIX='Base templates used: '
+
+
+def _normalise_base_templates(value):
+    if not isinstance(value,dict):
+        return {}
+    result={}
+    for kind in ('cv','letter'):
+        names=value.get(kind)
+        if isinstance(names,list):
+            names=list(dict.fromkeys(name for name in names if isinstance(name,str) and name))
+            if names:
+                result[kind]=names
+    return result
+
+
+def _latest_base_templates(job):
+    for note in job.notes.filter(note_type='cv_change',note__startswith=BASE_TEMPLATE_NOTE_PREFIX):
+        try:
+            value=json.loads(note.note[len(BASE_TEMPLATE_NOTE_PREFIX):])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value,dict):
+            return _normalise_base_templates(value)
+    return {}
+
+
+def _record_base_templates(job, value):
+    ApplicationNote.objects.create(job=job,note_type='cv_change',note=BASE_TEMPLATE_NOTE_PREFIX+json.dumps(
+        _normalise_base_templates(value),ensure_ascii=False,separators=(',',':'),sort_keys=True))
+
 
 _STAGE_CAPS={'queued':0,'preparing':9.5,'generating':64.5,'generated':69.5,'compiling_cv':81.5,'cv_compiled':84.5,'compiling_letter':94.5,'letter_compiled':96.5,'saving':99}
 
@@ -251,13 +283,18 @@ def _cleanup():
             del _tasks[task_id]
 
 
-def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, cancel_event=None):
+def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, cancel_event=None):
     close_old_connections()
     try:
         if cancel_event.is_set():
             raise GenerationCancelled
         job=JobLead.objects.get(id=job_id)
-        archive, filename, artifacts=generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, lambda progress, stage: _update(task_id, status='running', progress=progress, stage=stage), source_cv, source_letter, revision_instructions, create_cv, correction_image, cancelled=cancel_event.is_set, user_id=user_id)
+        if base_templates is None and (source_cv or source_letter):
+            base_templates=_latest_base_templates(job)
+        generation_kwargs={'cancelled':cancel_event.is_set,'user_id':user_id}
+        if base_templates:
+            generation_kwargs['base_templates']=base_templates
+        archive, filename, artifacts=generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, lambda progress, stage: _update(task_id, status='running', progress=progress, stage=stage), source_cv, source_letter, revision_instructions, create_cv, correction_image, **generation_kwargs)
         if cancel_event.is_set():
             raise GenerationCancelled
         # Generation can run for minutes with no database traffic, so the pooled connection opened
@@ -267,6 +304,8 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         learned_preference=_learn_application_preference(user_id, revision_instructions, create_cv, create_letter)
         clipboard_tex=_clipboard_contents(artifacts)
         clipboard_copied=bool(clipboard_tex and _copy_to_clipboard(clipboard_tex))
+        if 'base_templates' in artifacts:
+            _record_base_templates(job,artifacts['base_templates'])
         _update(task_id, status='ready', progress=100, stage='Ready', archive=archive, filename=filename, artifacts=artifacts, report=artifacts.get('report'), clipboard_tex=clipboard_tex, clipboard_copied=clipboard_copied, learned_preference=learned_preference)
     except GenerationCancelled:
         _update(task_id, status='cancelled', stage='Cancelled', error='')
@@ -307,7 +346,7 @@ def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter
     return task_id
 
 
-def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None):
+def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None):
     _cleanup()
     task_id=uuid.uuid4().hex
     now=time.monotonic()
@@ -317,7 +356,7 @@ def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, p
         _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_config':{'profile':profile,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'create_cv':create_cv,'provider':provider,'model':model,'effort':effort,'speed':speed},'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'_stage_times':{},'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in plan)
     # ponytail: one local CLI agent per task; add a concurrency cap if large batches exhaust the workstation.
-    Thread(target=_run, args=(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv, source_letter, revision_instructions, create_cv, correction_image, cancel_event), name=f'cv-agent-{task_id[:8]}', daemon=True).start()
+    Thread(target=_run, args=(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv, source_letter, revision_instructions, create_cv, correction_image, base_templates, cancel_event), name=f'cv-agent-{task_id[:8]}', daemon=True).start()
     return task_id
 
 
@@ -359,7 +398,10 @@ def start_cv_revision(task_id, user_id, instructions, correction_image=None):
         config=dict(parent['_config'])
         artifacts=dict(parent['artifacts'])
         job_id=parent['job_id']
-    return start_cv_task(job_id, user_id, **config, source_cv=artifacts.get('cv_tex'), source_letter=artifacts.get('letter_tex'), revision_instructions=instructions[:5000], correction_image=correction_image)
+    kwargs={'source_cv':artifacts.get('cv_tex'),'source_letter':artifacts.get('letter_tex'),'revision_instructions':instructions[:5000],'correction_image':correction_image}
+    if artifacts.get('base_templates'):
+        kwargs['base_templates']=artifacts['base_templates']
+    return start_cv_task(job_id, user_id, **config, **kwargs)
 
 
 def get_cv_task_download(task_id, user_id):

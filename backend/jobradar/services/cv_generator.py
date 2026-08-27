@@ -584,13 +584,13 @@ def _compile_pdf(output, filename, is_cv, cancelled=None):
 
 def _package_cache(workspace, job, profile, sources, options, user_id=None):
     # The cache directory is shared by every account on the machine, so the account is part of the
-    # key (version 3, TASK-99a). Two accounts with byte-identical templates and the same job hashed
+    # key (version 4; v3 was TASK-99a). Two accounts with byte-identical templates and the same job hashed
     # to the same entry before, and the cached zip carries the FIRST account's name in its
     # filenames -- so the second one downloaded an application titled with a stranger's surname.
     # The template and photo bytes are hashed in directly now that they are rows rather than files,
     # which also means editing a template invalidates the entry the way touching the file used to.
     digest=hashlib.sha256(json.dumps({
-        'version':3,
+        'version':4,
         'user':user_id,
         'job':[job.company,job.title,job.location,job.language_requirements,job.source_text],
         'evaluation':list(job.evaluations.values('fit_score','summary','main_match_reasons','main_gaps','cv_adjustment_notes')[:1]),
@@ -742,7 +742,7 @@ def _read_generated(path, label):
         raise RuntimeError(f'The current generated {label} is no longer on disk; generate it again rather than readjusting it.') from None
 
 
-def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed='normal', progress=None, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, cancelled=None, user_id=None):
+def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed='normal', progress=None, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, cancelled=None, user_id=None, base_templates=None):
     _ensure_active(cancelled)
 
     reported_progress=0
@@ -776,6 +776,14 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
     letter_language=cv_key
     letter_asset=cv_template['letters'].get(letter_key)
     photo=user_photo(requesting_user, assets)
+    if base_templates is None:
+        base_templates={
+            'cv':[cv_template['cv'].filename] if create_cv and not source_cv else [],
+            'letter':[letter_asset.filename] if create_letter and not source_letter else [],
+        }
+    else:
+        base_templates={kind:list(dict.fromkeys(name for name in base_templates.get(kind,[]) if name))
+                        for kind,enabled in (('cv',create_cv),('letter',create_letter)) if enabled}
 
     workspace=Path(settings.CODEX_CV_WORKSPACE) if settings.CODEX_CV_WORKSPACE else None
     if not workspace or not workspace.is_dir():
@@ -933,6 +941,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
         _ensure_active(cancelled)
         saved=persist_generated_files(output, workspace, cv_name if create_cv else None, letter_name if create_letter else None, source_cv if is_revision else None, source_letter if is_revision else None)
         saved['report']=generation_report
+        saved['base_templates']=base_templates
         archive=io.BytesIO()
         with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
             for generated_file in generated_files:

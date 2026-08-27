@@ -755,9 +755,9 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     recompiled,_,recompiled_saved=recompile_generated_package(job,'de',saved['cv_tex'],saved['letter_tex'], user_id=user.id)
     assert len([name for name in zipfile.ZipFile(BytesIO(recompiled)).namelist() if name.endswith('.pdf')])==2
     assert recompiled_saved['cv_tex']==saved['cv_tex'] and sum(command[0] in ('codex','claude') for command in commands)==model_calls
-    _,_,revised_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], revision_instructions='Fix the page break and overlap', user_id=user.id)
+    _,_,revised_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], revision_instructions='Fix the page break and overlap', user_id=user.id, base_templates=saved['base_templates'])
     assert revised_saved==saved
-    _,_,image_revised_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], correction_image=correction_image, user_id=user.id)
+    _,_,image_revised_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], correction_image=correction_image, user_id=user.id, base_templates=saved['base_templates'])
     assert image_revised_saved==saved and not correction_dirs[-1].exists()
     assert any('CURRENT GENERATED PDF LAYOUT CONTEXT' in prompt and 'current-CV-page-1.png' in prompt and 'SOURCE PRIORITY' in prompt for prompt in prompts)
     assert any('USER-PROVIDED CORRECTION IMAGE' in prompt and 'user-correction-reference.png' in prompt for prompt in prompts)
@@ -766,7 +766,8 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     assert not any('letter' in stage.lower() for _,stage in cv_only_progress)
     letter_only,_,letter_only_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', create_cv=False, user_id=user.id)
     assert len([name for name in zipfile.ZipFile(BytesIO(letter_only)).namelist() if name.endswith('.pdf')])==1
-    assert set(letter_only_saved)=={'letter_tex','letter_pdf','report'} and opened[-1]==tmp_path/'output'
+    assert set(letter_only_saved)=={'letter_tex','letter_pdf','report','base_templates'} and opened[-1]==tmp_path/'output'
+    assert letter_only_saved['base_templates']=={'cv':[],'letter':['motivationsschreiben.tex']}
     assert letter_only_saved['report']['unsupported_requirements_not_claimed']==['Unsupported tool']
     with pytest.raises(ValueError, match='at least'):
         generate_cv_package(job, 'profile', 'de', '', False, 'openai', 'gpt-5.5', 'high', create_cv=False, user_id=user.id)
@@ -857,19 +858,20 @@ def test_cv_task_completes_and_is_user_scoped(job, monkeypatch, tmp_path):
         learned_calls.append((user_id,instructions,create_cv,create_letter))
         return '- [CV + letter] ' + instructions
     monkeypatch.setattr(cv_tasks, '_learn_application_preference', learn)
+    provenance=[]; monkeypatch.setattr(cv_tasks, '_record_base_templates', lambda job,value: provenance.append(value))
     calls=[]
     latest=tmp_path/'latest.tex'; latest.write_text('generated CV TeX 📌', encoding='utf-8')
     latest_letter=tmp_path/'latest-letter.tex'; latest_letter.write_text('generated letter TeX 📌', encoding='utf-8')
     clipboard='% ===== latest.tex =====\ngenerated CV TeX 📌\n\n% ===== latest-letter.tex =====\ngenerated letter TeX 📌'
     assert cv_tasks._clipboard_contents({'cv_tex':str(latest)})=='generated CV TeX 📌'
     assert cv_tasks._clipboard_contents({'letter_tex':str(latest_letter)})=='generated letter TeX 📌'
-    def generate(job, profile, cv, letter, create_letter, provider, model, effort, speed, progress, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, cancelled=None, user_id=None):
+    def generate(job, profile, cv, letter, create_letter, provider, model, effort, speed, progress, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, cancelled=None, user_id=None, base_templates=None):
         assert (provider,model,effort,speed)==('openai','gpt-5.5','medium','normal')
         # The generator names the output files after this user, so the id has to reach it.
         assert user_id==job.created_by_id
         calls.append((source_cv,source_letter,revision_instructions,correction_image))
         progress(10,'Generating CV and motivation letter'); progress(95,'Motivation letter compiled')
-        return b'zip','application.zip',{'cv_pdf':'ready.pdf','cv_tex':str(latest),'letter_tex':str(latest_letter)}
+        return b'zip','application.zip',{'cv_pdf':'ready.pdf','cv_tex':str(latest),'letter_tex':str(latest_letter),'base_templates':{'cv':['English CV_v_1.5.tex'],'letter':['Cover_letter.tex']}}
     monkeypatch.setattr(cv_tasks, 'generate_cv_package', generate)
     task_id=cv_tasks.start_cv_task(job.id, job.created_by_id, 'profile', 'en', 'motivation_letter', True, 'openai', 'gpt-5.5', 'medium', 'normal')
     for _ in range(100):
@@ -881,6 +883,7 @@ def test_cv_task_completes_and_is_user_scoped(job, monkeypatch, tmp_path):
     assert cv_tasks.get_cv_task_download(task_id, job.created_by_id)==(b'zip','application.zip')
     assert task['artifacts']['cv_pdf']=='ready.pdf' and task['clipboard_tex']==clipboard
     assert task['clipboard_copied'] is True and copied==[clipboard]
+    assert provenance==[{'cv':['English CV_v_1.5.tex'],'letter':['Cover_letter.tex']}]
     monkeypatch.setattr(cv_tasks,'recompile_generated_package',lambda job,cv,source_cv,source_letter,progress,cancelled=None,user_id=None:(progress(95,'Motivation letter compiled') or (b'recompiled','recompiled.zip',{'cv_tex':str(latest),'letter_tex':str(latest_letter)})))
     compile_id=cv_tasks.start_cv_compile_task(job.id,job.created_by_id,'en',str(latest),str(latest_letter))
     for _ in range(100):
@@ -904,7 +907,7 @@ def test_cv_task_completes_and_is_user_scoped(job, monkeypatch, tmp_path):
     learned='- [CV + letter] Shorten the profile'
     assert revision_task['learned_preference']==learned
     assert learned_calls==[(job.created_by_id,'Shorten the profile',True,True)]
-    before=list(learned_calls)
+    before=list(learned_calls); provenance_before_failure=list(provenance)
     generation_error=RuntimeError('full compiler output'); generation_error.public_message='LaTeX could not compile the CV after repair.'; generation_error.diagnostics='line 42: undefined control sequence'; generation_error.repair_attempts=2
     monkeypatch.setattr(cv_tasks, 'generate_cv_package', lambda *args,**kwargs: (_ for _ in ()).throw(generation_error))
     failed_id=cv_tasks.start_cv_revision(revision_id, job.created_by_id, 'This must not be learned')
@@ -914,6 +917,7 @@ def test_cv_task_completes_and_is_user_scoped(job, monkeypatch, tmp_path):
         time.sleep(.01)
     assert failed['status']=='failed' and failed['stage']=='Failed' and failed['error']=='LaTeX could not compile the CV after repair.'
     assert failed['repair_attempts']==2 and 'undefined control sequence' in failed['diagnostics'] and learned_calls==before
+    assert provenance==provenance_before_failure, 'failed generation must not create provenance'
     with pytest.raises(ValueError): cv_tasks.start_cv_revision(task_id, -1, 'hack')
 
 
@@ -1501,14 +1505,14 @@ def test_start_cv_revision_inherits_parent_config_without_reverifying_capability
     cv_tasks._tasks.clear()
     captured=[]
     monkeypatch.setattr(cv_tasks, 'start_cv_task', lambda *args,**kwargs: captured.append((args,kwargs)) or 'child-task-id')
-    cv_tasks._tasks['parent-task']={'id':'parent-task','user_id':7,'job_id':job.id,'status':'ready','artifacts':{'cv_tex':'saved-cv.tex','letter_tex':'saved-letter.tex'},'_config':{'profile':'profile text','cv_key':'de','letter_key':'anschreiben','create_letter':True,'create_cv':True,'provider':'anthropic','model':'opus','effort':'default','speed':'fast'}}
+    cv_tasks._tasks['parent-task']={'id':'parent-task','user_id':7,'job_id':job.id,'status':'ready','artifacts':{'cv_tex':'saved-cv.tex','letter_tex':'saved-letter.tex','base_templates':{'cv':['German CV_v_1.5.tex'],'letter':['Anschreiben.tex']}},'_config':{'profile':'profile text','cv_key':'de','letter_key':'anschreiben','create_letter':True,'create_cv':True,'provider':'anthropic','model':'opus','effort':'default','speed':'fast'}}
 
     child_id=cv_tasks.start_cv_revision('parent-task', 7, 'Shorten the intro')
 
     assert child_id=='child-task-id' and len(captured)==1
     args,kwargs=captured[0]
     assert args==(job.id, 7)
-    assert kwargs=={'profile':'profile text','cv_key':'de','letter_key':'anschreiben','create_letter':True,'create_cv':True,'provider':'anthropic','model':'opus','effort':'default','speed':'fast','source_cv':'saved-cv.tex','source_letter':'saved-letter.tex','revision_instructions':'Shorten the intro','correction_image':None}
+    assert kwargs=={'profile':'profile text','cv_key':'de','letter_key':'anschreiben','create_letter':True,'create_cv':True,'provider':'anthropic','model':'opus','effort':'default','speed':'fast','source_cv':'saved-cv.tex','source_letter':'saved-letter.tex','revision_instructions':'Shorten the intro','correction_image':None,'base_templates':{'cv':['German CV_v_1.5.tex'],'letter':['Anschreiben.tex']}}
     cv_tasks._tasks.clear()
 
 
@@ -1538,9 +1542,10 @@ def test_cv_task_can_be_cancelled_without_saving_or_learning(job, monkeypatch):
     from threading import Event
     from jobradar.services import cv_tasks
 
-    cv_tasks._tasks.clear(); entered=Event(); learned=[]
+    cv_tasks._tasks.clear(); entered=Event(); learned=[]; provenance=[]
     monkeypatch.setattr(cv_tasks.JobLead.objects, 'get', lambda id: job)
     monkeypatch.setattr(cv_tasks, '_learn_application_preference', lambda *args: learned.append(args))
+    monkeypatch.setattr(cv_tasks, '_record_base_templates', lambda *args: provenance.append(args))
     def generate(job, profile, cv, letter, create_letter, provider, model, effort, speed, progress, *args, cancelled=None, **kwargs):
         progress(10,'Generating CV'); entered.set()
         while not cancelled(): time.sleep(.005)
@@ -1555,7 +1560,7 @@ def test_cv_task_can_be_cancelled_without_saving_or_learning(job, monkeypatch):
         if task['status']=='cancelled': break
         time.sleep(.01)
     assert task['status']=='cancelled' and task['stage']=='Cancelled' and task['estimated_seconds_remaining']==0
-    assert not task['artifacts'] and not learned and cv_tasks.get_cv_task_download(task_id,job.created_by_id) is None
+    assert not task['artifacts'] and not learned and not provenance and cv_tasks.get_cv_task_download(task_id,job.created_by_id) is None
     assert cv_tasks.cancel_cv_task(task_id,job.created_by_id) is False
 
 

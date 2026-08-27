@@ -1,14 +1,23 @@
 ---
 id: TASK-192
 title: Record which base template produced each generated CV and letter
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi'
+created_date: ''
+updated_date: '2026-08-27 15:47'
 labels:
   - backend
   - cv-generation
 dependencies:
   - TASK-99a
   - TASK-189
+modified_files:
+  - backend/jobradar/services/cv_generator.py
+  - backend/jobradar/services/cv_tasks.py
+  - backend/jobradar/management/commands/report_cv_template_usage.py
+  - backend/jobradar/tests/test_api.py
+  - backend/jobradar/tests/test_cv_assets.py
 priority: medium
 ordinal: 192000
 ---
@@ -51,15 +60,25 @@ the blast radius is currently unknowable.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every generation records the base template filename(s) it used, durably — surviving a process restart, unlike the current in-memory task dict
-- [ ] #2 When a generation uses more than one base (a CV base and a letter base, or several letters), ALL of them are recorded, not just the first
-- [ ] #3 The record includes the base's version as it appears in the filename (`_v_1.5`), not a version-stripped key, so a later version change is distinguishable
-- [ ] #4 The record is reachable from the job it belongs to, so "which base produced this application" is answerable per job without reading the workspace
-- [ ] #5 A report lists every base and how many generations used it, and names the bases used exactly once
-- [ ] #6 Stated explicitly: the 16 existing generated CVs and 5 letters cannot be attributed retrospectively, and nothing in the implementation pretends otherwise
-- [ ] #7 Nothing personal is written anywhere new — a filename and a count only, no template content, no candidate evidence, per TASK-189
-- [ ] #8 Backend suite green
+- [x] #1 Every generation records the base template filename(s) it used, durably — surviving a process restart, unlike the current in-memory task dict
+- [x] #2 When a generation uses more than one base (a CV base and a letter base, or several letters), ALL of them are recorded, not just the first
+- [x] #3 The record includes the base's version as it appears in the filename (`_v_1.5`), not a version-stripped key, so a later version change is distinguishable
+- [x] #4 The record is reachable from the job it belongs to, so "which base produced this application" is answerable per job without reading the workspace
+- [x] #5 A report lists every base and how many generations used it, and names the bases used exactly once
+- [x] #6 Stated explicitly: the 16 existing generated CVs and 5 letters cannot be attributed retrospectively, and nothing in the implementation pretends otherwise
+- [x] #7 Nothing personal is written anywhere new — a filename and a count only, no template content, no candidate evidence, per TASK-189
+- [x] #8 Backend suite green
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Trace fresh, cached, revised, letter-only, failed, and restarted generation paths; confirm the smallest durable job-linked record.
+2. Capture every actually used CvAsset filename and persist it only after successful generation, preserving full versioned names and revision lineage.
+3. Add report_cv_template_usage to count each recorded base and identify bases used exactly once; do not backfill unrecoverable historical files.
+4. Add focused regression coverage for multi-base/versioned filenames, restart durability, success-only persistence, reporting, and privacy; run backend suite and frontend build.
+5. Finalize through Backlog CLI and run the sealed Asian Dad evaluation.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -85,4 +104,16 @@ provenance for TASK-166's created leads.
 Do not store the template body. AC7 exists because TASK-189 deliberately kept the owner's templates
 and photograph out of the database; recording *which file* was used must not become a route to
 putting the file itself there.
+
+Implemented with the existing job-linked ApplicationNote model (`cv_change` plus a machine-readable provenance prefix), so no schema or migration was added. Each successful task stores normalized CV/letter filename lineage; failed and cancelled tasks do not. Cache metadata is versioned to retain the actual package lineage, and revisions inherit lineage from their parent task or the latest durable job note after restart.
+
+Added `report_cv_template_usage`, which counts a filename once per generation, lists exactly-once bases separately, skips malformed user-edited provenance safely, and explicitly states that the pre-existing 16 CVs and 5 letters cannot be reconstructed. Notes contain only document-type keys and filenames; no template body, candidate evidence, or creator identity is stored.
+
+Validation: focused provenance tests 5 passed; backend full suite 992 passed; frontend `npm run build` passed after installing lockfile dependencies in the isolated worktree. First-gate failures were root-caused in `.orchestrator/debug/task-192-2026-08-27-feature-1-{1,2}.md` before fixes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Recorded exact versioned CV and letter base filenames durably on each successful generation, preserved lineage through cache hits and revisions, and added a job-linked aggregate usage/exactly-once report. Verified with 992 backend tests and a successful frontend production build.
+<!-- SECTION:FINAL_SUMMARY:END -->
