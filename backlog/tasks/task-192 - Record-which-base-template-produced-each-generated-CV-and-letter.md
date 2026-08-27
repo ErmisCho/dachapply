@@ -1,11 +1,11 @@
 ---
 id: TASK-192
 title: Record which base template produced each generated CV and letter
-status: Done
+status: In Progress
 assignee:
   - '@pi'
 created_date: ''
-updated_date: '2026-08-27 15:47'
+updated_date: '2026-08-27 18:09'
 labels:
   - backend
   - cv-generation
@@ -110,6 +110,8 @@ Implemented with the existing job-linked ApplicationNote model (`cv_change` plus
 Added `report_cv_template_usage`, which counts a filename once per generation, lists exactly-once bases separately, skips malformed user-edited provenance safely, and explicitly states that the pre-existing 16 CVs and 5 letters cannot be reconstructed. Notes contain only document-type keys and filenames; no template body, candidate evidence, or creator identity is stored.
 
 Validation: focused provenance tests 5 passed; backend full suite 992 passed; frontend `npm run build` passed after installing lockfile dependencies in the isolated worktree. First-gate failures were root-caused in `.orchestrator/debug/task-192-2026-08-27-feature-1-{1,2}.md` before fixes.
+
+Completion-policy correction: implementation is committed, pushed, fully tested (992 backend tests plus frontend build), and Asian Dad verdict is PERFECT. Task remains In Progress until its branch is squash-merged into main; a post-merge completion change will set Done.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
