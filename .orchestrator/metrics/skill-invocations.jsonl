@@ -8,3 +8,5 @@
 {"timestamp":"2026-08-17T13:44:19.437Z","event":"selected","skill":"asian-dad-eval","session_id":"227af2ba-6699-44fa-b578-c63f2603b086","schema_version":1,"phase":null}
 {"timestamp":"2026-08-18T11:50:04.721Z","event":"selected","skill":"asian-dad-eval","session_id":"0e54d4ac-6325-4650-89be-b0b00ed869ad","schema_version":1,"phase":null}
 {"timestamp":"2026-08-19T17:05:39.914Z","event":"selected","skill":"asian-dad-eval","session_id":"fbcc4e7f-77c3-4672-892d-98fea5203e97","schema_version":1,"phase":null}
+{"timestamp":"2026-08-27T13:22:25.100Z","event":"selected","skill":"session-orchestrator:wave-executor","session_id":"task-192-2026-08-27-feature-1","phase":"wave-execution","schema_version":1}
+{"timestamp":"2026-08-27T16:49:34.141Z","event":"selected","skill":"session-orchestrator:session-end","session_id":"task-192-2026-08-27-feature-1","phase":null,"schema_version":1}

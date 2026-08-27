@@ -189,6 +189,51 @@ def test_two_accounts_with_identical_templates_do_not_share_a_cached_package(db,
     assert sum(command[0] == 'codex' for command in seen['commands']) == model_calls + 1 and again == alice_saved
 
 
+def test_generation_returns_every_versioned_base_filename_on_fresh_and_cached_runs(db, tmp_path, monkeypatch, settings, cv_assets, german_job):
+    """A cache hit must retain the exact bases that produced its package, not today's selection."""
+    settings.CODEX_CV_WORKSPACE=str(tmp_path); settings.CODEX_CV_CACHE=True; settings.CODEX_CV_OPEN_OUTPUT_FOLDER=False
+    (tmp_path/'CVs').mkdir()
+    user=User.objects.create_user('provenance@example.test')
+    cv_assets(user)
+    CvAsset.objects.filter(user=user,kind=CvAsset.KIND_CV,key='en').update(filename='English - AI Engineer (base)_v_1.5.tex')
+    CvAsset.objects.filter(user=user,kind=CvAsset.KIND_LETTER,key='motivation_letter').update(filename='Cover_letter.tex')
+    generated={**GENERATED,'letter_tex':VALID_TEX}
+    seen=_fake_pdflatex(monkeypatch,generated)
+
+    _,_,fresh=generate_cv_package(german_job,'profile','en','motivation_letter',True,'openai','gpt-5.5','medium',user_id=user.id)
+    model_calls=sum(command[0]=='codex' for command in seen['commands'])
+    CvAsset.objects.filter(user=user,kind=CvAsset.KIND_CV,key='en').update(filename='English - AI Engineer (base)_v_1.6.tex')
+    CvAsset.objects.filter(user=user,kind=CvAsset.KIND_LETTER,key='motivation_letter').update(filename='New_cover_letter.tex')
+    _,_,cached=generate_cv_package(german_job,'profile','en','motivation_letter',True,'openai','gpt-5.5','medium',user_id=user.id)
+
+    expected={'cv':['English - AI Engineer (base)_v_1.5.tex'],'letter':['Cover_letter.tex']}
+    assert fresh['base_templates']==cached['base_templates']==expected
+    assert sum(command[0]=='codex' for command in seen['commands'])==model_calls
+
+
+def test_job_linked_provenance_survives_task_cleanup_and_reports_generation_counts(db, german_job):
+    """Database notes outlive `_tasks`; reports count generations, not duplicate names in one note."""
+    from jobradar.services import cv_tasks
+
+    other=JobLead.objects.create(company='Andere Firma',title='Engineer',raw_description=GERMAN_SOURCE,created_by=german_job.created_by)
+    cv_tasks._record_base_templates(german_job,{'cv':['English CV_v_1.5.tex'],'letter':['Cover_letter.tex']})
+    cv_tasks._record_base_templates(other,{'cv':['English CV_v_1.5.tex','English CV_v_1.5.tex'],'letter':['Only_once.tex']})
+    cv_tasks._tasks['transient']={'not':'durable'}
+    cv_tasks._tasks.clear()
+
+    assert cv_tasks._latest_base_templates(german_job)=={'cv':['English CV_v_1.5.tex'],'letter':['Cover_letter.tex']}
+    note=german_job.notes.get()
+    assert note.created_by_id is None and 'original cv' not in note.note and GERMAN_SOURCE not in note.note
+
+    out=StringIO()
+    call_command('report_cv_template_usage',stdout=out)
+    report=out.getvalue()
+    assert 'English CV_v_1.5.tex: 2 generation(s)' in report
+    once=report.split('Bases used exactly once:',1)[1].split('The 16 existing CVs',1)[0]
+    assert 'Cover_letter.tex' in once and 'Only_once.tex' in once and 'English CV_v_1.5.tex' not in once
+    assert '16 existing CVs and 5 existing letters cannot be attributed retrospectively' in report
+
+
 def test_import_command_is_dry_run_by_default_and_prints_a_before_after_census(db, tmp_path):
     """AC3: the owner's files move with a command they can inspect first, never a migration."""
     owner = User.objects.create_user('import-owner@example.test', email='import-owner@example.test')
