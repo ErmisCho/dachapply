@@ -1,61 +1,86 @@
 ---
 schema-version: 1
-session: task-192-2026-08-27-feature-1
+session: task-196-2026-08-27-feature-1
 session-type: feature
-branch: task-192-template-provenance
-issues: [TASK-192]
-started_at: 2026-08-27T13:21:42.607Z
+branch: task-196-edit-notes
+issues: [TASK-196, TASK-197]
+started_at: 2026-08-27T17:19:16.166Z
 status: completed
-current-wave: 5
-total-waves: 5
-scope-baseline-intent: "Record durable job-linked base-template provenance for generated CVs and letters and report usage counts."
-scope-baseline-owner-boundary: "TASK-192 backend generation services, one reporting command, focused backend tests, and Backlog task metadata."
-scope-baseline-planned-files: 6
-scope-baseline-session: task-192-2026-08-27-feature-1
-scope-baseline-frozen-at: 2026-08-27T13:22:25.113Z
+current-wave: 4
+total-waves: 4
+scope-baseline-intent: "Let users edit their general job notes from every job status."
+scope-baseline-owner-boundary: "TASK-196 frontend note UI, focused frontend regression tests, and Backlog metadata."
+scope-baseline-planned-files: 3
+scope-baseline-session: task-196-2026-08-27-feature-1
+scope-baseline-frozen-at: 2026-08-27T17:19:16.166Z
+mission-status:
+  - id: m-1
+    task: "Implement status-independent inline editing for general job notes"
+    wave: 1
+    status: completed
+  - id: m-2
+    task: "Add focused save, cancel, and terminal-status regression coverage"
+    wave: 2
+    status: completed
+  - id: m-3
+    task: "Verify and finalize TASK-196"
+    wave: 3
+    status: completed
+  - id: m-4
+    task: "Remove fixable frontend npm audit vulnerabilities and align the backend quality runner"
+    wave: 4
+    status: completed
+updated: 2026-08-27T17:53:26.119Z
 recommended-mode: feature
 top-priorities: []
 carryover-ratio: 0
 completion-rate: 1
 rationale: "v0: default clean completion"
-completed_at: 2026-08-27T17:03:38.972Z
-updated: 2026-08-27T17:03:38.972Z
+completed_at: 2026-08-27T17:53:26.119Z
 ---
 
 ## Current Wave
 
-All 5 waves complete — awaiting /close
+All 4 waves complete. TASK-196 and TASK-197 are Done; full verification passed and commit/push are pending.
+
+## Session Plan
+
+### Wave 1: Impl-Core
+- Add an Edit action to each general note on the job detail page.
+- Save with `PATCH /api/notes/{id}/`, replace the existing local row, and make Cancel restore stored text.
+- Keep editability independent of job status.
+
+### Wave 2: Quality
+- Add one focused DOM-less Vitest file covering rendering, request semantics, no-duplicate replacement, cancellation, and terminal statuses.
+- Run `npm test` and `npm run build` in `frontend/`.
+
+### Wave 3: Finalization
+- Review the diff, update TASK-196 acceptance criteria and final summary, and prepare clean handoff.
 
 ## Wave History
 
-### Wave 1 — Discovery (planned 0 files → actual 0, over-delivery 0.00) — no suite (read-only)
-- Coordinator-direct: done — 0 files — traced fresh, cached, revision, restart, cancellation, and failure paths; selected existing job-linked ApplicationNote persistence.
-
-### Wave 2 — Impl-Core (planned 3 files → actual 3, over-delivery 1.00) — suite 12/0 on Windows
-- Coordinator-direct: done — 3 files — persisted versioned CV/letter lineage on successful fresh, cached, and revised generation; targeted checks passed.
-
-### Wave 3 — Impl-Polish (planned 1 file → actual 1, over-delivery 1.00) — suite 12/0 on Windows
-- Coordinator-direct: done — 1 file — added deterministic aggregate usage and exactly-once reporting with explicit no-backfill statement; command discovery and targeted checks passed.
-
-### Wave 4 — Quality (planned 5 files → actual 3, over-delivery 0.60) — suite 992/0 on Windows
-- Simplification: done — 0 files changed — no slop or duplicate tests found.
-- Test/review: done — 2 focused provenance tests added; security, QA, and architecture review PASS.
-- Full Gate: done — backend 992 passed; frontend TypeScript/Vite build passed; lint skipped by project config.
-
-### Wave 5 — Finalization (planned 1 file → actual 1, over-delivery 1.00) — suite 992/0 on Windows
-- Coordinator-direct: done — TASK-192 acceptance criteria checked, final summary recorded, status Done.
-- Asian Dad Eval: PERFECT — all 9 sealed criteria independently verified.
+- Wave 1 — Impl-Core: COMPLETE. Added inline editing and PATCH-based replacement in `frontend/src/App.tsx`.
+- Wave 2 — Quality: COMPLETE. Added 4 focused tests; full frontend suite 182/182 and production build passed.
+- Wave 3 — Finalization: COMPLETE. All acceptance criteria checked and TASK-196 marked Done.
+- Wave 4 — Security hardening: COMPLETE. npm audit reduced 5 findings to 0; quality policy aligned with the uv lockfile.
 
 ## Deviations
 
-- [2026-08-27T13:21:42.607Z] Worktree-Auto-Promotion accepted; running in isolated sibling worktree because session_id=343dadee-f268-43ec-9ad7-e34f07a2f368 is active in the original worktree.
-- [2026-08-27T13:29:40.009Z] Wave 2 scope expanded to backend/jobradar/tests/test_api.py because its existing asynchronous task unit mock must absorb and verify the new persistence side effect; production behavior was otherwise blocked by SQLite test-transaction locking.
-- [2026-08-27T15:46:29.746Z] Wave 4 Full Gate first attempt failed 3 backend tests because legacy mocks lacked the new provenance contract, and frontend dependencies were absent in the promoted worktree. Root causes recorded in .orchestrator/debug/task-192-2026-08-27-feature-1-{1,2}.md; minimal fixes applied; rerun passed 992 backend tests and the frontend build.
+- Pi v1 has no native parallel subagent dispatch; execute the waves sequentially, coordinator-direct.
+- Work was promoted to an isolated sibling worktree because the original worktree has an active feature session and unrelated changes.
+- [2026-08-27T17:45:50.130Z] User-authorized scope expansion after TASK-196: completed TASK-197 to remove all five fixable npm audit findings; also applied the already-proven uv quality-policy correction from TASK-192 without merging unrelated provenance code.
+
+## What Not To Retry
+
+(none yet)
+
+## Open Questions
+
+(none)
 
 ## Mission Status
 
-- m-1: completed (updated 2026-08-27T15:46:29.769Z)
-- m-2: completed (updated 2026-08-27T15:46:29.775Z)
-- m-3: completed (updated 2026-08-27T15:46:29.780Z)
-- m-4: completed (updated 2026-08-27T15:46:29.786Z)
-- m-5: completed (updated 2026-08-27T15:54:10.222Z)
+- m-1: completed (updated 2026-08-27T17:23:55.240Z)
+- m-2: completed (updated 2026-08-27T17:23:55.246Z)
+- m-3: completed (updated 2026-08-27T17:24:59.543Z)
+- m-4: completed (updated 2026-08-27T17:54:36.358Z)
