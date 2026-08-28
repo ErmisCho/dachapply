@@ -1,8 +1,13 @@
 ---
 id: TASK-191
-title: An interview date only reaches a job when the message is classified an invitation
-status: To Do
-assignee: []
+title: >-
+  An interview date only reaches a job when the message is classified an
+  invitation
+status: In Progress
+assignee:
+  - '@pi'
+created_date: ''
+updated_date: '2026-08-28 13:00'
 labels:
   - backend
   - mailbox
@@ -40,14 +45,20 @@ own dry run rather than an argument.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A matched, calendar-carrying message can put its date on the job without a human running a management command, or the reason it must not is stated with the case that breaks
-- [ ] #2 Measured against production before and after: which of the 21 calendar-carrying messages would produce an `interview_date` suggestion, named individually. A non-interview producing one is a FAILURE, not an acceptable cost
-- [ ] #3 The four community meetups and the recruiter catch-ups (Hays "Austausch Jobmöglichkeit") are checked by name and do NOT produce an interview date
-- [ ] #4 TASK-182's conservative keyword choice is not reversed — if a date now flows from a message the classifier does not call an invitation, state exactly what carries that decision instead
-- [ ] #5 `backfill_interview_dates` still works and stays dry-run-by-default; this removes the NEED to run it, not the option
-- [ ] #6 Verified on the real thing: clear job 535's `interview_at`, run only the automatic path, and show the date arrives
-- [ ] #7 Backend suite green
+- [x] #1 A matched, calendar-carrying message can put its date on the job without a human running a management command, or the reason it must not is stated with the case that breaks
+- [x] #2 Measured against production before and after: which of the 21 calendar-carrying messages would produce an `interview_date` suggestion, named individually. A non-interview producing one is a FAILURE, not an acceptable cost
+- [x] #3 The four community meetups and the recruiter catch-ups (Hays "Austausch Jobmöglichkeit") are checked by name and do NOT produce an interview date
+- [x] #4 TASK-182's conservative keyword choice is not reversed — if a date now flows from a message the classifier does not call an invitation, state exactly what carries that decision instead
+- [x] #5 `backfill_interview_dates` still works and stays dry-run-by-default; this removes the NEED to run it, not the option
+- [x] #6 Verified on the real thing: clear job 535's `interview_at`, run only the automatic path, and show the date arrives
+- [x] #7 Backend suite green
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Reverify the recovered calendar-date rule against every production calendar message. 2. Keep classifier keywords unchanged, exclude named meetups/catch-ups, and prove the automatic path updates job 535 without a management command. 3. Preserve dry-run backfill and run the backend suite.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -60,4 +71,18 @@ shape, not a design; measure it before building it.
 
 Do not reach for the LLM path. All 21 calendar rows are `evaluator='heuristic'`, so changing the
 prompt would be an unmeasured widening of a path none of them uses.
+
+Session Orchestrator deep session resumed the abandoned implementation from snapshot f85ca993 into isolated branch session-rest-backlog; prior output is treated as untrusted until reverified.
+
+Wave 1 production census rechecked all 21 calendar-bearing rows. Current recovered route selects only invitation 455 plus Formunauts 641/664, but its explicit Hays-on-interview known-limitation test contradicts the task and must be fixed in Wave 2.
+
+Wave 2: rejected the recovered false-positive ceiling. Added the minimal measured exclusions for Hays Austausch Jobmöglichkeit, community meetups, and build sprints; 12 focused checks and the 681-test impacted backend run passed. TASK-182 classifier constants remain untouched.
+
+Wave 4 production dry run over exactly 21 non-demo calendar rows: before selected [455], after [455,641,664]; named 365/484/601/602/701/702 remain false. A production transaction rollback cleared job 535, ran only build_suggestions for 641/664, selected 664 and produced 2026-08-26T14:00:00+00:00, then verified rollback. The backfill command remained dry-run by default. Classifier keywords are unchanged; structured VEVENT + matched job + owner-confirmed interview status carry the fallback, with explicit catch-up/community/build-sprint exclusions. Full 1014-test suite passed. Asian Dad: PERFECT.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Matched calendar events can now propose an interview date automatically for a job already confirmed in interview status, while measured Hays catch-ups, community meetups, and build sprints remain excluded and classifier keywords stay conservative. Production census/rollback checks and the full backend suite passed.
+<!-- SECTION:FINAL_SUMMARY:END -->

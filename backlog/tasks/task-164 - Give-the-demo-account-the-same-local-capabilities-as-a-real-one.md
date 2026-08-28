@@ -1,8 +1,11 @@
 ---
 id: TASK-164
 title: Give the demo account the same local capabilities as a real one
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
+created_date: ''
+updated_date: '2026-08-28 13:00'
 labels:
   - backend
   - demo
@@ -91,15 +94,21 @@ rows, or the owner's candidate-evidence file. A test should fail if it does.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Signed in as the demo account, the mailbox panel, the unmatched list and the attach action all work rather than 404 — verified in a browser, naming each endpoint exercised
-- [ ] #2 The demo account can see NO row of the owner's real mail. Proven by a test that seeds an owner message and asserts the demo user's every mailbox endpoint returns zero rows referencing it — asserted on response content, not on a permission flag
-- [ ] #3 Demo mailbox content is generated for the demo user the same way its job leads already are (`ensure_demo_user`), is clearly synthetic, and contains no real third-party names or addresses
-- [ ] #4 Nothing the demo account does can reach a real mail transport: no Gmail API call, no draft written to the owner's Gmail Drafts, no manual run against real credentials — verified by test, since a live call would otherwise only show up as a production surprise
-- [ ] #5 The demo account remains non-staff; capability comes from an explicit demo-scoped rule rather than from granting `is_staff`, so no future `is_staff` check anywhere silently widens for it
-- [ ] #6 CV generation is either included and demonstrated, or explicitly excluded with the reason recorded here and its own filed task — it depends on `CODEX_CV_ENABLED` and a LaTeX toolchain absent from the container (TASK-99), so it must not be left ambiguous
-- [ ] #7 The owner's own experience is unchanged — their mailbox endpoints behave exactly as before, verified by the existing suite plus one live check
-- [ ] #8 Backend suite green; frontend typecheck and tests green
+- [x] #1 Signed in as the demo account, the mailbox panel, the unmatched list and the attach action all work rather than 404 — verified in a browser, naming each endpoint exercised
+- [x] #2 The demo account can see NO row of the owner's real mail. Proven by a test that seeds an owner message and asserts the demo user's every mailbox endpoint returns zero rows referencing it — asserted on response content, not on a permission flag
+- [x] #3 Demo mailbox content is generated for the demo user the same way its job leads already are (`ensure_demo_user`), is clearly synthetic, and contains no real third-party names or addresses
+- [x] #4 Nothing the demo account does can reach a real mail transport: no Gmail API call, no draft written to the owner's Gmail Drafts, no manual run against real credentials — verified by test, since a live call would otherwise only show up as a production surprise
+- [x] #5 The demo account remains non-staff; capability comes from an explicit demo-scoped rule rather than from granting `is_staff`, so no future `is_staff` check anywhere silently widens for it
+- [x] #6 CV generation is either included and demonstrated, or explicitly excluded with the reason recorded here and its own filed task — it depends on `CODEX_CV_ENABLED` and a LaTeX toolchain absent from the container (TASK-99), so it must not be left ambiguous
+- [x] #7 The owner's own experience is unchanged — their mailbox endpoints behave exactly as before, verified by the existing suite plus one live check
+- [x] #8 Backend suite green; frontend typecheck and tests green
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Trace every mailbox endpoint and data ownership boundary. 2. Seed clearly fictional demo mailbox/CV assets scoped only to the non-staff demo user and prevent all real Gmail transport. 3. Verify mailbox panel, unmatched, attach, privacy isolation, owner behavior, and full gates.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -111,4 +120,14 @@ The scoping assumption stated to the owner and not contradicted: the demo accoun
 data, never the owner's. If the intent was instead a read-only view of the owner's real mail, that is
 a materially different task with a privacy decision attached and should be re-filed rather than
 folded in here.
+
+Wave 3: demo login now seeds three synthetic mailbox messages, one suggestion, fictional candidate evidence, CV/letter templates and a placeholder photo. Demo mailbox queries are prefix-scoped; non-demo mailbox queries exclude demo rows. Demo run/reply/AI/calendar paths short-circuit before Gmail, Google Calendar, or Codex. Privacy tests seed owner message/suggestion/draft content and exercise run, status, suggestion, unmatched, message, attach, reply, job-mailbox, draft edit/chat and decision endpoints without disclosure.
+
+Wave 4 verification: browser exercised /api/mailbox-suggestions/, /api/mailbox-runs/, /api/mailbox-runs/status/, /api/mailbox-runs/local-ai-review/, /api/mailbox-messages/unmatched/ and POST /api/mailbox-messages/{id}/attach/; the unmatched row disappeared after attach. Owner live HTTP checks returned 200 for runs/status/unmatched with zero synthetic markers. Demo rows use reserved UIDs 2000000000-2000000002 while the real resume marker remains 1173; real health/history/cold-start queries exclude demo rows. Full gates: 1014 backend and 187 frontend tests, production build, 0 npm audit findings. Asian Dad: PERFECT.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added an isolated fictional mailbox and fictional per-user CV assets to the non-staff public demo, with every real transport short-circuited and all owner mail/history/resume markers excluded. Browser, privacy/transport tests, live owner checks, and full backend/frontend gates passed; server generation remains honestly local-only under TASK-99B.
+<!-- SECTION:FINAL_SUMMARY:END -->

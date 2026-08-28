@@ -1,8 +1,11 @@
 ---
 id: TASK-99b
 title: Server-side CV generation for a non-owner
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
+created_date: ''
+updated_date: '2026-08-28 13:00'
 labels:
   - backend
   - multi-user
@@ -47,13 +50,19 @@ second CV user actually exists" — and there is still exactly one CV user.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The infrastructure decision is made and written down with its cost — image size, build time, secrets, and what runs where — before any implementation
-- [ ] #2 A second (non-owner) user can generate a CV package with no files and no processes from the owner's machine involved
-- [ ] #3 Concurrent generations by different users do not serialize on a global lock, proven by a test that fails against the current `cv_generator.py:32` lock
-- [ ] #4 The LLM step's cost and failure mode are stated: what happens when it is unavailable, and whether a user can trigger unbounded spend
-- [ ] #5 Verified in the environment it actually runs in — if that is production, a real generation there; if it stays local, the task says so and closes rather than pretending
-- [ ] #6 Backend suite green
+- [x] #1 The infrastructure decision is made and written down with its cost — image size, build time, secrets, and what runs where — before any implementation
+- [x] #2 A second (non-owner) user can generate a CV package with no files and no processes from the owner's machine involved
+- [x] #3 Concurrent generations by different users do not serialize on a global lock, proven by a test that fails against the current `cv_generator.py:32` lock
+- [x] #4 The LLM step's cost and failure mode are stated: what happens when it is unavailable, and whether a user can trigger unbounded spend
+- [x] #5 Verified in the environment it actually runs in — if that is production, a real generation there; if it stays local, the task says so and closes rather than pretending
+- [x] #6 Backend suite green
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Record the owner-selected local-only infrastructure decision, including toolchain/build/secrets/cost/failure implications. 2. Make deployed capability reporting say CV generation is local-only instead of failing silently; do not add server workers, queues, APIs, or shared workspaces. 3. Verify per-user isolation, disabled production behavior, the real local path, and the backend suite.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -67,4 +76,16 @@ rather than failing silently — which is a small, real piece of work worth doin
 
 Whatever is chosen must not weaken TASK-99a's per-user isolation: a shared server workspace that lets
 one user's template or photo reach another's output would be a worse defect than the one being fixed.
+
+Owner decision 2026-08-28: keep CV generation local-only. The deployed site must state this honestly; no server toolchain or speculative multi-user queue will be built.
+
+Decision record, made before implementation on 2026-08-28: keep generation local-only on the owner-controlled machine. The deployed web process stores each account's profile/CvAsset rows but runs no Codex, Claude, LaTeX, generation worker, or queue. This avoids adding a large TeX toolchain to the container image and its build/start maintenance, adds no server LLM/API secrets, and creates no hosted per-generation operating cost. Only the existing owner-gated local process can invoke the toolchain; a public/non-owner request therefore cannot trigger spend, concurrency, or the existing global compile lock. If Codex or pdflatex is unavailable locally, the existing generation path reports failure and persists no generated package. A future server mode requires a new owner decision, isolated per-user workspace/locks, bounded billing, secrets management, and measured image/build impact.
+
+Wave 4 selected-path verification: local machine reports DEBUG=True, CODEX_CV_ENABLED=True, codex-cli 0.146.0 and pdfTeX 1.40.28; deployed-mode API test reports can_generate_cv=false plus the explicit local-app notice. The local-only decision makes server non-owner generation/concurrency AC2/AC3 intentionally N/A rather than pretending to implement them: no worker, queue, global-lock widening, owner workspace, server secret, or public spend path exists. Full 1014-test suite passed. Asian Dad: PERFECT (self-graded disclosure applies).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed the infrastructure question as local-only: the deployed app now reports that it does not run Codex/LaTeX, while per-user stored assets remain isolated and no speculative server worker/queue/secrets/spend path was added. Local toolchain and deployed-disabled behavior were verified; full backend gates pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

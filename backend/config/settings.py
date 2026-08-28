@@ -205,7 +205,24 @@ INSTALLED_APPS = [
  'django.contrib.admin','django.contrib.auth','django.contrib.contenttypes','django.contrib.sessions','django.contrib.messages','django.contrib.staticfiles',
  'rest_framework','corsheaders','jobradar.apps.JobradarConfig'
 ]
+# TASK-188: GZipMiddleware is FIRST, per Django's own rule -- the response phase runs bottom-to-top,
+# so the first entry compresses last and therefore compresses the finished body. It was measured, not
+# assumed, that nothing was compressing API responses: the live app returns /api/health/ with no
+# content-encoding and no vary: Accept-Encoding, WhiteNoise only serves pre-compressed STATIC files,
+# and Container Apps' ingress adds nothing. The board's /api/jobs/ was therefore shipping 402,728
+# uncompressed bytes; gzip level 6 takes the same bytes to 79,370 (-80.3%) for 8 ms of CPU, measured
+# on the owner's real 69-row board. Nothing is dropped from the payload to get that, which is why it
+# is here rather than in the serializer.
+#
+# Two things this deliberately does NOT need a guard for, both checked in Django's own implementation:
+# read out of the installed django/middleware/gzip.py rather than assumed. The zip/xlsx/CSV export
+# responses: `if len(compressed_content) >= len(response.content): return response` hands back an
+# already-compressed archive untouched. And BREACH: the attack needs a secret IN the response body
+# next to attacker-controlled input, and the CSRF token is only ever set as a cookie here
+# (ensure_csrf_cookie) -- no view writes it into a body -- on top of which this Django version
+# already pads every compressed body with up to `max_random_bytes` of noise for exactly that reason.
 MIDDLEWARE = [
+ 'django.middleware.gzip.GZipMiddleware',
  'django.middleware.security.SecurityMiddleware','whitenoise.middleware.WhiteNoiseMiddleware','corsheaders.middleware.CorsMiddleware',
  'django.middleware.common.CommonMiddleware','config.middleware.NoCacheHtmlMiddleware','django.middleware.csrf.CsrfViewMiddleware','config.middleware.SplitAdminSessionMiddleware','django.contrib.auth.middleware.AuthenticationMiddleware','jobradar.middleware.UserUsageMiddleware',
  'django.contrib.messages.middleware.MessageMiddleware','django.middleware.clickjacking.XFrameOptionsMiddleware'

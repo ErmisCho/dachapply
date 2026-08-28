@@ -6071,3 +6071,108 @@ def test_an_older_invitation_attached_later_does_not_undo_the_newer_one(db, owne
     live = MailboxSuggestion.objects.filter(job=board_url_job, suggestion_type='interview_date', status='pending')
     assert live.count() == 1
     assert live.get().message == newest
+
+
+# --- TASK-191: a matched calendar invitation reaches the job with no management command ------------
+#
+# Measured against production 2026-08-25, after TASK-186 landed: 21 messages carry a calendar_start
+# and 11 of them are matched to a job -- the entire population any widening here can act on. By the
+# status of the job they matched: 7 `rejected` (175/179 SQUER, 391/696 zooplus, 679 APC, 701/702
+# Hays), 1 `archived` (682 Takeda), 3 `interview` (455 Elastic Consulting, 641/664 Formunauts). 455
+# already worked -- the classifier calls it an invitation. So the net new effect is 2 messages, and
+# they are the same meeting moved from 19 Aug to 26 Aug.
+#
+# The eight matched non-interview rows are excluded by terminal job status. The final parameterized
+# check also pins the named Hays/community exclusions even if one is attached to an interviewing job.
+
+def _formunauts_invitation(uid, subject, start, received_at):
+    """Messages 641/664's real shape: a Google-Calendar-sent appointment whose summary reads
+    "Formunauts - On Site" -- deliberately NOT an interview keyword (TASK-182), so the classifier
+    does not call it an invitation and never will.
+    """
+    return raw(uid, sender='Matthias Gira <matthias.gira@formunauts.at>', subject=subject,
+               body='Your event has been scheduled.', received_at=received_at,
+               calendar_summary='Formunauts - On Site (Ermis Chorinopoulos)', calendar_start=start)
+
+
+def test_a_calendar_invitation_on_an_interviewing_job_sets_the_date_with_no_management_command(client, owner, board_url_job):
+    """AC1/AC6: the whole automatic path -- run_check -> match_job -> classify_email ->
+    build_suggestions -- with `interview_at` arriving from nothing but that path.
+
+    Before this task the ONLY route from these two messages to job 535's empty `interview_at` was
+    `manage.py backfill_interview_dates --yes`, which no scheduler, view or task ever calls: the owner
+    had an on-site interview two days away that the board could not see. Nothing here runs a
+    management command, and nothing here hands the app a date in prose -- it exists only as the
+    VEVENT's start.
+    """
+    booked_at = timezone.localtime(timezone.now() + timedelta(days=2)).replace(hour=14, minute=0, second=0, microsecond=0)
+    moved_at = booked_at + timedelta(days=7)
+    # TASK-186's sender-domain rule, learned from mail the owner already confirmed -- job 535's own
+    # URL is a job board, so owned_job_domains() supplies formunauts.at from nowhere.
+    _matched_message(board_url_job, 'Nadja Steinboeck <jobs@formunauts.at>')
+    transport = FakeTransport([
+        _formunauts_invitation(2, 'Appointment booked: Formunauts - On Site (Ermis Chorinopoulos)',
+                               booked_at, timezone.now() - timedelta(days=1)),
+        _formunauts_invitation(3, 'Updated invitation: Formunauts - On Site (Ermis Chorinopoulos)',
+                               moved_at, timezone.now()),
+    ])
+    run_check(transport=transport, force=True)
+
+    stored = list(MailboxMessage.objects.filter(uid__in=[2, 3]).order_by('uid'))
+    assert [m.matched_job for m in stored] == [board_url_job, board_url_job]
+    # The load-bearing half of AC4: the classifier is NOT what lets the date through. If some later
+    # change makes these invitations after all, this test stops proving anything and must be re-aimed.
+    assert not any(m.classification == 'interview_invitation' for m in stored)
+    assert not any(m.classification in mailbox.STATUS_CHANGING_CLASSIFICATIONS for m in stored)
+
+    live = MailboxSuggestion.objects.filter(job=board_url_job, suggestion_type='interview_date', status='pending')
+    assert live.count() == 1, 'one appointment, not two -- TASK-186 supersedes the 19 Aug proposal'
+    suggestion = live.get()
+    assert datetime.fromisoformat(suggestion.payload['interview_at']) == moved_at, 'the meeting MOVED; the stale date must not win'
+    assert 'status' not in suggestion.payload, 'a message the classifier never called an invitation must not move the board'
+
+    # The owner clicking Confirm in the review panel -- still an explicit decision, never automatic.
+    r = client.post(f'/api/mailbox-suggestions/{suggestion.id}/confirm/')
+    assert r.status_code == 200
+    board_url_job.refresh_from_db()
+    assert board_url_job.interview_at == moved_at
+
+
+@pytest.mark.parametrize('status', ['new', 'reviewed', 'to_apply', 'applied', 'offer', 'accepted'])
+def test_a_calendar_carrying_message_proposes_no_date_until_the_job_is_actually_interviewing(db, owner, board_url_job, status):
+    """AC2/AC3, and the test that fails the moment this rule is widened to "any matched message with a
+    calendar_start". Every status here is ACTIONABLE, so build_suggestions' TASK-143 gate lets all of
+    them through -- the job's `interview` status is the only thing doing the excluding, which is
+    exactly the claim being made.
+
+    The message is production's Hays pair (701/702), "Austausch Jobmoeglichkeit": a recruiter
+    catch-up, calendar invitation and all. Today those two are excluded because job 34 is `rejected`;
+    that is a coincidence of the data and is not what this test relies on.
+    """
+    assert status in JobLead.ACTIONABLE_STATUSES, 'the TASK-143 gate must not be what excludes these'
+    board_url_job.status = status
+    board_url_job.save(update_fields=['status'])
+    catch_up = _matched_message(board_url_job, 'David Jin <david.jin@hays.test>', uid=4,
+                                classification='recruiter_reply', subject='Hays - Austausch Jobmöglichkeit',
+                                calendar_start=timezone.now() + timedelta(days=3))
+    assert build_suggestions(catch_up, board_url_job, 'recruiter_reply', None) == 0
+    assert not MailboxSuggestion.objects.filter(job=board_url_job, suggestion_type='interview_date').exists()
+
+
+@pytest.mark.parametrize('summary', [
+    'Hays - Austausch Jobmöglichkeit',
+    'Codex Community Build Meetup - Vienna',
+    'OpenAI Build Week Community Meetup - Vienna',
+    'NoCrastination · Build Sprint · Group 1',
+    'NoCrastination · Build Sprint · Group 1',
+])
+def test_named_non_interview_calendar_events_never_propose_an_interview_date(db, owner, board_url_job, summary):
+    """TASK-191 AC2/AC3: known catch-ups and all four measured community rows stay excluded."""
+    message = _matched_message(
+        board_url_job, 'events@example.test', uid=MailboxMessage.objects.count() + 10,
+        classification='recruiter_reply', subject=summary, calendar_summary=summary,
+        calendar_start=timezone.now() + timedelta(days=3),
+    )
+    assert board_url_job.status == 'interview'
+    assert build_suggestions(message, board_url_job, 'recruiter_reply', None) == 0
+    assert not MailboxSuggestion.objects.filter(job=board_url_job, suggestion_type='interview_date').exists()

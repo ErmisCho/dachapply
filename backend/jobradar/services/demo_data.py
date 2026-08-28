@@ -1,15 +1,21 @@
+from base64 import b64decode
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from jobradar.models import ApplicationNote, FollowUp, InviteCode, JobEvaluation, JobLead, UserProfile
+from jobradar.models import ApplicationNote, CvAsset, FollowUp, InviteCode, JobEvaluation, JobLead, MailboxMessage, MailboxRun, MailboxSuggestion, UserProfile
 
 DEMO_USERNAME = 'demo@dachapply.com'
 DEMO_PASSWORD = 'DemoApply2026!'
+DEMO_MAIL_PREFIX = 'demo-'
 
-DEMO_PROFILE = '''Senior backend/search engineer targeting DACH roles. Strongest fits: Python backend, Django/FastAPI, APIs, SQL/PostgreSQL, search/RAG, AI product engineering, data/platform-adjacent backend work, and pragmatic reliability. Comfortable with Docker, Linux, Redis/RabbitMQ, Elasticsearch/OpenSearch, LangChain/LangGraph, and cloud basics. German B2 in progress, English C2. Prefer Vienna, Berlin, Munich, Zurich, or remote/hybrid roles. Penalize frontend-heavy React roles, pure DevOps/SRE, deep Spark/Kafka ownership without support, and roles requiring fluent German C1+ as a hard gate. Be honest about cloud/Terraform/Spark depth and do not invent experience.'''
+DEMO_PROFILE = '''Fictional demo candidate Mira Beispiel is a senior backend/search engineer targeting DACH roles. Strongest fits: Python backend, Django/FastAPI, APIs, SQL/PostgreSQL, search/RAG, AI product engineering, data/platform-adjacent backend work, and pragmatic reliability. Comfortable with Docker, Linux, Redis/RabbitMQ, Elasticsearch/OpenSearch, LangChain/LangGraph, and cloud basics. German B2 in progress, English C2. Prefer Vienna, Berlin, Munich, Zurich, or remote/hybrid roles. Penalize frontend-heavy React roles, pure DevOps/SRE, deep Spark/Kafka ownership without support, and roles requiring fluent German C1+ as a hard gate. Be honest about cloud/Terraform/Spark depth and do not invent experience.'''
+DEMO_EVIDENCE = '''# Fictional demo candidate — Mira Beispiel
+
+This profile is synthetic and exists only to demonstrate DACHApply. Mira built Python/Django APIs, PostgreSQL services, and search prototypes for fictional employers Northstar Labs and Riverstone Systems. No person, employer, address, photograph, or employment claim in this record is real.'''
 DEMO_JOB_URL_PREFIX = 'https://demo.dachapply.local/'
 LEGACY_DEMO_JOB_URLS = {'https://example.com/jobs/dynatrace'}
 
@@ -63,6 +69,64 @@ def _profile(user, **defaults):
     return profile
 
 
+def _reset_demo_mailbox():
+    messages = MailboxMessage.objects.filter(gmail_id__startswith=DEMO_MAIL_PREFIX)
+    run_ids = list(messages.values_list('run_id', flat=True))
+    messages.delete()
+    MailboxRun.objects.filter(id__in=run_ids, messages__isnull=True).delete()
+
+
+def _seed_demo_cv_assets(demo):
+    CvAsset.objects.filter(user=demo).delete()
+    CvAsset.objects.bulk_create([
+        CvAsset(user=demo, kind=CvAsset.KIND_CV, key='en', language='en', label='Fictional demo CV', filename='Demo-CV.tex',
+                source=r'''\documentclass{article}\begin{document}
+\section*{Mira Beispiel — Fictional demo CV}
+\textbf{Profile} Python/Django backend and search engineer.\\
+\section*{Fictional experience} Northstar Labs: APIs and PostgreSQL services. Riverstone Systems: search prototypes and reliability work.
+\section*{Skills} Python, Django, FastAPI, PostgreSQL, OpenSearch, Docker.\\
+\section*{Languages} English C2, German B2 (fictional demo levels).\end{document}'''),
+        CvAsset(user=demo, kind=CvAsset.KIND_LETTER, key='cover_letter', language='en', label='Fictional demo cover letter', filename='Demo-Cover-Letter.tex',
+                source=r'''\documentclass{letter}\begin{document}\begin{letter}{Fictional hiring team\\Northstar Labs}
+\opening{Hello,}Mira Beispiel is a fictional candidate applying to demonstrate DACHApply. Her synthetic Python, Django, PostgreSQL and search experience matches this fictional role.\closing{Kind regards,\\Mira Beispiel}\end{letter}\end{document}'''),
+        CvAsset(user=demo, kind=CvAsset.KIND_PHOTO, label='Fictional demo placeholder', filename='Picture.png',
+                image=b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6nXcAAAAASUVORK5CYII=')),
+    ])
+
+
+@transaction.atomic
+def _seed_demo_mailbox(demo, jobs):
+    now = timezone.now()
+    run = MailboxRun.objects.create(finished_at=now, skipped=True, skip_reason='disabled', drafting_skipped=True,
+                                    fetched_count=3, job_related_count=2, suggestion_count=1)
+    # Reserved high range: unique in the legacy ownerless table, while real mailbox marker queries
+    # explicitly exclude demo rows so synthetic UIDs can never skip or renumber owner mail.
+    first_uid = 2_000_000_000
+    interview_job = next(job for job in jobs if job.company == 'AI Search Lab')
+    interview_at = now + timedelta(days=3)
+    invitation = MailboxMessage.objects.create(
+        run=run, uid=first_uid, gmail_id=f'{DEMO_MAIL_PREFIX}interview', thread_id=f'{DEMO_MAIL_PREFIX}thread-1',
+        sender='Alex Example <alex.recruiter@northstar.example>', subject='Fictional interview invitation',
+        body_text='Synthetic demo message: Northstar Labs invites Mira Beispiel to a fictional interview.',
+        calendar_summary='Fictional Northstar Labs interview', calendar_start=interview_at,
+        classification='interview_invitation', evaluator='demo-fixture', matched_job=interview_job, received_at=now,
+    )
+    MailboxSuggestion.objects.create(message=invitation, job=interview_job, suggestion_type='interview_date',
+                                     payload={'interview_at': interview_at.isoformat()})
+    MailboxMessage.objects.create(
+        run=run, uid=first_uid + 1, gmail_id=f'{DEMO_MAIL_PREFIX}update', thread_id=f'{DEMO_MAIL_PREFIX}thread-2',
+        sender='Sam Example <sam@riverstone.example>', subject='Fictional application update',
+        body_text='Synthetic demo message: Riverstone Systems received the fictional application.',
+        classification='application_confirmed', evaluator='demo-fixture', matched_job=next(job for job in jobs if job.company == 'FinTech GmbH'), received_at=now,
+    )
+    MailboxMessage.objects.create(
+        run=run, uid=first_uid + 2, gmail_id=f'{DEMO_MAIL_PREFIX}unmatched', thread_id=f'{DEMO_MAIL_PREFIX}thread-3',
+        sender='Taylor Example <taylor@demo.example>', subject='Fictional recruiter introduction for Green Energy Analytics',
+        body_text='Synthetic demo message from Green Energy Analytics with no job attached yet. Use the suggested demo job to try the workflow.',
+        classification='recruiter_reply', evaluator='demo-fixture', received_at=now,
+    )
+
+
 def _upsert_job(owner, data, referral_user=None):
     url = data['url']
     qs = JobLead.objects.filter(url=url)
@@ -97,9 +161,14 @@ def ensure_demo_user():
     """Create/refresh the public demo account with rich showcase data."""
     today = timezone.localdate()
     demo = _user(DEMO_USERNAME, DEMO_USERNAME, DEMO_PASSWORD, 'Demo')
+    if demo.is_staff or demo.is_superuser:
+        demo.is_staff = demo.is_superuser = False
+        demo.save(update_fields=['is_staff', 'is_superuser'])
     _profile(
         demo,
         candidate_profile=DEMO_PROFILE,
+        candidate_evidence=DEMO_EVIDENCE,
+        can_generate_cv=False,
         target_roles='Python Backend, Search/RAG Engineer, AI Engineer, Data/Platform Backend',
         preferred_locations='Vienna, Berlin, Munich, Zurich, remote/hybrid DACH',
         language_levels='English C2, German B2 in progress',
@@ -120,6 +189,7 @@ def ensure_demo_user():
     InviteCode.objects.update_or_create(code='FRIEND-DEMO', defaults={'label': 'Demo friends invite', 'active': True})
 
     delete_non_demo_jobs()
+    _reset_demo_mailbox()
 
     # Reset the demo dashboard on every seed/login so imported, edited, or stale
     # demo jobs never accumulate. This removes jobs owned by the demo user plus
@@ -222,4 +292,6 @@ def ensure_demo_user():
         'https://demo.dachapply.local/referrals/swiss-ai-backend': sophie,
     }
     created = [_upsert_job(demo, job, referral_map.get(job['url'])) for job in jobs]
+    _seed_demo_cv_assets(demo)
+    _seed_demo_mailbox(demo, created)
     return demo, created

@@ -2003,6 +2003,25 @@ def test_stats_include_application_pace(client):
     assert r.data['weekly_applications'][-1]['count'] == 3
 
 
+def test_stats_query_count_is_bounded_and_independent_of_job_count(client):
+    """TASK-193: bucket counts come from one bounded row fetch, not one query per date bucket."""
+    from django.test.utils import CaptureQueriesContext
+
+    def stats_queries(ctx):
+        return [q for q in ctx.captured_queries if any(table in q['sql'] for table in (
+            'jobradar_joblead', 'jobradar_jobevaluation', 'jobradar_followup'))]
+
+    client.get('/api/stats/')
+    make_job(client, company='Few', title='One', status='applied', applied_at=timezone.localdate())
+    with CaptureQueriesContext(connection) as few:
+        assert client.get('/api/stats/').status_code == 200
+    for i in range(20):
+        make_job(client, company=f'Many{i}', title='More', status='applied', applied_at=timezone.localdate()-timezone.timedelta(days=i))
+    with CaptureQueriesContext(connection) as many:
+        assert client.get('/api/stats/').status_code == 200
+    assert len(stats_queries(few)) == len(stats_queries(many)) <= 10, (stats_queries(few), stats_queries(many))
+
+
 def test_stats_count_one_application_for_a_job_walked_to_rejection(client):
     today=timezone.localdate()
     week_start=today-timezone.timedelta(days=today.weekday())
@@ -2567,6 +2586,117 @@ def test_demo_login_creates_rich_demo_dashboard(db):
     assert UserProfile.objects.filter(requested_submit_for=demo, submit_for__isnull=True).exists()
     assert JobEvaluation.objects.filter(job__in=jobs).count() >= jobs.count()
     assert FollowUp.objects.filter(job__in=jobs).exists()
+
+
+def test_demo_mailbox_and_cv_assets_are_fictional_and_owner_mail_stays_private(db, tmp_path, settings):
+    from jobradar.models import CvAsset, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion
+    from jobradar.services.demo_data import DEMO_MAIL_PREFIX
+
+    owner_user=User.objects.create_user('mail-owner@example.test', password='pw', is_staff=True)
+    UserProfile.objects.create(user=owner_user, candidate_evidence='OWNER_PRIVATE_EVIDENCE')
+    CvAsset.objects.create(user=owner_user, kind=CvAsset.KIND_CV, key='owner', filename='owner.tex', source='OWNER_PRIVATE_ASSET')
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    (tmp_path/'owner-evidence.md').write_text('OWNER_PRIVATE_WORKSPACE', encoding='utf-8')
+    owner_job=JobLead.objects.create(company='Owner Only', title='Private', created_by=owner_user)
+    owner_run=MailboxRun.objects.create(finished_at=timezone.now())
+    owner_message=MailboxMessage.objects.create(
+        run=owner_run, uid=1, gmail_id='real-owner-message', sender='private-recruiter@owner.example',
+        subject='OWNER_PRIVATE_SUBJECT', body_text='OWNER_PRIVATE_BODY', classification='recruiter_reply',
+        matched_job=owner_job, received_at=timezone.now(),
+    )
+    owner_suggestion=MailboxSuggestion.objects.create(message=owner_message, job=owner_job, suggestion_type='note', payload={'note':'OWNER_PRIVATE_SUGGESTION'})
+    owner_draft=MailboxDraft.objects.create(message=owner_message, job=owner_job, status='written', subject='OWNER_PRIVATE_DRAFT', body_text='OWNER_PRIVATE_DRAFT_BODY')
+
+    demo_client=APIClient()
+    login_response=demo_client.post('/api/auth/login/', {'username':'demo@dachapply.com','password':'DemoApply2026!'}, format='json')
+    assert login_response.status_code==200 and login_response.data['can_use_mailbox'] is True
+    demo=User.objects.get(username='demo@dachapply.com')
+    assert demo.is_staff is False and demo.is_superuser is False
+
+    assets=list(CvAsset.objects.filter(user=demo))
+    assert {asset.kind for asset in assets}=={CvAsset.KIND_CV,CvAsset.KIND_LETTER,CvAsset.KIND_PHOTO}
+    assert all(not asset.source_path for asset in assets)
+    assert 'fictional' in (UserProfile.objects.get(user=demo).candidate_evidence + ' '.join(asset.label for asset in assets)).lower()
+    assert 'OWNER_' not in UserProfile.objects.get(user=demo).candidate_evidence
+    assert all('OWNER_' not in asset.source for asset in assets)
+
+    demo_messages=MailboxMessage.objects.filter(gmail_id__startswith=DEMO_MAIL_PREFIX)
+    assert demo_messages.count()==3
+    assert all(address.endswith('.example>') for address in demo_messages.values_list('sender',flat=True))
+    assert all('synthetic' in body.lower() for body in demo_messages.values_list('body_text',flat=True))
+
+    runs=demo_client.get('/api/mailbox-runs/')
+    status_response=demo_client.get('/api/mailbox-runs/status/')
+    suggestions=demo_client.get('/api/mailbox-suggestions/')
+    unmatched=demo_client.get('/api/mailbox-messages/unmatched/?include_unidentified=1')
+    assert runs.status_code==status_response.status_code==suggestions.status_code==unmatched.status_code==200
+    responses=[runs,status_response,suggestions,unmatched,
+               demo_client.get(f'/api/mailbox-runs/{owner_run.id}/'),
+               demo_client.get(f'/api/mailbox-messages/{owner_message.id}/'),
+               demo_client.post(f'/api/mailbox-messages/{owner_message.id}/attach/', {'job':owner_job.id}, format='json'),
+               demo_client.post(f'/api/mailbox-messages/{owner_message.id}/reply/', {'body_text':'x','to':['x@demo.example']}, format='json'),
+               demo_client.get(f'/api/jobs/{owner_job.id}/mailbox/'),
+               demo_client.get(f'/api/mailbox-drafts/{owner_draft.id}/'),
+               demo_client.post(f'/api/mailbox-drafts/{owner_draft.id}/edit/', {'body_text':'x'}, format='json'),
+               demo_client.post(f'/api/mailbox-drafts/{owner_draft.id}/chat/', {'instruction':'x'}, format='json'),
+               demo_client.post(f'/api/mailbox-suggestions/{owner_suggestion.id}/decide/', {'decision':'reject'}, format='json')]
+    assert all(b'OWNER_PRIVATE' not in response.content and b'private-recruiter' not in response.content for response in responses)
+    assert all(response.status_code==404 for response in responses[4:])
+
+    unmatched_row=unmatched.data['results'][0]
+    demo_job=JobLead.objects.filter(Q(created_by=demo)|Q(submitted_for=demo)).first()
+    attached=demo_client.post(f"/api/mailbox-messages/{unmatched_row['id']}/attach/", {'job':demo_job.id}, format='json')
+    assert attached.status_code==200
+    assert demo_client.get(f'/api/jobs/{demo_job.id}/mailbox/').status_code==200
+
+    owner_client=APIClient(); owner_client.force_authenticate(owner_user)
+    assert owner_client.get(f'/api/mailbox-messages/{owner_message.id}/').status_code==200
+    assert DEMO_MAIL_PREFIX.encode() not in owner_client.get('/api/mailbox-runs/').content
+
+
+def test_demo_mailbox_never_calls_codex_google_or_gmail(db, monkeypatch):
+    from jobradar.models import MailboxMessage
+    from jobradar.services.demo_data import DEMO_MAIL_PREFIX
+
+    c=APIClient()
+    assert c.post('/api/auth/login/', {'username':'demo@dachapply.com','password':'DemoApply2026!'}, format='json').status_code==200
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError('real transport must not run for the demo account')
+    monkeypatch.setattr('jobradar.views.mailbox_tasks.start_mailbox_check', forbidden)
+    monkeypatch.setattr('jobradar.views.mailbox.review_uncertain_with_codex', forbidden)
+    monkeypatch.setattr('jobradar.views.mailbox.list_calendars', forbidden)
+    monkeypatch.setattr('jobradar.views.mailbox.compose_reply_draft', forbidden)
+
+    assert c.post('/api/mailbox-runs/run-now/').data['demo'] is True
+    assert c.post('/api/mailbox-runs/local-ai-review/').status_code==404
+    assert c.get('/api/mailbox-runs/calendars/').status_code==200
+    message=MailboxMessage.objects.filter(gmail_id__startswith=DEMO_MAIL_PREFIX, matched_job__isnull=False).first()
+    response=c.post(f'/api/mailbox-messages/{message.id}/reply/', {'body_text':'Hello','to':['safe@demo.example']}, format='json')
+    assert response.status_code==400 and 'synthetic' in response.data['detail'].lower()
+
+
+def test_demo_rows_never_become_real_mailbox_history(db):
+    from jobradar.services import mailbox
+    from jobradar.services.demo_data import ensure_demo_user
+    from jobradar.views import _mailbox_health
+
+    ensure_demo_user()
+
+    assert mailbox.real_mailbox_messages().count()==0
+    assert mailbox.real_mailbox_runs().count()==0
+    assert mailbox.next_check_is_cold_start() is True
+    assert mailbox.mailbox_check_estimate()=={'kind':'cold','estimated_seconds':None}
+    assert mailbox.current_mailbox_run() is None
+    assert _mailbox_health()[0]=='stale'
+
+
+def test_deployed_auth_reports_that_cv_generation_is_local_only(client):
+    with override_settings(DEBUG=False, CODEX_CV_ENABLED=False):
+        response=client.get('/api/auth/me/')
+    assert response.status_code==200
+    assert response.data['can_generate_cv'] is False
+    assert 'local app' in response.data['cv_generation_notice'].lower()
+    assert 'does not run codex or latex' in response.data['cv_generation_notice'].lower()
 
 
 def test_demo_seed_removes_demo_jobs_from_other_accounts(db):
@@ -3461,11 +3591,9 @@ def test_jobs_list_hides_note_preview_on_a_job_handed_to_somebody_else(db):
 def test_jobs_list_note_preview_costs_no_extra_query(client):
     """No N+1: the preview costs nothing per row and nothing per note.
 
-    Measured at a FIXED row count, notes absent then present, because this endpoint has a
-    pre-existing per-row query of its own (one auth_user SELECT per row, from the created_by /
-    submitted_for username+email SerializerMethodFields) that a rows-scaling comparison would end up
-    measuring instead of this field -- reported separately, not fixed here. Warm-up first, same
-    idiom as test_feedback_due_query_count_does_not_scale_with_row_count above: the visitor-tracking
+    Measured at a FIXED row count, notes absent then present, so this test isolates the note
+    annotation from TASK-187's separate row-scaling assertion below. Warm-up first, same idiom as
+    test_feedback_due_query_count_does_not_scale_with_row_count above: the visitor-tracking
     middleware INSERTs on a request's first-ever hit and UPDATEs after.
     """
     from django.test.utils import CaptureQueriesContext
@@ -3483,3 +3611,152 @@ def test_jobs_list_note_preview_costs_no_extra_query(client):
     # And the notes are read inside that one job SELECT rather than by a query of their own: a
     # standalone note SELECT would list jobradar_applicationnote's own columns first.
     assert not [q for q in noted.captured_queries if q['sql'].startswith('SELECT "jobradar_applicationnote"')]
+
+
+# --- TASK-187 / TASK-188 AC4: /api/jobs/ costs a constant number of queries ----------------------
+# Measured on the owner's real board before the fix: 69 rows cost 72 queries -- auth_user 69,
+# joblead 1, jobevaluation 1, mailboxmessage 1 -- because JobLeadSerializer's four
+# created_by/submitted_for username+email SerializerMethodFields each walk a foreign key the
+# queryset never joined. Against a remote Neon database (25.7 ms median round trip, measured over
+# 30 warm samples) those 69 extra round trips were ~1.8 s of a 3.5 s request.
+
+def test_jobs_list_query_count_does_not_scale_with_row_count(client):
+    """The assertion TASK-178's own query test could not make yet.
+
+    That test compares notes-absent vs notes-present at a FIXED row count and says why in its
+    docstring: at the time, scaling the rows would have measured the per-row auth_user SELECT
+    instead of the field it was about. This is the stronger version that defect was blocking, and
+    it is the one that fails on the pre-fix code. Measured by reverting the select_related and
+    running this: 3 rows cost 17 queries and 12 rows cost 35 -- two extra per row, one per relation
+    (created_by and submitted_for), which is exactly the 18 the 9 added rows bring with them.
+
+    Every row carries a distinct created_by AND a distinct submitted_for, so a per-row lookup has
+    two relations to walk and cannot be hidden by Django's identity map handing back the same user
+    object over and over -- which is what a single shared owner would have done.
+
+    Warm-up call first, the idiom the two query tests above already use: the visitor-tracking
+    middleware INSERTs on a request's first-ever hit and UPDATEs after.
+    """
+    from django.test.utils import CaptureQueriesContext
+
+    def add_rows(n, tag):
+        for i in range(n):
+            creator = User.objects.create_user('creator-%s-%d' % (tag, i), password='pw')
+            JobLead.objects.create(company='Co%s%d' % (tag, i), title='Engineer', created_by=creator, submitted_for=client.user)
+
+    client.get('/api/jobs/')
+    add_rows(3, 'a')
+    with CaptureQueriesContext(connection) as few:
+        r = client.get('/api/jobs/')
+    assert r.status_code == 200 and len(r.data) == 3
+    add_rows(9, 'b')
+    with CaptureQueriesContext(connection) as many:
+        r = client.get('/api/jobs/')
+    assert r.status_code == 200 and len(r.data) == 12
+    assert len(few) == len(many), (len(few), len(many), many.captured_queries)
+    # And specifically: no auth_user SELECT of its own at all -- both users ride the joined row.
+    assert not [q for q in many.captured_queries if q['sql'].startswith('SELECT "auth_user"')], many.captured_queries
+
+
+def test_jobs_list_select_related_changes_how_rows_are_fetched_not_which(client):
+    """TASK-187 AC3: TASK-184's ownership scoping is untouched.
+
+    Both foreign keys are nullable, so select_related joins LEFT OUTER and cannot drop a row -- but
+    "cannot" is an argument, so this measures it across the shapes that differ: a job owned outright
+    with no separate recipient, a job created by somebody else and handed to this user, a job with
+    no creator at all, and a job this user created for somebody else (submitted-away, which the list
+    adds and projects down).
+    """
+    other = User.objects.create_user('other', password='pw')
+    mine = JobLead.objects.create(company='Mine', title='Engineer', created_by=client.user)
+    handed_to_me = JobLead.objects.create(company='ForMe', title='Engineer', created_by=other, submitted_for=client.user)
+    orphan = JobLead.objects.create(company='Orphan', title='Engineer', created_by=None, submitted_for=client.user)
+    handed_away = JobLead.objects.create(company='Away', title='Engineer', created_by=client.user, submitted_for=other)
+    not_mine = JobLead.objects.create(company='Theirs', title='Engineer', created_by=other, submitted_for=other)
+
+    rows = client.get('/api/jobs/').data
+    ids = [row['id'] for row in rows]
+    assert set(ids) == {mine.id, handed_to_me.id, orphan.id, handed_away.id}
+    assert not_mine.id not in ids
+    # The joined columns still reach the response, including for the row with no creator at all.
+    by_id = {row['id']: row for row in rows}
+    assert by_id[mine.id]['created_by_username'] == client.user.username
+    assert by_id[handed_to_me.id]['created_by_username'] == 'other'
+    assert by_id[orphan.id]['created_by_username'] == ''
+    assert by_id[handed_to_me.id]['submitted_for_username'] == client.user.username
+
+
+# --- TASK-188 AC6: the list payload carries what the board renders and not more -------------------
+
+def test_board_skill_statuses_drop_only_what_the_board_cannot_read(client, owner):
+    """skill_statuses was 46% of the whole 402.7 KB board payload. What is left is what SkillLabels
+    can actually look up; the detail endpoint is unchanged.
+
+    Each case below is a shape App.tsx's SkillLabels renders identically to the full one -- see the
+    serializer's own docstring for the line of that function each maps to.
+    """
+    job = JobLead.objects.create(company='ACME', title='Engineer', created_by=owner)
+    JobEvaluation.objects.create(
+        job=job, fit_score=70, priority='high', recommendation='apply',
+        required_skills=['Python', 'k8s'],            # display==key + status match | display!=key
+        nice_to_have_skills=['Terraform'],            # never rendered from the list response
+        missing_skills=['some bespoke tooling'],      # status unknown, display!=key
+        matched_skills=['Widgets'],                   # status unknown, display==key -> no entry
+    )
+    row = [r for r in client.get('/api/jobs/').data if r['id'] == job.id][0]
+    statuses = row['latest_evaluation']['skill_statuses']
+
+    assert statuses['Python'] == 'match'                                    # bare string; label falls back to the key
+    assert statuses['k8s'] == {'status': 'match', 'display': 'Kubernetes'}   # both halves needed
+    assert statuses['some bespoke tooling'] == {'display': 'Some Bespoke Tooling'}  # unknown == absent
+    assert 'Widgets' not in statuses                                        # nothing left to say about it
+    assert 'Terraform' not in statuses                                      # nice_to_have is not on the board
+
+    # The detail endpoint keeps the full map, every key, both fields -- that is where the trimmed
+    # information still lives.
+    detail = client.get('/api/jobs/%d/' % job.id).data['latest_evaluation']['skill_statuses']
+    assert detail['Widgets'] == {'status': 'unknown', 'display': 'Widgets'}
+    assert detail['Terraform'] == {'status': 'weak', 'display': 'Terraform'}
+    assert detail['Python'] == {'status': 'match', 'display': 'Python'}
+
+
+# --- TASK-188 AC5: the dashboard's second /api/jobs/ call, narrowed ------------------------------
+
+def test_new_unanalyzed_returns_only_the_id_and_url_the_picker_renders(client):
+    """The board used to fetch /api/jobs/?status=new in full (71 KB measured) to feed a count and a
+    "#id url" picker. Two columns, one query, no evaluation serialized, and the unanalyzed filter
+    moved off the client."""
+    from django.test.utils import CaptureQueriesContext
+
+    unanalyzed = make_job(client, company='New', title='', url='https://example.test/1', status='new')
+    analyzed = make_job(client, company='Done', title='', url='https://example.test/2', status='new')
+    JobEvaluation.objects.create(job=analyzed, fit_score=50, priority='low', recommendation='maybe')
+    make_job(client, company='Applied', title='x', url='https://example.test/3', status='applied')
+
+    client.get('/api/jobs/new-unanalyzed/')
+    with CaptureQueriesContext(connection) as ctx:
+        r = client.get('/api/jobs/new-unanalyzed/')
+    assert r.status_code == 200
+    assert r.data == [{'id': unanalyzed.id, 'url': 'https://example.test/1'}]
+    assert not [q for q in ctx.captured_queries if q['sql'].startswith('SELECT "jobradar_jobevaluation"')], ctx.captured_queries
+
+    # Scoped like the board (TASK-184): another user's new job is not in it.
+    other = User.objects.create_user('stranger', password='pw')
+    JobLead.objects.create(company='Not mine', title='', status='new', created_by=other)
+    assert [row['id'] for row in client.get('/api/jobs/new-unanalyzed/').data] == [unanalyzed.id]
+
+
+def test_api_responses_are_compressed_on_the_wire(client):
+    """TASK-188: nothing was compressing API responses -- measured on the live app, no
+    content-encoding and no vary: Accept-Encoding, so the board shipped 402,728 raw bytes. Django's
+    GZipMiddleware only acts when the client asks for it and only when compression actually shrinks
+    the body, so this needs a response big enough to be worth compressing."""
+    import gzip
+
+    for i in range(30):
+        make_job(client, company='Compressible Company %d' % i, title='Senior Python Engineer', raw_description='x' * 400)
+    r = client.get('/api/jobs/', headers={'Accept-Encoding': 'gzip'})
+    assert r.status_code == 200
+    assert r['Content-Encoding'] == 'gzip'
+    assert 'Accept-Encoding' in r['Vary']
+    assert len(gzip.decompress(r.content)) > len(r.content)
