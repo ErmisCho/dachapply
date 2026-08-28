@@ -1,11 +1,11 @@
 ---
 id: TASK-99b
 title: Server-side CV generation for a non-owner
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: ''
-updated_date: '2026-08-28 13:00'
+updated_date: '2026-08-28 18:58'
 labels:
   - backend
   - multi-user
@@ -82,6 +82,8 @@ Owner decision 2026-08-28: keep CV generation local-only. The deployed site must
 Decision record, made before implementation on 2026-08-28: keep generation local-only on the owner-controlled machine. The deployed web process stores each account's profile/CvAsset rows but runs no Codex, Claude, LaTeX, generation worker, or queue. This avoids adding a large TeX toolchain to the container image and its build/start maintenance, adds no server LLM/API secrets, and creates no hosted per-generation operating cost. Only the existing owner-gated local process can invoke the toolchain; a public/non-owner request therefore cannot trigger spend, concurrency, or the existing global compile lock. If Codex or pdflatex is unavailable locally, the existing generation path reports failure and persists no generated package. A future server mode requires a new owner decision, isolated per-user workspace/locks, bounded billing, secrets management, and measured image/build impact.
 
 Wave 4 selected-path verification: local machine reports DEBUG=True, CODEX_CV_ENABLED=True, codex-cli 0.146.0 and pdfTeX 1.40.28; deployed-mode API test reports can_generate_cv=false plus the explicit local-app notice. The local-only decision makes server non-owner generation/concurrency AC2/AC3 intentionally N/A rather than pretending to implement them: no worker, queue, global-lock widening, owner workspace, server secret, or public spend path exists. Full 1014-test suite passed. Asian Dad: PERFECT (self-graded disclosure applies).
+
+Post-merge closure: implementation squash-merged through PR #88 as 56115296e580d22cfbcdf97731a7b9d1fd00f1fb after successful CI and GitGuardian checks.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

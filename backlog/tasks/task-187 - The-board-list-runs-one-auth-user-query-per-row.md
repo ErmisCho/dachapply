@@ -1,11 +1,11 @@
 ---
 id: TASK-187
 title: The board list runs one auth_user query per row
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: ''
-updated_date: '2026-08-28 13:00'
+updated_date: '2026-08-28 18:58'
 labels:
   - backend
   - performance
@@ -73,6 +73,8 @@ Wave 1 recovery validation: focused backend slice passed; recovered row-scaling 
 Wave 2: mutation verification proved the regression test fails pre-fix at 17 vs 35 queries and passes with select_related; impacted backend files passed 681 tests.
 
 Wave 4 production measurement: 69 rows now cost 3 list-owned queries, 18 whole-request queries, 0 auth_user SELECTs, and 1370.3 ms in-process; browser board response measured 1521.3 ms versus 72 queries/3513 ms before. Temporary pre-fix mutation reproduced 17 queries for 3 rows versus 35 for 12. Ownership/annotation tests and all 1014 backend tests passed. Asian Dad: PERFECT (rubric created late and self-graded, disclosed).
+
+Post-merge closure: implementation squash-merged through PR #88 as 56115296e580d22cfbcdf97731a7b9d1fd00f1fb after successful CI and GitGuardian checks.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
