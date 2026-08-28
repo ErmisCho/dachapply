@@ -22,6 +22,12 @@ Do not edit Backlog task, draft, document, decision, or milestone markdown files
 </CRITICAL_INSTRUCTION>
 <!-- BACKLOG.MD GUIDELINES END -->
 
+## Task Completion Policy
+
+- Treat “go on” and “do this” as instructions to carry assigned work through implementation, verification, evaluation, commit, push, and squash merge without waiting for a separate close request.
+- A task is complete only after its required tests pass, Asian Dad returns PERFECT, its changes are committed and pushed, and its implementation branch is squash-merged into the default branch.
+- Keep Backlog tasks In Progress while merge is pending. Mark them Done in a post-merge completion change, then squash-merge that administrative change too.
+
 ## Session Config
 
 project-name: dachapply

@@ -6,7 +6,7 @@
 
 ## Test Plan
 
-- [ ] Backend tests pass (`cd backend && python -m pytest -q`)
+- [ ] Backend tests pass (`cd backend && uv run pytest -q`)
 - [ ] Frontend build passes (`cd frontend && npm run build`)
 - [ ] Manually tested
 

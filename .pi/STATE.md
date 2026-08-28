@@ -41,7 +41,7 @@ completed_at: 2026-08-27T17:53:26.119Z
 
 ## Current Wave
 
-All 4 waves complete. TASK-196 and TASK-197 are Done; full verification passed and commit/push are pending.
+All 4 waves complete. TASK-196 and TASK-197 are merge-ready; full verification and push passed, with squash merge pending.
 
 ## Session Plan
 
@@ -61,7 +61,7 @@ All 4 waves complete. TASK-196 and TASK-197 are Done; full verification passed a
 
 - Wave 1 — Impl-Core: COMPLETE. Added inline editing and PATCH-based replacement in `frontend/src/App.tsx`.
 - Wave 2 — Quality: COMPLETE. Added 4 focused tests; full frontend suite 182/182 and production build passed.
-- Wave 3 — Finalization: COMPLETE. All acceptance criteria checked and TASK-196 marked Done.
+- Wave 3 — Finalization: COMPLETE. All acceptance criteria checked and TASK-196 prepared for merge.
 - Wave 4 — Security hardening: COMPLETE. npm audit reduced 5 findings to 0; quality policy aligned with the uv lockfile.
 
 ## Deviations

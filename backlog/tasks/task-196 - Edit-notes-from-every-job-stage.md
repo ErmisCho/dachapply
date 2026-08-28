@@ -1,11 +1,11 @@
 ---
 id: TASK-196
 title: Edit notes from every job stage
-status: Done
+status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-08-27 15:22'
-updated_date: '2026-08-27 17:24'
+updated_date: '2026-08-28 06:44'
 labels:
   - frontend
   - notes
@@ -44,6 +44,10 @@ Let users edit notes they added to a job from the job detail page regardless of 
 Implemented inline editing in the existing JobNotes flow. General notes now expose Edit, Save changes, and Cancel controls. Save reuses the existing owner-scoped PATCH /api/notes/{id}/ endpoint and replaces the matching note in local state, so it does not create duplicates. The editability rule deliberately ignores job status and covers all 11 statuses. No backend or CSS changes were needed.
 
 Validation: frontend npm test — 6 files, 182 tests passed; frontend npm run build — TypeScript and Vite production build passed.
+
+Completion-policy correction: implementation is committed, pushed, fully tested, and Asian Dad verdict is PERFECT. Task remains In Progress until its implementation branch is squash-merged into main; a post-merge completion change will set Done.
+
+Final post-rebase validation: backend 992 passed; frontend 182 passed; production build passed. Existing TASK-196 Asian Dad verdict remains PERFECT.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
