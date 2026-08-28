@@ -5,7 +5,7 @@ session-type: deep
 branch: session-rest-backlog
 issues: [TASK-164, TASK-187, TASK-188, TASK-191, TASK-193, TASK-99B]
 started_at: 2026-08-28T08:19:21.423Z
-status: active
+status: completed
 current-wave: 5
 total-waves: 5
 scope-baseline-intent: "Complete every remaining actionable Backlog task, recover abandoned work safely, and resolve server CV generation as local-only."
@@ -49,8 +49,14 @@ mission-status:
   - id: m-9
     task: "Commit, push, squash-merge, then close tasks through a second squash merge"
     wave: 5
-    status: in-dev
-updated: 2026-08-28T12:30:00Z
+    status: completed
+updated: 2026-08-28T19:05:19.841Z
+recommended-mode: feature
+top-priorities: []
+carryover-ratio: 0
+completion-rate: 1
+rationale: "v0: default clean completion"
+completed_at: 2026-08-28T19:04:52.896Z
 ---
 
 ## Current Wave
@@ -122,7 +128,7 @@ Wave 5 — Finalization: commit, CI, squash merge, then post-merge Backlog closu
 - m-6: completed
 - m-7: completed
 - m-8: completed
-- m-9: in-dev
+- m-9: completed (updated 2026-08-28T19:05:11.042Z)
 
 ## Previous Session
 
