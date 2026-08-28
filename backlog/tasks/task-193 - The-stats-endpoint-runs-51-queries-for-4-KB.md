@@ -1,11 +1,11 @@
 ---
 id: TASK-193
 title: The stats endpoint runs 51 queries for 4 KB
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: ''
-updated_date: '2026-08-28 13:00'
+updated_date: '2026-08-28 18:58'
 labels:
   - backend
   - performance
@@ -82,6 +82,8 @@ Cap refinement before implementation: the same capture showed 14 fixed auth/usag
 Wave 3 implementation: one application-row fetch now supplies all time buckets, funnel counts and source effectiveness; fixed job/evaluation aggregates replace repeated counts. Production remeasurement: 20 total queries, 6 stats-owned queries, 1069.3 ms, 4638 bytes, versus 65 total/48 JobLead queries, 2657.0 ms, 4638 bytes. Deep comparison of the complete owner response is exactly equal. No cache was added and the owned-jobs queryset is unchanged.
 
 Wave 4 browser post-fix stats timing was 1169.5 ms on the owner board versus 3050 ms cold/2008 ms warm before. In-process production capture remained 20 total/6 stats-owned queries versus 65/48, with exact 4638-byte deep response parity. Constant-query regression, owner scoping, no-cache inspection, and all 1014 backend tests passed. Asian Dad: PERFECT (self-graded disclosure applies).
+
+Post-merge closure: implementation squash-merged through PR #88 as 56115296e580d22cfbcdf97731a7b9d1fd00f1fb after successful CI and GitGuardian checks.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -1,11 +1,11 @@
 ---
 id: TASK-164
 title: Give the demo account the same local capabilities as a real one
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: ''
-updated_date: '2026-08-28 13:00'
+updated_date: '2026-08-28 18:58'
 labels:
   - backend
   - demo
@@ -124,6 +124,8 @@ folded in here.
 Wave 3: demo login now seeds three synthetic mailbox messages, one suggestion, fictional candidate evidence, CV/letter templates and a placeholder photo. Demo mailbox queries are prefix-scoped; non-demo mailbox queries exclude demo rows. Demo run/reply/AI/calendar paths short-circuit before Gmail, Google Calendar, or Codex. Privacy tests seed owner message/suggestion/draft content and exercise run, status, suggestion, unmatched, message, attach, reply, job-mailbox, draft edit/chat and decision endpoints without disclosure.
 
 Wave 4 verification: browser exercised /api/mailbox-suggestions/, /api/mailbox-runs/, /api/mailbox-runs/status/, /api/mailbox-runs/local-ai-review/, /api/mailbox-messages/unmatched/ and POST /api/mailbox-messages/{id}/attach/; the unmatched row disappeared after attach. Owner live HTTP checks returned 200 for runs/status/unmatched with zero synthetic markers. Demo rows use reserved UIDs 2000000000-2000000002 while the real resume marker remains 1173; real health/history/cold-start queries exclude demo rows. Full gates: 1014 backend and 187 frontend tests, production build, 0 npm audit findings. Asian Dad: PERFECT.
+
+Post-merge closure: implementation squash-merged through PR #88 as 56115296e580d22cfbcdf97731a7b9d1fd00f1fb after successful CI and GitGuardian checks.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

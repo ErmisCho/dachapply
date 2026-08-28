@@ -3,11 +3,11 @@ id: TASK-191
 title: >-
   An interview date only reaches a job when the message is classified an
   invitation
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: ''
-updated_date: '2026-08-28 13:00'
+updated_date: '2026-08-28 18:58'
 labels:
   - backend
   - mailbox
@@ -79,6 +79,8 @@ Wave 1 production census rechecked all 21 calendar-bearing rows. Current recover
 Wave 2: rejected the recovered false-positive ceiling. Added the minimal measured exclusions for Hays Austausch Jobmöglichkeit, community meetups, and build sprints; 12 focused checks and the 681-test impacted backend run passed. TASK-182 classifier constants remain untouched.
 
 Wave 4 production dry run over exactly 21 non-demo calendar rows: before selected [455], after [455,641,664]; named 365/484/601/602/701/702 remain false. A production transaction rollback cleared job 535, ran only build_suggestions for 641/664, selected 664 and produced 2026-08-26T14:00:00+00:00, then verified rollback. The backfill command remained dry-run by default. Classifier keywords are unchanged; structured VEVENT + matched job + owner-confirmed interview status carry the fallback, with explicit catch-up/community/build-sprint exclusions. Full 1014-test suite passed. Asian Dad: PERFECT.
+
+Post-merge closure: implementation squash-merged through PR #88 as 56115296e580d22cfbcdf97731a7b9d1fd00f1fb after successful CI and GitGuardian checks.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

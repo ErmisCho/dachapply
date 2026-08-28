@@ -1,11 +1,11 @@
 ---
 id: TASK-188
 title: The board takes 4.5 seconds to appear and shows nothing while it waits
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: ''
-updated_date: '2026-08-28 13:00'
+updated_date: '2026-08-28 18:58'
 labels:
   - backend
   - frontend
@@ -167,6 +167,8 @@ Wave 1 recovery validation: 13 focused backend tests and 5 skeleton tests passed
 Wave 2: recovered backend/frontend implementation reviewed and polished; impacted backend files passed 681 tests and all 187 frontend tests passed. Real-browser timing/layout checks remain in Wave 4.
 
 Wave 4 browser measurement on the real 69-row board: API requests start at 724 ms in parallel with auth/me (serial gate removed); one board jobs call takes 1521 ms and first row paints at 2350 ms, down from 4528/~4500 ms. The 850 ms shortfall against 1.5 s is the measured 724 ms shell/usage-middleware start plus the 1521 ms remote-Neon/330 KB board response. Payload fell 402728->329991 bytes (5837->4782 B/row) and gzip transfers 71277 bytes (1033 B/row). Skeleton last top and real first-row top were both 2259.2 px; 360 px card measurement was both 4212.6 px, 69 cards, no table or body overflow. Existing markers: 0 px header overlap, click reaches row, body 1263<=1263, wrapper 1614>1214 with scrollLeft 200, sticky header 60.4 px at scrollTop 0/300/700, 12 note indicators with hover/click, feedback popup portalled and fully visible. Current build loaded 69 rows without error at exact localhost:8000. Full gates passed. Asian Dad: PERFECT.
+
+Post-merge closure: implementation squash-merged through PR #88 as 56115296e580d22cfbcdf97731a7b9d1fd00f1fb after successful CI and GitGuardian checks.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
