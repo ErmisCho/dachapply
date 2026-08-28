@@ -1,11 +1,11 @@
 ---
 id: TASK-192
 title: Record which base template produced each generated CV and letter
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: ''
-updated_date: '2026-08-27 18:09'
+updated_date: '2026-08-28 06:54'
 labels:
   - backend
   - cv-generation
@@ -112,10 +112,12 @@ Added `report_cv_template_usage`, which counts a filename once per generation, l
 Validation: focused provenance tests 5 passed; backend full suite 992 passed; frontend `npm run build` passed after installing lockfile dependencies in the isolated worktree. First-gate failures were root-caused in `.orchestrator/debug/task-192-2026-08-27-feature-1-{1,2}.md` before fixes.
 
 Completion-policy correction: implementation is committed, pushed, fully tested (992 backend tests plus frontend build), and Asian Dad verdict is PERFECT. Task remains In Progress until its branch is squash-merged into main; a post-merge completion change will set Done.
+
+Squash-merged PR #85 into main as 3d0967684e515470e97b36fa9f0c56af24645515 after GitHub test and GitGuardian checks passed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Recorded exact versioned CV and letter base filenames durably on each successful generation, preserved lineage through cache hits and revisions, and added a job-linked aggregate usage/exactly-once report. Verified with 992 backend tests and a successful frontend production build.
+Recorded exact versioned CV and letter base filenames durably on successful generations, preserved cache/revision/restart lineage, and added aggregate plus exactly-once reporting. Verified 992 backend tests, frontend production build, Asian Dad PERFECT, and squash merge via PR #85 (3d09676).
 <!-- SECTION:FINAL_SUMMARY:END -->
