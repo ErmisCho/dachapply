@@ -1,11 +1,11 @@
 ---
 id: TASK-196
 title: Edit notes from every job stage
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-08-27 15:22'
-updated_date: '2026-08-28 06:44'
+updated_date: '2026-08-28 06:54'
 labels:
   - frontend
   - notes
@@ -48,10 +48,12 @@ Validation: frontend npm test — 6 files, 182 tests passed; frontend npm run bu
 Completion-policy correction: implementation is committed, pushed, fully tested, and Asian Dad verdict is PERFECT. Task remains In Progress until its implementation branch is squash-merged into main; a post-merge completion change will set Done.
 
 Final post-rebase validation: backend 992 passed; frontend 182 passed; production build passed. Existing TASK-196 Asian Dad verdict remains PERFECT.
+
+Squash-merged PR #86 into main as f95bdcf2c16641cf739e090ae944c0edae4342f2 after GitHub test and GitGuardian checks passed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Added status-independent inline editing for general notes on job detail pages, using the existing owner-scoped PATCH endpoint with cancel-safe local state. Added focused regression coverage for Edit visibility, PATCH/no-duplicate behavior, cancellation, and terminal statuses. Verified 182 frontend tests and the production build.
+Added status-independent inline editing for general job notes using the owner-scoped PATCH endpoint with cancel-safe, no-duplicate local replacement. Verified 992 backend tests, 182 frontend tests, production build, Asian Dad PERFECT, and squash merge via PR #86 (f95bdcf).
 <!-- SECTION:FINAL_SUMMARY:END -->
