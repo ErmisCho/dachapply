@@ -18,6 +18,7 @@ frontend/dist/
 .codex/
 .cursor/
 .orchestrator/session.lock
+.orchestrator/runtime/
 .orchestrator/current-session.json
 .orchestrator/host.json
 .orchestrator/metrics/*.marker

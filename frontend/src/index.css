@@ -295,6 +295,20 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
 .dark .job-table thead th{background:rgba(5,7,13,.96)!important;box-shadow:0 1px 0 rgba(255,255,255,.08)}
 .job-table th,.job-table td{max-width:12rem;overflow-wrap:anywhere;word-break:break-word;white-space:normal;vertical-align:top}
 .job-table a,.job-table pre,.job-table div,.job-table span{overflow-wrap:anywhere;word-break:break-word;max-width:100%}
+/* TASK-188: the skeleton -> real transition. A CSS insertion animation rather than a JS one because
+   it then costs nothing to keep correct: a keyframe animation runs when an element is INSERTED, and
+   React keys board rows by job id, so an edit that replaces a row's data reuses the same <tr> and
+   does NOT re-fire this. It fires exactly when rows actually arrive -- first load, filter change,
+   re-sort -- which is precisely when the owner is watching for them. The mobile card list gets the
+   same treatment so the 360px layout is not the unpolished one.
+
+   Opacity only, no transform: a transform on a <tr> would make it a containing block for any
+   position:fixed descendant, and this board's popups are exactly that (portalled to <body> as
+   `fixed` by TASK-173/TASK-139). Opacity settles back to 1, so the stacking context it creates
+   lasts 180 ms and never outranks the sticky `thead th` (z-index:12, TASK-167) in tree order. */
+@keyframes board-row-in{from{opacity:0}to{opacity:1}}
+.job-table tbody tr,.dashboard-mobile-card{animation:board-row-in .18s ease-out both}
+@media (prefers-reduced-motion:reduce){.job-table tbody tr,.dashboard-mobile-card{animation:none}}
 @media (min-width: 1024px){
   /* TASK-139. Used to carry `.premium-card.relative.z-0.overflow-x-auto.overflow-y-visible
      {overflow:visible!important}` here - a shorthand override that beat the Tailwind

@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 from html import escape
 
 from django.contrib.auth import authenticate, login, logout, get_user_model
@@ -31,7 +32,7 @@ from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user
 from .services.access import accessible_jobs, job_create_defaults, owned_by, submitted_away_jobs
 from .services.cleaning import clean_job_location
 from .services.job_replace import replace_job_with_supplied_data
-from .services.demo_data import DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user
+from .services.demo_data import DEMO_MAIL_PREFIX, DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user, is_demo_user
 from .services.interview_coach import analyze_answer, suggest_questions
 from .services import mailbox, mailbox_tasks
 from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_suggestion, postpone_suggestion, suggest_job_for_message
@@ -48,6 +49,8 @@ logger = logging.getLogger(__name__)
 
 # Shipped in /api/auth/me/ so the board badges read the same numbers stale_rank orders by,
 # instead of the frontend keeping its own copy of them.
+CV_LOCAL_ONLY_NOTICE = 'CV and letter generation stays in the owner’s local app. This deployed server stores account-scoped profile data but does not run Codex or LaTeX.'
+
 BOARD_THRESHOLDS = {
     'stale_applied_days': JobLead.STALE_APPLIED_DAYS,
     'stale_unapplied_days': JobLead.STALE_UNAPPLIED_DAYS,
@@ -169,18 +172,15 @@ def conversion_rate(numerator, denominator):
     return round(100 * numerator / denominator, 1) if denominator else None
 
 
-def funnel_counts(applied_jobs):
-    """applied -> interview -> offer over one cohort of applications.
+def _row_reached_interview(row):
+    return row['status'] in ('interview', 'offer', 'accepted') or row['interview_stage'] is not None or row['interview_at'] is not None
 
-    The cohort is always jobs with an `applied_at` (TASK-76's write-once stamp), never jobs
-    in the current `applied` status, so a job walked on to `rejected` still counts as an
-    application. Numerators are intersected with the same cohort, so a job that reached
-    interview without ever being marked applied cannot push a rate above 100% -- it is
-    reported separately as `interviews_without_application` instead of being hidden.
-    """
-    applications = applied_jobs.count()
-    interviews = applied_jobs.filter(REACHED_INTERVIEW).count()
-    offers = applied_jobs.filter(REACHED_OFFER).count()
+
+def funnel_counts(application_rows):
+    """applied -> interview -> offer over already-fetched application rows."""
+    applications = len(application_rows)
+    interviews = sum(_row_reached_interview(row) for row in application_rows)
+    offers = sum(row['status'] in ('offer', 'accepted') for row in application_rows)
     return {
         'applications': applications,
         'interviews': interviews,
@@ -190,16 +190,18 @@ def funnel_counts(applied_jobs):
     }
 
 
-def source_effectiveness(applied_jobs):
-    """Applications and interview rate per `source`, busiest source first.
-
-    Grouped over the application cohort, so a source that has never produced an application
-    does not dilute the table. `source` is emitted raw; '' is a real bucket (jobs added
-    without a source) and the frontend labels it.
-    """
-    rows = applied_jobs.values('source').annotate(applications=Count('id'), interviews=Count('id', filter=REACHED_INTERVIEW)).order_by('-applications', 'source')
-    return [{'source': row['source'], 'applications': row['applications'], 'interviews': row['interviews'],
-             'interview_rate': conversion_rate(row['interviews'], row['applications'])} for row in rows]
+def source_effectiveness(application_rows):
+    """Applications and interview rate per source from the same bounded row fetch."""
+    grouped = {}
+    for row in application_rows:
+        counts = grouped.setdefault(row['source'], [0, 0])
+        counts[0] += 1
+        counts[1] += _row_reached_interview(row)
+    return [
+        {'source': source, 'applications': counts[0], 'interviews': counts[1],
+         'interview_rate': conversion_rate(counts[1], counts[0])}
+        for source, counts in sorted(grouped.items(), key=lambda item: (-item[1][0], item[0]))
+    ]
 
 
 def password_rejection(password, user=None):
@@ -345,10 +347,11 @@ def _mailbox_health():
     so a legitimate skip (quiet hours, disabled, outside the check window) still counts as evidence
     the checker itself is alive, which is what staleness is actually asking about.
     """
-    latest = MailboxRun.objects.order_by('-started_at').first()
+    runs = mailbox.real_mailbox_runs()
+    latest = runs.order_by('-started_at').first()
     if latest is not None and latest.error:
         return 'failing', latest.error
-    last_success = MailboxRun.objects.filter(finished_at__isnull=False, error='').order_by('-finished_at').first()
+    last_success = runs.filter(finished_at__isnull=False, error='').order_by('-finished_at').first()
     cutoff = timezone.now() - timezone.timedelta(hours=settings.MAILBOX_STALE_ALERT_HOURS)
     if last_success is None or last_success.finished_at < cutoff:
         if last_success is None:
@@ -458,7 +461,7 @@ def login_view(request):
     else:
         user=authenticate(request, username=username, password=password)
     if not user: return Response({'detail':'Invalid credentials'}, status=400)
-    login(request, user); return Response({'username':user.username, 'can_generate_cv':is_cv_owner(user)})
+    login(request, user); return Response({'username':user.username, 'is_staff':user.is_staff, 'is_demo':is_demo_user(user), 'can_use_mailbox':is_mailbox_owner(user), 'can_generate_cv':is_cv_owner(user), 'cv_generation_notice':'' if settings.CODEX_CV_ENABLED else CV_LOCAL_ONLY_NOTICE})
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -684,7 +687,7 @@ def me(request):
     requested=profile.requested_submit_for if profile else None
     # candidate_profile_missing is the nudge signal: true means every prompt endpoint will refuse
     # with 400 {'code':'candidate_profile_required'} until the user fills in Settings -> profile.
-    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user), 'candidate_profile_missing':not has_candidate_profile(request.user), 'email_verified':is_email_verified(request.user), 'feedback_url':settings.FEEDBACK_URL, 'board_thresholds':BOARD_THRESHOLDS})
+    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'is_demo':is_demo_user(request.user), 'can_use_mailbox':is_mailbox_owner(request.user), 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user), 'cv_generation_notice':'' if settings.CODEX_CV_ENABLED else CV_LOCAL_ONLY_NOTICE, 'candidate_profile_missing':not has_candidate_profile(request.user), 'email_verified':is_email_verified(request.user), 'feedback_url':settings.FEEDBACK_URL, 'board_thresholds':BOARD_THRESHOLDS})
 
 @api_view(['GET','POST'])
 def friend_requests(request):
@@ -724,7 +727,16 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         # follow-ups -- stays on accessible_jobs and 404s for them.
         if self.action == 'list':
             qs=qs | submitted_away_jobs(self.request.user)
-        qs=qs.prefetch_related('evaluations'); p=self.request.query_params
+        # TASK-187: the four created_by/submitted_for username+email SerializerMethodFields each
+        # walk a foreign key this queryset never joined, so serializing the board cost one
+        # auth_user SELECT per row -- measured against production, 69 rows -> 72 queries
+        # (auth_user 69 | joblead 1 | jobevaluation 1 | mailboxmessage 1). The database is remote
+        # (Neon), where a trivial SELECT 1 round trip measures a 25.7 ms median from the owner's
+        # machine, so those 69 extra round trips were roughly 1.8 s of the 3.5 s board request --
+        # latency, not work. Both FKs are null=True, so this is a LEFT OUTER JOIN: it changes how
+        # rows are fetched, never which rows come back, and TASK-184's accessible_jobs scoping
+        # above is untouched (measured: same 69 ids, same order, before and after).
+        qs=qs.select_related('created_by','submitted_for').prefetch_related('evaluations'); p=self.request.query_params
         if p.get('status'):
             statuses=[s for s in p.get('status','').split(',') if s]
             qs=qs.filter(status__in=statuses)
@@ -913,6 +925,27 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         ).order_by('feedback_due_date', 'id').values('id', 'company', 'title', 'status', 'feedback_due_date')
         return Response([{**row, 'overdue': row['feedback_due_date'] < today} for row in rows])
 
+    @action(detail=False, methods=['get'], url_path='new-unanalyzed')
+    def new_unanalyzed(self, request):
+        """TASK-188 AC5: the dashboard's second /api/jobs/ call, shrunk to what it feeds.
+
+        The board used to load by firing /api/jobs/?board=1 AND /api/jobs/?status=new on the same
+        page load -- measured 393 KB and 71 KB, both starting at 1015 ms. The second one is not a
+        duplicate of the first and cannot be derived from it: ?board=1 excludes untitled rows, which
+        is exactly what an unanalyzed new job looks like, and the board also honours whatever status
+        filter the owner saved. So it stays -- but it was shipping the FULL list serializer (every
+        column, plus each row's nested evaluation) to feed two things: a button that reads
+        "Analyze N new jobs", and a picker that renders "#id url" per row. id and url, nothing else.
+
+        Narrow projection in the same shape as feedback_due above: .values() selects only JobLead's
+        own columns, so this is one SELECT regardless of row count and no evaluation is serialized.
+        The unanalyzed filter moves here too -- the client used to fetch every status='new' job and
+        drop the analyzed ones in JavaScript, which is a payload it paid for and threw away.
+        accessible_jobs is the same scoping the board list uses (TASK-184).
+        """
+        rows=accessible_jobs(request.user).filter(status='new', evaluations__isnull=True).order_by('-id').values('id', 'url')
+        return Response(list(rows))
+
 class EvaluationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class=JobEvaluationSerializer; queryset=JobEvaluation.objects.select_related('job').all()
     def get_queryset(self): return JobEvaluation.objects.select_related('job').filter(job__in=accessible_jobs(self.request.user))
@@ -1035,7 +1068,9 @@ def is_mailbox_owner(user):
     CODEX_CV_ENABLED does. On the production database exactly 1 of 9 accounts is staff (the
     owner).
     """
-    return bool(user and user.is_authenticated and user.is_staff)
+    # TASK-164: the public demo is an explicit exception over synthetic prefix-scoped rows only;
+    # it stays non-staff and every transport action returns before Gmail/Google/Codex is reachable.
+    return bool(user and user.is_authenticated and (user.is_staff or is_demo_user(user)))
 
 
 class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
@@ -1047,12 +1082,16 @@ class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class=MailboxRunSerializer
     def get_queryset(self):
         if not is_mailbox_owner(self.request.user): return MailboxRun.objects.none()
-        return MailboxRun.objects.all().prefetch_related('messages__matched_job','messages__draft')
+        qs=(MailboxRun.objects.filter(messages__gmail_id__startswith=DEMO_MAIL_PREFIX) if is_demo_user(self.request.user)
+            else mailbox.real_mailbox_runs())
+        return qs.prefetch_related('messages__matched_job','messages__draft').distinct()
     @action(detail=False, methods=['get', 'post'], url_path='local-ai-review')
     def local_ai_review(self, request):
         """Explicit local Codex pass over cloud-ingested heuristic-uncertain messages."""
         if not is_mailbox_owner(request.user):
             return Response({'detail': 'Not found.'}, status=404)
+        if is_demo_user(request.user):
+            return Response({'local': False, 'supported': False, 'pending': 0, 'detail': 'The demo mailbox is synthetic and never invokes Codex.'}, status=404 if request.method == 'POST' else 200)
         if not _is_loopback_debug_request(request):
             data = {'local': False, 'supported': False, 'pending': 0, 'detail': 'Codex review is available only from the local app.'}
             return Response(data, status=404 if request.method == 'POST' else 200)
@@ -1091,6 +1130,8 @@ class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
         """
         if not is_mailbox_owner(request.user):
             return Response({'detail': 'Not found.'}, status=404)
+        if is_demo_user(request.user):
+            return Response({'queued': False, 'demo': True, 'detail': 'Synthetic demo mailbox is already current; no Gmail transport was contacted.'})
         return Response(mailbox_tasks.start_mailbox_check(request.user))
     @action(detail=False, methods=['get'], url_path='status')
     def status_view(self, request):
@@ -1109,14 +1150,16 @@ class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
         """
         if not is_mailbox_owner(request.user):
             return Response({'detail': 'Not found.'}, status=404)
-        run = mailbox.current_mailbox_run() or MailboxRun.objects.first()
+        runs=self.get_queryset()
+        run = runs.filter(finished_at__isnull=True).first() or runs.first()
         running = bool(run and run.finished_at is None)
         elapsed_seconds = (timezone.now() - run.started_at).total_seconds() if running else None
-        estimate = mailbox.mailbox_check_estimate()
+        estimate = ({'kind':'incremental','estimated_seconds':0} if is_demo_user(request.user)
+                    else mailbox.mailbox_check_estimate())
         estimated_seconds = estimate.get('estimated_seconds')
         taking_longer_than_usual = bool(running and estimated_seconds is not None and elapsed_seconds > estimated_seconds)
         return Response({
-            'has_credentials': mailbox.has_mailbox_credentials(),
+            'has_credentials': False if is_demo_user(request.user) else mailbox.has_mailbox_credentials(),
             'running': running,
             'run': MailboxRunSerializer(run).data if run else None,
             'elapsed_seconds': elapsed_seconds,
@@ -1136,6 +1179,8 @@ class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
         """
         if not is_mailbox_owner(request.user):
             return Response({'detail': 'Not found.'}, status=404)
+        if is_demo_user(request.user):
+            return Response({'calendars': [], 'error': 'The demo mailbox uses synthetic data and no Google account.'})
         if not (settings.GMAIL_OAUTH_CLIENT_ID and settings.GMAIL_OAUTH_CLIENT_SECRET):
             return Response({'calendars': [], 'error': 'Gmail OAuth is not configured on this server.'})
         try:
@@ -1166,7 +1211,9 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
     serializer_class=MailboxMessageSerializer
     def get_queryset(self):
         if not is_mailbox_owner(self.request.user): return MailboxMessage.objects.none()
-        return MailboxMessage.objects.all()
+        qs=MailboxMessage.objects.all()
+        return (qs.filter(gmail_id__startswith=DEMO_MAIL_PREFIX) if is_demo_user(self.request.user)
+                else qs.exclude(gmail_id__startswith=DEMO_MAIL_PREFIX))
     def retrieve(self, request, pk=None):
         """TASK-142 AC1/AC5/AC7 support: `unmatched` below truncates body_text to a preview
         (MailboxMessageListSerializer) so the list itself stays bounded -- this is where the owner
@@ -1491,6 +1538,8 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         message = self._accessible_message(request, pk)
         if not message:
             return Response({'detail': 'Not found.'}, status=404)
+        if is_demo_user(request.user):
+            return Response({'detail': 'The demo mailbox is synthetic and cannot contact Gmail.'}, status=400)
         body_text = (request.data.get('body_text') or '').strip()
         raw_to = request.data.get('to')
         raw_cc = request.data.get('cc', [])
@@ -1976,7 +2025,9 @@ def import_eval(request):
 def stats(request):
     jobs=accessible_jobs(request.user)
     today=timezone.localdate(); evaluations=JobEvaluation.objects.filter(job__in=jobs)
-    applied_jobs=jobs.filter(applied_at__isnull=False)
+    application_rows=list(jobs.filter(applied_at__isnull=False).values('applied_at','source','status','interview_stage','interview_at'))
+    application_dates=Counter(row['applied_at'] for row in application_rows)
+    count_between=lambda start,end: sum(count for date,count in application_dates.items() if start <= date <= end)
     week_start=today-timezone.timedelta(days=today.weekday())
     month_start=today.replace(day=1)
     next_month=(today.replace(year=today.year+1, month=1, day=1) if today.month == 12 else today.replace(month=today.month+1, day=1))
@@ -1985,7 +2036,7 @@ def stats(request):
     for i in range(3,-1,-1):
         start=week_start-timezone.timedelta(days=i*7)
         end=start+timezone.timedelta(days=6)
-        weekly_applications.append({'label':start.strftime('%d %b'), 'start':start.isoformat(), 'end':end.isoformat(), 'count':applied_jobs.filter(applied_at__gte=start, applied_at__lte=end).count()})
+        weekly_applications.append({'label':start.strftime('%d %b'), 'start':start.isoformat(), 'end':end.isoformat(), 'count':count_between(start,end)})
     month_week_applications=[]
     suffixes=['st','nd','rd']
     cursor=month_start
@@ -1993,28 +2044,35 @@ def stats(request):
     while cursor <= month_end:
         end=min(cursor+timezone.timedelta(days=6), month_end)
         suffix=suffixes[idx-1] if idx <= 3 else 'th'
-        month_week_applications.append({'label':f'{idx}{suffix} week', 'range':f'{cursor.day}-{end.day} {end.strftime("%b")}', 'start':cursor.isoformat(), 'end':end.isoformat(), 'count':applied_jobs.filter(applied_at__gte=cursor, applied_at__lte=end).count()})
+        month_week_applications.append({'label':f'{idx}{suffix} week', 'range':f'{cursor.day}-{end.day} {end.strftime("%b")}', 'start':cursor.isoformat(), 'end':end.isoformat(), 'count':count_between(cursor,end)})
         cursor=end+timezone.timedelta(days=1)
         idx+=1
     workday_applications=[]
     cursor=month_start
     while cursor <= month_end:
         if cursor.weekday() < 5:
-            workday_applications.append({'label':cursor.strftime('%d %b'), 'date':cursor.isoformat(), 'count':applied_jobs.filter(applied_at=cursor).count()})
+            workday_applications.append({'label':cursor.strftime('%d %b'), 'date':cursor.isoformat(), 'count':application_dates[cursor]})
         cursor+=timezone.timedelta(days=1)
-    applications_this_week=applied_jobs.filter(applied_at__gte=week_start, applied_at__lte=today).count()
-    elapsed_workdays=sum(1 for i in range(min(today.weekday(), 4)+1))
-    # Only interviews still ahead of us, soonest first; a date that has passed drops out on its own.
+    applications_this_week=count_between(week_start,today)
+    elapsed_workdays=min(today.weekday(),4)+1
     upcoming_interviews=[{'id':j.id, 'company':j.company, 'title':j.title, 'interview_at':j.interview_at, 'interview_note':j.interview_note}
                          for j in jobs.filter(interview_at__gte=timezone.now()).exclude(status__in=['rejected','withdrawn','skipped','archived']).order_by('interview_at')[:10]]
     recent_start=today-timezone.timedelta(days=JobLead.FUNNEL_RECENT_DAYS)
+    recent_applications=[row for row in application_rows if row['applied_at'] >= recent_start]
+    job_counts=jobs.aggregate(
+        total_jobs=Count('id'), interviews=Count('id', filter=Q(status='interview')),
+        offers=Count('id', filter=Q(status='offer')), accepted=Count('id', filter=Q(status='accepted')),
+        rejected=Count('id', filter=Q(status='rejected')), withdrawn=Count('id', filter=Q(status='withdrawn')),
+        interviews_without_application=Count('id', filter=REACHED_INTERVIEW & Q(applied_at__isnull=True)),
+    )
     funnel={'recent_window_days':JobLead.FUNNEL_RECENT_DAYS, 'recent_window_start':recent_start.isoformat(),
-            'all_time':funnel_counts(applied_jobs),
-            'recent':funnel_counts(applied_jobs.filter(applied_at__gte=recent_start)),
-            # Jobs sitting in interview/offer that were never marked applied. Excluded from every
-            # rate above so none can exceed 100%, surfaced here so the gap is visible and fixable.
-            'interviews_without_application':jobs.filter(REACHED_INTERVIEW, applied_at__isnull=True).count()}
-    return Response({'total_jobs':jobs.count(), 'funnel':funnel, 'source_effectiveness':source_effectiveness(applied_jobs), 'jobs_by_status':dict(jobs.values_list('status').annotate(c=Count('id'))), 'average_fit_score':evaluations.aggregate(a=Avg('fit_score'))['a'] or 0, 'high_priority_jobs':evaluations.filter(priority='high', job__status='new').values('job').distinct().count(), 'applications_sent':applied_jobs.count(), 'applications_this_week':applications_this_week, 'applications_per_workday':round(applications_this_week/max(elapsed_workdays,1), 1), 'workday_applications':workday_applications, 'month_week_applications':month_week_applications, 'weekly_applications':weekly_applications, 'interviews':jobs.filter(status='interview').count(), 'upcoming_interviews':upcoming_interviews, 'offers':jobs.filter(status='offer').count(), 'accepted':jobs.filter(status='accepted').count(), 'rejected':jobs.filter(status='rejected').count(), 'withdrawn':jobs.filter(status='withdrawn').count(), 'jobs_needing_follow_up':FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).count()})
+            'all_time':funnel_counts(application_rows), 'recent':funnel_counts(recent_applications),
+            'interviews_without_application':job_counts['interviews_without_application']}
+    # Preserve the endpoint's existing grouped response exactly; removing model ordering here would
+    # change its current values, which TASK-193 explicitly forbids even though it would be cleaner SQL.
+    jobs_by_status=dict(jobs.values_list('status').annotate(c=Count('id')))
+    evaluation_counts=evaluations.aggregate(average_fit_score=Avg('fit_score'), high_priority_jobs=Count('job', filter=Q(priority='high', job__status='new'), distinct=True))
+    return Response({'total_jobs':job_counts['total_jobs'], 'funnel':funnel, 'source_effectiveness':source_effectiveness(application_rows), 'jobs_by_status':jobs_by_status, 'average_fit_score':evaluation_counts['average_fit_score'] or 0, 'high_priority_jobs':evaluation_counts['high_priority_jobs'], 'applications_sent':len(application_rows), 'applications_this_week':applications_this_week, 'applications_per_workday':round(applications_this_week/max(elapsed_workdays,1), 1), 'workday_applications':workday_applications, 'month_week_applications':month_week_applications, 'weekly_applications':weekly_applications, 'interviews':job_counts['interviews'], 'upcoming_interviews':upcoming_interviews, 'offers':job_counts['offers'], 'accepted':job_counts['accepted'], 'rejected':job_counts['rejected'], 'withdrawn':job_counts['withdrawn'], 'jobs_needing_follow_up':FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).count()})
 
 @api_view(['GET', 'POST'])
 def export_user_data(request):

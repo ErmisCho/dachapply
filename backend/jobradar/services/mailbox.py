@@ -83,6 +83,7 @@ from django.db.models import F, Max, Q
 from django.utils import timezone
 
 from jobradar.models import ApplicationNote, JobLead, MailboxCheckRequest, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun
+from jobradar.services.demo_data import DEMO_MAIL_PREFIX
 from jobradar.services.followup_digest import owned_jobs
 from jobradar.services.prompt_builder import user_profile_settings
 # Reuse of interview_coach's local-LLM plumbing (TASK-104): same LLM_PROVIDER env gate, same
@@ -93,6 +94,16 @@ from jobradar.services.interview_coach import _load_llm_config, _post_json, _pos
 logger = logging.getLogger(__name__)
 
 TASK_NAME = 'check_mailbox'
+
+
+def real_mailbox_messages():
+    """Owner mail only; public demo fixtures share the legacy table but never its workflows."""
+    return MailboxMessage.objects.exclude(gmail_id__startswith=DEMO_MAIL_PREFIX)
+
+
+def real_mailbox_runs():
+    """Owner runs only; public demo fixtures share the legacy ownerless table but not its history."""
+    return MailboxRun.objects.exclude(messages__gmail_id__startswith=DEMO_MAIL_PREFIX).distinct()
 
 
 # --- Transport (AC1, AC6: fake-injectable, no test ever opens a socket) -------------------------
@@ -1427,7 +1438,7 @@ def _classify_with_local_llm(raw, domain_known, config):
 
 
 def pending_codex_review_count():
-    return MailboxMessage.objects.filter(
+    return real_mailbox_messages().filter(
         classification='uncertain', evaluator='heuristic', sent_by_owner=False,
         dismissed_at__isnull=True,
     ).count()
@@ -1437,7 +1448,7 @@ def review_uncertain_with_codex(model, effort, limit=10):
     """Locally re-label a bounded uncertain batch; never creates suggestions, drafts, or Gmail I/O."""
     from jobradar.services.mailbox_ai import classify_batch
 
-    messages = list(MailboxMessage.objects.filter(
+    messages = list(real_mailbox_messages().filter(
         classification='uncertain', evaluator='heuristic', sent_by_owner=False,
         dismissed_at__isnull=True,
     ).select_related('matched_job').order_by('-uid')[:max(1, min(int(limit), 10))])
@@ -1461,7 +1472,7 @@ def review_uncertain_with_codex(model, effort, limit=10):
         guarded[message.id] = classification
 
     with transaction.atomic():
-        locked = {message.id: message for message in MailboxMessage.objects.select_for_update().filter(id__in=guarded)}
+        locked = {message.id: message for message in real_mailbox_messages().select_for_update().filter(id__in=guarded)}
         if len(locked) != len(messages) or any(
             message.classification != 'uncertain' or message.evaluator != 'heuristic'
             for message in locked.values()
@@ -1709,7 +1720,7 @@ def matched_sender_domains(owner) -> dict[str, JobLead]:
     owner_domains = {address.rsplit('@', 1)[-1] for address in _owner_email_addresses() if '@' in address}
     domain_jobs: dict[str, set] = {}
     jobs_by_id = {job.id: job for job in owned_jobs(owner)}
-    rows = (MailboxMessage.objects.filter(matched_job_id__in=jobs_by_id, sent_by_owner=False)
+    rows = (real_mailbox_messages().filter(matched_job_id__in=jobs_by_id, sent_by_owner=False)
             .exclude(sender='').values_list('sender', 'matched_job_id'))
     for sender, job_id in rows:
         domain = _normalize_domain(_sender_domain(sender))
@@ -2025,7 +2036,7 @@ def _match_by_thread(thread_id: str) -> JobLead | None:
     the sent one; `None` when the thread has no such message yet (a personal email, or the very first,
     owner-authored message of a brand-new application -- out of this task's scope, see its notes).
     """
-    row = MailboxMessage.objects.filter(thread_id=thread_id).exclude(matched_job__isnull=True).order_by('uid').first()
+    row = real_mailbox_messages().filter(thread_id=thread_id).exclude(matched_job__isnull=True).order_by('uid').first()
     return row.matched_job if row else None
 
 
@@ -2307,6 +2318,22 @@ def _supersede_stale_interview_date(message: MailboxMessage, job: JobLead, when:
         dismiss_suggestion(pending)
 
 
+NON_INTERVIEW_CALENDAR_TERMS = ('austausch jobmöglichkeit', 'build sprint')
+
+
+def _calendar_date_for_a_job_already_interviewing(message: MailboxMessage, job: JobLead) -> bool:
+    """Accept matched VEVENT dates for an owner-confirmed interview stage, except known non-interviews.
+
+    This leaves TASK-182's conservative classifier untouched. The fallback is carried by structured
+    calendar data, an existing job match, and the owner's `interview` status; the denylist is the
+    measured Hays recruiter catch-up plus the four measured community events from TASK-191.
+    """
+    event = f'{message.calendar_summary} {message.subject}'.casefold()
+    return (bool(message.calendar_start) and job.status == 'interview'
+            and not any(term in event for term in NON_INTERVIEW_CALENDAR_TERMS)
+            and not ('community' in event and 'meetup' in event))
+
+
 def build_suggestions(message: MailboxMessage, job: JobLead, classification: str, interview_at, raw: RawMessage | None = None) -> int:
     """Returns the number of MailboxSuggestion rows created (unchanged contract -- every existing
     caller/test treats this as a plain count, so TASK-154 keeps that shape rather than widening it
@@ -2343,7 +2370,7 @@ def build_suggestions(message: MailboxMessage, job: JobLead, classification: str
         created += _create_pending_suggestion(message, job, 'status_change', {'status': 'rejected'})
     elif classification == 'offer' and job.status not in ('offer', 'accepted'):
         created += _create_pending_suggestion(message, job, 'status_change', {'status': 'offer'})
-    elif classification == 'interview_invitation':
+    elif classification == 'interview_invitation' or _calendar_date_for_a_job_already_interviewing(message, job):
         # TASK-179: the date is sourced HERE (calendar first -- see _interview_datetime), not taken
         # on trust from the caller's prose extraction, and the key is OMITTED when there is no date
         # rather than sent as None. apply_suggestion() hands this payload straight to
@@ -2842,9 +2869,8 @@ def interview_date_coverage(owner=None) -> dict:
 
     Scoped to the mailbox owner's OWN jobs (owned_jobs, the same rule followup_digest uses), not
     every row in the table: the coordinator's production baseline is 82 tracked jobs, which is the
-    owner's board, while the deployment holds several accounts. The mailbox-side counts are
-    deliberately NOT scoped -- MailboxMessage/MailboxSuggestion rows only ever come from the one
-    mailbox this module reads, so there is nothing to scope them by.
+    owner's board, while the deployment holds several accounts. Mailbox-side counts use the same
+    real-mail helpers as ingestion so TASK-164's public synthetic demo rows never alter owner audits.
 
     The three `messages_*` counts are what says WHICH of the two measured causes is dominant in real
     data: an invitation whose date could not be read at all, versus a parsed VEVENT sitting on a
@@ -2852,8 +2878,8 @@ def interview_date_coverage(owner=None) -> dict:
     """
     owner = owner or _owner_user()
     jobs = owned_jobs(owner) if owner is not None else JobLead.objects.none()
-    suggestions = MailboxSuggestion.objects.filter(suggestion_type='interview_date')
-    with_calendar = MailboxMessage.objects.exclude(calendar_start=None)
+    suggestions = MailboxSuggestion.objects.exclude(message__gmail_id__startswith=DEMO_MAIL_PREFIX).filter(suggestion_type='interview_date')
+    with_calendar = real_mailbox_messages().exclude(calendar_start=None)
     return {
         'owner': (getattr(owner, 'email', '') or getattr(owner, 'username', '')) if owner is not None else '',
         'jobs': jobs.count(),
@@ -2866,7 +2892,7 @@ def interview_date_coverage(owner=None) -> dict:
         'interview_date_suggestions_pending': suggestions.filter(status='pending').count(),
         'interview_date_suggestions_confirmed': suggestions.filter(status='confirmed').count(),
         'interview_date_suggestions_carrying_a_date': sum(1 for s in suggestions if (s.payload or {}).get('interview_at')),
-        'messages_classified_interview_invitation': MailboxMessage.objects.filter(classification='interview_invitation').count(),
+        'messages_classified_interview_invitation': real_mailbox_messages().filter(classification='interview_invitation').count(),
         'messages_with_calendar_start': with_calendar.count(),
         'messages_with_calendar_start_not_classified_invitation': with_calendar.exclude(classification='interview_invitation').count(),
     }
@@ -2945,7 +2971,7 @@ def detach_job_board_messages(dry_run: bool = True):
     dry_run=True (the default) matches and reports without writing anything.
     """
     candidates = (
-        MailboxMessage.objects.filter(matched_job__isnull=False).exclude(sender='')
+        real_mailbox_messages().filter(matched_job__isnull=False).exclude(sender='')
         .select_related('matched_job').order_by('matched_job_id', 'uid')
     )
     by_job = {}
@@ -2996,7 +3022,7 @@ def detach_ats_host_messages(dry_run: bool = True):
     dry_run=True (the default) matches and reports without writing anything.
     """
     candidates = (
-        MailboxMessage.objects.filter(matched_job__isnull=False).exclude(sender='')
+        real_mailbox_messages().filter(matched_job__isnull=False).exclude(sender='')
         .select_related('matched_job').order_by('matched_job_id', 'uid')
     )
     by_job = {}
@@ -3047,7 +3073,7 @@ def rematch_ats_display_name_messages(dry_run: bool = True) -> list[dict]:
     owner = _owner_user()
     if owner is None:
         return []
-    candidates = MailboxMessage.objects.filter(matched_job__isnull=True).exclude(sender='').order_by('uid')
+    candidates = real_mailbox_messages().filter(matched_job__isnull=True).exclude(sender='').order_by('uid')
     by_job: dict = {}
     for message in candidates:
         if not is_ats_host(_normalize_domain(_sender_domain(message.sender))):
@@ -3095,7 +3121,7 @@ def rematch_sender_domain_messages(dry_run: bool = True) -> list[dict]:
     if not sender_domains:
         return []
     by_job: dict = {}
-    for message in MailboxMessage.objects.filter(matched_job__isnull=True, sent_by_owner=False).exclude(sender='').order_by('uid'):
+    for message in real_mailbox_messages().filter(matched_job__isnull=True, sent_by_owner=False).exclude(sender='').order_by('uid'):
         job = _job_by_sender_domain(message.sender, message.received_at, sender_domains)
         if job is not None:
             by_job.setdefault(job, []).append(message)
@@ -3152,7 +3178,7 @@ def reclassify_messages(dry_run: bool = True, limit: int | None = None) -> list[
     a status-changing class, and both the guard and the heuristic are idempotent). dry_run=True (the
     default) reports without writing anything.
     """
-    candidates = MailboxMessage.objects.filter(classification__in=STATUS_CHANGING_CLASSIFICATIONS).exclude(sender='').order_by('uid')
+    candidates = real_mailbox_messages().filter(classification__in=STATUS_CHANGING_CLASSIFICATIONS).exclude(sender='').order_by('uid')
     if limit is not None:
         candidates = candidates[:limit]
 
@@ -4055,12 +4081,9 @@ def estimate_seconds_from_history(durations: list[float]) -> float | None:
 
 
 def next_check_is_cold_start() -> bool:
-    """Best-effort guess at whether the NEXT run will be a cold start, mirroring run_check's own
-    `last_marker == 0` rule (see its comment): true exactly when no message has ever been logged,
-    since that marker is zero only when the table is empty. The configured transport does not change
-    between runs in practice (module docstring), so this holds regardless of which one is active.
-    """
-    return not MailboxMessage.objects.exists()
+    """Best-effort guess at whether the NEXT real run will be a cold start, mirroring run_check's
+    own `last_marker == 0` rule without letting public demo fixtures manufacture owner history."""
+    return not real_mailbox_messages().exists()
 
 
 def _recent_run_durations(is_cold_start: bool, limit: int = 10) -> list[float]:
@@ -4069,7 +4092,7 @@ def _recent_run_durations(is_cold_start: bool, limit: int = 10) -> list[float]:
     TASK-110's cold-start comment in run_check). Kept separate from estimate_seconds_from_history so
     the actual math stays a pure function with its own test.
     """
-    rows = MailboxRun.objects.filter(
+    rows = real_mailbox_runs().filter(
         drafting_skipped=is_cold_start, skipped=False, error='', finished_at__isnull=False,
     ).order_by('-started_at')[:limit]
     return [(row.finished_at - row.started_at).total_seconds() for row in rows]
@@ -4100,7 +4123,7 @@ def current_mailbox_run() -> MailboxRun | None:
     """AC5: the run currently in progress, if any. AC4's concurrency guard (_claim_run) means at most
     one such row can exist at a time, so this is the one row a poller needs to read for live
     fetched_count while a run is in flight."""
-    return MailboxRun.objects.filter(finished_at__isnull=True).order_by('-started_at').first()
+    return real_mailbox_runs().filter(finished_at__isnull=True).order_by('-started_at').first()
 
 
 def run_check(force=False, transport=None) -> MailboxRun | None:
@@ -4185,9 +4208,9 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         # one transport is ever configured on a given machine (see the gate above/_default_transport).
         is_gmail_api = isinstance(active_transport, GmailApiTransport)
         if is_gmail_api:
-            last_marker = MailboxMessage.objects.aggregate(Max('internal_date_ms'))['internal_date_ms__max'] or 0
+            last_marker = real_mailbox_messages().aggregate(Max('internal_date_ms'))['internal_date_ms__max'] or 0
         else:
-            last_marker = MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0
+            last_marker = real_mailbox_messages().aggregate(Max('uid'))['uid__max'] or 0
         # A zero marker means nothing has ever been recorded, so fetch_new() returns the entire
         # mailbox rather than "new mail since last run". Classifying and suggesting over that history
         # is fine -- both stay inside the app and are reviewable. Drafting is not: it writes into the
@@ -4222,7 +4245,7 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         # IMAP-shaped int; Gmail's own id is a hex string that does not fit it) -- assigned here in
         # processing order so -uid ordering (see MailboxRunSerializer.get_digest_messages) still reads
         # newest-last, same as the real IMAP UIDs it stands in for.
-        next_uid = (MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0) if is_gmail_api else None
+        next_uid = (real_mailbox_messages().aggregate(Max('uid'))['uid__max'] or 0) if is_gmail_api else None
         sort_key = (lambda item: item.internal_date_ms or 0) if is_gmail_api else (lambda item: item.uid)
         # TASK-154 AC2: build_suggestions() refusing a message for bulk mail is counted and explained
         # here, not skipped silently -- MailboxRun has no dedicated counter for this (unlike
@@ -4233,7 +4256,7 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             # Gmail's `after:` search is only second-granular (see GmailApiTransport.fetch_new), so a
             # message right at the resume boundary can come back on two consecutive runs -- this dedup
             # guard is what actually makes that harmless instead of a duplicated log/suggestion/draft.
-            if is_gmail_api and raw.gmail_id and MailboxMessage.objects.filter(gmail_id=raw.gmail_id).exists():
+            if is_gmail_api and raw.gmail_id and real_mailbox_messages().filter(gmail_id=raw.gmail_id).exists():
                 continue
             # TASK-144 AC1/AC5/AC6: the owner's own sent mail (now part of what fetch_new() above
             # returns) is matched by which tracked-job THREAD it already belongs to, never by its own
@@ -4353,7 +4376,7 @@ def seed_fake_run() -> MailboxRun:
         fetched_count=3, job_related_count=3, suggestion_count=1,
         draft_written_count=1, draft_blocked_count=1, finished_at=timezone.now(),
     )
-    next_uid = (MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0) + 1
+    next_uid = (real_mailbox_messages().aggregate(Max('uid'))['uid__max'] or 0) + 1
 
     rejection = MailboxMessage.objects.create(
         run=run, uid=next_uid, sender='recruiting@example-test.invalid',
@@ -4480,7 +4503,7 @@ def ingest_threads(dry_run: bool = True, limit: int | None = None) -> dict:
     # unmatched (AC1: it belongs to the same conversation, which is already "about" that job).
     thread_job_ids: dict[str, int] = {}
     for thread_id, job_id in (
-        MailboxMessage.objects.filter(matched_job__isnull=False).exclude(thread_id='')
+        real_mailbox_messages().filter(matched_job__isnull=False).exclude(thread_id='')
         .order_by('uid').values_list('thread_id', 'matched_job_id')
     ):
         thread_job_ids.setdefault(thread_id, job_id)
@@ -4511,13 +4534,13 @@ def ingest_threads(dry_run: bool = True, limit: int | None = None) -> dict:
         # long-dead thread's oldest history matters far less than whether the last few exchanges
         # (most likely still live) are visible.
         for raw in thread_messages[capped_count:]:
-            if not raw.gmail_id or MailboxMessage.objects.filter(gmail_id=raw.gmail_id).exists():
+            if not raw.gmail_id or real_mailbox_messages().filter(gmail_id=raw.gmail_id).exists():
                 messages_skipped_existing += 1
                 continue
             if not dry_run:
                 if run is None:
                     run = MailboxRun.objects.create(finished_at=timezone.now())
-                    next_uid = (MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0) + 1
+                    next_uid = (real_mailbox_messages().aggregate(Max('uid'))['uid__max'] or 0) + 1
                 job_id = thread_job_ids.get(thread_id)
                 matched = JobLead.objects.filter(pk=job_id).first() if job_id else None
                 classification, interview_at, evaluator = classify_email(raw, domain_known=True)
@@ -4568,7 +4591,7 @@ def backfill_thread_ids(dry_run: bool = True, limit: int | None = None) -> dict:
 
     batch_limit = BACKFILL_BATCH_LIMIT if limit is None else limit
     candidates = list(
-        MailboxMessage.objects.filter(thread_id='').exclude(gmail_id='').order_by('uid').values_list('id', 'gmail_id')[:batch_limit]
+        real_mailbox_messages().filter(thread_id='').exclude(gmail_id='').order_by('uid').values_list('id', 'gmail_id')[:batch_limit]
     )
     filled = failed = 0
     for message_id, gmail_id in candidates:
@@ -4667,14 +4690,14 @@ def backfill_message_bodies(dry_run: bool = True, limit: int | None = None, cale
 
     if calendar_missing:
         candidates = list(
-            MailboxMessage.objects.filter(calendar_summary='', calendar_checked_at__isnull=True)
+            real_mailbox_messages().filter(calendar_summary='', calendar_checked_at__isnull=True)
             .exclude(gmail_id='').exclude(body_text='')
             .order_by('uid').values_list('id', 'gmail_id')[:batch_limit]
         )
     else:
         # TASK-149: gated on attachments==[] too -- see the docstring above.
         candidates = list(
-            MailboxMessage.objects.filter(body_text='', calendar_summary='', attachments=[]).exclude(gmail_id='')
+            real_mailbox_messages().filter(body_text='', calendar_summary='', attachments=[]).exclude(gmail_id='')
             .order_by('uid').values_list('id', 'gmail_id')[:batch_limit]
         )
 
@@ -4879,7 +4902,7 @@ def backfill_historical_mail(dry_run: bool = True, limit: int | None = None, flo
                 message_ids.append(msg_id)
     matched_by_query = len(message_ids)
 
-    known_ids = set(MailboxMessage.objects.exclude(gmail_id='').values_list('gmail_id', flat=True))
+    known_ids = set(real_mailbox_messages().exclude(gmail_id='').values_list('gmail_id', flat=True))
     new_ids = [mid for mid in message_ids if mid not in known_ids]
     already_present = len(message_ids) - len(new_ids)
 
@@ -4892,7 +4915,7 @@ def backfill_historical_mail(dry_run: bool = True, limit: int | None = None, flo
     created = 0
     for msg_id in to_process:
         raw = transport.fetch_message(msg_id)
-        if MailboxMessage.objects.filter(gmail_id=raw.gmail_id).exists():
+        if real_mailbox_messages().filter(gmail_id=raw.gmail_id).exists():
             # A concurrent write (a scheduled live run, or another backfill call) created this row
             # between the id listing above and this fetch -- rare, but this is the one point this
             # function actually writes, so it is checked again right before doing so.
@@ -4901,7 +4924,7 @@ def backfill_historical_mail(dry_run: bool = True, limit: int | None = None, flo
         if not dry_run:
             if run is None:
                 run = MailboxRun.objects.create(finished_at=timezone.now())
-                next_uid = (MailboxMessage.objects.aggregate(Max('uid'))['uid__max'] or 0) + 1
+                next_uid = (real_mailbox_messages().aggregate(Max('uid'))['uid__max'] or 0) + 1
             matched = match_job(raw, job_domains, owner=owner, sender_domains=sender_domains)
             classification, interview_at, evaluator = classify_email(raw, domain_known=matched is not None)
             message = MailboxMessage.objects.create(

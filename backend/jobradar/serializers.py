@@ -292,11 +292,55 @@ class JobEvaluationListSerializer(JobEvaluationSerializer):
     plus skill_statuses). Drops structured_json_raw -- the whole raw LLM reply, ~3.7KB
     per evaluation in the local snapshot and by far the biggest thing on the wire -- and
     the long-form notes only the detail page shows. recommendation stays because the
-    board filters on it; skill_statuses is still computed from the instance, so it keeps
-    covering nice_to_have skills even though that list itself is not sent.
+    board filters on it; skill_statuses is reduced to the required/matched/missing keys
+    that SkillLabels can actually look up. The detail serializer keeps the complete map.
     """
     class Meta(JobEvaluationSerializer.Meta):
         fields=('id','fit_score','priority','recommendation','summary','main_match_reasons','main_gaps','required_skills','matched_skills','missing_skills','skill_statuses')
+    def get_skill_statuses(self, obj):
+        """The same map, carrying only what the board can actually read out of it.
+
+        Measured on the owner's real 69-row board: skill_statuses was 181.8 KB of a 402.7 KB
+        response -- 46% of the whole payload, the single biggest thing on the wire, at 37.4 entries
+        per row against 31.6 skills the board ever looks up. Every byte below is dropped because
+        App.tsx's SkillLabels provably cannot reach it, not because it looked expendable -- read
+        that function alongside this one, they are a pair:
+
+        1. Keys outside required + missing + matched go. SkillLabels builds its skill list from
+           exactly those three arrays and looks each name up with `ev.skill_statuses?.[s]`, so a
+           nice_to_have-only key has no lookup that can find it. (The parent still computes them:
+           the DETAIL endpoint keeps the full map.) Measured: 328 of 2,506 keys.
+        2. `display` goes when it equals the key. SkillLabels' `label()` falls back to the raw
+           skill name when the entry has no display, and the entry then collapses to the bare
+           status string -- a shape that function has always handled (`typeof meta(s)==='string'`).
+           Measured: 687 of 2,178 reachable keys.
+        3. `status: 'unknown'` goes. `tone()` reads 'match' -> green, 'weak' -> yellow, and
+           *everything else* -> red, so an absent status and an 'unknown' one paint the identical
+           chip. Measured: 1,385 of 2,178.
+        4. An entry that is both (unknown status, display == key) disappears entirely, because
+           SkillLabels renders a name with no entry at all exactly the same way. Measured: 294.
+
+        Net 402,728 -> 330,238 B, 5,837 -> 4,786 B per row, with byte-identical chips: same names,
+        same tones, same order (the sort is the client's and reads only these values), same hover
+        tooltip, and the 360px card layout's limit={999} sees the same full list as the desktop
+        table's limit={8}. This is the call JobEvaluationListSerializer's own docstring already made
+        once for structured_json_raw, applied one field further down.
+        """
+        # dict-not-set so the key order stays the board's own (required, then missing, then
+        # matched, first mention wins) instead of a hash order that would change between processes.
+        rendered={}
+        for name in (obj.required_skills or []) + (obj.missing_skills or []) + (obj.matched_skills or []):
+            if name: rendered.setdefault(name, None)
+        out={}
+        for name in rendered:
+            status=smart_skill_status(name); display=display_skill_name(name)
+            if display == name:
+                if status != 'unknown': out[name]=status
+            elif status == 'unknown':
+                out[name]={'display': display}
+            else:
+                out[name]={'status': status, 'display': display}
+        return out
 
 class JobLeadListSerializer(JobLeadSerializer):
     """/api/jobs/ list rows. The detail endpoint keeps every field.
