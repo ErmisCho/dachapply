@@ -1,14 +1,13 @@
 {
-  "wave": 4,
-  "role": "Quality",
+  "wave": 5,
+  "role": "Finalization",
   "enforcement": "warn",
   "allowedPaths": [
     "backlog/tasks/task-199 - Keep-the-local-launcher-synchronized-with-deployed-main.md",
-    "scripts/dachapply-local-runtime.cmd",
-    "backend/jobradar/tests/test_local_runtime_launcher.py",
+    ".orchestrator/metrics/events.jsonl",
+    ".orchestrator/metrics/sessions.jsonl",
     ".pi/STATE.md",
-    ".pi/wave-scope.json",
-    ".claude/.asian-dad/task-199-local-azure-sync-rubric.json"
+    ".pi/wave-scope.json"
   ],
   "externalAllowedPaths": [
     "C:/Users/Administrator/Backup/Projects/Configuration/bin/dachapply-start.cmd",
