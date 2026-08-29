@@ -3607,38 +3607,21 @@ def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, cl
 
 # --- Gmail deep link (TASK-121 AC3/AC4/AC5): the ONE Gmail URL builder in the codebase -----------
 
-def gmail_conversation_url(message_id: str, authuser: str = '', draft: bool = False) -> str:
-    """The single Gmail URL builder (AC3) -- every "open this in Gmail" link in the app goes through
-    this function. With draft=True, message_id is Gmail's internal DRAFT MESSAGE id and the
-    `#drafts?compose=` form opens that exact composed draft. Otherwise it takes
-    MailboxMessage.message_id (the RFC 822 Message-ID header), the only id
-    populated by BOTH transports (RawMessage.gmail_id is '' on every IMAP-sourced row, so a link keyed
-    on it would be dead on a machine configured for IMAP -- see the task notes). Strips the header's
-    required angle brackets and URL-encodes the rest into Gmail's `rfc822msgid:` search operator,
-    which opens the whole conversation, not just one message.
+def gmail_conversation_url(message_id: str, authuser: str = '', draft: bool = False, thread_id: str = '') -> str:
+    """Build every Gmail link in one place.
 
-    Returns '' when there is no usable id (AC4/AC5: a row with no id, or one written before this
-    task shipped, must show no link rather than one that 404s into an empty search) -- callers must
-    treat a falsy return as "no link", never build a URL themselves.
-
-    `authuser`, when given (typically _reply_from_address(), the owner's own mailbox address),
-    disambiguates which signed-in Google account the link opens against -- `/mail/u/0/` alone always
-    addresses whichever account signed in first in the browser, which is wrong on a machine with more
-    than one Google account signed in.
-
-    NOT verified against a real Gmail inbox by this change -- see TASK-121 notes: report the produced
-    URL string so the coordinator can confirm it in an actual browser before AC3 is checked off.
+    Drafts use Gmail's internal draft-message id. Captured Gmail messages use their persisted thread
+    id to open the conversation directly; IMAP and historical rows without one retain the RFC822
+    search fallback because that is their only usable identifier.
     """
-    stripped = (message_id or '').strip().strip('<>').strip()
-    if not stripped:
-        return ''
-    if draft:
-        # Gmail's deep link keys on the draft's message id, not users.drafts' outer id. Keep the
-        # same authuser account selector as conversation links; /u/<email>/ returns Gmail 404.
-        query = f'?{urlencode({"authuser": authuser})}' if authuser else ''
-        return f'https://mail.google.com/mail/u/0/{query}#drafts?compose={quote(stripped, safe="")}'
+    message_id = (message_id or '').strip().strip('<>').strip()
+    thread_id = (thread_id or '').strip()
     query = f'?{urlencode({"authuser": authuser})}' if authuser else ''
-    return f'https://mail.google.com/mail/u/0/{query}#search/rfc822msgid:{quote(stripped, safe="")}'
+    if draft:
+        return f'https://mail.google.com/mail/u/0/{query}#drafts?compose={quote(message_id, safe="")}' if message_id else ''
+    if thread_id:
+        return f'https://mail.google.com/mail/u/0/{query}#all/{quote(thread_id, safe="")}'
+    return f'https://mail.google.com/mail/u/0/{query}#search/rfc822msgid:{quote(message_id, safe="")}' if message_id else ''
 
 
 # --- TASK-114 AC6: remove drafts this app already wrote ------------------------------------------
@@ -4120,7 +4103,7 @@ def mailbox_check_estimate() -> dict:
 def queue_mailbox_check_request(user) -> MailboxCheckRequest:
     """AC2: recorded instead of failing when this backend has no credentials -- picked up by
     pending_mailbox_check_request() on the hourly cloud workflow's next check_mailbox tick."""
-    return MailboxCheckRequest.objects.create(requested_by=user)
+    return MailboxCheckRequest.objects.filter(requested_by=user, handled_at__isnull=True).first() or MailboxCheckRequest.objects.create(requested_by=user)
 
 
 def pending_mailbox_check_request() -> MailboxCheckRequest | None:

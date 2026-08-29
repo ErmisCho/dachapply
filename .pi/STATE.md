@@ -1,97 +1,88 @@
 ---
 schema-version: 1
-session: task-113-2026-08-28-feature-1
+session: task-198-2026-08-29-feature-1
 session-type: feature
-branch: worktree-task-113-actionable-reminders
-issues: [TASK-113]
-started_at: 2026-08-28T19:37:10.686Z
-status: completed
-current-wave: 5
+branch: worktree-mailbox-links-manual-run
+issues: [TASK-198]
+started_at: 2026-08-29T16:28:35.154Z
+status: active
+current-wave: 4
 total-waves: 5
-scope-baseline-intent: "Make reminder emails actionable and stop reminders after a proven or confirmed sent follow-up."
-scope-baseline-owner-boundary: "TASK-113 only; preserve no-send, owner scoping, and real-mail safety."
-scope-baseline-planned-files: 13
-scope-baseline-session: task-113-2026-08-28-feature-1
-scope-baseline-frozen-at: 2026-08-28T19:37:10.686Z
 mission-status:
   - id: m-1
-    task: "Reconcile TASK-113 with capabilities shipped by TASK-121 and later mailbox work"
+    task: "Trace direct Gmail-link and manual-run failures to their shared enforcement points"
     wave: 1
     status: completed
   - id: m-2
-    task: "Build actionable HTML/plain digests and durable sent confirmation"
+    task: "Use persisted Gmail thread ids for direct conversations and restore the deployed run control"
     wave: 2
-    status: completed
+    status: testing
   - id: m-3
-    task: "Add job-page context, manual action, and automatic proof"
+    task: "Add focused backend and frontend regressions"
     wave: 3
-    status: completed
+    status: testing
   - id: m-4
-    task: "Run full tests, live link/browser verification, and Asian Dad evaluation"
+    task: "Run full gates and Asian Dad evaluation"
     wave: 4
-    status: completed
+    status: in-dev
   - id: m-5
-    task: "Commit, push, squash-merge, and close TASK-113 post-merge"
+    task: "Commit, merge, close TASK-198, and finalize the session"
     wave: 5
-    status: completed
-updated: 2026-08-29T08:58:18.983Z
-recommended-mode: feature
-top-priorities: []
-carryover-ratio: 0
-completion-rate: 1
-rationale: "v0: default clean completion"
-completed_at: 2026-08-29T08:56:19.000Z
+    status: validated
+updated: 2026-08-29T16:31:00.000Z
+scope-baseline-intent: "Open captured Gmail messages as direct conversations and restore manual mailbox requests on deployed backends."
+scope-baseline-owner-boundary: "TASK-198 only; preserve owner scope, no-send, and real-mail test isolation."
+scope-baseline-planned-files: 5
+scope-baseline-session: task-198-2026-08-29-feature-1
+scope-baseline-frozen-at: 2026-08-29T16:31:49.834Z
 ---
 
 ## Current Wave
 
-Wave 5 — COMPLETE: implementation merged, TASK-113 closed, and session finalized.
+Wave 4 — ACTIVE: full quality gates and evaluation.
 
 ## Session Plan
 
 ### Wave 1 — Discovery
-- Reclaim the clean stale worktree after confirming PID 188528 is absent.
-- Rebase the task-filing commit onto origin/main and trace every existing draft/digest/follow-up path.
+- Trace message ids through storage, serialization, and Gmail navigation.
+- Trace run-now through deployment capability, ownership, and UI visibility.
 
 ### Wave 2 — Impl-Core
-- Extend the existing Gmail URL builder for exact draft links.
-- Add actionable HTML/plain digest rendering and atomic sent confirmation.
+- Extend the one Gmail URL builder to prefer persisted thread ids.
+- Restore owner-visible manual mailbox requests on deployed backends.
 
 ### Wave 3 — Impl-Polish
-- Reuse the sent-confirmation path for automatic mailbox proof.
-- Add job-page thread/draft context and explicit confirmation.
+- Add focused backend and DOM-less frontend regression checks.
 
 ### Wave 4 — Quality
-- Run focused and full backend/frontend gates, no-send grep, live link inspection, and Asian Dad evaluation.
+- Run backend/frontend gates, no-send grep, and Asian Dad evaluation.
 
 ### Wave 5 — Finalization
-- Merge implementation, then mark TASK-113 Done in a post-merge update.
+- Squash-merge implementation, close TASK-198 post-merge, and finalize state.
 
 ## Wave History
 
 ### Wave 1 — COMPLETE
-- The stale worktree was clean and its recorded PID was absent; its one task-filing commit was rebased onto origin/main.
-- TASK-121 already persists Gmail draft/message/thread ids and verified live rows, so TASK-113 reuses that foundation instead of reimplementing it.
-- Existing /jobs/:id/mailbox/ already exposes owner-scoped thread context and draft text; the detail page can reuse it.
+- Current message links always emit `#search/rfc822msgid:` although `MailboxMessage.thread_id` is persisted.
+- `POST /api/mailbox-runs/run-now/` already supports credential-less deployed requests, but the frontend hides it when `status.has_credentials` is false.
+- Root-cause artifact: `.orchestrator/debug/task-198-2026-08-29-feature-1-1.md`.
 
-### Waves 2-4 — COMPLETE
-- Added actionable HTML/plain digests, durable manual/automatic sent recording, honest no-draft states, and optional next scheduling.
-- Browser-verified one-screen job context and the exact Gmail draft deep link; all disposable browser fixtures were removed.
-- Passed 1025 backend tests, 191 frontend tests, production build, Django checks, npm audit, and Asian Dad PERFECT.
+### Wave 2 — COMPLETE
+- The shared URL builder now prefers `MailboxMessage.thread_id` and emits an account-scoped `#all/<thread_id>` conversation link, preserving RFC822 and exact-draft fallbacks.
+- The Mailbox page shows the owner control on deployed no-credential backends and truthfully labels the queued request path.
 
-### Wave 5 — COMPLETE
-- Implementation squash-merged in PR #91 as `983fcb70b1c69fcf5ac9ca7976da7ea9581710b1` after CI and GitGuardian passed.
-- TASK-113 was marked Done only after the implementation reached `main`.
-- No carryover remains.
+### Wave 3 — COMPLETE
+- Added direct-thread URL/serializer coverage, pending-request deduplication coverage, and owner/non-owner frontend visibility coverage.
+- Focused result: 23 backend checks and all 193 frontend tests passed.
 
 ## Deviations
 
-- TASK-113 AC1's implementation premise was superseded by merged TASK-121; only TASK-113-specific exact-draft use and live re-verification remain.
+- Pi v1 has no parallel Agent tool, so roles execute sequentially in the isolated worktree.
 
 ## What Not To Retry
 
 - Do not add a second Gmail URL builder or any Gmail send call.
-- Do not treat draft deletion alone as proof of sending.
+- Do not require local Gmail credentials merely to record a deployed mailbox-check request.
 
 ## Open Questions
 
@@ -100,7 +91,7 @@ Wave 5 — COMPLETE: implementation merged, TASK-113 closed, and session finaliz
 ## Mission Status
 
 - m-1: completed
-- m-2: completed
-- m-3: completed
-- m-4: completed
-- m-5: completed
+- m-2: testing
+- m-3: testing
+- m-4: in-dev
+- m-5: validated

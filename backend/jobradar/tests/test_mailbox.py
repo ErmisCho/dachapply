@@ -3545,6 +3545,11 @@ def test_gmail_conversation_url_includes_authuser_when_given():
     assert url.startswith('https://mail.google.com/mail/u/0/?authuser=owner%40example.test#search/rfc822msgid:')
 
 
+def test_gmail_conversation_url_opens_persisted_thread_directly():
+    url = gmail_conversation_url('', authuser='owner@example.test', thread_id='18d4abc123')
+    assert url == 'https://mail.google.com/mail/u/0/?authuser=owner%40example.test#all/18d4abc123'
+
+
 def test_gmail_conversation_url_opens_exact_draft_by_message_id_and_account():
     url = gmail_conversation_url('1a015989bf9644bc', authuser='owner@example.test', draft=True)
     assert url == 'https://mail.google.com/mail/u/0/?authuser=owner%40example.test#drafts?compose=1a015989bf9644bc'

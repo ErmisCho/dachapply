@@ -227,14 +227,19 @@ def test_job_mailbox_endpoint_message_gmail_url_is_null_without_a_usable_id(clie
     assert row['gmail_url'] is None
 
 
-def test_job_mailbox_endpoint_message_gmail_url_is_built_from_the_message_id(client, applied_job):
+def test_job_mailbox_endpoint_message_gmail_url_opens_the_persisted_thread(client, applied_job):
     message = _log_message(applied_job, 'uncertain', message_id='<abc123@mail.gmail.com>')
+    message.thread_id = 'thread-abc123'
+    message.save(update_fields=['thread_id'])
 
     r = client.get(f'/api/jobs/{applied_job.id}/mailbox/')
 
     row = next(m for m in r.data['messages'] if m['id'] == message.id)
-    assert row['gmail_url'] == mailbox.gmail_conversation_url('<abc123@mail.gmail.com>', authuser=mailbox._reply_from_address() or '')
-    assert 'rfc822msgid:abc123' in row['gmail_url']
+    assert row['gmail_url'] == mailbox.gmail_conversation_url(
+        '<abc123@mail.gmail.com>', authuser=mailbox._reply_from_address() or '', thread_id='thread-abc123',
+    )
+    assert '#all/thread-abc123' in row['gmail_url']
+    assert '#search/' not in row['gmail_url']
 
 
 def test_job_mailbox_endpoint_gmail_url_names_the_account_it_means(client, applied_job, settings):
@@ -1049,6 +1054,10 @@ def test_run_now_queues_a_request_when_this_backend_has_no_credentials(client, o
     request = MailboxCheckRequest.objects.get(pk=r.data['request_id'])
     assert request.requested_by_id == owner.id
     assert request.handled_at is None
+
+    repeated = client.post('/api/mailbox-runs/run-now/')
+    assert repeated.data['request_id'] == request.id
+    assert MailboxCheckRequest.objects.filter(handled_at__isnull=True).count() == 1
 
 
 def test_run_now_requires_cv_owner(db, applied_job):
