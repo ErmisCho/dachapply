@@ -1,14 +1,17 @@
 {
-  "wave": 5,
-  "role": "Finalization",
+  "wave": 4,
+  "role": "Quality",
   "enforcement": "warn",
   "allowedPaths": [
-    "backlog/tasks/task-198 - Open-the-exact-Gmail-conversation-and-allow-manual-mailbox-runs.md",
     "backlog/tasks/task-199 - Keep-the-local-launcher-synchronized-with-deployed-main.md",
-    ".orchestrator/debug/task-198-2026-08-29-feature-1-3.md",
-    ".orchestrator/metrics/events.jsonl",
-    ".orchestrator/metrics/sessions.jsonl",
+    "scripts/dachapply-local-runtime.cmd",
+    "backend/jobradar/tests/test_local_runtime_launcher.py",
     ".pi/STATE.md",
-    ".pi/wave-scope.json"
+    ".pi/wave-scope.json",
+    ".claude/.asian-dad/task-199-local-azure-sync-rubric.json"
+  ],
+  "externalAllowedPaths": [
+    "C:/Users/Administrator/Backup/Projects/Configuration/bin/dachapply-start.cmd",
+    "C:/Users/Administrator/Backup/Projects/Configuration/test.cmd"
   ]
 }
