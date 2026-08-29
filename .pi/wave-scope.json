@@ -1,12 +1,11 @@
 {
-  "wave": 2,
-  "role": "Bugfix",
+  "wave": 4,
+  "role": "Finalization",
   "enforcement": "warn",
   "allowedPaths": [
-    "backend/jobradar/tests/test_api.py",
     "backlog/tasks/task-201 - Make-the-follow-up-sent-date-assertion-timezone-stable.md",
-    ".orchestrator/debug/task-201-2026-08-29-bugfix-1-1.md",
-    ".claude/.asian-dad/task-201-timezone-stable-rubric.json",
+    ".orchestrator/metrics/events.jsonl",
+    ".orchestrator/metrics/sessions.jsonl",
     ".pi/STATE.md",
     ".pi/wave-scope.json"
   ]
