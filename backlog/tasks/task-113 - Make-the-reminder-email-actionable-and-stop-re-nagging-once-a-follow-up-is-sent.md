@@ -3,11 +3,11 @@ id: TASK-113
 title: >-
   Make the reminder email actionable and stop re-nagging once a follow-up is
   sent
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-08-17 19:38'
-updated_date: '2026-08-29 08:49'
+updated_date: '2026-08-29 08:57'
 labels:
   - product
   - email
@@ -145,6 +145,8 @@ Validation 2026-08-29:
 - Digest regression coverage proves HTML buttons plus plain links, exact Gmail/job URLs, blocked/no-draft wording, owner scoping, selected follow-up identity, feedback-only reminders, next-day silence, and optional rescheduling. Mailbox tests prove automatic confirmation only when a draft disappears AND a newer owner-authored same-thread message exists; either condition alone records nothing.
 - Gates: 1025 backend tests passed; 191 frontend tests passed; TypeScript/Vite production build passed; Django checks, migration drift check, and compileall passed; npm audit reports 0 vulnerabilities. No test contacted a live mailbox. No Gmail send or SMTP call site exists; grep hits only no-send comments/docstrings/tests.
 - Asian Dad Eval: PERFECT across all 10 sealed binary criteria (self-graded rubric disclosed).
+
+Implementation squash-merged in PR #91 as 983fcb70b1c69fcf5ac9ca7976da7ea9581710b1. Task marked Done only after the implementation reached main.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
