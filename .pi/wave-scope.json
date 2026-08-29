@@ -1,16 +1,13 @@
 {
-  "wave": 5,
-  "role": "Finalization",
+  "wave": 2,
+  "role": "Bugfix",
   "enforcement": "warn",
   "allowedPaths": [
-    "backlog/tasks/task-199 - Keep-the-local-launcher-synchronized-with-deployed-main.md",
-    ".orchestrator/metrics/events.jsonl",
-    ".orchestrator/metrics/sessions.jsonl",
+    "backend/jobradar/tests/test_api.py",
+    "backlog/tasks/task-201 - Make-the-follow-up-sent-date-assertion-timezone-stable.md",
+    ".orchestrator/debug/task-201-2026-08-29-bugfix-1-1.md",
+    ".claude/.asian-dad/task-201-timezone-stable-rubric.json",
     ".pi/STATE.md",
     ".pi/wave-scope.json"
-  ],
-  "externalAllowedPaths": [
-    "C:/Users/Administrator/Backup/Projects/Configuration/bin/dachapply-start.cmd",
-    "C:/Users/Administrator/Backup/Projects/Configuration/test.cmd"
   ]
 }

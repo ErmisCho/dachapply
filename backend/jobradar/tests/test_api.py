@@ -3238,7 +3238,7 @@ def test_confirm_sent_records_date_note_and_silences_both_digest_halves(client):
     assert followup.completed is True and followup.sent_at is not None
     assert job.feedback_due_date is None and draft.sent_at==followup.sent_at
     note=job.notes.get(note_type='follow_up')
-    assert draft.gmail_draft_id in note.note and followup.sent_at.date().isoformat() in note.note
+    assert draft.gmail_draft_id in note.note and timezone.localtime(followup.sent_at).date().isoformat() in note.note
     assert send_digest(client.user, today+timezone.timedelta(days=1)) is False
     assert mail.outbox==[]
 
