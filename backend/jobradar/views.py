@@ -36,7 +36,7 @@ from .services.demo_data import DEMO_MAIL_PREFIX, DEMO_PASSWORD, DEMO_USERNAME, 
 from .services.interview_coach import analyze_answer, suggest_questions
 from .services import mailbox, mailbox_tasks
 from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_suggestion, postpone_suggestion, suggest_job_for_message
-from .services.followup_digest import owned_jobs
+from .services.followup_digest import owned_jobs, record_job_followup_sent
 from .services.draft_chat import ChatTurn, run_chat_turn
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, available_model_options, decode_correction_image, generation_preview, is_cv_owner, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
@@ -865,6 +865,23 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         job=self.get_object()
         if request.method=='GET': return Response(FollowUpSerializer(job.followups.all(), many=True).data)
         ser=FollowUpSerializer(data={**request.data,'job':job.id}, context={'request': request}); ser.is_valid(raise_exception=True); ser.save(); return Response(ser.data, status=201)
+    @action(detail=True, methods=['patch'], url_path='confirm-follow-up-sent')
+    def confirm_follow_up_sent(self, request, pk=None):
+        job=self.get_object()
+        try:
+            draft=MailboxDraft.objects.get(pk=request.data.get('draft_id'), job=job, status='written')
+        except (MailboxDraft.DoesNotExist, ValueError, TypeError):
+            return Response({'detail':'A written draft for this job is required.'}, status=400)
+        raw_date=request.data.get('next_follow_up_date')
+        try:
+            next_date=None if raw_date in (None, '') else serializers.DateField().run_validation(raw_date)
+            followup, next_followup, _=record_job_followup_sent(job, draft, request.user, next_date=next_date, followup_id=request.data.get('followup_id'))
+        except ValueError as exc:
+            return Response({'detail':str(exc)}, status=400)
+        return Response({
+            'followup': FollowUpSerializer(followup).data,
+            'next_followup': FollowUpSerializer(next_followup).data if next_followup else None,
+        })
     @action(detail=True, methods=['get'])
     def mailbox(self, request, pk=None):
         """TASK-117 AC2 / TASK-120 AC1,AC3,AC4,AC5: every mailbox message matched to this job --

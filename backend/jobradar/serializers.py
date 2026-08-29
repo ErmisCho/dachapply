@@ -201,7 +201,7 @@ class FollowUpSerializer(serializers.ModelSerializer):
     company=serializers.CharField(source='job.company', read_only=True)
     title=serializers.CharField(source='job.title', read_only=True)
     class Meta:
-        model=FollowUp; fields='__all__'; read_only_fields=('created_at','updated_at')
+        model=FollowUp; fields='__all__'; read_only_fields=('sent_at','created_at','updated_at')
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         request=self.context.get('request') if hasattr(self, 'context') else None
@@ -429,7 +429,7 @@ class PracticeEvaluateSerializer(serializers.Serializer):
 # serializers below turn that into None rather than an empty string on the wire. Imported lazily
 # (inside the function, not at module level) because services.mailbox itself imports
 # JobLeadSerializer from this module -- a top-level import here would be circular.
-def _gmail_url(message_id):
+def _gmail_url(message_id, draft=False):
     # TASK-121 AC3/AC4, measured against the owner's real mailbox 2026-08-18: a bare
     # https://mail.google.com/mail/u/0/#search/... opens whichever Google account signed in FIRST in
     # that browser, not necessarily the mailbox the app reads. The owner had to hand-edit /u/0/ to
@@ -438,7 +438,7 @@ def _gmail_url(message_id):
     # Imported inside the function on purpose: services.mailbox imports JobLeadSerializer from this
     # module, so a module-level import here is a circular import that breaks the whole app.
     from .services.mailbox import _reply_from_address, gmail_conversation_url
-    return gmail_conversation_url(message_id, authuser=_reply_from_address() or '') or None
+    return gmail_conversation_url(message_id, authuser=_reply_from_address() or '', draft=draft) or None
 
 class MailboxDraftSerializer(serializers.ModelSerializer):
     """TASK-110 AC5. Read-only everywhere -- MailboxDraft is append-only, same shape as
@@ -446,20 +446,18 @@ class MailboxDraftSerializer(serializers.ModelSerializer):
     are '' on every row written before that task, and on every row from a machine on the IMAP
     transport (no Gmail API ids at all).
     """
-    # gmail_conversation_url only accepts an RFC822 Message-ID (see its docstring) --
-    # gmail_message_id is a different, Gmail-internal id it does not understand. The draft's own
-    # inbound message is the conversation this draft replies to, so that message's message_id is
-    # the link target (null when that message has no usable id either -- TASK-121 AC4).
+    # TASK-113: draft links use the Gmail-internal message id with the builder's exact-draft mode;
+    # conversation links below continue to use the inbound RFC822 Message-ID. Null for old/IMAP rows.
     gmail_url=serializers.SerializerMethodField()
     class Meta:
         model=MailboxDraft
         # TASK-122 AC4/AC5: chat_history is read-only here too -- the only writer is
         # MailboxDraftViewSet.chat (append on a successful turn) and .edit (reset on accept),
         # never a generic field on this serializer.
-        fields=('id','status','block_reason','subject','body_text','evaluator','gmail_draft_id','gmail_message_id','gmail_thread_id','gmail_url','chat_history','created_at')
+        fields=('id','status','block_reason','subject','body_text','evaluator','gmail_draft_id','gmail_message_id','gmail_thread_id','gmail_url','sent_at','chat_history','created_at')
         read_only_fields=fields
     def get_gmail_url(self, obj):
-        return _gmail_url(obj.message.message_id)
+        return _gmail_url(obj.gmail_message_id, draft=True)
 
 class MailboxMessageSerializer(serializers.ModelSerializer):
     """TASK-109. Read-only everywhere -- the model itself is the append-only log (AC5), so no

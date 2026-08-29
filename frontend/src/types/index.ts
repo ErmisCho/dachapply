@@ -2,7 +2,7 @@ export type Evaluation={id:number;job:number;fit_score:number;priority:'high'|'m
 // TASK-126 AC4: has_mailbox_history is list-only (JobLeadListSerializer's Exists() annotation) --
 // undefined on a job fetched from /api/jobs/<id>/ (JobLeadSerializer, no such field on the wire).
 export type Job={id:number;company:string;title:string;location:string;url:string;source:string;raw_description:string;original_source_text?:string;submitted_by:string;submitter_reason:string;salary_info:string;language_requirements:string;work_mode:string;status:string;status_date?:string|null;interview_stage?:number|null;interview_total?:number|null;interview_at?:string|null;interview_note?:string;apply_by?:string|null;last_update_date?:string|null;feedback_due_date?:string|null;created_by_username?:string;created_by_email?:string;submitted_for_username?:string;submitted_for_email?:string;created_at:string;updated_at?:string;latest_evaluation?:Evaluation|null;has_mailbox_history?:boolean;note_preview?:string}
-export type FollowUp={id:number;job:number;company:string;title:string;follow_up_date:string;reason:string;completed:boolean}
+export type FollowUp={id:number;job:number;company:string;title:string;follow_up_date:string;reason:string;completed:boolean;sent_at:string|null}
 // TASK-146. GET /api/jobs/feedback-due/'s row shape - already sorted overdue-group-first then
 // soonest-first by the server. The exact key the backend uses to mark a row overdue-vs-upcoming is
 // deliberately not modeled here: the client recomputes that itself from feedback_due_date vs today
@@ -42,14 +42,13 @@ export type PracticeSession={id:number;job:number|null;job_company:string;job_ti
 // TASK-110: draft is null unless this message's classification wanted a reply and matched a job.
 // TASK-121 AC1: gmail_draft_id/gmail_message_id/gmail_thread_id are '' on every row written before
 // that task, and on every row from a machine on the IMAP transport (no Gmail API ids at all).
-// gmail_url is the SAME builder as MailboxMessage.gmail_url below (both key off the underlying
-// inbound message's RFC822 Message-ID, not the draft's own gmail_message_id - see serializers.py),
-// null when that id is not usable.
+// gmail_url uses the shared builder's exact-draft mode and the draft's gmail_message_id; message
+// rows below use its conversation mode and their inbound RFC822 Message-ID. Old/IMAP drafts are null.
 // TASK-122 AC2/AC4: chat_history is the app-owned transcript re-fed to the (stateless) model on
 // every turn - server-authoritative (never trust a client-resent copy), reset to [] the moment a
 // revision is accepted via /edit/ (see views.py's MailboxDraftViewSet.edit).
 export type MailboxChatTurn={user_message:string;revised_text:string}
-export type MailboxDraft={id:number;status:'written'|'blocked';block_reason:string;subject:string;body_text:string;evaluator:string;gmail_draft_id:string;gmail_message_id:string;gmail_thread_id:string;gmail_url:string|null;chat_history:MailboxChatTurn[];created_at:string}
+export type MailboxDraft={id:number;status:'written'|'blocked';block_reason:string;subject:string;body_text:string;evaluator:string;gmail_draft_id:string;gmail_message_id:string;gmail_thread_id:string;gmail_url:string|null;sent_at:string|null;chat_history:MailboxChatTurn[];created_at:string}
 // TASK-117 AC1: body_text is the received email body (5000-char cap applied at the wire read),
 // stored now instead of dropped - see the model docstring for why the minimal-metadata default
 // was reversed 2026-08-18.

@@ -316,6 +316,8 @@ class FollowUp(models.Model):
     follow_up_date=models.DateField()
     reason=models.CharField(max_length=250)
     completed=models.BooleanField(default=False)
+    # Dedicated proof of when the owner sent the follow-up; updated_at also moves for unrelated edits.
+    sent_at=models.DateTimeField(null=True, blank=True)
     created_at=models.DateTimeField(auto_now_add=True)
     updated_at=models.DateTimeField(auto_now=True)
     class Meta: ordering=['completed','follow_up_date']
@@ -693,6 +695,9 @@ class MailboxDraft(models.Model):
     gmail_draft_id=models.CharField(max_length=32, blank=True, default='')
     gmail_message_id=models.CharField(max_length=32, blank=True, default='')
     gmail_thread_id=models.CharField(max_length=32, blank=True, default='')
+    # Set with FollowUp.sent_at when this exact draft is confirmed/proven sent; prevents reusing
+    # the same vanished draft to complete a later follow-up on the job.
+    sent_at=models.DateTimeField(null=True, blank=True)
     # TASK-122 AC4/AC5: the multi-turn draft-chat transcript, as a JSON list of
     # {"user_message": ..., "revised_text": ...} -- one dict per services.draft_chat.ChatTurn,
     # in order, so `[ChatTurn(**item) for item in chat_history]` reconstructs it exactly. Only a

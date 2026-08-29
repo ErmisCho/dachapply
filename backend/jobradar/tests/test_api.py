@@ -3185,6 +3185,117 @@ def test_digest_emails_due_follow_ups_and_overdue_feedback(digest_owner):
     assert 'turn these reminders off' in email.body
 
 
+def test_digest_has_html_buttons_plain_links_and_honest_no_draft_states(digest_owner, settings):
+    from jobradar.models import MailboxDraft, MailboxMessage, MailboxRun
+    from jobradar.services.followup_digest import send_due_digests
+
+    settings.FRONTEND_URL='https://dachapply.example'
+    settings.GMAIL_IMAP_USER='owner@example.test'
+    today=timezone.localdate()
+    run=MailboxRun.objects.create(finished_at=timezone.now())
+    jobs=[]
+    for company in ['Ready GmbH', 'Blocked AG', 'No Draft SE']:
+        job=JobLead.objects.create(company=company, title='Engineer', created_by=digest_owner)
+        FollowUp.objects.create(job=job, follow_up_date=today, reason='Ask for an update')
+        jobs.append(job)
+    ready_message=MailboxMessage.objects.create(run=run, uid=1001, matched_job=jobs[0], thread_id='thread-ready', subject='Ready subject')
+    blocked_message=MailboxMessage.objects.create(run=run, uid=1002, matched_job=jobs[1], thread_id='thread-blocked', subject='Blocked subject')
+    MailboxDraft.objects.create(message=ready_message, job=jobs[0], status='written', subject='Re: Ready', body_text='Exact body', gmail_draft_id='draft-ready', gmail_message_id='message-ready', gmail_thread_id='thread-ready')
+    MailboxDraft.objects.create(message=blocked_message, job=jobs[1], status='blocked', block_reason='salary below configured floor', subject='Re: Blocked')
+
+    assert send_due_digests()==1
+    email=mail.outbox[0]
+    html=email.alternatives[0][0]
+    assert email.alternatives[0][1]=='text/html'
+    assert 'Open Gmail draft' in html and 'Review in DACHApply' in html
+    assert '#drafts?compose=message-ready' in html and '?authuser=owner%40example.test' in html
+    assert 'salary below configured floor' in email.body and 'No reply draft was generated' in email.body
+    assert 'Open exact Gmail draft:' in email.body and '/jobs/' in email.body
+    assert html.count('#drafts?compose=')==1
+
+
+def _followup_with_draft(user, *, feedback_due_date=None):
+    from jobradar.models import MailboxDraft, MailboxMessage, MailboxRun
+
+    job=JobLead.objects.create(company='Actionable GmbH', title='Engineer', status='interview', feedback_due_date=feedback_due_date, created_by=user)
+    followup=FollowUp.objects.create(job=job, follow_up_date=timezone.localdate(), reason='Send the prepared reply')
+    run=MailboxRun.objects.create(finished_at=timezone.now())
+    message=MailboxMessage.objects.create(run=run, uid=2001+job.id, matched_job=job, thread_id=f'thread-{job.id}', subject='Recruiter update')
+    draft=MailboxDraft.objects.create(message=message, job=job, status='written', subject='Re: Recruiter update', body_text='Verbatim prepared reply', gmail_draft_id=f'draft-{job.id}', gmail_message_id=f'message-{job.id}', gmail_thread_id=f'thread-{job.id}')
+    return job, followup, draft
+
+
+def test_confirm_sent_records_date_note_and_silences_both_digest_halves(client):
+    from jobradar.models import MailboxDraft
+    from jobradar.services.followup_digest import send_digest
+
+    client.user.email='owner@example.test'; client.user.save(update_fields=['email'])
+    today=timezone.localdate()
+    job, followup, draft=_followup_with_draft(client.user, feedback_due_date=today)
+    response=client.patch(f'/api/jobs/{job.id}/confirm-follow-up-sent/', {'draft_id':draft.id, 'followup_id':followup.id}, format='json')
+    assert response.status_code==200 and response.data['next_followup'] is None
+    followup.refresh_from_db(); job.refresh_from_db(); draft=MailboxDraft.objects.get(pk=draft.pk)
+    assert followup.completed is True and followup.sent_at is not None
+    assert job.feedback_due_date is None and draft.sent_at==followup.sent_at
+    note=job.notes.get(note_type='follow_up')
+    assert draft.gmail_draft_id in note.note and followup.sent_at.date().isoformat() in note.note
+    assert send_digest(client.user, today+timezone.timedelta(days=1)) is False
+    assert mail.outbox==[]
+
+
+def test_confirm_sent_records_the_selected_due_followup(client):
+    today=timezone.localdate()
+    job, selected, draft=_followup_with_draft(client.user, feedback_due_date=today)
+    older=FollowUp.objects.create(job=job, follow_up_date=today-timezone.timedelta(days=1), reason='A different due action')
+    response=client.patch(f'/api/jobs/{job.id}/confirm-follow-up-sent/', {'draft_id':draft.id, 'followup_id':selected.id}, format='json')
+    assert response.status_code==200
+    selected.refresh_from_db(); older.refresh_from_db()
+    assert selected.sent_at is not None and older.sent_at is None
+
+
+def test_confirm_sent_handles_feedback_overdue_without_an_existing_followup(client):
+    from jobradar.models import MailboxDraft
+
+    today=timezone.localdate()
+    job, followup, draft=_followup_with_draft(client.user, feedback_due_date=today)
+    followup.delete()
+    response=client.patch(f'/api/jobs/{job.id}/confirm-follow-up-sent/', {'draft_id':draft.id}, format='json')
+    assert response.status_code==200
+    recorded=job.followups.get()
+    job.refresh_from_db(); draft=MailboxDraft.objects.get(pk=draft.pk)
+    assert recorded.completed is True and recorded.sent_at==draft.sent_at
+    assert job.feedback_due_date is None
+
+
+def test_confirm_sent_rejects_a_job_without_a_due_reminder(client):
+    job, followup, draft=_followup_with_draft(client.user, feedback_due_date=timezone.localdate()+timezone.timedelta(days=2))
+    followup.follow_up_date=timezone.localdate()+timezone.timedelta(days=2); followup.save()
+    response=client.patch(f'/api/jobs/{job.id}/confirm-follow-up-sent/', {'draft_id':draft.id}, format='json')
+    assert response.status_code==400
+    draft.refresh_from_db(); assert draft.sent_at is None
+
+
+def test_confirm_sent_optional_next_followup_returns_only_on_that_date(client):
+    from jobradar.services.followup_digest import send_digest
+
+    client.user.email='owner@example.test'; client.user.save(update_fields=['email'])
+    today=timezone.localdate(); next_date=today+timezone.timedelta(days=4)
+    job, followup, draft=_followup_with_draft(client.user, feedback_due_date=today)
+    response=client.patch(f'/api/jobs/{job.id}/confirm-follow-up-sent/', {'draft_id':draft.id, 'next_follow_up_date':next_date.isoformat()}, format='json')
+    assert response.status_code==200 and response.data['next_followup']['follow_up_date']==next_date.isoformat()
+    assert send_digest(client.user, next_date-timezone.timedelta(days=1)) is False
+    assert send_digest(client.user, next_date) is True
+    assert 'Next follow-up scheduled' in job.notes.get(note_type='follow_up').note
+
+
+def test_confirm_sent_is_owner_scoped(client):
+    stranger=User.objects.create_user('stranger', password='pw')
+    job, followup, draft=_followup_with_draft(stranger)
+    response=client.patch(f'/api/jobs/{job.id}/confirm-follow-up-sent/', {'draft_id':draft.id}, format='json')
+    assert response.status_code==404
+    followup.refresh_from_db(); assert followup.sent_at is None
+
+
 def test_digest_sends_nothing_when_no_item_is_due(digest_owner):
     from jobradar.services.followup_digest import send_due_digests
 
