@@ -1,18 +1,13 @@
 {
-  "wave": 4,
-  "role": "Quality",
+  "wave": 5,
+  "role": "Finalization",
   "enforcement": "warn",
   "allowedPaths": [
-    "backend/jobradar/services/mailbox.py",
-    "backend/jobradar/serializers.py",
-    "backend/jobradar/tests/test_mailbox.py",
-    "backend/jobradar/tests/test_mailbox_panel.py",
-    "frontend/src/App.tsx",
-    "frontend/src/manualMailboxRun.test.tsx",
     "backlog/tasks/task-198 - Open-the-exact-Gmail-conversation-and-allow-manual-mailbox-runs.md",
-    ".orchestrator/debug/task-198-2026-08-29-feature-1-1.md",
-    ".orchestrator/debug/task-198-2026-08-29-feature-1-2.md",
-    ".claude/.asian-dad/task-198-direct-gmail-manual-mailbox-rubric.json",
+    "backlog/tasks/task-199 - Keep-the-local-launcher-synchronized-with-deployed-main.md",
+    ".orchestrator/debug/task-198-2026-08-29-feature-1-3.md",
+    ".orchestrator/metrics/events.jsonl",
+    ".orchestrator/metrics/sessions.jsonl",
     ".pi/STATE.md",
     ".pi/wave-scope.json"
   ]

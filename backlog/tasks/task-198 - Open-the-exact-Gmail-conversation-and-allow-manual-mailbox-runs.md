@@ -1,11 +1,11 @@
 ---
 id: TASK-198
 title: Open the exact Gmail conversation and allow manual mailbox runs
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-08-29 16:27'
-updated_date: '2026-08-29 19:03'
+updated_date: '2026-08-29 21:19'
 labels:
   - email
   - backend
@@ -24,7 +24,7 @@ The per-message Gmail action currently opens an RFC822 search result instead of 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each linked captured message with a persisted Gmail thread identifier opens the actual Gmail conversation, not a search results page
+- [x] #1 Each linked captured message with a persisted Gmail thread identifier opens the actual Gmail conversation, not a search results page
 - [x] #2 The Gmail conversation link selects the configured owner account and uses one shared URL builder
 - [x] #3 The owner can start mailbox automation manually from the application and sees whether it completed, skipped, or failed
 - [x] #4 A manual run reuses the existing mailbox automation path and cannot introduce Gmail sending or SMTP capability
@@ -44,4 +44,16 @@ The per-message Gmail action currently opens an RFC822 search result instead of 
 Root cause confirmed before editing: MailboxMessageSerializer ignores persisted thread_id and emits an RFC822 search URL; commit fb4a51b also hid TASK-124's deployed queued-run control behind status.has_credentials. Debug artifact: .orchestrator/debug/task-198-2026-08-29-feature-1-1.md.
 
 Validation 2026-08-29: the shared builder/serializer now emits an account-scoped #all/<thread_id> direct-conversation URL while preserving exact-draft and RFC822 fallback forms. The existing owner-only run-now endpoint is visible again on no-credential deployments, pending requests deduplicate, and the UI reports queued/running/skipped/failed outcomes through the existing status path. Gates passed: 1026 backend tests, 193 frontend tests, production build, Django check, migration drift check, compileall, npm audit (0 vulnerabilities), git diff check, and no-send implementation scan. Automated tests used only fake/synthetic mailbox data. AC1 awaits deployed click verification; authenticated Gmail was not accessed without permission.
+
+Implementation squash-merged in PR #93 as ae4f8b04483c224c0307baa1997d1607cba37fe3. Main CI passed and the Azure deployment workflow completed, including its public-app verification. AC1 remains the sole unclosed criterion because the pre-sealed Asian Dad check requires observing an authenticated Gmail conversation; that safety-sensitive verification has not been fabricated or performed without permission.
+
+Manual deployed verification completed by the owner on 2026-08-29: from the Azure mailbox page, the per-message link opened the Gmail conversation directly rather than the RFC822 search-results page. The earlier failed check was traced to localhost running the unrelated pre-fix wave9 worktree; debug artifact: .orchestrator/debug/task-198-2026-08-29-feature-1-3.md.
+
+Asian Dad evaluation: PERFECT (self-graded). Evidence: owner-observed deployed direct conversation; manual-run endpoint/UI tests exercised immediate and queued outcomes; 1026 backend tests, 193 frontend tests, and production build passed; authorization and no-send scans passed; main CI/deployment passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Opened captured Gmail messages through persisted direct thread routes and restored owner-visible immediate/queued mailbox execution without adding send capability. Verified by 1026 backend tests, 193 frontend tests, production build/CI, successful Azure deployment, and the owner's live Gmail conversation check.
+<!-- SECTION:FINAL_SUMMARY:END -->
