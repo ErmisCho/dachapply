@@ -1,106 +1,94 @@
 ---
 schema-version: 1
-session: task-198-2026-08-29-feature-1
+session: task-199-2026-08-29-feature-1
 session-type: feature
-branch: worktree-mailbox-links-manual-run
-issues: [TASK-198]
-started_at: 2026-08-29T16:28:35.154Z
-status: completed
-current-wave: 5
+branch: task-199-local-main-sync
+issues: [TASK-199]
+started_at: 2026-08-29T21:33:06.112Z
+status: active
+current-wave: 4
 total-waves: 5
 mission-status:
   - id: m-1
-    task: "Trace direct Gmail-link and manual-run failures to their shared enforcement points"
+    task: "Trace local launcher and Azure release sources"
     wave: 1
     status: completed
   - id: m-2
-    task: "Use persisted Gmail thread ids for direct conversations and restore the deployed run control"
+    task: "Synchronize a dedicated local runtime to origin/main"
     wave: 2
     status: completed
   - id: m-3
-    task: "Add focused backend and frontend regressions"
+    task: "Add fail-closed and cleanup launcher checks"
     wave: 3
     status: completed
   - id: m-4
-    task: "Run full gates and Asian Dad evaluation"
+    task: "Verify commit parity and dirty-worktree preservation"
     wave: 4
     status: completed
   - id: m-5
-    task: "Commit, merge, close TASK-198, and finalize the session"
+    task: "Merge, restart localhost, close TASK-199, and finalize"
     wave: 5
-    status: completed
-updated: 2026-08-29T21:20:00.000Z
-scope-baseline-intent: "Open captured Gmail messages as direct conversations and restore manual mailbox requests on deployed backends."
-scope-baseline-owner-boundary: "TASK-198 only; preserve owner scope, no-send, and real-mail test isolation."
-scope-baseline-planned-files: 5
-scope-baseline-session: task-198-2026-08-29-feature-1
-scope-baseline-frozen-at: 2026-08-29T16:31:49.834Z
+    status: pending
+updated: 2026-08-29T21:45:00.000Z
+scope-baseline-intent: "Keep the normal local runtime on the same released main code as Azure."
+scope-baseline-owner-boundary: "TASK-199 only; never reset, clean, or overwrite active development worktrees."
+scope-baseline-planned-files: 3
+scope-baseline-session: task-199-2026-08-29-feature-1
+scope-baseline-frozen-at: 2026-08-29T21:33:06.112Z
 ---
 
 ## Current Wave
 
-Wave 5 — COMPLETE: implementation and closure merged, TASK-198 verified and closed.
+Wave 4 — COMPLETE: release-runtime parity, fail-closed behavior, and full gates verified.
 
 ## Session Plan
 
 ### Wave 1 — Discovery
-- Trace message ids through storage, serialization, and Gmail navigation.
-- Trace run-now through deployment capability, ownership, and UI visibility.
+- Trace the normal Windows launcher and Azure deployment source.
 
 ### Wave 2 — Impl-Core
-- Extend the one Gmail URL builder to prefer persisted thread ids.
-- Restore owner-visible manual mailbox requests on deployed backends.
+- Fetch origin/main and synchronize a dedicated detached runtime worktree before local startup.
 
 ### Wave 3 — Impl-Polish
-- Add focused backend and DOM-less frontend regression checks.
+- Extend launcher checks for synchronization, fail-closed startup, and stale-port cleanup.
 
 ### Wave 4 — Quality
-- Run backend/frontend gates, no-send grep, and Asian Dad evaluation.
+- Measure commit parity and prove the dirty feature worktree is unchanged.
 
 ### Wave 5 — Finalization
-- Squash-merge implementation, close TASK-198 post-merge, and finalize state.
+- Merge, restart localhost from released main, close TASK-199, and clean resources.
 
 ## Wave History
 
 ### Wave 1 — COMPLETE
-- Current message links always emit `#search/rfc822msgid:` although `MailboxMessage.thread_id` is persisted.
-- `POST /api/mailbox-runs/run-now/` already supports credential-less deployed requests, but the frontend hides it when `status.has_credentials` is false.
-- Root-cause artifact: `.orchestrator/debug/task-198-2026-08-29-feature-1-1.md`.
+- Azure tests and deploys each main push by immutable GitHub SHA.
+- The normal local launcher hard-codes the active development worktree, which is nine commits behind origin/main and dirty.
+- A dedicated disposable worktree is the smallest safe boundary: release updates can hard-reset it without touching development work.
 
 ### Wave 2 — COMPLETE
-- The shared URL builder now prefers `MailboxMessage.thread_id` and emits an account-scoped `#all/<thread_id>` conversation link, preserving RFC822 and exact-draft fallbacks.
-- The Mailbox page shows the owner control on deployed no-credential backends and truthfully labels the queued request path.
+- The normal launcher now stops stale servers, fetches origin/main, and executes the launcher script from that exact released ref.
+- The tracked launcher prepares `%LOCALAPPDATA%\\dachapply\\main-runtime` as a detached origin/main worktree and shares the existing ignored `.env` by hard link.
 
 ### Wave 3 — COMPLETE
-- Added direct-thread URL/serializer coverage, pending-request deduplication coverage, and owner/non-owner frontend visibility coverage.
-- Focused result: 23 backend checks and all 193 frontend tests passed.
+- Configuration smoke checks cover stale-port cleanup, main fetch, released-script loading, fail-closed routing, and absence of direct development-worktree startup.
+- A repository test locks in detached runtime use, no reset of the development repo, commit verification before serving, cleanup, and Azure's main/SHA deployment.
 
 ### Wave 4 — COMPLETE
-- Passed 1026 backend tests, 193 frontend tests, production build, Django checks, migration checks, compileall, npm audit, diff check, and the no-send scan.
-- Asian Dad evaluation: PERFECT with self-grading disclosure.
-
-### Wave 5 — COMPLETE
-- Squash-merged implementation in PR #93 as `ae4f8b04483c224c0307baa1997d1607cba37fe3`.
-- Main CI and Azure deployment passed; the owner confirmed the deployed link opens the actual Gmail conversation.
-- TASK-198 is Done with zero carryover. TASK-199 separately tracks the requested local/deployed release synchronization.
+- Prepare-only synchronization produced identical local/main SHA `bbc7232ec7a5b484ab3b24163063f104df8914c6`.
+- The dirty development worktree status hash remained `976345520865f69021d3f919c0a9e8a86e3784c5ae0266539328e55de9d4c2d2` before and after.
+- Invalid-source synchronization exited 1, created no runtime, and printed `Nothing was started`.
+- Passed 1027 backend tests, 193 frontend tests, production build, Configuration smoke checks, and diff check.
 
 ## Deviations
 
-- Pi v1 has no parallel Agent tool, so roles execute sequentially in the isolated worktree.
+- Pi v1 executes roles sequentially.
+- The user-specific launcher lives under the adjacent machine-local Configuration folder, matching TASK-58 precedent.
 
 ## What Not To Retry
 
-- Do not add a second Gmail URL builder or any Gmail send call.
-- Do not require local Gmail credentials merely to record a deployed mailbox-check request.
+- Never pull, reset, stash, or clean the active `wave9-auto-interview-date` worktree.
+- Do not change Azure's already-correct main deployment workflow.
 
 ## Open Questions
 
 (none)
-
-## Mission Status
-
-- m-1: completed
-- m-2: completed
-- m-3: completed
-- m-4: completed
-- m-5: completed
