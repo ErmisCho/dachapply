@@ -28,7 +28,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from jobradar.models import ApplicationNote, JobLead, MailboxCheckRequest, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun, UserProfile
+from jobradar.models import ApplicationNote, FollowUp, JobLead, MailboxCheckRequest, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun, UserProfile
 from jobradar.services import mailbox, mailbox_tasks
 from jobradar.services.mailbox import (
     MailboxCheckInProgress,
@@ -3545,12 +3545,70 @@ def test_gmail_conversation_url_includes_authuser_when_given():
     assert url.startswith('https://mail.google.com/mail/u/0/?authuser=owner%40example.test#search/rfc822msgid:')
 
 
+def test_gmail_conversation_url_opens_exact_draft_by_message_id_and_account():
+    url = gmail_conversation_url('1a015989bf9644bc', authuser='owner@example.test', draft=True)
+    assert url == 'https://mail.google.com/mail/u/0/?authuser=owner%40example.test#drafts?compose=1a015989bf9644bc'
+
+
 @pytest.mark.parametrize('message_id', ['', None, '   ', '<>'])
 def test_gmail_conversation_url_returns_empty_string_for_no_usable_id(message_id):
     """AC4/AC5: a row with no usable id (or one written before TASK-121) must yield no link, never a
     URL that 404s into an empty Gmail search.
     """
     assert gmail_conversation_url(message_id) == ''
+
+
+class _DraftAwareTransport(FakeTransport):
+    def __init__(self, messages, draft_ids):
+        super().__init__(messages)
+        self.draft_ids=draft_ids
+    def list_draft_ids(self):
+        return list(self.draft_ids)
+
+
+def _due_draft(job, run, uid=800):
+    message=MailboxMessage.objects.create(run=run, uid=uid, matched_job=job, thread_id='thread-sent', sender='hr@acme.test', subject='Recruiter update', received_at=timezone.now()-timedelta(hours=1), classification='recruiter_reply')
+    draft=MailboxDraft.objects.create(message=message, job=job, status='written', subject='Re: Recruiter update', body_text='Prepared reply', gmail_draft_id='draft-sent', gmail_message_id='message-sent', gmail_thread_id='thread-sent')
+    followup=FollowUp.objects.create(job=job, follow_up_date=timezone.localdate(), reason='Send reply')
+    return followup, draft
+
+
+def test_next_mailbox_check_auto_confirms_only_after_newer_owner_message(not_cold_start, owner, applied_job):
+    followup, draft=_due_draft(applied_job, not_cold_start)
+    sent=raw(801, sender='owner@example.test', subject='Re: Recruiter update', received_at=timezone.now()+timedelta(minutes=1), thread_id='thread-sent')
+    run=run_check(force=True, transport=_DraftAwareTransport([sent], draft_ids=[]))
+    assert run.error==''
+    followup.refresh_from_db(); draft.refresh_from_db(); applied_job.refresh_from_db()
+    assert followup.completed is True and followup.sent_at is not None
+    assert draft.sent_at==followup.sent_at and applied_job.feedback_due_date is None
+    assert draft.gmail_draft_id in applied_job.notes.get(note_type='follow_up').note
+
+
+def test_missing_draft_alone_never_counts_as_sent(db, owner, applied_job):
+    from jobradar.services.followup_digest import reconcile_sent_followups
+
+    run=MailboxRun.objects.create(finished_at=timezone.now())
+    followup, draft=_due_draft(applied_job, run, uid=802)
+    assert reconcile_sent_followups(_DraftAwareTransport([], draft_ids=[]), owner)==0
+    followup.refresh_from_db(); assert followup.sent_at is None
+
+    MailboxMessage.objects.create(run=run, uid=803, matched_job=applied_job, thread_id='thread-sent', sender='owner@example.test', sent_by_owner=True, received_at=timezone.now()+timedelta(minutes=1))
+    assert reconcile_sent_followups(_DraftAwareTransport([], draft_ids=['draft-sent']), owner)==0
+    followup.refresh_from_db(); assert followup.sent_at is None
+    assert reconcile_sent_followups(_DraftAwareTransport([], draft_ids=[]), owner)==1
+
+
+def test_auto_confirm_handles_feedback_overdue_without_a_followup(db, owner, applied_job):
+    from jobradar.services.followup_digest import reconcile_sent_followups
+
+    run=MailboxRun.objects.create(finished_at=timezone.now())
+    followup, draft=_due_draft(applied_job, run, uid=804)
+    followup.delete()
+    applied_job.feedback_due_date=timezone.localdate(); applied_job.save(update_fields=['feedback_due_date'])
+    MailboxMessage.objects.create(run=run, uid=805, matched_job=applied_job, thread_id='thread-sent', sender='owner@example.test', sent_by_owner=True, received_at=timezone.now()+timedelta(minutes=1))
+    assert reconcile_sent_followups(_DraftAwareTransport([], draft_ids=[]), owner)==1
+    recorded=applied_job.followups.get()
+    assert recorded.completed is True and recorded.sent_at is not None
 
 
 class FakeDraftStore:

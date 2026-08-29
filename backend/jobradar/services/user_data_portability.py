@@ -21,7 +21,7 @@ APP_NAME = 'dachapply'
 JOB_FIELDS = ['company','title','location','url','source','raw_description','original_source_text','submitted_by','submitter_reason','salary_info','language_requirements','work_mode','status','status_date','applied_at','interview_stage','interview_total','interview_at','interview_note','apply_by','last_update_date','feedback_due_date']
 EVALUATION_FIELDS = ['fit_score','priority','recommendation','summary','main_match_reasons','main_gaps','required_skills','nice_to_have_skills','matched_skills','missing_skills','cv_adjustment_notes','interview_prep_notes','risk_notes','next_action','structured_json_raw']
 NOTE_FIELDS = ['note','note_type']
-FOLLOWUP_FIELDS = ['follow_up_date','reason','completed']
+FOLLOWUP_FIELDS = ['follow_up_date','reason','completed','sent_at']
 # TASK-104: read-only in the export -- practice sessions are user-owned directly (no job__in
 # cascade), so they are not part of the conflict/import machinery below, only the export and the
 # account-deletion path (PracticeSession.user cascades on User.delete()).

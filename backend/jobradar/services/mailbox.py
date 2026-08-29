@@ -816,11 +816,9 @@ class GmailApiTransport:
     # nowhere -- but these are the first calls here that remove anything from the mailbox, so they
     # are deliberately split: listing is read-only, deleting takes one explicit id at a time.
 
-    def list_drafts(self) -> list[tuple[str, str, str]]:
-        """[(draft_id, subject, body_text)] for every draft in the account."""
-        import email.policy
-
-        access_token = self._access_token()
+    def list_draft_ids(self, access_token: str = '') -> list[str]:
+        """Gmail draft ids only; unlike list_drafts this needs no per-draft body download."""
+        access_token = access_token or self._access_token()
         draft_ids = []
         page_token = None
         while True:
@@ -831,10 +829,15 @@ class GmailApiTransport:
             draft_ids.extend(d['id'] for d in listing.get('drafts') or [])
             page_token = listing.get('nextPageToken')
             if not page_token:
-                break
+                return draft_ids
 
+    def list_drafts(self) -> list[tuple[str, str, str]]:
+        """[(draft_id, subject, body_text)] for every draft in the account."""
+        import email.policy
+
+        access_token = self._access_token()
         drafts = []
-        for draft_id in draft_ids:
+        for draft_id in self.list_draft_ids(access_token):
             detail = _gmail_api_request('GET', f'{GMAIL_API_BASE}/drafts/{draft_id}?format=raw', access_token)
             encoded = (detail.get('message') or {}).get('raw', '')
             raw_bytes = base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4))
@@ -3604,9 +3607,11 @@ def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, cl
 
 # --- Gmail deep link (TASK-121 AC3/AC4/AC5): the ONE Gmail URL builder in the codebase -----------
 
-def gmail_conversation_url(message_id: str, authuser: str = '') -> str:
+def gmail_conversation_url(message_id: str, authuser: str = '', draft: bool = False) -> str:
     """The single Gmail URL builder (AC3) -- every "open this in Gmail" link in the app goes through
-    this function. Takes MailboxMessage.message_id (the RFC 822 Message-ID header), the only id
+    this function. With draft=True, message_id is Gmail's internal DRAFT MESSAGE id and the
+    `#drafts?compose=` form opens that exact composed draft. Otherwise it takes
+    MailboxMessage.message_id (the RFC 822 Message-ID header), the only id
     populated by BOTH transports (RawMessage.gmail_id is '' on every IMAP-sourced row, so a link keyed
     on it would be dead on a machine configured for IMAP -- see the task notes). Strips the header's
     required angle brackets and URL-encodes the rest into Gmail's `rfc822msgid:` search operator,
@@ -3627,6 +3632,11 @@ def gmail_conversation_url(message_id: str, authuser: str = '') -> str:
     stripped = (message_id or '').strip().strip('<>').strip()
     if not stripped:
         return ''
+    if draft:
+        # Gmail's deep link keys on the draft's message id, not users.drafts' outer id. Keep the
+        # same authuser account selector as conversation links; /u/<email>/ returns Gmail 404.
+        query = f'?{urlencode({"authuser": authuser})}' if authuser else ''
+        return f'https://mail.google.com/mail/u/0/{query}#drafts?compose={quote(stripped, safe="")}'
     query = f'?{urlencode({"authuser": authuser})}' if authuser else ''
     return f'https://mail.google.com/mail/u/0/{query}#search/rfc822msgid:{quote(stripped, safe="")}'
 
@@ -4330,6 +4340,11 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             # the row mid-run must see fetched_count actually move, and the first live run's 641
             # messages is exactly the case a save-only-at-the-end would leave silent the whole time.
             run.save(update_fields=['fetched_count', 'job_related_count', 'uncertain_count', 'suggestion_count', 'suggestion_blocked_count', 'draft_written_count', 'draft_blocked_count'])
+
+        # TASK-113: deletion of a Gmail draft is not proof of sending. Reconciliation also requires
+        # a newer owner-authored message in the same thread and reuses the manual confirmation path.
+        from jobradar.services.followup_digest import reconcile_sent_followups
+        reconcile_sent_followups(active_transport, owner)
 
         if suggestion_refusals:
             # TASK-154 AC2: NOT folded into run.error -- dozens of existing tests treat `not run.error`
