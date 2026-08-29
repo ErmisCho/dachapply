@@ -1,11 +1,11 @@
 ---
 id: TASK-199
 title: Keep the local launcher synchronized with deployed main
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-08-29 21:19'
-updated_date: '2026-08-29 21:45'
+updated_date: '2026-08-29 21:54'
 labels:
   - dev-experience
   - deployment
@@ -28,11 +28,11 @@ The normal localhost launcher currently serves whichever branch is checked out i
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The normal local launcher serves code from the latest fetched origin/main rather than the active development worktree
-- [ ] #2 Updating the local runtime does not reset, clean, or overwrite dirty feature worktrees
-- [ ] #3 A fetch or synchronization failure stops startup with a clear message instead of serving stale code
-- [ ] #4 Launcher checks cover synchronization and the existing fixed-port cleanup behavior
-- [ ] #5 Azure deployment remains sourced from main so local and Azure share the same released code
+- [x] #1 The normal local launcher serves code from the latest fetched origin/main rather than the active development worktree
+- [x] #2 Updating the local runtime does not reset, clean, or overwrite dirty feature worktrees
+- [x] #3 A fetch or synchronization failure stops startup with a clear message instead of serving stale code
+- [x] #4 Launcher checks cover synchronization and the existing fixed-port cleanup behavior
+- [x] #5 Azure deployment remains sourced from main so local and Azure share the same released code
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -51,4 +51,14 @@ Implemented a dedicated  worktree. The machine launcher stops existing local ser
 Validation: prepare-only runtime HEAD and origin/main both resolved to bbc7232ec7a5b484ab3b24163063f104df8914c6; the dirty development worktree status hash was unchanged before/after; an invalid source exited 1 with no runtime created; Configuration/test.cmd passed all checks; 1027 backend and 193 frontend tests plus the production build passed.
 
 The dedicated runtime path omitted in the preceding shell-rendered note is `%LOCALAPPDATA%\dachapply\main-runtime`.
+
+Post-merge parity proof: local runtime HEAD, origin/main, and the successful Azure workflow head SHA all equal ab523e7d2bdb83ede796c01bc54523883d47b76b. Local health endpoints returned HTTP 200 on ports 8000 and 5173; Azure deployment and public-app verification succeeded in run 33277039916. PR #95 squash-merged the implementation.
+
+Asian Dad evaluation: PERFECT (self-graded). All six sealed criteria passed on measured commit equality, immutable Azure SHA deployment, unchanged dirty-worktree hash during synchronization, explicit failure-path execution, launcher smoke checks, and full test/build evidence.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Changed the normal Windows launcher to fetch released main and serve a dedicated disposable origin/main worktree, leaving active development work untouched and failing closed on update errors. Verified local/main/Azure SHA equality at ab523e7d, HTTP 200 from both local servers, successful Azure deployment, 1027 backend tests, 193 frontend tests, production build, and launcher smoke/failure checks.
+<!-- SECTION:FINAL_SUMMARY:END -->
