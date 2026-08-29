@@ -43,7 +43,7 @@ export type PracticeSession={id:number;job:number|null;job_company:string;job_ti
 // TASK-121 AC1: gmail_draft_id/gmail_message_id/gmail_thread_id are '' on every row written before
 // that task, and on every row from a machine on the IMAP transport (no Gmail API ids at all).
 // gmail_url uses the shared builder's exact-draft mode and the draft's gmail_message_id; message
-// rows below use its conversation mode and their inbound RFC822 Message-ID. Old/IMAP drafts are null.
+// rows below prefer their Gmail thread_id and retain the inbound RFC822 Message-ID fallback. Old/IMAP drafts are null.
 // TASK-122 AC2/AC4: chat_history is the app-owned transcript re-fed to the (stateless) model on
 // every turn - server-authoritative (never trust a client-resent copy), reset to [] the moment a
 // revision is accepted via /edit/ (see views.py's MailboxDraftViewSet.edit).
@@ -52,9 +52,8 @@ export type MailboxDraft={id:number;status:'written'|'blocked';block_reason:stri
 // TASK-117 AC1: body_text is the received email body (5000-char cap applied at the wire read),
 // stored now instead of dropped - see the model docstring for why the minimal-metadata default
 // was reversed 2026-08-18.
-// TASK-121 AC2/AC4: thread_id is the inbound Gmail thread id (a different id from a draft's own
-// gmail_thread_id above). gmail_url is null when this message's RFC822 Message-ID is not usable -
-// render no link at all in that case, never a link that 404s into an empty Gmail search.
+// thread_id is the inbound Gmail conversation id (different from a draft's gmail_thread_id above).
+// gmail_url is null only when neither it nor the RFC822 fallback id is usable; render no link then.
 // TASK-132/TASK-134 AC4: sent_by_owner is a STORED flag (MailboxMessageSerializer, never a
 // From-address comparison at render time) distinguishing the owner's own sent mail from what they
 // received - the one thing that makes a message list read as an exchange rather than a flat log.
