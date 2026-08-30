@@ -5,8 +5,8 @@ session-type: feature
 branch: task-200-scroll-chaining
 issues: [TASK-200]
 started_at: 2026-08-30T06:31:14.080Z
-status: active
-current-wave: 4
+status: completed
+current-wave: 5
 total-waves: 5
 mission-status:
   - id: m-1
@@ -28,8 +28,8 @@ mission-status:
   - id: m-5
     task: "Merge, update local/Azure, close TASK-200, and finalize"
     wave: 5
-    status: pending
-updated: 2026-08-30T06:53:00.000Z
+    status: completed
+updated: 2026-08-30T07:03:30.000Z
 scope-baseline-intent: "Hand edge-crossing job-board wheel movement to the page immediately."
 scope-baseline-owner-boundary: "TASK-200 only; preserve independent desktop board scrolling and mobile page scrolling."
 scope-baseline-planned-files: 5
@@ -39,7 +39,7 @@ scope-baseline-frozen-at: 2026-08-30T06:41:00.000Z
 
 ## Current Wave
 
-Wave 4 — COMPLETE: browser measurements and full quality gates passed.
+Wave 5 — COMPLETE: implementation deployed locally and to Azure; TASK-200 closed.
 
 ## Session Plan
 
@@ -61,6 +61,11 @@ Wave 4 — COMPLETE: browser measurements and full quality gates passed.
 - Focused tests cover internal, crossing, and exact-edge movement in both directions.
 - Headless Chrome measured board/page deltas: 180/0, 50/130, 0/180, -30/-150, and 0/-180.
 - Passed 1027 backend tests, 195 frontend tests, production build, npm audit, and diff check.
+
+### Wave 5 — COMPLETE
+- Squash-merged PR #99 as `e1a780a55406064ec4e71d0222ba91c4184fa6cd`.
+- Main CI, GitGuardian, Azure deployment/public verification, and local release synchronization passed.
+- Asian Dad evaluation: PERFECT with self-grading disclosure; TASK-200 is Done with zero carryover.
 
 ## Deviations
 
