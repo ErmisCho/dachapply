@@ -1,10 +1,11 @@
 ---
-id: TASK-111
+id: TASK-204
 title: Serve the local app against the remote database by default
 status: Done
 assignee:
   - '@claude'
 created_date: '2026-08-16 22:20'
+updated_date: '2026-08-30 12:26'
 labels:
   - backend
   - dev-experience
@@ -35,6 +36,12 @@ keeps the protection that motivated TASK-100 in the first place (a habitual loca
 - [x] #3 The guard's tests cover the exemption and the still-blocked cases; the full suite passes
 - [x] #4 The README local-workflow section and the guard's error message describe the new split
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Housekeeping 2026-08-30: Backlog doctor repaired this task from the duplicate ID TASK-111 to TASK-204. Historical branch name feature/task-111-local-serves-remote-db remains unchanged because it is a literal Git ref, not a current task reference. The legacy wave-plan line that names the old ID is in a malformed document without Backlog frontmatter and cannot be addressed by the CLI; this task is the canonical identity.
+<!-- SECTION:NOTES:END -->
 
 ## Outcome (2026-08-16)
 
