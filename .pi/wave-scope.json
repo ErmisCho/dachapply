@@ -1,13 +1,11 @@
 {
-  "wave": 4,
-  "role": "Quality",
+  "wave": 5,
+  "role": "Finalization",
   "enforcement": "warn",
   "allowedPaths": [
-    "frontend/src/App.tsx",
-    "frontend/src/boardScrollChaining.test.tsx",
     "backlog/tasks/task-200 - Let-page-scrolling-continue-when-the-job-board-reaches-its-edge.md",
-    ".orchestrator/debug/task-200-2026-08-29-bugfix-1-1.md",
-    ".claude/.asian-dad/task-200-scroll-chaining-rubric.json",
+    ".orchestrator/metrics/events.jsonl",
+    ".orchestrator/metrics/sessions.jsonl",
     ".pi/STATE.md",
     ".pi/wave-scope.json"
   ]
