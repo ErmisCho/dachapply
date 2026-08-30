@@ -1,11 +1,11 @@
 ---
 id: TASK-202
 title: Reconcile the stale wave9 worktree with released main
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-08-30 07:39'
-updated_date: '2026-08-30 07:41'
+updated_date: '2026-08-30 07:46'
 labels:
   - git
   - backlog
@@ -23,12 +23,12 @@ The primary project directory is still on the dirty ancestor branch wave9-auto-i
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A checksum-verified recovery archive preserves the old branch, tracked working-tree patch, untracked files, and recovery commit f85ca993
-- [ ] #2 Every dirty implementation change is classified as already released, superseded, unique, or ephemeral before removal
-- [ ] #3 Unique user-authored files remain available after reconciliation
-- [ ] #4 The primary project worktree points at current main with no stale tracked or task-state changes
-- [ ] #5 Backlog in the primary project directory shows no To Do or In Progress tasks after reconciliation
-- [ ] #6 The synchronized local runtime and released origin/main remain unchanged and healthy
+- [x] #1 A checksum-verified recovery archive preserves the old branch, tracked working-tree patch, untracked files, and recovery commit f85ca993
+- [x] #2 Every dirty implementation change is classified as already released, superseded, unique, or ephemeral before removal
+- [x] #3 Unique user-authored files remain available after reconciliation
+- [x] #4 The primary project worktree points at current main with no stale tracked or task-state changes
+- [x] #5 Backlog in the primary project directory shows no To Do or In Progress tasks after reconciliation
+- [x] #6 The synchronized local runtime and released origin/main remain unchanged and healthy
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -47,4 +47,12 @@ Classification completed before cleanup: (a) committed branch cec0f18 and all fo
 Reconciliation applied: the primary worktree now uses local main fast-forwarded to origin/main at 1f9cfe9; the obsolete wave9-auto-interview-date branch was deleted only after its bundle and ancestry were verified. Feedback/SixRobotics.MD remained in place with SHA-256 a1fbc040b0e5f169d4468672e2f01a81b5af9efadf74cb6f1b7930913fd18417, identical to the archived copy.
 
 Initial verification passed: both bundles verify as complete histories; all archive SHA256 checks and ZIP integrity pass; primary Backlog reports no To Do or In Progress tasks; runtime and origin/main both resolve to 1f9cfe9; localhost API/frontend return HTTP 200. A single current Session Orchestrator stop event may appear as telemetry in the primary worktree and is unrelated to stale implementation/task state.
+
+PR #101 merged the reconciliation record as 8a420d0 after 1027 backend tests, 195 frontend tests/build checks, and GitGuardian passed. Current stop telemetry generated after the safety archive was retained append-only in the closure change rather than left as unexplained primary-worktree dirt.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Archived and verified every recoverable wave9 state, confirmed its implementation was already released or safely superseded, preserved unique feedback unchanged, and moved the primary project directory to current main. Verified complete Git bundles and checksums, zero stale Backlog work, matching release/runtime state, HTTP 200 health, and full CI.
+<!-- SECTION:FINAL_SUMMARY:END -->
