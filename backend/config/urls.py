@@ -25,6 +25,8 @@ if settings.FRONTEND_DIST.exists():
         ),
     ]
     urlpatterns += [re_path(r'^(?!api/|admin/|static/).*$', TemplateView.as_view(template_name='index.html'))]
+elif settings.DEBUG and settings.FRONTEND_URL:
+    urlpatterns += [path('', RedirectView.as_view(url=settings.FRONTEND_URL, permanent=False))]
 if settings.DEBUG:
     urlpatterns += staticfiles_urlpatterns()
 else:
