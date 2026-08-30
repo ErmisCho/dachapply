@@ -1,11 +1,13 @@
 {
   "wave": 4,
-  "role": "Finalization",
+  "role": "Quality",
   "enforcement": "warn",
   "allowedPaths": [
-    "backlog/tasks/task-201 - Make-the-follow-up-sent-date-assertion-timezone-stable.md",
-    ".orchestrator/metrics/events.jsonl",
-    ".orchestrator/metrics/sessions.jsonl",
+    "frontend/src/App.tsx",
+    "frontend/src/boardScrollChaining.test.tsx",
+    "backlog/tasks/task-200 - Let-page-scrolling-continue-when-the-job-board-reaches-its-edge.md",
+    ".orchestrator/debug/task-200-2026-08-29-bugfix-1-1.md",
+    ".claude/.asian-dad/task-200-scroll-chaining-rubric.json",
     ".pi/STATE.md",
     ".pi/wave-scope.json"
   ]

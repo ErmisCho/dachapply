@@ -1,15 +1,20 @@
 ---
 id: TASK-200
 title: Let page scrolling continue when the job board reaches its edge
-status: To Do
+status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-08-29 21:25'
+updated_date: '2026-08-30 06:53'
 labels:
   - frontend
   - bug
   - accessibility
 dependencies: []
+modified_files:
+  - frontend/src/App.tsx
+  - frontend/src/boardScrollChaining.test.tsx
+  - .orchestrator/debug/task-200-2026-08-29-bugfix-1-1.md
 priority: medium
 type: bug
 ordinal: 200000
@@ -29,3 +34,19 @@ The home-page job board has its own vertical scrollbar. While the pointer is ove
 - [ ] #4 The behavior works on the home-page job board without breaking its independent scrollbar
 - [ ] #5 A browser regression check covers scroll chaining at both board edges
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Reproduce the lost wheel delta at the bounded desktop job board and record the root cause. 2. Split an edge-crossing wheel delta between the board's remaining scroll range and the page, using one non-passive listener on the existing board wrapper. 3. Add focused delta-splitting tests for middle, bottom, top, and edge-crossing cases. 4. Measure board/page deltas in a real headless Chrome session, then run full frontend/backend gates. 5. Merge, update both local and Azure releases, close TASK-200, and finalize.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Root-cause measurement on released main: with the board 50 px from its bottom, one 180 px wheel input moved the board 50 px, the page 0 px, and lost the remaining 130 px. The wrapper has only native overflow-y:auto and no wheel handoff; Chrome consumes the edge-crossing input in the nested scroller, so page movement waits for another input. A discrete input beginning at the exact edge does chain natively, which is why the fix must handle the crossing remainder rather than disable independent board scrolling.
+
+Implemented one native non-passive wheel listener on the existing desktop board wrapper. Fully consumable input remains native board scrolling; an edge-crossing input is split into the board's remaining distance and an immediate page scroll remainder. Mobile remains page-scrolled because the listener is disabled below the existing 1024 px breakpoint.
+
+Validation: focused delta tests passed; real headless Chrome measured board/page deltas of middle 180/0, bottom crossing 50/130, bottom 0/180, top crossing -30/-150, and top 0/-180 with the pointer remaining over the board. Full gates passed: 1027 backend tests, 195 frontend tests, production build, npm audit with zero vulnerabilities, and diff check.
+<!-- SECTION:NOTES:END -->
