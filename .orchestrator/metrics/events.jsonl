@@ -1552,3 +1552,5 @@
 {"timestamp":"2026-08-29T22:15:31.797Z","event":"orchestrator.session.completed","session_id":"01a0432f-8243-7150-8255-task201tz","semantic_session_id":"task-201-2026-08-29-bugfix-1","mode":"feature","branch":"task-201-timezone-stable","status":"completed","carryover":0}
 {"timestamp":"2026-08-30T07:04:49.820Z","event":"orchestrator.wave.completed","session_id":"01a0432f-8243-7150-8255-task200scroll","semantic_session_id":"task-200-2026-08-29-bugfix-1","wave":5,"role":"Finalization","status":"complete"}
 {"timestamp":"2026-08-30T07:04:49.820Z","event":"orchestrator.session.completed","session_id":"01a0432f-8243-7150-8255-task200scroll","semantic_session_id":"task-200-2026-08-29-bugfix-1","mode":"feature","branch":"task-200-scroll-chaining","status":"completed","carryover":0}
+{"timestamp":"2026-08-30T07:40:44.955Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"1f9cfe9ab66e4ca4bb141023aa30515454b6b542","duration_ms":0}
+{"timestamp":"2026-08-30T07:43:47.902Z","event":"orchestrator.agent.stopped","agent":""}
