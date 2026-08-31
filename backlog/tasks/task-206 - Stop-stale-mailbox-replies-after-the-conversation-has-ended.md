@@ -1,11 +1,11 @@
 ---
 id: TASK-206
 title: Stop stale mailbox replies after the conversation has ended
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-08-31 08:13'
-updated_date: '2026-08-31 08:41'
+updated_date: '2026-08-31 08:52'
 labels:
   - bug
   - mailbox
@@ -40,11 +40,11 @@ The Email decisions panel can show an old generic 'I remain very interested' Gma
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A written draft is not presented as actionable when a newer owner-authored message exists in the same captured Gmail thread
-- [ ] #2 A written interested/follow-up draft is not presented beside a newer rejection or other terminal conversation outcome
-- [ ] #3 Current reply-worthy drafts with no later owner response or terminal outcome remain available
-- [ ] #4 Regression tests cover the measured Formunauts-style chronology without contacting Gmail or using owner content
-- [ ] #5 Owner scoping, no-send behavior, and existing Gmail deep links remain unchanged
+- [x] #1 A written draft is not presented as actionable when a newer owner-authored message exists in the same captured Gmail thread
+- [x] #2 A written interested/follow-up draft is not presented beside a newer rejection or other terminal conversation outcome
+- [x] #3 Current reply-worthy drafts with no later owner response or terminal outcome remain available
+- [x] #4 Regression tests cover the measured Formunauts-style chronology without contacting Gmail or using owner content
+- [x] #5 Owner scoping, no-send behavior, and existing Gmail deep links remain unchanged
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -61,4 +61,12 @@ Read-only, scheduler-disabled production metadata confirmed the owner report wit
 Implemented three bounded protections: classify the measured polite closure as rejection; refuse generation when a newer genuine owner reply is already captured or later in the same fetch; serialize/render persisted stale drafts as a non-destructive notice instead of contradictory body/edit/chat controls. The app draft's own captured Gmail message id is excluded from reply proof.
 
 Verification: production-scoped read-only check reports the existing case stale and reclassifies its closure as rejection with 0 writes/Gmail calls; focused backend 7 and frontend 14 passed; full backend 1034 and frontend 197 passed; build, Django/migration/compile checks, npm audit, and no-send/delete scan passed. Asian Dad self-evaluation: PERFECT.
+
+PR #107 squash-merged as e6831a9. Main run 33374428376 passed 1034 backend tests, 197 frontend tests/build, image deployment, and public Azure verification. The synchronized local runtime serves the same SHA with API/web HTTP 200. A fresh scheduler-disabled released-code read-only check proves the existing case is stale and classifies its closure as rejection, with zero database writes or Gmail calls.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Stopped stale or contradictory mailbox replies after a conversation closes: specific polite-goodbye wording is terminal, newer same-thread owner replies block generation, and existing stale Gmail drafts render only a non-destructive notice/link rather than body/edit/chat actions. Synthetic regressions, full test/build/audit gates, the measured released case, CI, runtime parity, and Azure deployment all passed; no send/delete capability or owner content was added.
+<!-- SECTION:FINAL_SUMMARY:END -->
