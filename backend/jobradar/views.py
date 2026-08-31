@@ -912,7 +912,9 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         # ApplicationNote.Meta.ordering is already ['-created_at'], so this is newest first (AC3).
         notes=job.notes.all()
         return Response({
-            'messages': MailboxMessageWithSuggestionsSerializer(messages, many=True).data,
+            'messages': MailboxMessageWithSuggestionsSerializer(
+                messages, many=True, context={**self.get_serializer_context(), 'include_draft_stale_reason': True},
+            ).data,
             'notes': ApplicationNoteSerializer(notes, many=True).data,
         })
     @action(detail=False, methods=['get'], url_path='feedback-due')
@@ -1026,7 +1028,9 @@ class MailboxSuggestionViewSet(viewsets.GenericViewSet):
         # stored flag, moving the job back to an actionable status brings it back on the very next
         # load, with no re-fetch or repair (AC5).
         qs=qs.filter(job__status__in=JobLead.ACTIONABLE_STATUSES)
-        return Response(self.get_serializer(qs, many=True).data)
+        return Response(self.get_serializer(
+            qs, many=True, context={**self.get_serializer_context(), 'include_draft_stale_reason': True},
+        ).data)
     @action(detail=True, methods=['post'])
     def confirm(self, request, pk=None):
         suggestion=self.get_object()

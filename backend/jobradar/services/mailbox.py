@@ -870,6 +870,7 @@ REJECTION_KEYWORDS = [
     'unfortunately', 'we have decided to move forward with other candidates', 'decided to move forward with other',
     'will not be moving forward', 'not moving forward with your application', 'decided not to proceed',
     'regret to inform', "you were not selected", 'other candidates whose', 'pursue other candidates',
+    'wish you the very best',
     'leider', 'abgesagt', 'andere kandidat', 'entschieden, nicht fortzufahren',
     # TASK-168 coordinator correction (measured against production, 7 join.com "Deine Bewerbung bei
     # X" rejections, all this exact template): "...zum jetzigen Zeitpunkt nicht mit deiner Bewerbung
@@ -3548,7 +3549,32 @@ def _job_has_undecided_written_draft(job: JobLead) -> bool:
     return MailboxSuggestion.objects.filter(job=job, status='pending', message__draft__status='written').exists()
 
 
-def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, classification: str, interview_at, owner, profile, transport) -> MailboxDraft | None:
+def _newer_owner_reply_exists(message: MailboxMessage, draft_message_id: str = '') -> bool:
+    if not message.thread_id or not message.received_at:
+        return False
+    replies = MailboxMessage.objects.filter(
+        matched_job_id=message.matched_job_id, thread_id=message.thread_id,
+        sent_by_owner=True, received_at__gt=message.received_at,
+    )
+    if draft_message_id:
+        replies = replies.exclude(gmail_id=draft_message_id)
+    return replies.exists()
+
+
+def draft_stale_reason(draft: MailboxDraft) -> str:
+    if draft.sent_at:
+        return 'this reply is already recorded as sent'
+    if _newer_owner_reply_exists(draft.message, draft.gmail_message_id):
+        return 'you already replied later in this conversation'
+    if draft.message.received_at and MailboxMessage.objects.filter(
+        matched_job_id=draft.job_id, sent_by_owner=False, classification='rejection',
+        received_at__gt=draft.message.received_at,
+    ).exists():
+        return 'a later rejection ended this application'
+    return ''
+
+
+def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, classification: str, interview_at, owner, profile, transport, newer_owner_reply=False) -> MailboxDraft | None:
     """The one entry point run_check() calls per matched message. None when this classification
     never wants a reply (rejection, not_job_related, uncertain -- see _DRAFT_WORTHY_CLASSIFICATIONS);
     otherwise always returns a MailboxDraft row, written or blocked, logging the guardrail verdict
@@ -3561,6 +3587,8 @@ def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, cl
     # send and the owner would keep paying for the model call. No MailboxDraft row at all, the same
     # "nothing worth generating" shape the classification check right above already uses.
     if job.status not in JobLead.ACTIONABLE_STATUSES:
+        return None
+    if newer_owner_reply or _newer_owner_reply_exists(message):
         return None
     # TASK-114 AC1/AC5: newsletters and robots get a logged, counted refusal rather than a silent
     # skip -- a run reporting job-related mail and no drafts must be able to say why. Checked before
@@ -4228,6 +4256,12 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         # takes effect on the very next run with no restart); the IMAP path has no such floor to pass
         # (ImapTransport.fetch_new only ever reads the INBOX mailbox forward from last_uid).
         raw_messages = active_transport.fetch_new(last_marker, lookback_days=_lookback_days(profile)) if is_gmail_api else active_transport.fetch_new(last_marker)
+        newest_owner_reply_by_thread = {}
+        for candidate in raw_messages:
+            if candidate.thread_id and candidate.received_at and _is_owner_address(candidate.sender):
+                newest_owner_reply_by_thread[candidate.thread_id] = max(
+                    candidate.received_at, newest_owner_reply_by_thread.get(candidate.thread_id, candidate.received_at),
+                )
         job_domains = owned_job_domains(owner)
         # TASK-186: built ONCE per run, next to job_domains and for the same reason -- it is a query
         # over the whole message table, and rebuilding it per message would be the per-row cost
@@ -4313,7 +4347,11 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
                     suggestion_refusals.append(f'message {message.pk} ({message.sender}): {suggestion_refusal}')
                     run.suggestion_blocked_count += 1
                 if not is_cold_start:
-                    draft = maybe_draft_reply(message, raw, matched, classification, interview_at, owner, profile, active_transport)
+                    owner_reply_at = newest_owner_reply_by_thread.get(raw.thread_id)
+                    draft = maybe_draft_reply(
+                        message, raw, matched, classification, interview_at, owner, profile, active_transport,
+                        newer_owner_reply=bool(owner_reply_at and raw.received_at and owner_reply_at > raw.received_at),
+                    )
                     if draft is not None:
                         if draft.status == 'written':
                             run.draft_written_count += 1

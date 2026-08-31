@@ -48,7 +48,7 @@ export type PracticeSession={id:number;job:number|null;job_company:string;job_ti
 // every turn - server-authoritative (never trust a client-resent copy), reset to [] the moment a
 // revision is accepted via /edit/ (see views.py's MailboxDraftViewSet.edit).
 export type MailboxChatTurn={user_message:string;revised_text:string}
-export type MailboxDraft={id:number;status:'written'|'blocked';block_reason:string;subject:string;body_text:string;evaluator:string;gmail_draft_id:string;gmail_message_id:string;gmail_thread_id:string;gmail_url:string|null;sent_at:string|null;chat_history:MailboxChatTurn[];created_at:string}
+export type MailboxDraft={id:number;status:'written'|'blocked';block_reason:string;subject:string;body_text:string;evaluator:string;gmail_draft_id:string;gmail_message_id:string;gmail_thread_id:string;gmail_url:string|null;sent_at:string|null;stale_reason:string;chat_history:MailboxChatTurn[];created_at:string}
 // TASK-117 AC1: body_text is the received email body (5000-char cap applied at the wire read),
 // stored now instead of dropped - see the model docstring for why the minimal-metadata default
 // was reversed 2026-08-18.

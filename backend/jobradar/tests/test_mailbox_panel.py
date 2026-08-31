@@ -905,6 +905,71 @@ def _written_draft(job, message, **extra):
     return MailboxDraft.objects.create(message=message, job=job, **defaults)
 
 
+def test_suggestion_marks_draft_stale_after_a_newer_owner_reply(client, applied_job):
+    source_at = timezone.now() - timezone.timedelta(hours=2)
+    source = MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=100, sender='recruiter@acme.test', subject='Your application',
+        classification='recruiter_reply', matched_job=applied_job, thread_id='thread-closed', received_at=source_at,
+    )
+    draft = _written_draft(applied_job, source, gmail_message_id='app-draft-message')
+    suggestion = MailboxSuggestion.objects.create(
+        message=source, job=applied_job, suggestion_type='feedback_clear', payload={'feedback_due_date': None},
+    )
+    MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=101, gmail_id='real-owner-reply', sender='owner@example.test',
+        subject='Re: Your application', classification='recruiter_reply', matched_job=applied_job,
+        thread_id='thread-closed', sent_by_owner=True, received_at=source_at + timezone.timedelta(minutes=30),
+    )
+
+    row = client.get('/api/mailbox-suggestions/').data[0]
+
+    assert row['id'] == suggestion.id
+    assert row['message']['draft']['id'] == draft.id
+    assert row['message']['draft']['stale_reason'] == 'you already replied later in this conversation'
+
+
+def test_app_draft_self_capture_does_not_make_the_draft_stale(client, applied_job):
+    source_at = timezone.now() - timezone.timedelta(hours=2)
+    source = MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=102, sender='recruiter@acme.test', subject='Application update',
+        classification='recruiter_reply', matched_job=applied_job, thread_id='thread-current', received_at=source_at,
+    )
+    _written_draft(applied_job, source, gmail_message_id='app-draft-message')
+    MailboxSuggestion.objects.create(
+        message=source, job=applied_job, suggestion_type='feedback_clear', payload={'feedback_due_date': None},
+    )
+    MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=103, gmail_id='app-draft-message', sender='owner@example.test',
+        subject='Re: Application update', classification='recruiter_reply', matched_job=applied_job,
+        thread_id='thread-current', sent_by_owner=True, received_at=source_at + timezone.timedelta(minutes=30),
+    )
+
+    row = client.get('/api/mailbox-suggestions/').data[0]
+
+    assert row['message']['draft']['stale_reason'] == ''
+
+
+def test_suggestion_marks_draft_stale_after_a_later_rejection(client, applied_job):
+    source_at = timezone.now() - timezone.timedelta(hours=2)
+    source = MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=104, sender='recruiter@acme.test', subject='Application update',
+        classification='recruiter_reply', matched_job=applied_job, thread_id='thread-update', received_at=source_at,
+    )
+    _written_draft(applied_job, source)
+    MailboxSuggestion.objects.create(
+        message=source, job=applied_job, suggestion_type='feedback_clear', payload={'feedback_due_date': None},
+    )
+    MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=105, sender='hr@acme.test', subject='Application decision',
+        classification='rejection', matched_job=applied_job, thread_id='thread-decision',
+        received_at=source_at + timezone.timedelta(minutes=30),
+    )
+
+    row = client.get('/api/mailbox-suggestions/').data[0]
+
+    assert row['message']['draft']['stale_reason'] == 'a later rejection ended this application'
+
+
 def _fake_gmail_transport(monkeypatch, calls):
     """A real GmailApiTransport instance (never touches a socket -- __init__ only stores attrs) with
     update_draft replaced, wired in as the module's _default_transport() so update_draft_text's

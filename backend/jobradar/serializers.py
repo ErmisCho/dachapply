@@ -447,15 +447,21 @@ class MailboxDraftSerializer(serializers.ModelSerializer):
     # TASK-113: draft links use the Gmail-internal message id with the builder's exact-draft mode;
     # conversation links below continue to use the inbound RFC822 Message-ID. Null for old/IMAP rows.
     gmail_url=serializers.SerializerMethodField()
+    stale_reason=serializers.SerializerMethodField()
     class Meta:
         model=MailboxDraft
         # TASK-122 AC4/AC5: chat_history is read-only here too -- the only writer is
         # MailboxDraftViewSet.chat (append on a successful turn) and .edit (reset on accept),
         # never a generic field on this serializer.
-        fields=('id','status','block_reason','subject','body_text','evaluator','gmail_draft_id','gmail_message_id','gmail_thread_id','gmail_url','sent_at','chat_history','created_at')
+        fields=('id','status','block_reason','subject','body_text','evaluator','gmail_draft_id','gmail_message_id','gmail_thread_id','gmail_url','sent_at','stale_reason','chat_history','created_at')
         read_only_fields=fields
     def get_gmail_url(self, obj):
         return _gmail_url(obj.gmail_message_id, draft=True)
+    def get_stale_reason(self, obj):
+        if not self.context.get('include_draft_stale_reason') or obj.status != 'written':
+            return ''
+        from .services.mailbox import draft_stale_reason
+        return draft_stale_reason(obj)
 
 class MailboxMessageSerializer(serializers.ModelSerializer):
     """TASK-109. Read-only everywhere -- the model itself is the append-only log (AC5), so no
@@ -488,7 +494,7 @@ class MailboxMessageSerializer(serializers.ModelSerializer):
         fields=('id','sender','subject','body_text','received_at','classification','matched_job','matched_job_company','matched_job_title','draft','thread_id','gmail_url','to_addrs','cc_addrs','sent_by_owner','created_at','calendar_summary','calendar_location','calendar_organizer','calendar_start','calendar_end','attachments')
     def get_draft(self, obj):
         draft=getattr(obj,'draft',None)
-        return MailboxDraftSerializer(draft).data if draft else None
+        return MailboxDraftSerializer(draft, context=self.context).data if draft else None
     def get_gmail_url(self, obj):
         return _gmail_url(obj.message_id, thread_id=obj.thread_id)
 

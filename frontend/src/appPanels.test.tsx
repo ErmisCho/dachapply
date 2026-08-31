@@ -9,7 +9,8 @@
 // and the ordering rules they call into are unit-tested in appUtils.test.ts.
 import {describe,expect,it} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {DashboardPanel} from './App'
+import {DashboardPanel,DraftReplyBlock} from './App'
+import type {MailboxDraft} from './types'
 
 const noop=()=>{}
 function render(drag:{held?:boolean;landing?:boolean}={}){
@@ -78,5 +79,26 @@ describe('DashboardPanel drag feedback (TASK-183 AC1/AC5/AC6)',()=>{
   // span. A button here would put back the very control the owner asked to have removed.
   it('adds no button while doing it',()=>{
     expect(render({held:true,landing:true}).match(/<button/g)).toBeNull()
+  })
+})
+
+const mailboxDraft:MailboxDraft={id:1,status:'written',block_reason:'',subject:'Re: Update',body_text:'Current prepared response',evaluator:'template',gmail_draft_id:'draft-1',gmail_message_id:'message-1',gmail_thread_id:'thread-1',gmail_url:'https://mail.google.test/#drafts?compose=message-1',sent_at:null,stale_reason:'',chat_history:[],created_at:'2026-08-31T08:00:00Z'}
+
+describe('stale mailbox draft presentation (TASK-206)',()=>{
+  it('replaces stale body and editing actions with a non-destructive notice',()=>{
+    const html=renderToStaticMarkup(<DraftReplyBlock draft={{...mailboxDraft,body_text:'Contradictory stale response',stale_reason:'you already replied later in this conversation'}}/>)
+    expect(html).toContain('Draft no longer applicable')
+    expect(html).toContain('you already replied later in this conversation')
+    expect(html).toContain('existing Gmail draft was not changed')
+    expect(html).toContain('Open stale Gmail draft')
+    expect(html).not.toContain('Contradictory stale response')
+    expect(html).not.toContain('Chat to revise')
+  })
+
+  it('keeps a current draft available',()=>{
+    const html=renderToStaticMarkup(<DraftReplyBlock draft={mailboxDraft}/>)
+    expect(html).toContain('Current prepared response')
+    expect(html).toContain('Chat to revise')
+    expect(html).not.toContain('Draft no longer applicable')
   })
 })
