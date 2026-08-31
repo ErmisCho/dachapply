@@ -1,0 +1,57 @@
+{
+  "task_prompt": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\pi-clipboard-1daa2e0c-eb9c-4f99-bce2-0ec4658fba0b.png better, but make it obvous that this would be a stale conversation reply and that this is a draft nad not something sent, but this message should be editable and be able to specify that I want the AI's helpe with this specific message to draft it and or understand it",
+  "created_at": "2026-08-31T09:09:45.486422+00:00",
+  "authored_by_grader": true,
+  "criteria": [
+    {
+      "id": 1,
+      "description": "The expanded conversation explicitly identifies the stale reply context.",
+      "authority": "explicit",
+      "source": "make it obvious that this would be a stale conversation reply",
+      "verification": "render a stale synthetic thread and assert the visible stale-conversation label"
+    },
+    {
+      "id": 2,
+      "description": "The message is unmistakably identified as an unsent draft rather than a sent message.",
+      "authority": "explicit",
+      "source": "this is a draft and not something sent",
+      "verification": "render the synthetic draft and assert an unsent-draft label while sent-message fixtures remain unlabeled"
+    },
+    {
+      "id": 3,
+      "description": "The stale draft can still be edited and saved through the existing draft-editing behavior.",
+      "authority": "explicit",
+      "source": "this message should be editable",
+      "verification": "exercise the edit/save UI against a stale draft and assert the owner-scoped draft update request"
+    },
+    {
+      "id": 4,
+      "description": "AI help can be requested for this exact draft for drafting/revision.",
+      "authority": "explicit",
+      "source": "specify that I want the AI's help with this specific message to draft it",
+      "verification": "open AI help from the stale draft and assert the composed prompt identifies that message and requests drafting help"
+    },
+    {
+      "id": 5,
+      "description": "AI help can be requested for this exact draft to understand it.",
+      "authority": "explicit",
+      "source": "or understand it",
+      "verification": "open AI help from the stale draft and assert the composed prompt identifies that message and offers understanding help"
+    },
+    {
+      "id": 6,
+      "description": "The delivered interaction runs without breaking ordinary conversation messages or current drafts.",
+      "authority": "implied",
+      "source": "baseline: the requested controls must function in the existing conversation UI",
+      "verification": "run focused regressions for stale drafts, current drafts, and sent messages plus the full frontend suite"
+    },
+    {
+      "id": 7,
+      "description": "Load-bearing claims are measured rather than asserted, and contradicted instructions are refused with evidence.",
+      "authority": "implied",
+      "source": "baseline: a claim that decides the verdict must be measured",
+      "verification": "review runnable test, build, and interaction outputs used for every verdict claim"
+    }
+  ],
+  "superseded": []
+}

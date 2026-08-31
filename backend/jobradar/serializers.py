@@ -476,6 +476,11 @@ class MailboxMessageSerializer(serializers.ModelSerializer):
     draft=serializers.SerializerMethodField()
     # Null only when neither the direct Gmail thread id nor the RFC822 fallback id is usable.
     gmail_url=serializers.SerializerMethodField()
+    # TASK-207: only the per-job conversation supplies this context map. A Gmail draft is ingested
+    # as an owner-authored MailboxMessage, but its MailboxDraft belongs to the earlier inbound
+    # source message; carrying the exact persisted id match lets the client distinguish that one
+    # unsent capture without exposing gmail_id or guessing from sender/body text.
+    app_draft=serializers.SerializerMethodField()
     class Meta:
         model=MailboxMessage
         # TASK-117 AC1/AC2: body_text is the received body (5000-char cap applied at the wire read in
@@ -491,9 +496,12 @@ class MailboxMessageSerializer(serializers.ModelSerializer):
         # attachments were added to the model (migration 0042) but never added here -- see
         # MailboxMessage's own docstring for exactly what each holds. Read-only like everything else
         # in this serializer (ModelSerializer default for a field with no explicit writable=True).
-        fields=('id','sender','subject','body_text','received_at','classification','matched_job','matched_job_company','matched_job_title','draft','thread_id','gmail_url','to_addrs','cc_addrs','sent_by_owner','created_at','calendar_summary','calendar_location','calendar_organizer','calendar_start','calendar_end','attachments')
+        fields=('id','sender','subject','body_text','received_at','classification','matched_job','matched_job_company','matched_job_title','draft','app_draft','thread_id','gmail_url','to_addrs','cc_addrs','sent_by_owner','created_at','calendar_summary','calendar_location','calendar_organizer','calendar_start','calendar_end','attachments')
     def get_draft(self, obj):
         draft=getattr(obj,'draft',None)
+        return MailboxDraftSerializer(draft, context=self.context).data if draft else None
+    def get_app_draft(self, obj):
+        draft=self.context.get('app_drafts_by_gmail_id', {}).get(obj.gmail_id)
         return MailboxDraftSerializer(draft, context=self.context).data if draft else None
     def get_gmail_url(self, obj):
         return _gmail_url(obj.message_id, thread_id=obj.thread_id)

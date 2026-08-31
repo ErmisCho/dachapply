@@ -47,7 +47,7 @@ export type PracticeSession={id:number;job:number|null;job_company:string;job_ti
 // TASK-122 AC2/AC4: chat_history is the app-owned transcript re-fed to the (stateless) model on
 // every turn - server-authoritative (never trust a client-resent copy), reset to [] the moment a
 // revision is accepted via /edit/ (see views.py's MailboxDraftViewSet.edit).
-export type MailboxChatTurn={user_message:string;revised_text:string}
+export type MailboxChatTurn={user_message:string;revised_text:string;mode?:'revise'|'understand'}
 export type MailboxDraft={id:number;status:'written'|'blocked';block_reason:string;subject:string;body_text:string;evaluator:string;gmail_draft_id:string;gmail_message_id:string;gmail_thread_id:string;gmail_url:string|null;sent_at:string|null;stale_reason:string;chat_history:MailboxChatTurn[];created_at:string}
 // TASK-117 AC1: body_text is the received email body (5000-char cap applied at the wire read),
 // stored now instead of dropped - see the model docstring for why the minimal-metadata default
@@ -78,7 +78,7 @@ export type MailboxAttachment={filename:string;mime_type:string;size:number}
 // them - that is the required answer, not a missing one, so the panel renders an empty, editable
 // field rather than a guess. `status` is the JobLead status the message's classification implies.
 export type MailboxLeadPrefill={company:string;title:string;status:string}
-export type MailboxMessage={id:number;sender:string;subject:string;body_text:string;received_at:string|null;classification:string;matched_job:number|null;matched_job_company:string;matched_job_title:string;draft:MailboxDraft|null;thread_id:string;gmail_url:string|null;sent_by_owner:boolean;created_at:string;calendar_summary:string;calendar_location:string;calendar_organizer:string;calendar_start:string|null;calendar_end:string|null;attachments:MailboxAttachment[];suggested_job?:{id:number;label:string}|null;body_truncated?:boolean;dismissed?:boolean;lead_prefill?:MailboxLeadPrefill|null}
+export type MailboxMessage={id:number;sender:string;subject:string;body_text:string;received_at:string|null;classification:string;matched_job:number|null;matched_job_company:string;matched_job_title:string;draft:MailboxDraft|null;app_draft?:MailboxDraft|null;thread_id:string;gmail_url:string|null;sent_by_owner:boolean;created_at:string;calendar_summary:string;calendar_location:string;calendar_organizer:string;calendar_start:string|null;calendar_end:string|null;attachments:MailboxAttachment[];suggested_job?:{id:number;label:string}|null;body_truncated?:boolean;dismissed?:boolean;lead_prefill?:MailboxLeadPrefill|null}
 // TASK-175: `postponed` is a fourth STATUS, not a fourth suggestion_type - a postpone resolves a
 // proposal the classifier already made rather than being one of its own (see the backend model's
 // docstring). It is also non-terminal: a postponed suggestion can still be confirmed or dismissed.

@@ -69,6 +69,22 @@ def test_build_chat_prompt_includes_every_earlier_turn_so_a_later_instruction_ca
     assert prompt.index('Tuesday March 3') < prompt.rindex('CURRENT DRAFT')
 
 
+def test_understand_prompt_names_the_exact_unsent_draft_and_keeps_answers_out_of_revision_state():
+    history = [
+        ChatTurn(user_message='make it warmer', revised_text='Dear X, warm current draft.'),
+        ChatTurn(user_message='why is this stale?', revised_text='Because you replied later.', mode='understand'),
+    ]
+
+    explain = draft_chat._build_chat_prompt('Dear X, original.', history, 'What does this wording imply?', 'understand')
+    revise = draft_chat._build_chat_prompt('Dear X, original.', history, 'make it shorter', 'revise')
+
+    assert 'EXACT UNSENT DRAFT:\nDear X, warm current draft.' in explain
+    assert 'QUESTION FROM THE CANDIDATE:\nWhat does this wording imply?' in explain
+    assert 'do not rewrite it or claim it was sent' in explain
+    assert 'CURRENT DRAFT (what you must revise from):\nDear X, warm current draft.' in revise
+    assert 'CURRENT DRAFT (what you must revise from):\nBecause you replied later.' not in revise
+
+
 def test_run_chat_turn_second_turn_prompt_carries_the_first_turns_revision(monkeypatch):
     """AC2's own verification example: "shorter" then "actually keep the date I just added" only
     makes sense if the first turn's added date is still visible to the second call.
@@ -88,6 +104,30 @@ def test_run_chat_turn_second_turn_prompt_carries_the_first_turns_revision(monke
     assert result.reason == ''
     assert 'Tuesday March 3' in captured['prompt'], 'second turn must still see the first turn\'s added date'
     assert 'shorter' in captured['prompt'], 'second turn must still see the first turn\'s own instruction'
+
+
+def test_understand_turn_returns_an_answer_without_treating_it_as_an_accept_ready_draft(settings, monkeypatch):
+    settings.MAILBOX_SALARY_FLOOR_EUR = '50000'
+    captured = {}
+
+    def _run(command, **kwargs):
+        captured['prompt'] = kwargs.get('input', '')
+        return _stdout_completed(command, {'revised_text': 'The draft mentions 40000 EUR only as context.'})
+
+    monkeypatch.setattr(draft_chat, '_binary_for', lambda provider: 'C:\\fake\\claude.exe')
+    monkeypatch.setattr(draft_chat, '_run', _run)
+
+    result = run_chat_turn('Exact unsent draft.', [], 'Explain the salary wording', 'anthropic', 'sonnet', 'medium', mode='understand')
+
+    assert result == ChatTurnResult('The draft mentions 40000 EUR only as context.', '')
+    assert 'Exact unsent draft.' in captured['prompt']
+    assert 'QUESTION FROM THE CANDIDATE' in captured['prompt']
+
+
+def test_run_chat_turn_rejects_unknown_help_mode_before_invoking_a_provider(monkeypatch):
+    monkeypatch.setattr(draft_chat, '_run', _refusing_run())
+    result = run_chat_turn('Exact unsent draft.', [], 'send it', 'anthropic', 'sonnet', 'medium', mode='send')
+    assert result == ChatTurnResult('', 'mode must be revise or understand')
 
 
 # --- AC3: model choice is validated against what the machine can actually run --------------------
