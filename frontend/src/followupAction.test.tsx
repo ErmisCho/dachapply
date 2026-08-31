@@ -5,7 +5,7 @@ import {confirmFollowUpSent,JobFollowUpContext,JobFollowUps} from './App'
 import type {Job,JobMailboxPayload,MailboxDraft} from './types'
 
 const job={id:42,company:'Acme',title:'Engineer',status:'interview'} as Job
-const draft:MailboxDraft={id:9,status:'written',block_reason:'',subject:'Re: Interview',body_text:'Exact prepared reply\nSecond line',evaluator:'template',gmail_draft_id:'draft-9',gmail_message_id:'message-9',gmail_thread_id:'thread-9',gmail_url:'https://mail.google.com/mail/u/0/?authuser=owner%40example.test#drafts?compose=message-9',sent_at:null,chat_history:[],created_at:'2026-08-28T10:00:00Z'}
+const draft:MailboxDraft={id:9,status:'written',block_reason:'',subject:'Re: Interview',body_text:'Exact prepared reply\nSecond line',evaluator:'template',gmail_draft_id:'draft-9',gmail_message_id:'message-9',gmail_thread_id:'thread-9',gmail_url:'https://mail.google.com/mail/u/0/?authuser=owner%40example.test#drafts?compose=message-9',sent_at:null,stale_reason:'',chat_history:[],created_at:'2026-08-28T10:00:00Z'}
 const mailbox={messages:[{id:7,sender:'Recruiter <hr@acme.test>',subject:'Interview update',body_text:'Can you meet?',received_at:'2026-08-28T09:00:00Z',classification:'recruiter_reply',matched_job:42,matched_job_company:'Acme',matched_job_title:'Engineer',draft,thread_id:'thread-9',gmail_url:null,sent_by_owner:false,created_at:'2026-08-28T09:00:00Z',calendar_summary:'',calendar_location:'',calendar_organizer:'',calendar_start:null,calendar_end:null,attachments:[]}],notes:[{id:3,job:42,note:'Waiting for final feedback',note_type:'general',created_by:1,created_at:'2026-08-27T10:00:00Z'}]} as unknown as JobMailboxPayload
 
 describe('actionable follow-up context (TASK-113)',()=>{

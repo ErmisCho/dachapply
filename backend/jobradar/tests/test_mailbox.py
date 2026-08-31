@@ -486,6 +486,18 @@ def test_classify_email_genuine_rejection_also_thanking_for_applying_still_class
     assert classification == 'rejection'
 
 
+def test_classify_email_personal_application_goodbye_is_rejection():
+    r = raw(
+        1, sender='recruiter@employer.test', subject='Your application',
+        body=(
+            'I wanted to personally reach out following the automated update about your application. '
+            'Thank you for taking the time to meet our team. We wish you the very best\nin your future endeavors.'
+        ),
+    )
+    classification, _interview_at, _evaluator = classify_email(r, domain_known=True)
+    assert classification == 'rejection'
+
+
 # --- Coordinator correction (dry run against production, 17 proposed changes hand-inspected, 11
 # wrong): the first TASK-168 fix demoted 7 genuine join.com rejections to application_confirmed (a
 # polite "Vielen Dank für deine Bewerbung" opening outranking the actual refusal sentence -- the exact
@@ -5603,6 +5615,46 @@ def test_maybe_draft_reply_generates_no_draft_for_a_non_actionable_job(db, owner
     r = raw(1, subject='Interview invite', body='We would like to invite you to an interview on 03.03.2026 at 14:00.')
     draft = maybe_draft_reply(message, r, applied_job, 'interview_invitation', None, owner, user_profile_settings(owner), transport)
     assert draft is None
+    assert transport.appended_drafts == []
+
+
+def test_maybe_draft_reply_refuses_when_the_owner_already_replied_in_the_thread(db, owner, applied_job):
+    source_at = timezone.now() - timedelta(hours=2)
+    message = MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=1, sender='recruiter@acme.test', subject='Your application',
+        classification='recruiter_reply', matched_job=applied_job, thread_id='thread-closed', received_at=source_at,
+    )
+    MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=2, sender='owner@example.test', subject='Re: Your application',
+        classification='recruiter_reply', matched_job=applied_job, thread_id='thread-closed', sent_by_owner=True,
+        received_at=source_at + timedelta(minutes=30),
+    )
+    transport = FakeTransport([])
+
+    draft = maybe_draft_reply(
+        message, raw(1, sender=message.sender, subject=message.subject, thread_id=message.thread_id),
+        applied_job, 'recruiter_reply', None, owner, user_profile_settings(owner), transport,
+    )
+
+    assert draft is None
+    assert transport.appended_drafts == []
+
+
+def test_run_check_refuses_a_draft_when_the_owner_reply_is_later_in_the_same_batch(not_cold_start, db, owner, applied_job):
+    source_at = timezone.now() - timedelta(hours=2)
+    transport = FakeTransport([
+        raw(2, sender='recruiter@acme.test', subject='Application update', body='We are reviewing your application.',
+            thread_id='thread-batch', received_at=source_at),
+        raw(3, sender='owner@example.test', subject='Re: Application update', body='Thank you for the update.',
+            thread_id='thread-batch', received_at=source_at + timedelta(minutes=30)),
+    ])
+
+    run = run_check(transport=transport)
+
+    source = MailboxMessage.objects.get(uid=2)
+    assert run.error == ''
+    assert source.classification == 'recruiter_reply'
+    assert not MailboxDraft.objects.filter(message=source).exists()
     assert transport.appended_drafts == []
 
 
