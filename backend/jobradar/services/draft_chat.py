@@ -72,14 +72,16 @@ class ChatTurn:
     """
     user_message: str
     revised_text: str
+    # TASK-207: old rows omit this and therefore remain revision turns. Understanding turns are
+    # answers about the exact draft, never replacement text offered for acceptance.
+    mode: str = 'revise'
 
 
 @dataclass
 class ChatTurnResult:
-    """revised_text is what the model produced -- '' if the call failed before producing anything.
-    reason is '' when revised_text is clear to show the owner as accept-ready; any other value means
-    it is NOT -- a provider failure (AC7) or a guardrail block (AC6) -- and the caller must not
-    persist or write revised_text anywhere in that case, only display the reason.
+    """revised_text is what the model produced -- a proposed draft in revise mode or a plain answer
+    in understand mode, and '' if the call failed. `reason` is '' when the result is safe to show;
+    only revise-mode results are ever accept-ready.
     """
     revised_text: str
     reason: str
@@ -93,22 +95,30 @@ _CHAT_SCHEMA = {
 }
 
 
-def _build_chat_prompt(original_draft_text: str, history: list[ChatTurn], user_message: str) -> str:
-    """The whole transcript, re-sent every turn -- see the module docstring's stateless-provider
-    note. `history` is TRUSTED (the owner's own prior instructions and the model's own prior
-    revisions, never inbound-email text), so unlike sanitize_inbound_text's callers this needs no
-    injection scrubbing.
+def _build_chat_prompt(original_draft_text: str, history: list[ChatTurn], user_message: str, mode: str = 'revise') -> str:
+    """The exact draft and whole app-owned transcript, re-sent every turn. TASK-207 adds an
+    understanding mode so asking what a stale draft means cannot be mistaken for replacement text.
     """
     turns = [
-        f'Turn {index} -- owner said: "{turn.user_message}"\nTurn {index} -- resulting draft:\n{turn.revised_text}'
+        f'Turn {index} -- owner said: "{turn.user_message}"\nTurn {index} -- AI {"answer" if turn.mode == "understand" else "draft"}:\n{turn.revised_text}'
         for index, turn in enumerate(history, start=1)
     ]
     conversation = '\n\n'.join(turns) if turns else '(no earlier turns yet)'
-    current_text = history[-1].revised_text if history else original_draft_text
+    revisions = [turn.revised_text for turn in history if turn.mode != 'understand']
+    current_text = revisions[-1] if revisions else original_draft_text
+    if mode == 'understand':
+        return (
+            'You are helping a candidate understand one exact UNSENT email draft. Answer the '
+            'candidate\'s question about this draft directly; do not rewrite it or claim it was sent.\n\n'
+            f'EXACT UNSENT DRAFT:\n{current_text}\n\n'
+            f'CONVERSATION SO FAR:\n{conversation}\n\n'
+            f'QUESTION FROM THE CANDIDATE:\n{user_message}\n\n'
+            'Return only valid JSON with this exact shape: {"revised_text": "your clear answer about the draft"}'
+        )
     return (
-        'You are revising a short email reply draft for a DACH-focused job-search tracker, at the '
-        "candidate's own spoken direction. Apply ONLY the new instruction below to the current draft; "
-        'keep everything the earlier turns already settled unless the new instruction changes it.\n\n'
+        'You are revising one exact UNSENT email reply draft for a DACH-focused job-search tracker, '
+        "at the candidate's own spoken direction. Apply ONLY the new instruction below to the current "
+        'draft; keep everything the earlier turns already settled unless the new instruction changes it.\n\n'
         f'ORIGINAL DRAFT (before any conversation):\n{original_draft_text}\n\n'
         f'CONVERSATION SO FAR:\n{conversation}\n\n'
         f'CURRENT DRAFT (what you must revise from):\n{current_text}\n\n'
@@ -197,6 +207,7 @@ def run_chat_turn(
     effort: str,
     speed: str = 'normal',
     *,
+    mode: str = 'revise',
     profile=None,
     timeout_seconds: float | None = None,
 ) -> ChatTurnResult:
@@ -212,18 +223,22 @@ def run_chat_turn(
     explicitly to override per call. AC8's "cannot hang forever" requirement is satisfied either way:
     a timeout always reaches the subprocess call, whichever value it resolved to.
     """
+    if mode not in {'revise', 'understand'}:
+        return ChatTurnResult('', 'mode must be revise or understand')
     try:
         model_option = validate_model_capability(provider, model, effort, speed)
     except ValueError as exc:
         return ChatTurnResult('', str(exc))
 
     resolved_timeout = timeout_seconds if timeout_seconds is not None else _load_llm_config().timeout_seconds
-    prompt = _build_chat_prompt(original_draft_text, history, user_message)
+    prompt = _build_chat_prompt(original_draft_text, history, user_message, mode)
     revised_text, reason = _run_provider_turn(provider, model, effort, speed, model_option, prompt, resolved_timeout)
     if reason:
         return ChatTurnResult(revised_text, reason)
 
-    # AC6: the same code-level guardrail a template-generated draft cannot get past either -- run
-    # here, on the generated text, never as an instruction the model itself could be talked out of.
+    # Understanding answers are never offered as replacement draft text and never touch Gmail, so
+    # draft-write guardrails do not apply. Revisions retain the existing defense in depth.
+    if mode == 'understand':
+        return ChatTurnResult(revised_text, '')
     block_reason = check_guardrails(revised_text, _effective_salary_floor_eur(profile), _effective_do_not_disclose(profile))
     return ChatTurnResult(revised_text, block_reason)

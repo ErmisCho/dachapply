@@ -906,14 +906,22 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         # it existed, or any transport hiccup that left it unset); nulls_last is a deliberate choice
         # over the default arbitrary placement -- "we don't know when this arrived" reads closer to
         # "oldest" than "newest" in a newest-first decision list.
-        messages=job.mailbox_messages.select_related('matched_job').prefetch_related('draft','suggestions').order_by(F('received_at').desc(nulls_last=True))
+        messages=list(job.mailbox_messages.select_related('matched_job').prefetch_related('draft','suggestions').order_by(F('received_at').desc(nulls_last=True)))
+        # TASK-207: Gmail later re-ingests an app-created draft as an owner-authored message. The
+        # MailboxDraft relation stays on its inbound source message, so map the draft's persisted
+        # Gmail message id to that captured row before serialization. `draft` is already prefetched;
+        # this is one in-memory pass, not a query per message, and raw Gmail ids never reach the wire.
+        app_drafts_by_gmail_id={
+            draft.gmail_message_id: draft for message in messages
+            if (draft := getattr(message, 'draft', None)) and draft.status == 'written' and draft.gmail_message_id
+        }
         # One extra query for a single job instance -- not the N+1 that prefetch_related guards
         # against for a list of parents -- same pattern as the sibling `notes` action above.
         # ApplicationNote.Meta.ordering is already ['-created_at'], so this is newest first (AC3).
         notes=job.notes.all()
         return Response({
             'messages': MailboxMessageWithSuggestionsSerializer(
-                messages, many=True, context={**self.get_serializer_context(), 'include_draft_stale_reason': True},
+                messages, many=True, context={**self.get_serializer_context(), 'include_draft_stale_reason': True, 'app_drafts_by_gmail_id': app_drafts_by_gmail_id},
             ).data,
             'notes': ApplicationNoteSerializer(notes, many=True).data,
         })
@@ -1651,16 +1659,19 @@ class MailboxDraftViewSet(viewsets.GenericViewSet):
         model=request.data.get('model') or ''
         effort=request.data.get('effort') or ''
         speed=request.data.get('speed') or 'normal'
+        mode=request.data.get('mode') or 'revise'
+        if mode not in {'revise', 'understand'}:
+            return Response({'detail':'mode must be revise or understand.'}, status=400)
         profile=user_profile_settings(request.user)
         if provider and model and (profile.mailbox_chat_provider != provider or profile.mailbox_chat_model != model):
             profile.mailbox_chat_provider=provider
             profile.mailbox_chat_model=model
             profile.save(update_fields=['mailbox_chat_provider','mailbox_chat_model'])
         history=[ChatTurn(**item) for item in draft.chat_history]
-        result=run_chat_turn(draft.body_text, history, user_message, provider, model, effort, speed, profile=profile)
+        result=run_chat_turn(draft.body_text, history, user_message, provider, model, effort, speed, mode=mode, profile=profile)
         if result.reason:
             return Response({'detail': result.reason}, status=400)
-        draft.chat_history=draft.chat_history + [{'user_message': user_message, 'revised_text': result.revised_text}]
+        draft.chat_history=draft.chat_history + [{'user_message': user_message, 'revised_text': result.revised_text, 'mode': mode}]
         draft.save(update_fields=['chat_history'])
         return Response(self.get_serializer(draft).data)
 

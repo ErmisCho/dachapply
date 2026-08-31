@@ -84,21 +84,26 @@ describe('DashboardPanel drag feedback (TASK-183 AC1/AC5/AC6)',()=>{
 
 const mailboxDraft:MailboxDraft={id:1,status:'written',block_reason:'',subject:'Re: Update',body_text:'Current prepared response',evaluator:'template',gmail_draft_id:'draft-1',gmail_message_id:'message-1',gmail_thread_id:'thread-1',gmail_url:'https://mail.google.test/#drafts?compose=message-1',sent_at:null,stale_reason:'',chat_history:[],created_at:'2026-08-31T08:00:00Z'}
 
-describe('stale mailbox draft presentation (TASK-206)',()=>{
-  it('replaces stale body and editing actions with a non-destructive notice',()=>{
-    const html=renderToStaticMarkup(<DraftReplyBlock draft={{...mailboxDraft,body_text:'Contradictory stale response',stale_reason:'you already replied later in this conversation'}}/>)
-    expect(html).toContain('Draft no longer applicable')
+describe('mailbox draft presentation (TASK-206/TASK-207)',()=>{
+  it('labels a stale reply as an unsent draft while preserving its text, edit, and exact-draft AI action',()=>{
+    const html=renderToStaticMarkup(<DraftReplyBlock draft={{...mailboxDraft,body_text:'Synthetic stale response',stale_reason:'you already replied later in this conversation'}}/>)
+    expect(html).toContain('UNSENT DRAFT')
+    expect(html).toContain('STALE CONVERSATION REPLY')
+    expect(html).toContain('This would be a stale reply')
     expect(html).toContain('you already replied later in this conversation')
-    expect(html).toContain('existing Gmail draft was not changed')
-    expect(html).toContain('Open stale Gmail draft')
-    expect(html).not.toContain('Contradictory stale response')
-    expect(html).not.toContain('Chat to revise')
+    expect(html).toContain('nothing was sent')
+    expect(html).toContain('Synthetic stale response')
+    expect(html).toContain('Edit draft')
+    expect(html).toContain('Ask AI about this draft')
+    expect(html).toContain('Open draft in Gmail')
   })
 
-  it('keeps a current draft available',()=>{
+  it('keeps a current unsent draft available without calling it stale',()=>{
     const html=renderToStaticMarkup(<DraftReplyBlock draft={mailboxDraft}/>)
+    expect(html).toContain('UNSENT DRAFT')
+    expect(html).toContain('not sent')
     expect(html).toContain('Current prepared response')
-    expect(html).toContain('Chat to revise')
-    expect(html).not.toContain('Draft no longer applicable')
+    expect(html).toContain('Ask AI about this draft')
+    expect(html).not.toContain('STALE CONVERSATION REPLY')
   })
 })

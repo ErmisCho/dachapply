@@ -120,4 +120,26 @@ describe('TASK-177 a collapsed conversation message',()=>{
     expect(c.rowsWithBody).toBe(2)
     expect(c.html).toContain('No message text')
   })
+
+  it('distinguishes a captured stale app draft from the real sent owner message (TASK-207)',()=>{
+    const draft={id:207,status:'written' as const,block_reason:'',subject:'Re: Application',body_text:'Synthetic draft text',evaluator:'template',gmail_draft_id:'draft-207',gmail_message_id:'message-207',gmail_thread_id:'thread-207',gmail_url:'https://mail.google.test/#drafts?compose=message-207',sent_at:null,stale_reason:'you already replied later in this conversation',chat_history:[],created_at:'2026-08-31T08:00:00Z'}
+    // Same newest-first order as GET /jobs/{id}/mailbox/; MailboxThreadGroup reverses it for display.
+    const messages=[
+      msg(3,true,120,{body_text:draft.body_text,app_draft:draft}),
+      msg(2,true,120,{body_text:'Synthetic sent goodbye'}),
+      msg(1,false,120),
+    ]
+
+    const html=counts(messages).html
+
+    expect(html).toContain('Unsent draft')
+    expect(html).toContain('UNSENT DRAFT')
+    expect(html).toContain('STALE REPLY')
+    expect(html).toContain('STALE CONVERSATION REPLY')
+    expect(html).toContain('It is still only a Gmail draft; nothing was sent.')
+    expect(html).toContain('Edit draft')
+    expect(html).toContain('Ask AI about this draft')
+    expect((html.match(/>You</g)||[]).length).toBe(1)
+    expect((html.match(/aria-label="Reply to this message from/g)||[]).length).toBe(2)
+  })
 })

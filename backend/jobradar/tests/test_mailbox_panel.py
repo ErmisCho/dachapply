@@ -949,6 +949,37 @@ def test_app_draft_self_capture_does_not_make_the_draft_stale(client, applied_jo
     assert row['message']['draft']['stale_reason'] == ''
 
 
+def test_job_mailbox_identifies_the_captured_app_draft_without_exposing_raw_gmail_ids(client, applied_job):
+    source_at = timezone.now() - timezone.timedelta(hours=3)
+    source = MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=106, gmail_id='source-message', sender='recruiter@acme.test',
+        subject='Application update', classification='recruiter_reply', matched_job=applied_job,
+        thread_id='thread-stale-draft', received_at=source_at,
+    )
+    draft = _written_draft(applied_job, source, body_text='Synthetic unsent draft', gmail_message_id='app-draft-message')
+    owner_reply = MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=107, gmail_id='real-owner-reply', sender='owner@example.test',
+        subject='Re: Application update', classification='recruiter_reply', matched_job=applied_job,
+        thread_id='thread-stale-draft', sent_by_owner=True, received_at=source_at + timezone.timedelta(minutes=30),
+    )
+    captured_draft = MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=108, gmail_id='app-draft-message', sender='owner@example.test',
+        subject='Re: Application update', body_text='Synthetic unsent draft', classification='recruiter_reply',
+        matched_job=applied_job, thread_id='thread-stale-draft', sent_by_owner=True,
+        received_at=source_at + timezone.timedelta(hours=1),
+    )
+
+    response = client.get(f'/api/jobs/{applied_job.id}/mailbox/')
+
+    assert response.status_code == 200
+    rows = {row['id']: row for row in response.data['messages']}
+    assert rows[captured_draft.id]['app_draft']['id'] == draft.id
+    assert rows[captured_draft.id]['app_draft']['stale_reason'] == 'you already replied later in this conversation'
+    assert rows[owner_reply.id]['app_draft'] is None
+    assert rows[source.id]['app_draft'] is None
+    assert all('gmail_id' not in row for row in rows.values())
+
+
 def test_suggestion_marks_draft_stale_after_a_later_rejection(client, applied_job):
     source_at = timezone.now() - timezone.timedelta(hours=2)
     source = MailboxMessage.objects.create(
@@ -1260,17 +1291,18 @@ def test_chat_turn_persists_history_and_rebuilds_it_on_the_next_turn(client, own
     draft = _written_draft(applied_job, message, body_text='Original draft text')
     captured = []
 
-    def fake_run_chat_turn(original_draft_text, history, user_message, provider, model, effort, speed='normal', *, profile=None, timeout_seconds=None):
-        captured.append({'original': original_draft_text, 'history': list(history), 'message': user_message})
+    def fake_run_chat_turn(original_draft_text, history, user_message, provider, model, effort, speed='normal', *, mode='revise', profile=None, timeout_seconds=None):
+        captured.append({'original': original_draft_text, 'history': list(history), 'message': user_message, 'mode': mode})
         return ChatTurnResult(f'revision {len(captured)}', '')
 
     monkeypatch.setattr('jobradar.views.run_chat_turn', fake_run_chat_turn)
 
     r1 = client.post(f'/api/mailbox-drafts/{draft.id}/chat/', {'user_message': 'kuerzer', 'provider': 'anthropic', 'model': 'sonnet', 'effort': 'medium'}, format='json')
     assert r1.status_code == 200
-    assert r1.data['chat_history'] == [{'user_message': 'kuerzer', 'revised_text': 'revision 1'}]
+    assert r1.data['chat_history'] == [{'user_message': 'kuerzer', 'revised_text': 'revision 1', 'mode': 'revise'}]
     assert captured[0]['history'] == []
     assert captured[0]['original'] == 'Original draft text'
+    assert captured[0]['mode'] == 'revise'
 
     r2 = client.post(f'/api/mailbox-drafts/{draft.id}/chat/', {'user_message': 'actually keep the date I just added', 'provider': 'anthropic', 'model': 'sonnet', 'effort': 'medium'}, format='json')
     assert r2.status_code == 200
@@ -1284,6 +1316,52 @@ def test_chat_turn_persists_history_and_rebuilds_it_on_the_next_turn(client, own
     owner.jobradar_profile.refresh_from_db()
     assert owner.jobradar_profile.mailbox_chat_provider == 'anthropic'
     assert owner.jobradar_profile.mailbox_chat_model == 'sonnet'
+
+
+def test_understand_turn_is_scoped_to_the_exact_draft_and_never_writes_gmail(client, applied_job, monkeypatch):
+    from jobradar.services.draft_chat import ChatTurnResult
+
+    message = _log_message(applied_job, 'recruiter_reply')
+    draft = _written_draft(applied_job, message, body_text='Exact synthetic unsent draft')
+    captured = []
+
+    def fake_run_chat_turn(original_draft_text, history, user_message, provider, model, effort, speed='normal', *, mode='revise', profile=None, timeout_seconds=None):
+        captured.append((original_draft_text, user_message, mode))
+        return ChatTurnResult('This explains the exact draft without replacing it.', '')
+
+    monkeypatch.setattr('jobradar.views.run_chat_turn', fake_run_chat_turn)
+    r = client.post(f'/api/mailbox-drafts/{draft.id}/chat/', {
+        'user_message': 'Why is this stale?', 'mode': 'understand', 'provider': 'anthropic',
+        'model': 'sonnet', 'effort': 'medium',
+    }, format='json')
+
+    assert r.status_code == 200
+    assert captured == [('Exact synthetic unsent draft', 'Why is this stale?', 'understand')]
+    assert r.data['chat_history'] == [{
+        'user_message': 'Why is this stale?',
+        'revised_text': 'This explains the exact draft without replacing it.',
+        'mode': 'understand',
+    }]
+    draft.refresh_from_db()
+    assert draft.body_text == 'Exact synthetic unsent draft'
+    assert draft.chat_history == r.data['chat_history']
+
+
+def test_chat_turn_rejects_an_unknown_help_mode_without_invoking_a_model(client, applied_job, monkeypatch):
+    message = _log_message(applied_job, 'recruiter_reply')
+    draft = _written_draft(applied_job, message)
+    called = []
+    monkeypatch.setattr('jobradar.views.run_chat_turn', lambda *args, **kwargs: called.append(True))
+
+    r = client.post(f'/api/mailbox-drafts/{draft.id}/chat/', {
+        'user_message': 'Help', 'mode': 'send', 'provider': 'anthropic', 'model': 'sonnet', 'effort': 'medium',
+    }, format='json')
+
+    assert r.status_code == 400
+    assert r.data['detail'] == 'mode must be revise or understand.'
+    assert called == []
+    draft.refresh_from_db()
+    assert draft.chat_history == []
 
 
 def test_chat_turn_for_a_job_the_user_cannot_see_is_404(client, applied_job):
