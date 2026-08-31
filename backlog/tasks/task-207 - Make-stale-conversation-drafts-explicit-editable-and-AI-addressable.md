@@ -1,11 +1,11 @@
 ---
 id: TASK-207
 title: 'Make stale conversation drafts explicit, editable, and AI-addressable'
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-08-31 09:07'
-updated_date: '2026-08-31 13:57'
+updated_date: '2026-08-31 14:07'
 labels:
   - bug
   - mailbox
@@ -28,6 +28,7 @@ modified_files:
   - .orchestrator/debug/task-207-2026-08-31-bugfix-2-2.md
   - .orchestrator/debug/task-207-2026-08-31-bugfix-2-3.md
   - .orchestrator/debug/task-207-2026-08-31-bugfix-3-1.md
+  - .orchestrator/debug/task-207-2026-08-31-bugfix-3-2.md
   - .claude/.asian-dad/task-207-stale-draft-controls-rubric.json
   - >-
     backlog/tasks/task-207 -
@@ -44,11 +45,11 @@ In the expanded Email decisions conversation, an app-created Gmail draft current
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Expanded conversations clearly distinguish app-created drafts from sent owner messages and label stale conversation-reply context plainly
-- [ ] #2 A stale draft remains editable through the existing owner-scoped draft editing path
-- [ ] #3 The owner can ask AI to draft/revise or explain the specific stale draft message, with that message identified in the AI context
-- [ ] #4 Normal captured sent messages and current non-stale drafts keep their existing behavior
-- [ ] #5 Synthetic regressions cover labels, editing, and message-specific AI help without contacting Gmail or using owner content
+- [x] #1 Expanded conversations clearly distinguish app-created drafts from sent owner messages and label stale conversation-reply context plainly
+- [x] #2 A stale draft remains editable through the existing owner-scoped draft editing path
+- [x] #3 The owner can ask AI to draft/revise or explain the specific stale draft message, with that message identified in the AI context
+- [x] #4 Normal captured sent messages and current non-stale drafts keep their existing behavior
+- [x] #5 Synthetic regressions cover labels, editing, and message-specific AI help without contacting Gmail or using owner content
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -63,4 +64,12 @@ In the expanded Email decisions conversation, an app-created Gmail draft current
 Root cause documented in .orchestrator/debug/task-207-2026-08-31-bugfix-1-1.md. Read-only released-runtime measurement: the draft Gmail message id matches exactly one captured sent_by_owner row, but that row has no draft relation; the serializer drops this identity, and the stale UI returns before edit/chat. Measurement made 0 writes and 0 Gmail calls.
 
 Implemented exact captured-draft identity through the job-mailbox serializer, explicit UNSENT DRAFT / STALE CONVERSATION REPLY presentation, inline edit controls, and separate Draft/rewrite versus Explain/understand AI modes. Understanding results are never offered as replacement text and never write Gmail. Verification: 1040 backend tests, 198 frontend tests, production build, Django/migration/compile checks, npm audit (0 vulnerabilities), no-send/delete scan, synthetic browser interaction, and read-only measured-case serialization all passed. Asian Dad self-evaluation: PERFECT.
+
+PR #109 squash-merged as 5f8055f. Main run 33400177245 passed tests, image deployment, and public Azure verification. The synchronized released runtime serves the same SHA with API/web HTTP 200. Final released-code measured-case check remained read-only with zero Gmail calls.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Made captured Gmail drafts unmistakably unsent and stale in the exact conversation row, retained owner-scoped editing, and added exact-draft AI modes for rewriting or understanding without treating explanations as replacement text. Synthetic browser/API checks, 1040 backend tests, 198 frontend tests, build/audit/safety gates, measured released data, CI, runtime parity, and Azure deployment passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
