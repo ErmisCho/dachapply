@@ -3582,6 +3582,31 @@ def test_feedback_due_excludes_non_actionable_statuses(client):
     assert r.status_code==200 and r.data==[]
 
 
+def test_feedback_due_job_status_patch_removes_closed_lead_and_keeps_actionable_change(client):
+    today=timezone.localdate()
+    due=today+timezone.timedelta(days=2)
+    closing=make_job(client, company='Closing GmbH', title='Backend Engineer', status='interview', feedback_due_date=due)
+
+    closed=client.patch(f'/api/jobs/{closing.id}/', {
+        'status':'rejected', 'status_date':today, 'last_update_date':None,
+        'interview_stage':None, 'interview_total':None,
+    }, format='json')
+
+    assert closed.status_code==200 and closed.data['status']=='rejected'
+    closing.refresh_from_db()
+    assert closing.feedback_due_date==due
+    assert client.get('/api/jobs/feedback-due/').data==[]
+
+    active=make_job(client, company='Active GmbH', title='Data Engineer', status='interview', feedback_due_date=due)
+    updated=client.patch(f'/api/jobs/{active.id}/', {
+        'status':'offer', 'status_date':today, 'last_update_date':today,
+        'interview_stage':None, 'interview_total':None,
+    }, format='json')
+    assert updated.status_code==200 and updated.data['status']=='offer'
+    rows=client.get('/api/jobs/feedback-due/').data
+    assert len(rows)==1 and rows[0]['id']==active.id and rows[0]['status']=='offer'
+
+
 def test_feedback_due_query_count_does_not_scale_with_row_count(client):
     """AC10: no per-row query. Same request-level query count (auth/visitor-tracking middleware
     plus this endpoint's own one SELECT) whether 2 or 6 qualifying jobs exist -- if the endpoint

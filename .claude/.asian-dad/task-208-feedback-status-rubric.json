@@ -1,0 +1,50 @@
+{
+  "task_prompt": "also i nthe feeedback deaedlines pane per lead, I should be able to select to reschedule and/or change status",
+  "created_at": "2026-08-31T14:12:24.687330+00:00",
+  "authored_by_grader": true,
+  "criteria": [
+    {
+      "id": 1,
+      "description": "Each lead in the feedback deadlines pane retains a selectable reschedule action.",
+      "authority": "explicit",
+      "source": "in the feedback deadlines pane per lead ... select to reschedule",
+      "verification": "render a synthetic feedback row and exercise its date update request"
+    },
+    {
+      "id": 2,
+      "description": "Each lead in the pane offers a selectable job-status change.",
+      "authority": "explicit",
+      "source": "per lead ... change status",
+      "verification": "render a synthetic feedback row and assert the real status options are selectable"
+    },
+    {
+      "id": 3,
+      "description": "A selected status is persisted for the specific lead and reflected without a full reload.",
+      "authority": "implied",
+      "source": "baseline: a status-change control must actually change the selected lead",
+      "verification": "exercise the control with a fake API and assert the lead-specific PATCH plus updated/removal state"
+    },
+    {
+      "id": 4,
+      "description": "The existing reschedule and new status actions work independently or in sequence.",
+      "authority": "explicit",
+      "source": "reschedule and/or change status",
+      "verification": "exercise each action separately and both on one synthetic row"
+    },
+    {
+      "id": 5,
+      "description": "Failures do not appear as successful changes.",
+      "authority": "implied",
+      "source": "baseline: mutable controls must not lie about failed persistence",
+      "verification": "reject each fake API request and assert the row/error state remains truthful"
+    },
+    {
+      "id": 6,
+      "description": "Load-bearing claims are measured rather than asserted, and contradicted instructions are refused with evidence.",
+      "authority": "implied",
+      "source": "baseline: a claim that decides the verdict must be measured",
+      "verification": "review runnable test, build, and interaction outputs used for every verdict claim"
+    }
+  ],
+  "superseded": []
+}
