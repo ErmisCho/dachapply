@@ -8,7 +8,7 @@ export type FollowUp={id:number;job:number;company:string;title:string;follow_up
 // deliberately not modeled here: the client recomputes that itself from feedback_due_date vs today
 // (groupFeedbackDueRows in appUtils.ts), so it never has to agree on a field name with the backend.
 // `[key:string]:any` absorbs whatever extra field the backend does send for that marker.
-export type FeedbackDueRow={id:number;company:string;title:string;status:string;feedback_due_date:string;[key:string]:any}
+export type FeedbackDueRow={id:number;company:string;title:string;status:string;feedback_due_date:string;gmail_search_url:string;[key:string]:any}
 // /api/stats/ funnel + source rows. Rates are number|null on purpose: null is "no denominator yet",
 // which must never render as 0% ("you convert nothing"). `offers` here is *reached* offer over the
 // application cohort - a different measure from the flat stats.offers, which is *currently* in offer.

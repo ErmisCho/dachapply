@@ -3591,7 +3591,10 @@ def feedback_due_board(client):
     return overdue_old, overdue_recent, due_today, due_soon, due_later
 
 
-def test_feedback_due_returns_actionable_dated_rows_overdue_first_then_soonest_first(client, feedback_due_board):
+def test_feedback_due_returns_actionable_dated_rows_overdue_first_then_soonest_first(client, feedback_due_board, settings):
+    settings.GMAIL_IMAP_USER='different-private-owner@example.test'
+    client.user.email='owner@example.test'
+    client.user.save(update_fields=['email'])
     r=client.get('/api/jobs/feedback-due/')
     assert r.status_code==200
     companies=[row['company'] for row in r.data]
@@ -3601,8 +3604,9 @@ def test_feedback_due_returns_actionable_dated_rows_overdue_first_then_soonest_f
     overdue_flags={row['company']: row['overdue'] for row in r.data}
     assert overdue_flags=={'EBCONT (BMJ)': True, 'DataScience Service GmbH': True, 'Takeda Pharmaceutical': False, 'Swiss AI Systems': False, 'Dynatrace': False}
     row=r.data[0]
-    assert set(row.keys())=={'id', 'company', 'title', 'status', 'feedback_due_date', 'overdue'}
+    assert set(row.keys())=={'id', 'company', 'title', 'status', 'feedback_due_date', 'overdue', 'gmail_search_url'}
     assert row['status']=='interview'
+    assert row['gmail_search_url']=='https://mail.google.com/mail/u/0/?authuser=owner%40example.test#search/EBCONT%20%28BMJ%29'
     # ISO date string on the wire, same shape every other date field on this API already uses --
     # r.data holds the pre-render date object, so read the actual rendered JSON like
     # test_stats_list_upcoming_interviews_soonest_first_and_drop_past_ones does above.
