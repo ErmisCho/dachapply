@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-08-31 13:50'
-updated_date: '2026-09-01 09:18'
+updated_date: '2026-09-01 09:31'
 labels:
   - backend
   - frontend
@@ -53,6 +53,8 @@ Implemented strict future-interview suppression across feedback-due, stats, dige
 Browser verification on the real branch Dashboard with synthetic demo data measured 5 rows shown, 1 overdue row retained when upcoming was hidden, and 5 restored; aria-pressed and localStorage changed true→false→true, and a Dashboard remount initialized from stored false. Disclosed self-graded Asian Dad evaluation: PERFECT (6/6).
 
 PR #112 squash-merged as 795996ca7074cd42f81958b48f08a9d6db6d2ce7. Main CI/deployment run 33489845881 passed. Deployed HTTPS browser verification measured 5→1 overdue-only→5 rows; stored false survived an authenticated reload. Dedicated local runtime is clean at the same SHA with API/root/Vite HTTP 200. Released VIG remains interview with feedback_due_date/interview_at null.
+
+Closure run 33491854803 initially hit a GitHub-hosted Docker daemon 500 while booting Buildx; rerunning failed jobs on unchanged SHA 49de0c9 succeeded through deployment/public verification. Post-deployment browser settled at the expected 5 rows with the persisted toggle restored. Debug: finalization-2-1/2-2.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
