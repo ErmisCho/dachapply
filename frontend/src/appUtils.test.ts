@@ -282,8 +282,10 @@ describe('groupFeedbackDueRows (TASK-146)',()=>{
     })
   })
 
-  it('drops the overdue group entirely when the toggle is off, rather than only hiding it',()=>{
-    expect(groupFeedbackDueRows(rows,'2026-08-19',false)).toEqual({overdue:[],upcoming:[rows[2],rows[3]]})
+  it('drops either group independently when its toggle is off',()=>{
+    expect(groupFeedbackDueRows(rows,'2026-08-19',false,true)).toEqual({overdue:[],upcoming:[rows[2],rows[3]]})
+    expect(groupFeedbackDueRows(rows,'2026-08-19',true,false)).toEqual({overdue:[rows[0],rows[1]],upcoming:[]})
+    expect(groupFeedbackDueRows(rows,'2026-08-19',false,false)).toEqual({overdue:[],upcoming:[]})
   })
 
   it('returns two empty groups for no rows',()=>{

@@ -581,11 +581,11 @@ export function describeOrdering(ordering?:string|null):string{
 // feedback_due_date to todayIso is unambiguous and needs no coordination with the backend's naming.
 // Relative order within each group is preserved as returned (the endpoint is already sorted
 // overdue-group-first then soonest-first), so a job 23 days overdue never gets re-sorted as if it were
-// due soonest just because this function ran. `includeOverdue=false` (AC3's toggle) drops the group
-// entirely rather than only hiding it visually, so turning it off really means zero overdue rows shown.
-export function groupFeedbackDueRows<T extends {feedback_due_date:string}>(rows:T[],todayIso:string,includeOverdue=true):{overdue:T[];upcoming:T[]}{
+// due soonest just because this function ran. Disabled groups are dropped entirely rather than only
+// hidden visually, so the two pane controls are independent and really render zero rows when off.
+export function groupFeedbackDueRows<T extends {feedback_due_date:string}>(rows:T[],todayIso:string,includeOverdue=true,includeUpcoming=true):{overdue:T[];upcoming:T[]}{
   const overdue=includeOverdue?rows.filter(r=>r.feedback_due_date<todayIso):[]
-  const upcoming=rows.filter(r=>r.feedback_due_date>=todayIso)
+  const upcoming=includeUpcoming?rows.filter(r=>r.feedback_due_date>=todayIso):[]
   return {overdue,upcoming}
 }
 

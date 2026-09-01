@@ -2988,7 +2988,9 @@ def test_stats_list_upcoming_interviews_soonest_first_and_drop_past_ones(client)
     later=make_job(client, company='Later', title='Next week', status='applied', interview_at=now+timezone.timedelta(days=7))
     make_job(client, company='Past', title='Yesterday', status='interview', interview_at=now-timezone.timedelta(days=1))
     make_job(client, company='Dropped', title='Rejected before it happened', status='rejected', interview_at=now+timezone.timedelta(days=2))
-    FollowUp.objects.create(job=later, follow_up_date=timezone.localdate(), reason='ping recruiter')
+    FollowUp.objects.create(job=later, follow_up_date=timezone.localdate(), reason='superseded by upcoming interview')
+    due_without_interview=make_job(client, company='Due', title='No interview scheduled', status='applied')
+    FollowUp.objects.create(job=due_without_interview, follow_up_date=timezone.localdate(), reason='ping recruiter')
     r=client.get('/api/stats/')
     assert r.status_code==200
     assert [row['company'] for row in r.data['upcoming_interviews']]==['Soon','Later']
@@ -2996,7 +2998,7 @@ def test_stats_list_upcoming_interviews_soonest_first_and_drop_past_ones(client)
     assert r.data['upcoming_interviews'][0]['interview_note']=='On site'
     wire=json.loads(r.content)['upcoming_interviews'][0]  # the frontend reads an ISO string, not a datetime
     assert parse_datetime(wire['interview_at'])==soon.interview_at and set(wire)=={'id','company','title','interview_at','interview_note'}
-    # distinct from due follow-ups and from the plain interview-status count
+    # The due item with no interview counts; Later's equally-due item is paused by its future interview.
     assert r.data['jobs_needing_follow_up']==1 and r.data['interviews']==2
 
 
@@ -3185,6 +3187,25 @@ def test_digest_emails_due_follow_ups_and_overdue_feedback(digest_owner):
     assert 'turn these reminders off' in email.body
 
 
+def test_digest_pauses_due_followups_and_feedback_until_after_a_future_interview(digest_owner):
+    from jobradar.services.followup_digest import digest_items
+
+    now=timezone.now(); today=timezone.localdate(now); due=today-timezone.timedelta(days=1)
+    future=JobLead.objects.create(company='Future interview', title='Engineer', status='interview', interview_at=now+timezone.timedelta(hours=1), feedback_due_date=due, created_by=digest_owner)
+    future_followup=FollowUp.objects.create(job=future, follow_up_date=due, reason='Wait until interview')
+    elapsed=JobLead.objects.create(company='Elapsed interview', title='Engineer', status='interview', interview_at=now-timezone.timedelta(seconds=1), feedback_due_date=due, created_by=digest_owner)
+    elapsed_followup=FollowUp.objects.create(job=elapsed, follow_up_date=due, reason='Now due')
+    unscheduled=JobLead.objects.create(company='No interview time', title='Engineer', status='interview', feedback_due_date=due, created_by=digest_owner)
+
+    followups, overdue=digest_items(digest_owner, today)
+
+    assert [item.id for item in followups]==[elapsed_followup.id]
+    assert {job.id for job in overdue}=={elapsed.id,unscheduled.id}
+    future.refresh_from_db();future_followup.refresh_from_db()
+    assert future.interview_at==now+timezone.timedelta(hours=1)
+    assert future.feedback_due_date==due and future_followup.completed is False and future_followup.follow_up_date==due
+
+
 def test_digest_has_html_buttons_plain_links_and_honest_no_draft_states(digest_owner, settings):
     from jobradar.models import MailboxDraft, MailboxMessage, MailboxRun
     from jobradar.services.followup_digest import send_due_digests
@@ -3273,6 +3294,21 @@ def test_confirm_sent_rejects_a_job_without_a_due_reminder(client):
     response=client.patch(f'/api/jobs/{job.id}/confirm-follow-up-sent/', {'draft_id':draft.id}, format='json')
     assert response.status_code==400
     draft.refresh_from_db(); assert draft.sent_at is None
+
+
+def test_confirm_sent_refuses_while_an_interview_is_upcoming(client):
+    from jobradar.models import MailboxDraft
+
+    job, followup, draft=_followup_with_draft(client.user, feedback_due_date=timezone.localdate())
+    job.interview_at=timezone.now()+timezone.timedelta(hours=1);job.save(update_fields=['interview_at'])
+
+    response=client.patch(f'/api/jobs/{job.id}/confirm-follow-up-sent/', {'draft_id':draft.id, 'followup_id':followup.id}, format='json')
+
+    assert response.status_code==400
+    assert response.data['detail']=='Follow-up is paused until after the upcoming interview.'
+    followup.refresh_from_db();draft=MailboxDraft.objects.get(pk=draft.pk);job.refresh_from_db()
+    assert followup.completed is False and followup.sent_at is None and draft.sent_at is None
+    assert job.feedback_due_date==timezone.localdate() and job.interview_at>timezone.now()
 
 
 def test_confirm_sent_optional_next_followup_returns_only_on_that_date(client):
@@ -3605,6 +3641,27 @@ def test_feedback_due_job_status_patch_removes_closed_lead_and_keeps_actionable_
     assert updated.status_code==200 and updated.data['status']=='offer'
     rows=client.get('/api/jobs/feedback-due/').data
     assert len(rows)==1 and rows[0]['id']==active.id and rows[0]['status']=='offer'
+
+
+def test_feedback_due_pauses_only_strictly_future_interviews_without_mutating_dates(client, monkeypatch):
+    now=timezone.now()
+    monkeypatch.setattr('jobradar.views.timezone.now', lambda: now)
+    due=timezone.localdate(now)
+    future=make_job(client, company='Future interview', title='Engineer', status='interview', feedback_due_date=due, interview_at=now+timezone.timedelta(hours=1))
+    equal=make_job(client, company='Interview starts now', title='Engineer', status='interview', feedback_due_date=due, interview_at=now)
+    elapsed=make_job(client, company='Past interview', title='Engineer', status='interview', feedback_due_date=due, interview_at=now-timezone.timedelta(seconds=1))
+    unscheduled=make_job(client, company='No interview time', title='Engineer', status='interview', feedback_due_date=due, interview_at=None)
+
+    with timezone.override('Europe/Vienna'):
+        rows=client.get('/api/jobs/feedback-due/').data
+
+    assert {row['id'] for row in rows}=={equal.id, elapsed.id, unscheduled.id}
+    assert future.id not in {row['id'] for row in rows}
+    assert {row['id'] for row in client.get('/api/jobs/').data}.issuperset({future.id,equal.id,elapsed.id,unscheduled.id})
+    assert future.id in {row['id'] for row in client.get('/api/stats/').data['upcoming_interviews']}
+    for job, expected in [(future,now+timezone.timedelta(hours=1)),(equal,now),(elapsed,now-timezone.timedelta(seconds=1)),(unscheduled,None)]:
+        job.refresh_from_db()
+        assert job.feedback_due_date==due and job.interview_at==expected
 
 
 def test_feedback_due_query_count_does_not_scale_with_row_count(client):

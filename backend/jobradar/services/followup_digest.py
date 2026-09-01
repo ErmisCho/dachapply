@@ -25,8 +25,11 @@ def owned_jobs(user):
 def digest_items(user, today):
     """(due follow-ups, jobs whose expected feedback date has passed) for one user."""
     jobs = owned_jobs(user)
-    followups = list(FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).select_related('job').order_by('follow_up_date'))
-    overdue_feedback = list(jobs.filter(feedback_due_date__lte=today).exclude(status__in=CLOSED_STATUSES).order_by('feedback_due_date'))
+    # TASK-209: a future interview is the next real action. Earlier feedback/follow-up clocks stay
+    # stored but are not reminders until that interview has happened.
+    reminder_jobs = jobs.exclude(interview_at__gt=timezone.now())
+    followups = list(FollowUp.objects.filter(job__in=reminder_jobs, completed=False, follow_up_date__lte=today).select_related('job').order_by('follow_up_date'))
+    overdue_feedback = list(reminder_jobs.filter(feedback_due_date__lte=today).exclude(status__in=CLOSED_STATUSES).order_by('feedback_due_date'))
     return followups, overdue_feedback
 
 
@@ -170,7 +173,10 @@ def record_followup_sent(followup, draft, user, next_date=None, sent_at=None):
 def record_job_followup_sent(job, draft, user, next_date=None, sent_at=None, followup_id=None):
     """Record a due FollowUp, or the job's overdue feedback reminder when no FollowUp exists."""
     job = JobLead.objects.select_for_update().get(pk=job.pk)
-    today = timezone.localdate(sent_at) if sent_at else timezone.localdate()
+    now = sent_at or timezone.now()
+    if job.interview_at and job.interview_at > now:
+        raise ValueError('Follow-up is paused until after the upcoming interview.')
+    today = timezone.localdate(now)
     due_followups = FollowUp.objects.select_for_update().filter(
         job=job, completed=False, follow_up_date__lte=today,
     )
@@ -196,7 +202,7 @@ def reconcile_sent_followups(transport, user):
             Q(job__followups__completed=False, job__followups__follow_up_date__lte=today) |
             Q(job__feedback_due_date__lte=today),
             job__in=owned_jobs(user), status='written', sent_at__isnull=True,
-        ).exclude(gmail_draft_id='').select_related('job', 'message').distinct()
+        ).exclude(job__interview_at__gt=timezone.now()).exclude(gmail_draft_id='').select_related('job', 'message').distinct()
     )
     if not candidates:
         return 0

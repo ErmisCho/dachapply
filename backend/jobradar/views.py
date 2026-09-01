@@ -945,11 +945,11 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         regardless of how many rows come back -- no per-row query for company/title/status/date,
         all of which already live on this table.
         """
-        today=timezone.localdate()
+        now=timezone.now();today=timezone.localdate(now)
         rows=accessible_jobs(request.user).filter(
             status__in=JobLead.ACTIONABLE_STATUSES,
             feedback_due_date__isnull=False,
-        ).order_by('feedback_due_date', 'id').values('id', 'company', 'title', 'status', 'feedback_due_date')
+        ).exclude(interview_at__gt=now).order_by('feedback_due_date', 'id').values('id', 'company', 'title', 'status', 'feedback_due_date')
         return Response([{**row, 'overdue': row['feedback_due_date'] < today} for row in rows])
 
     @action(detail=False, methods=['get'], url_path='new-unanalyzed')
@@ -2056,7 +2056,7 @@ def import_eval(request):
 @api_view(['GET'])
 def stats(request):
     jobs=accessible_jobs(request.user)
-    today=timezone.localdate(); evaluations=JobEvaluation.objects.filter(job__in=jobs)
+    today=timezone.localdate(); now=timezone.now(); evaluations=JobEvaluation.objects.filter(job__in=jobs)
     application_rows=list(jobs.filter(applied_at__isnull=False).values('applied_at','source','status','interview_stage','interview_at'))
     application_dates=Counter(row['applied_at'] for row in application_rows)
     count_between=lambda start,end: sum(count for date,count in application_dates.items() if start <= date <= end)
@@ -2088,7 +2088,7 @@ def stats(request):
     applications_this_week=count_between(week_start,today)
     elapsed_workdays=min(today.weekday(),4)+1
     upcoming_interviews=[{'id':j.id, 'company':j.company, 'title':j.title, 'interview_at':j.interview_at, 'interview_note':j.interview_note}
-                         for j in jobs.filter(interview_at__gte=timezone.now()).exclude(status__in=['rejected','withdrawn','skipped','archived']).order_by('interview_at')[:10]]
+                         for j in jobs.filter(interview_at__gte=now).exclude(status__in=['rejected','withdrawn','skipped','archived']).order_by('interview_at')[:10]]
     recent_start=today-timezone.timedelta(days=JobLead.FUNNEL_RECENT_DAYS)
     recent_applications=[row for row in application_rows if row['applied_at'] >= recent_start]
     job_counts=jobs.aggregate(
@@ -2104,7 +2104,7 @@ def stats(request):
     # change its current values, which TASK-193 explicitly forbids even though it would be cleaner SQL.
     jobs_by_status=dict(jobs.values_list('status').annotate(c=Count('id')))
     evaluation_counts=evaluations.aggregate(average_fit_score=Avg('fit_score'), high_priority_jobs=Count('job', filter=Q(priority='high', job__status='new'), distinct=True))
-    return Response({'total_jobs':job_counts['total_jobs'], 'funnel':funnel, 'source_effectiveness':source_effectiveness(application_rows), 'jobs_by_status':jobs_by_status, 'average_fit_score':evaluation_counts['average_fit_score'] or 0, 'high_priority_jobs':evaluation_counts['high_priority_jobs'], 'applications_sent':len(application_rows), 'applications_this_week':applications_this_week, 'applications_per_workday':round(applications_this_week/max(elapsed_workdays,1), 1), 'workday_applications':workday_applications, 'month_week_applications':month_week_applications, 'weekly_applications':weekly_applications, 'interviews':job_counts['interviews'], 'upcoming_interviews':upcoming_interviews, 'offers':job_counts['offers'], 'accepted':job_counts['accepted'], 'rejected':job_counts['rejected'], 'withdrawn':job_counts['withdrawn'], 'jobs_needing_follow_up':FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).count()})
+    return Response({'total_jobs':job_counts['total_jobs'], 'funnel':funnel, 'source_effectiveness':source_effectiveness(application_rows), 'jobs_by_status':jobs_by_status, 'average_fit_score':evaluation_counts['average_fit_score'] or 0, 'high_priority_jobs':evaluation_counts['high_priority_jobs'], 'applications_sent':len(application_rows), 'applications_this_week':applications_this_week, 'applications_per_workday':round(applications_this_week/max(elapsed_workdays,1), 1), 'workday_applications':workday_applications, 'month_week_applications':month_week_applications, 'weekly_applications':weekly_applications, 'interviews':job_counts['interviews'], 'upcoming_interviews':upcoming_interviews, 'offers':job_counts['offers'], 'accepted':job_counts['accepted'], 'rejected':job_counts['rejected'], 'withdrawn':job_counts['withdrawn'], 'jobs_needing_follow_up':FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).exclude(job__interview_at__gt=now).count()})
 
 @api_view(['GET', 'POST'])
 def export_user_data(request):
