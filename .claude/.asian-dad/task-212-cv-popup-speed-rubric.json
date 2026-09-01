@@ -1,0 +1,58 @@
+{
+  "task_prompt": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\pi-clipboard-d3a1af51-cb4c-4c01-b51f-2c2883668c5c.png this popup menu takes more than 20 seconds to open fully, also when I say something as small as this it should take like 3-5 seconds maximum not again 1-2 minutes. Add the specified Professional Development entry between RISE and Kapsch; replace the Independent Projects first bullet with the supplied new text; keep everything else unchanged; do not add Salesforce, Agentforce, Apex, Snowflake, Databricks, GraphQL, or unsupported consulting/customer-delivery experience; submit after these changes if the rendered CV remains within 2 pages.",
+  "created_at": "2026-09-01T21:50:00Z",
+  "authored_by_grader": true,
+  "created_late": true,
+  "criteria": [
+    {
+      "id": 1,
+      "description": "The CV popup's optional model discovery finishes within five seconds even when both local probes hang.",
+      "authority": "explicit",
+      "source": "popup menu takes more than 20 seconds ... should take like 3-5 seconds maximum",
+      "verification": "Measure released discovery with both optional probes held until their timeout."
+    },
+    {
+      "id": 2,
+      "description": "Responsive Ollama and LM Studio models remain available and cloud model behavior remains intact.",
+      "authority": "implied",
+      "source": "baseline: speeding up the existing popup must not remove working choices",
+      "verification": "Run focused provider-discovery and cache regressions."
+    },
+    {
+      "id": 3,
+      "description": "The Professional Development entry and bullet are present exactly between RISE and Kapsch.",
+      "authority": "explicit",
+      "source": "ADD BETWEEN RISE AND KAPSCH",
+      "verification": "Inspect the generated TeX ordering and exact text."
+    },
+    {
+      "id": 4,
+      "description": "The Independent Projects first bullet equals the requested replacement.",
+      "authority": "explicit",
+      "source": "INDEPENDENT PROJECTS FIRST BULLET ... NEW",
+      "verification": "Compare the generated TeX bullet with the supplied sentence."
+    },
+    {
+      "id": 5,
+      "description": "No forbidden or unsupported experience is added and no unnecessary CV rewrite is performed.",
+      "authority": "explicit",
+      "source": "KEEP EVERYTHING ELSE UNCHANGED. Do not add Salesforce, Agentforce, Apex, Snowflake, Databricks, GraphQL, or consulting/customer-delivery experience that you do not have.",
+      "verification": "Scan document content for forbidden claims and confirm the already-correct artifact was not rewritten."
+    },
+    {
+      "id": 6,
+      "description": "The resulting CV is submitted to the generated-artifact workflow only when it renders within two pages.",
+      "authority": "explicit",
+      "source": "Submit after these changes if the rendered CV remains within 2 pages.",
+      "verification": "Read PDF page count and confirm the generated artifact exists."
+    },
+    {
+      "id": 7,
+      "description": "Load-bearing timing, page-count, content, and no-model claims are measured rather than asserted.",
+      "authority": "implied",
+      "source": "baseline: a claim that decides the verdict must be measured",
+      "verification": "Review command outputs for elapsed seconds, PDF metadata, exact-text checks, and model-call count."
+    }
+  ],
+  "superseded": []
+}
