@@ -2,6 +2,8 @@ import json
 import math
 import time
 import uuid
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from statistics import median
 from threading import Event, Lock, Thread
@@ -333,6 +335,26 @@ def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, can
         close_old_connections()
 
 
+def no_change_requested(instructions):
+    return (instructions or '').strip().partition('.')[0].strip().casefold() == 'no further cv changes required'
+
+
+def start_cv_noop_task(job_id, user_id, artifacts):
+    _cleanup()
+    artifacts={key:path for key,path in artifacts.items() if key in ('cv_tex','cv_pdf','letter_tex','letter_pdf') and Path(path).is_file()}
+    if not artifacts:
+        raise ValueError('No previous generated files were found for this job.')
+    archive=BytesIO()
+    with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as bundle:
+        for path in artifacts.values():
+            bundle.write(path,Path(path).name)
+    task_id=uuid.uuid4().hex
+    now=time.monotonic()
+    with _lock:
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'ready','progress':100,'stage':'No changes requested','error':'','archive':archive.getvalue(),'filename':f'application-{job_id}-current.zip','artifacts':artifacts,'report':{'changed_files':[],'main_changes':['Current files retained unchanged.'],'unsupported_requirements_not_claimed':[]},'clipboard_tex':_clipboard_contents(artifacts),'clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_created_at':now,'_started_at':now,'_finished_at':now,'_stage_key':'ready','_stage_started_at':now,'_stage_plan':[],'_stage_defaults':{},'_estimate_key':('no-change',),'_stage_times':{},'updated_at':time.time()}
+    return task_id
+
+
 def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter=None):
     _cleanup()
     task_id=uuid.uuid4().hex
@@ -398,6 +420,8 @@ def start_cv_revision(task_id, user_id, instructions, correction_image=None):
         config=dict(parent['_config'])
         artifacts=dict(parent['artifacts'])
         job_id=parent['job_id']
+    if no_change_requested(instructions) and not correction_image:
+        return task_id
     kwargs={'source_cv':artifacts.get('cv_tex'),'source_letter':artifacts.get('letter_tex'),'revision_instructions':instructions[:5000],'correction_image':correction_image}
     if artifacts.get('base_templates'):
         kwargs['base_templates']=artifacts['base_templates']
