@@ -1,11 +1,11 @@
 ---
 id: TASK-210
 title: Make feedback-deadline navigation immediate and expose its email conversation
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-01 11:20'
-updated_date: '2026-09-01 15:34'
+updated_date: '2026-09-01 15:44'
 labels:
   - frontend
   - backend
@@ -54,6 +54,8 @@ The Feedback deadlines company/title control currently clears board filters and 
 Read-only production measurement: Sponsorhive — CTO is job 1079, status interview, feedback due 2026-08-26; matched messages=0, drafts=0, pending suggestions=0, stored contact emails=0, Gmail calls=0, writes=0. Root navigation path unconditionally calls the full board loader before looking for an already-mounted row.
 
 Implemented mounted-row-first navigation with the existing reset-load fallback; one lazy job-mailbox request powers the reused chat conversation modal. Gmail fallback searches the authenticated user's account by company and explicitly states when no captured conversation or recipient is known. Browser evidence: Sponsorhive target 0.5 ms, 0 jobs requests; email button 44x44, one mailbox request, 0 jobs requests; filtered fallback one reset jobs request; synthetic two-message thread chronological with reply, exact-Gmail, draft, and pending-decision controls. Gates: 1,045 backend tests, 206 frontend tests, focused tests, TypeScript/Vite build, Django checks, migration check, npm audit with 0 vulnerabilities, diff check, and no-send/delete scan passed. Asian Dad verdict: PERFECT (self-graded disclosed). Browser timing/setup failures are preserved in .orchestrator/debug/task-210-*.md and were traced to disposable DB setup, minimized-tab input/polling, and case-sensitive verifier assumptions rather than product defects.
+
+Released through implementation PR #115, squash-merged as 085a6277c74bd6c65642543ab715314b30e77215. Main CI/deployment run 33527072981 passed backend/frontend tests, image build, Azure deploy, and public-app verification on the released SHA. Independent post-deploy probes returned HTTP 200 for both the public root and /api/health/.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
