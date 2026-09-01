@@ -3567,6 +3567,11 @@ def test_gmail_conversation_url_opens_exact_draft_by_message_id_and_account():
     assert url == 'https://mail.google.com/mail/u/0/?authuser=owner%40example.test#drafts?compose=1a015989bf9644bc'
 
 
+def test_gmail_conversation_url_searches_honestly_when_no_message_is_captured():
+    url = gmail_conversation_url('', authuser='owner@example.test', search_query='Sponsorhive CTO')
+    assert url == 'https://mail.google.com/mail/u/0/?authuser=owner%40example.test#search/Sponsorhive%20CTO'
+
+
 @pytest.mark.parametrize('message_id', ['', None, '   ', '<>'])
 def test_gmail_conversation_url_returns_empty_string_for_no_usable_id(message_id):
     """AC4/AC5: a row with no usable id (or one written before TASK-121) must yield no link, never a

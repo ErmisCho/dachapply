@@ -1,0 +1,50 @@
+{
+  "task_prompt": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\pi-clipboard-1c9fe228-8992-431d-a923-711f4723ad2d.png when I click E.G. sponsorhive-CTO it takes like 3 seconds toy navigate there, and also I need a button next to this to open up the email that I should reach out to them, and also have the chat style conversation that I could have for emails that were received on my end and had to do somethign about them",
+  "created_at": "2026-09-01T11:21:05.856400+00:00",
+  "authored_by_grader": true,
+  "criteria": [
+    {
+      "id": 1,
+      "description": "Clicking Sponsorhive \u2014 CTO no longer incurs the reported roughly three-second navigation delay.",
+      "authority": "explicit",
+      "source": "it takes like 3 seconds to navigate there",
+      "verification": "measure click-to-target before and after on the rendered dashboard"
+    },
+    {
+      "id": 2,
+      "description": "Each relevant feedback-deadline row has an adjacent button for its email action.",
+      "authority": "explicit",
+      "source": "I need a button next to this",
+      "verification": "inspect and activate the rendered row control by accessible role/name"
+    },
+    {
+      "id": 3,
+      "description": "The email action opens the email or an honest route to the email the owner should use for that lead.",
+      "authority": "explicit",
+      "source": "to open up the email that I should reach out to them",
+      "verification": "exercise rows with and without a captured email and inspect the opened target/state"
+    },
+    {
+      "id": 4,
+      "description": "Received emails that required owner action are presented as a chat-style conversation with their actionable email controls.",
+      "authority": "explicit",
+      "source": "have the chat style conversation ... for emails that were received on my end and had to do something about them",
+      "verification": "render a synthetic inbound actionable thread and verify chronological chat messages and controls"
+    },
+    {
+      "id": 5,
+      "description": "The implementation runs without weakening mailbox authorization or the application no-send guarantee.",
+      "authority": "implied",
+      "source": "baseline: an email workflow must execute safely within existing access and no-send boundaries",
+      "verification": "run scoped/full tests and scan the diff for send/SMTP capability"
+    },
+    {
+      "id": 6,
+      "description": "Load-bearing performance, mailbox, and empty-state claims are measured rather than asserted.",
+      "authority": "implied",
+      "source": "baseline: a claim that decides the verdict must be measured",
+      "verification": "review timing, request-count, browser DOM, and synthetic boundary outputs"
+    }
+  ],
+  "superseded": []
+}

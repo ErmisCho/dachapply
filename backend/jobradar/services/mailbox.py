@@ -3635,21 +3635,24 @@ def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, cl
 
 # --- Gmail deep link (TASK-121 AC3/AC4/AC5): the ONE Gmail URL builder in the codebase -----------
 
-def gmail_conversation_url(message_id: str, authuser: str = '', draft: bool = False, thread_id: str = '') -> str:
+def gmail_conversation_url(message_id: str, authuser: str = '', draft: bool = False, thread_id: str = '', search_query: str = '') -> str:
     """Build every Gmail link in one place.
 
     Drafts use Gmail's internal draft-message id. Captured Gmail messages use their persisted thread
     id to open the conversation directly; IMAP and historical rows without one retain the RFC822
-    search fallback because that is their only usable identifier.
+    search fallback. A plain search is the honest fallback when a lead has no captured message id.
     """
     message_id = (message_id or '').strip().strip('<>').strip()
     thread_id = (thread_id or '').strip()
+    search_query = (search_query or '').strip()
     query = f'?{urlencode({"authuser": authuser})}' if authuser else ''
     if draft:
         return f'https://mail.google.com/mail/u/0/{query}#drafts?compose={quote(message_id, safe="")}' if message_id else ''
     if thread_id:
         return f'https://mail.google.com/mail/u/0/{query}#all/{quote(thread_id, safe="")}'
-    return f'https://mail.google.com/mail/u/0/{query}#search/rfc822msgid:{quote(message_id, safe="")}' if message_id else ''
+    if message_id:
+        return f'https://mail.google.com/mail/u/0/{query}#search/rfc822msgid:{quote(message_id, safe="")}'
+    return f'https://mail.google.com/mail/u/0/{query}#search/{quote(search_query, safe="")}' if search_query else ''
 
 
 # --- TASK-114 AC6: remove drafts this app already wrote ------------------------------------------

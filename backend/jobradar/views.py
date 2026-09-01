@@ -950,7 +950,12 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             status__in=JobLead.ACTIONABLE_STATUSES,
             feedback_due_date__isnull=False,
         ).exclude(interview_at__gt=now).order_by('feedback_due_date', 'id').values('id', 'company', 'title', 'status', 'feedback_due_date')
-        return Response([{**row, 'overdue': row['feedback_due_date'] < today} for row in rows])
+        authuser=(request.user.email or '').strip()
+        return Response([{
+            **row,
+            'overdue': row['feedback_due_date'] < today,
+            'gmail_search_url': mailbox.gmail_conversation_url('', authuser=authuser, search_query=row['company']),
+        } for row in rows])
 
     @action(detail=False, methods=['get'], url_path='new-unanalyzed')
     def new_unanalyzed(self, request):
