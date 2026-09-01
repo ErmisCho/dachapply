@@ -178,14 +178,14 @@ def _discover_model_options():
     ollama=shutil.which('ollama') or shutil.which('ollama.exe')
     if ollama:
         try:
-            rows=subprocess.run([ollama,'list'], capture_output=True, text=True, timeout=10, check=False).stdout.splitlines()[1:]
+            rows=subprocess.run([ollama,'list'], capture_output=True, text=True, timeout=2, check=False).stdout.splitlines()[1:]
             options += [{'provider':'ollama','key':row.split()[0],'label':row.split()[0],'efforts':['default'],'default_effort':'default','fast_tier':''} for row in rows if row.split() and 'embed' not in row.split()[0].lower()]
         except (OSError, subprocess.TimeoutExpired):
             pass
     lms=shutil.which('lms') or shutil.which('lms.exe')
     if lms:
         try:
-            models=json.loads(subprocess.run([lms,'ls','--llm','--json'], capture_output=True, text=True, timeout=15, check=False).stdout or '[]')
+            models=json.loads(subprocess.run([lms,'ls','--llm','--json'], capture_output=True, text=True, timeout=2, check=False).stdout or '[]')
             options += [{'provider':'lmstudio','key':model['modelKey'],'label':model.get('displayName') or model['modelKey'],'efforts':['default'],'default_effort':'default','fast_tier':''} for model in models]
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired):
             pass

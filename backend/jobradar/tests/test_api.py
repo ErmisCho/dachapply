@@ -1097,6 +1097,33 @@ def test_available_model_options_are_cached_between_calls(monkeypatch):
     assert first==second and len(calls)==1
 
 
+def test_optional_model_discovery_cannot_hold_the_popup_beyond_four_seconds(monkeypatch):
+    import subprocess
+    from jobradar.services import cv_generator
+
+    timeouts=[]
+    monkeypatch.setattr(cv_generator, 'codex_model_options', lambda: [{'provider':'openai','key':'cloud'}])
+    monkeypatch.setattr(cv_generator, 'claude_model_options', lambda: [{'provider':'anthropic','key':'cloud'}])
+    monkeypatch.setattr(cv_generator.shutil, 'which', lambda name: name if name in {'ollama','lms'} else None)
+    def timeout(command, **kwargs):
+        timeouts.append(kwargs['timeout'])
+        raise subprocess.TimeoutExpired(command, kwargs['timeout'])
+    monkeypatch.setattr(cv_generator.subprocess, 'run', timeout)
+
+    options=cv_generator._discover_model_options()
+
+    assert sum(timeouts) <= 4
+    assert {option['provider'] for option in options} == {'openai','anthropic'}
+
+    class Result:
+        def __init__(self, stdout): self.stdout=stdout
+    monkeypatch.setattr(cv_generator.subprocess, 'run', lambda command, **kwargs: Result(
+        'NAME ID SIZE\nllama:latest abc 1 GB\n' if command[0] == 'ollama'
+        else '[{"modelKey":"local-model","displayName":"Local model"}]'
+    ))
+    assert {'ollama','lmstudio'} <= {option['provider'] for option in cv_generator._discover_model_options()}
+
+
 def _reveal_task(owner, artifacts):
     from jobradar.services import cv_tasks
     owner.email='owner@example.test'; owner.save()
