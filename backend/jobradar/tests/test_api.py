@@ -575,6 +575,53 @@ def test_cv_task_status_and_download_are_owner_only(client, owner, job, monkeypa
 
 
 @throttled_rest_framework(cv_generation_user='100/hour')
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_no_change_latest_revision_returns_current_artifacts_immediately(client, owner, job, tmp_path, monkeypatch):
+    import hashlib
+    import time
+    from jobradar.services import cv_tasks
+
+    owner.email='owner@example.test'; owner.save(update_fields=['email'])
+    cv=tmp_path/'current.tex'; cv.write_text('current cv',encoding='utf-8')
+    pdf=tmp_path/'current.pdf'; pdf.write_bytes(b'%PDF-current')
+    before=hashlib.sha256(cv.read_bytes()).hexdigest()
+    monkeypatch.setattr('jobradar.views.latest_generated_sources',lambda job,user:(str(cv),None))
+    monkeypatch.setattr('jobradar.views.latest_generated_artifacts',lambda job,user:{'cv_tex':str(cv),'cv_pdf':str(pdf)})
+    monkeypatch.setattr('jobradar.views.start_cv_task',lambda *args,**kwargs: (_ for _ in ()).throw(AssertionError('model task started')))
+    monkeypatch.setattr(cv_tasks,'generate_cv_package',lambda *args,**kwargs: (_ for _ in ()).throw(AssertionError('model called')))
+    monkeypatch.setattr(cv_tasks,'recompile_generated_package',lambda *args,**kwargs: (_ for _ in ()).throw(AssertionError('compiler called')))
+    prompt='No further CV changes required.\nUse the current version.\nDo not change any content.'
+
+    started=time.perf_counter()
+    response=client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/',{'instructions':prompt,'create_cv':True,'create_letter':False},format='json')
+    elapsed=time.perf_counter()-started
+
+    assert response.status_code==202 and response.data['status']=='ready' and response.data['stage']=='No changes requested'
+    assert elapsed < .25 and response.data['artifacts']=={'cv_tex':str(cv),'cv_pdf':str(pdf)}
+    assert hashlib.sha256(cv.read_bytes()).hexdigest()==before
+    assert cv_tasks.get_cv_task_download(response.data['task_id'],owner.id)[0].startswith(b'PK')
+    other=User.objects.create_user('noop-other@example.test',email='noop-other@example.test')
+    other_client=APIClient(); other_client.force_authenticate(other)
+    assert other_client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/',{'instructions':prompt},format='json').status_code==404
+
+
+def test_no_change_completed_task_is_reused_but_real_edits_and_images_start_revision(owner, monkeypatch):
+    import time
+    from jobradar.services import cv_tasks
+
+    cv_tasks._tasks['ready-parent']={'id':'ready-parent','user_id':owner.id,'job_id':123,'status':'ready','_config':{'profile':'profile','cv_key':'en','letter_key':'','create_letter':False,'create_cv':True,'provider':'openai','model':'model','effort':'low','speed':'normal'},'artifacts':{'cv_tex':'current.tex'},'updated_at':time.time()}
+    started=[]
+    monkeypatch.setattr(cv_tasks,'start_cv_task',lambda *args,**kwargs: started.append((args,kwargs)) or 'child')
+    prompt='No further CV changes required.\nKeep everything else unchanged.'
+
+    assert cv_tasks.start_cv_revision('ready-parent',owner.id,prompt)=='ready-parent'
+    assert started==[]
+    assert cv_tasks.start_cv_revision('ready-parent',owner.id,'Shorten the profile')=='child'
+    assert cv_tasks.start_cv_revision('ready-parent',owner.id,prompt,(b'png','.png'))=='child'
+    assert len(started)==2
+
+
+@throttled_rest_framework(cv_generation_user='100/hour')
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
 def test_cv_capability_flag_opens_generation_to_a_non_owner_and_defaults_closed(db, monkeypatch):
     started={}

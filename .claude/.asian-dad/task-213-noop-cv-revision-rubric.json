@@ -1,0 +1,43 @@
+{
+  "task_prompt": "yes off course,m but when I click on readjust button and compile this process should take a few msecons since there are no changes",
+  "created_at": "2026-09-01T22:25:00Z",
+  "authored_by_grader": true,
+  "criteria": [
+    {
+      "id": 1,
+      "description": "An unambiguous no-change instruction finishes immediately without model generation.",
+      "authority": "explicit",
+      "source": "this process should take a few milliseconds since there are no changes",
+      "verification": "Measure the backend no-change path and assert the model entry point is not called."
+    },
+    {
+      "id": 2,
+      "description": "No compiler runs for the no-change instruction.",
+      "authority": "explicit",
+      "source": "since there are no changes",
+      "verification": "Replace the compiler entry point with a failing sentinel while exercising the no-change path."
+    },
+    {
+      "id": 3,
+      "description": "The current generated CV remains the returned application artifact unchanged.",
+      "authority": "implied",
+      "source": "baseline: a no-change action must retain the current artifact",
+      "verification": "Compare artifact path and bytes before and after the request."
+    },
+    {
+      "id": 4,
+      "description": "Actual edit instructions and correction images still invoke revision generation.",
+      "authority": "implied",
+      "source": "baseline: the shortcut must apply only when there are no changes",
+      "verification": "Run focused positive-edit and image regressions against a model-call sentinel."
+    },
+    {
+      "id": 5,
+      "description": "Timing, no-call, and artifact-preservation claims are measured rather than asserted.",
+      "authority": "implied",
+      "source": "baseline: a claim that decides the verdict must be measured",
+      "verification": "Review elapsed-time, call-count, path, and hash measurements."
+    }
+  ],
+  "superseded": []
+}
