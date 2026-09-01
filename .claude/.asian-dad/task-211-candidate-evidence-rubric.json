@@ -1,0 +1,43 @@
+{
+  "task_prompt": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\pi-clipboard-59ad3296-1ff8-4277-9324-5696cc726f50.png fix this",
+  "created_at": "2026-09-01T18:03:00Z",
+  "authored_by_grader": true,
+  "criteria": [
+    {
+      "id": 1,
+      "description": "The displayed local Generate CV error about empty candidate evidence is removed when the owner's supported evidence source contains usable evidence.",
+      "authority": "explicit",
+      "source": "fix this: screenshot shows 'Candidate evidence is empty' in Generate CV",
+      "verification": "reproduce the owner preview boundary before and after and inspect the rendered dialog"
+    },
+    {
+      "id": 2,
+      "description": "The corrected evidence reaches the existing CV preview/generation path rather than merely hiding the error.",
+      "authority": "implied",
+      "source": "baseline: fixing a generation-blocking error must restore the blocked workflow",
+      "verification": "measure the preview response and exercise generation up to a fake model boundary"
+    },
+    {
+      "id": 3,
+      "description": "The fix does not fabricate candidate evidence or expose another user's evidence.",
+      "authority": "implied",
+      "source": "baseline: candidate CV content must remain truthful and owner-scoped",
+      "verification": "test source precedence with synthetic owner, file, empty, and non-owner evidence"
+    },
+    {
+      "id": 4,
+      "description": "A genuinely empty supported evidence source still fails closed with an actionable error.",
+      "authority": "implied",
+      "source": "baseline: fixing the false empty state must not permit evidence-free CV generation",
+      "verification": "run the empty-source regression and assert the existing error remains"
+    },
+    {
+      "id": 5,
+      "description": "Load-bearing claims about the configured file, runtime environment, and workflow outcome are measured rather than asserted.",
+      "authority": "implied",
+      "source": "baseline: a claim that decides the verdict must be measured",
+      "verification": "inspect runtime path/file bytes, account evidence, API response, tests, and browser DOM"
+    }
+  ],
+  "superseded": []
+}

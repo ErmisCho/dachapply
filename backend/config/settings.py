@@ -137,7 +137,7 @@ FEEDBACK_URL = os.getenv('FEEDBACK_URL') or (f'mailto:{CODEX_CV_OWNER_EMAIL}?sub
 # already does). Sharing that directory between accounts is TASK-99b's problem, not this setting's.
 CODEX_CV_WORKSPACE = os.getenv('CODEX_CV_WORKSPACE', '')
 CODEX_CV_CACHE = env_bool('CODEX_CV_CACHE', True)
-CODEX_CANDIDATE_EVIDENCE_PATH = os.getenv('CODEX_CANDIDATE_EVIDENCE_PATH', str(BASE_DIR.parent/'Ermis-Chorinopoulos-Candidate-Evidence.md') if DEBUG else '')
+CODEX_CANDIDATE_EVIDENCE_PATH = os.getenv('CODEX_CANDIDATE_EVIDENCE_PATH', str(Path(os.getenv('DACHAPPLY_SOURCE_REPO', BASE_DIR.parent))/'Ermis-Chorinopoulos-Candidate-Evidence.md') if DEBUG else '')
 CODEX_APPLICATION_RULES_PATH = os.getenv('CODEX_APPLICATION_RULES_PATH', str(BASE_DIR.parent/'job-application-adaptation-rules.md'))
 CODEX_CV_OPEN_OUTPUT_FOLDER = env_bool('CODEX_CV_OPEN_OUTPUT_FOLDER', DEBUG)
 

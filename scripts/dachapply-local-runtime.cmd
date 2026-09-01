@@ -2,6 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 set "REPO=%~1"
+set "DACHAPPLY_SOURCE_REPO=%REPO%"
 set "STOP_SCRIPT=%~2"
 if not defined REPO goto usage
 if not defined DACHAPPLY_RUNTIME_DIR set "DACHAPPLY_RUNTIME_DIR=%LOCALAPPDATA%\dachapply\main-runtime"
