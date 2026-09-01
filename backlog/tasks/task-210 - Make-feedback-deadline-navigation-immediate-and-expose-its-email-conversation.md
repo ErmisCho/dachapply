@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-01 11:20'
-updated_date: '2026-09-01 15:44'
+updated_date: '2026-09-01 16:02'
 labels:
   - frontend
   - backend
@@ -56,6 +56,8 @@ Read-only production measurement: Sponsorhive — CTO is job 1079, status interv
 Implemented mounted-row-first navigation with the existing reset-load fallback; one lazy job-mailbox request powers the reused chat conversation modal. Gmail fallback searches the authenticated user's account by company and explicitly states when no captured conversation or recipient is known. Browser evidence: Sponsorhive target 0.5 ms, 0 jobs requests; email button 44x44, one mailbox request, 0 jobs requests; filtered fallback one reset jobs request; synthetic two-message thread chronological with reply, exact-Gmail, draft, and pending-decision controls. Gates: 1,045 backend tests, 206 frontend tests, focused tests, TypeScript/Vite build, Django checks, migration check, npm audit with 0 vulnerabilities, diff check, and no-send/delete scan passed. Asian Dad verdict: PERFECT (self-graded disclosed). Browser timing/setup failures are preserved in .orchestrator/debug/task-210-*.md and were traced to disposable DB setup, minimized-tab input/polling, and case-sensitive verifier assumptions rather than product defects.
 
 Released through implementation PR #115, squash-merged as 085a6277c74bd6c65642543ab715314b30e77215. Main CI/deployment run 33527072981 passed backend/frontend tests, image build, Azure deploy, and public-app verification on the released SHA. Independent post-deploy probes returned HTTP 200 for both the public root and /api/health/.
+
+Post-merge closure PR #116 was squash-merged as 41d30af1aa41a201e81c603fd65d25179276cc81. Final main run 33527982226 passed tests, image build, Azure deployment, and public verification. The dedicated local runtime was synchronized cleanly to that released SHA; localhost ports 5173 and 8000 both returned HTTP 200.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
