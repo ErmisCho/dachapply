@@ -1,7 +1,7 @@
 import {describe,expect,it,vi} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
 import {MemoryRouter} from 'react-router-dom'
-import {confirmFollowUpSent,JobFollowUpContext,JobFollowUps} from './App'
+import {confirmFollowUpSent,hasUpcomingInterview,JobFollowUpContext,JobFollowUps} from './App'
 import type {Job,JobMailboxPayload,MailboxDraft} from './types'
 
 const job={id:42,company:'Acme',title:'Engineer',status:'interview'} as Job
@@ -31,6 +31,20 @@ describe('actionable follow-up context (TASK-113)',()=>{
     const html=renderToStaticMarkup(<MemoryRouter><JobFollowUps job={overdue} mailbox={mailbox}/></MemoryRouter>)
     expect(html).toContain('Expected feedback is overdue.')
     expect(html).toContain('I sent this Gmail draft')
+  })
+
+  it('pauses the sent action while an interview is strictly upcoming',()=>{
+    const now=Date.parse('2026-09-03T09:00:00Z')
+    expect(hasUpcomingInterview({interview_at:'2026-09-03T10:00:00Z'},now)).toBe(true)
+    expect(hasUpcomingInterview({interview_at:'2026-09-03T09:00:00Z'},now)).toBe(false)
+    expect(hasUpcomingInterview({interview_at:'2026-09-03T08:59:59Z'},now)).toBe(false)
+    expect(hasUpcomingInterview({interview_at:null},now)).toBe(false)
+
+    const upcoming={...job,feedback_due_date:'2000-01-01',interview_at:'2999-09-03T10:00:00Z'}
+    const html=renderToStaticMarkup(<MemoryRouter><JobFollowUps job={upcoming} mailbox={mailbox}/></MemoryRouter>)
+    expect(html).toContain('Follow-up paused')
+    expect(html).toContain('Set a new feedback date after the interview')
+    expect(html).not.toContain('I sent this Gmail draft')
   })
 
   it('explains a blocked draft and renders no Gmail action',()=>{
