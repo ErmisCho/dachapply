@@ -1,0 +1,50 @@
+{
+  "task_prompt": "still this request takes 1-2 minutes [supplied multiline Salesforce header/photo replacement and multiline certification-spacing OLD/NEW replacement], and I got [WinError 32] The process cannot access the file because it is being used by another process",
+  "created_at": "2026-09-02T08:20:00Z",
+  "authored_by_grader": true,
+  "criteria": [
+    {
+      "id": 1,
+      "description": "The supplied multiline replacements do not invoke AI when uniquely matchable or already applied.",
+      "authority": "explicit",
+      "source": "still this request takes 1-2 minutes",
+      "verification": "Run the exact supplied request against the current artifact with model/compiler sentinels and measure elapsed time."
+    },
+    {
+      "id": 2,
+      "description": "Bounded ellipsis replaces only one block between exact prefix and suffix; ambiguous or unbounded forms fall back.",
+      "authority": "implied",
+      "source": "baseline: `...` must not permit an arbitrary destructive document rewrite",
+      "verification": "Exercise one match, duplicate matches, and ellipsis without both bounds."
+    },
+    {
+      "id": 3,
+      "description": "Multiline exact replacement preserves all non-target bytes and produces a valid two-page PDF.",
+      "authority": "explicit",
+      "source": "KEEP EVERYTHING ELSE UNCHANGED",
+      "verification": "Compare expected bytes and inspect PDF page metadata."
+    },
+    {
+      "id": 4,
+      "description": "A late Windows lock on disposable temp cleanup cannot overturn successfully persisted output.",
+      "authority": "explicit",
+      "source": "[WinError 32] The process cannot access the file because it is being used by another process",
+      "verification": "Simulate cleanup PermissionError after successful context work and verify no propagated failure."
+    },
+    {
+      "id": 5,
+      "description": "Real generation, compilation, and persistence errors remain failures.",
+      "authority": "implied",
+      "source": "baseline: cleanup tolerance must not hide product failures",
+      "verification": "Force a compiler/persistence failure inside the context and assert it still propagates."
+    },
+    {
+      "id": 6,
+      "description": "Timing, call-count, page-count, and artifact-preservation claims are measured.",
+      "authority": "implied",
+      "source": "baseline: a claim that decides the verdict must be measured",
+      "verification": "Review elapsed milliseconds, model/compiler counts, PDF metadata, paths, and hashes."
+    }
+  ],
+  "superseded": []
+}
