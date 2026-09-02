@@ -621,6 +621,90 @@ def test_no_change_completed_task_is_reused_but_real_edits_and_images_start_revi
     assert len(started)==2
 
 
+def test_exact_revision_plan_is_conservative_and_byte_local(tmp_path):
+    from jobradar.services.cv_generator import exact_revision_plan
+
+    cv=tmp_path/'cv.tex'; cv.write_text('prefix OLD \\& value middle SECOND suffix',encoding='utf-8')
+    instructions='''1. First\nOLD:\nOLD & value\nNEW:\nNEW & value\n\n2. Second\nOLD:\nSECOND\nNEW:\nREPLACED\n\nKEEP EVERYTHING ELSE UNCHANGED.'''
+    plan=exact_revision_plan([cv],instructions)
+    assert plan=={str(cv):'prefix NEW \\& value middle REPLACED suffix'}
+    cv.write_text(plan[str(cv)],encoding='utf-8')
+    assert exact_revision_plan([cv],instructions)=={}
+    cv.write_bytes(b'line one\r\nOLD text\r\nline three')
+    assert exact_revision_plan([cv],'OLD:\nOLD text\nNEW:\nNEW text')[str(cv)]=='line one\r\nNEW text\r\nline three'
+    cv.write_text('duplicate duplicate',encoding='utf-8')
+    assert exact_revision_plan([cv],'OLD:\nduplicate\nNEW:\nreplacement') is None
+    assert exact_revision_plan([cv],'OLD:\nduplicate\nNEW:\nline one\nline two') is None
+    assert exact_revision_plan([cv],'Please rewrite the profile.') is None
+
+
+def test_revision_cache_identity_covers_private_and_generation_inputs(job, tmp_path):
+    from jobradar.services.cv_generator import _package_cache
+
+    def key(*,user=1,source=b'source',instructions='change',image=b'',profile='profile',model='model'):
+        options=['en','',True,False,'openai',model,'low','normal',' '.join(instructions.split()),'.png' if image else '']
+        return _package_cache(tmp_path,job,profile,[source,*([image] if image else [])],options,user)[0]
+    baseline=key()
+    assert baseline==key(instructions='  change  ')
+    assert len({baseline,key(user=2),key(source=b'other'),key(instructions='other'),key(image=b'png'),key(profile='other'),key(model='other')})==7
+    original=job.title; job.title='Different role'
+    assert key()!=baseline
+    job.title=original
+
+
+@throttled_rest_framework(cv_generation_user='100/hour')
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_exact_revision_route_bypasses_ai_but_semantic_and_image_requests_do_not(client, owner, job, tmp_path, monkeypatch):
+    owner.email='owner@example.test'; owner.save(update_fields=['email'])
+    cv=tmp_path/'current.tex'; cv.write_text('prefix OLD text suffix',encoding='utf-8')
+    pdf=tmp_path/'current.pdf'; pdf.write_bytes(b'%PDF')
+    monkeypatch.setattr('jobradar.views.latest_generated_sources',lambda job,user:(str(cv),None))
+    monkeypatch.setattr('jobradar.views.latest_generated_artifacts',lambda job,user:{'cv_tex':str(cv),'cv_pdf':str(pdf)})
+    compiled=[]; ai=[]
+    monkeypatch.setattr('jobradar.views.start_cv_compile_task',lambda *args,**kwargs: compiled.append((args,kwargs)) or 'exact-task')
+    monkeypatch.setattr('jobradar.views.start_cv_task',lambda *args,**kwargs: ai.append((args,kwargs)) or 'ai-task')
+    monkeypatch.setattr('jobradar.views.validate_model_capability',lambda *args: None)
+    monkeypatch.setattr('jobradar.views.load_candidate_evidence',lambda *args: 'profile')
+    base={'create_cv':True,'create_letter':False,'cv_template':'en','provider':'openai','model':'model','effort':'low'}
+
+    exact=client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/',{**base,'instructions':'OLD:\nOLD text\nNEW:\nNEW text'},format='json')
+    assert exact.status_code==202 and exact.data['task_id']=='exact-task' and ai==[]
+    assert compiled[0][1]['source_updates']=={str(cv):'prefix NEW text suffix'}
+    assert compiled[0][1]['task_report']['changed_files']==['current.tex']
+    other=User.objects.create_user('exact-other@example.test',email='exact-other@example.test')
+    other_client=APIClient(); other_client.force_authenticate(other)
+    assert other_client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/',{**base,'instructions':'OLD:\nOLD text\nNEW:\nNEW text'},format='json').status_code==404
+
+    semantic=client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/',{**base,'instructions':'Make the profile more concise.'},format='json')
+    image=client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/',{**base,'instructions':'OLD:\nOLD text\nNEW:\nNEW text','correction_image':PNG_DATA_URL},format='json')
+    assert semantic.status_code==202 and image.status_code==202 and len(ai)==2
+
+
+def test_exact_revision_compile_is_atomic(job, tmp_path, monkeypatch):
+    from jobradar.services import cv_generator
+
+    source=tmp_path/'current.tex'; source.write_text('before',encoding='utf-8')
+    pdf=tmp_path/'current.pdf'; pdf.write_bytes(b'old-pdf')
+    letter=tmp_path/'letter.tex'; letter.write_text('unchanged letter',encoding='utf-8')
+    letter_pdf=tmp_path/'letter.pdf'; letter_pdf.write_bytes(b'old-letter-pdf')
+    monkeypatch.setattr(cv_generator,'user_photo',lambda user:None)
+    monkeypatch.setattr(cv_generator,'_compile_pdf',lambda *args,**kwargs: (_ for _ in ()).throw(RuntimeError('compile failed')))
+    with pytest.raises(RuntimeError,match='compile failed'):
+        cv_generator.recompile_generated_package(job,'en',str(source),str(letter),source_updates={str(source):'after'})
+    assert source.read_text(encoding='utf-8')=='before' and pdf.read_bytes()==b'old-pdf'
+    assert letter.read_text(encoding='utf-8')=='unchanged letter' and letter_pdf.read_bytes()==b'old-letter-pdf'
+
+    compiled=[]
+    def compile_ok(output,filename,*args,**kwargs):
+        compiled.append(filename)
+        (output/__import__('pathlib').Path(filename).with_suffix('.pdf')).write_bytes(b'new-pdf')
+    monkeypatch.setattr(cv_generator,'_compile_pdf',compile_ok)
+    _,_,artifacts=cv_generator.recompile_generated_package(job,'en',str(source),str(letter),source_updates={str(source):'after'})
+    assert source.read_text(encoding='utf-8')=='after' and pdf.read_bytes()==b'new-pdf'
+    assert letter.read_text(encoding='utf-8')=='unchanged letter' and letter_pdf.read_bytes()==b'old-letter-pdf'
+    assert compiled==['current.tex'] and artifacts['cv_tex']==str(source) and artifacts['letter_tex']==str(letter)
+
+
 @throttled_rest_framework(cv_generation_user='100/hour')
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
 def test_cv_capability_flag_opens_generation_to_a_non_owner_and_defaults_closed(db, monkeypatch):
@@ -802,8 +886,19 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     recompiled,_,recompiled_saved=recompile_generated_package(job,'de',saved['cv_tex'],saved['letter_tex'], user_id=user.id)
     assert len([name for name in zipfile.ZipFile(BytesIO(recompiled)).namelist() if name.endswith('.pdf')])==2
     assert recompiled_saved['cv_tex']==saved['cv_tex'] and sum(command[0] in ('codex','claude') for command in commands)==model_calls
-    _,_,revised_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], revision_instructions='Fix the page break and overlap', user_id=user.id, base_templates=saved['base_templates'])
+    settings.CODEX_CV_CACHE=True
+    generated.update(cv_tex='\\documentclass{article}\\begin{document}revised cv\\end{document}',letter_tex='\\documentclass{article}\\begin{document}revised letter\\end{document}')
+    revision_calls=sum(command[0]=='codex' for command in commands)
+    first_revision=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], revision_instructions='Fix the page break and overlap', user_id=user.id, base_templates=saved['base_templates'])
+    cached_revision_progress=[]
+    cached_revision=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', progress=lambda percent,stage:cached_revision_progress.append(stage), source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], revision_instructions='  Fix   the page break and overlap  ', user_id=user.id, base_templates=saved['base_templates'])
+    assert cached_revision==first_revision and sum(command[0]=='codex' for command in commands)==revision_calls+1
+    assert cached_revision_progress==['Preparing templates','Using saved package']
+    generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], revision_instructions='Use different spacing', user_id=user.id, base_templates=saved['base_templates'])
+    assert sum(command[0]=='codex' for command in commands)==revision_calls+2
+    revised_saved=first_revision[2]
     assert revised_saved==saved
+    settings.CODEX_CV_CACHE=False
     _,_,image_revised_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', source_cv=saved['cv_tex'], source_letter=saved['letter_tex'], correction_image=correction_image, user_id=user.id, base_templates=saved['base_templates'])
     assert image_revised_saved==saved and not correction_dirs[-1].exists()
     assert any('CURRENT GENERATED PDF LAYOUT CONTEXT' in prompt and 'current-CV-page-1.png' in prompt and 'SOURCE PRIORITY' in prompt for prompt in prompts)

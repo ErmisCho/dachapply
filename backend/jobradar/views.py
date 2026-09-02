@@ -1,6 +1,7 @@
 import logging
 from collections import Counter
 from html import escape
+from pathlib import Path
 
 from django.contrib.auth import authenticate, login, logout, get_user_model
 from django.conf import settings
@@ -39,7 +40,7 @@ from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_s
 from .services.followup_digest import owned_jobs, record_job_followup_sent
 from .services.draft_chat import ChatTurn, run_chat_turn
 from .services.analytics import record_demo_click
-from .services.cv_generator import ARTIFACT_KEYS, available_model_options, decode_correction_image, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
+from .services.cv_generator import ARTIFACT_KEYS, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
 from .services.cv_tasks import cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, start_cv_compile_task, start_cv_noop_task, start_cv_revision, start_cv_task
 from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
 from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
@@ -1957,11 +1958,20 @@ def revise_latest_cv_documents(request, job_id):
     create_letter=create_letter and bool(source_letter)
     if not create_cv and not create_letter:
         return Response({'detail':'No previous generated files were found for this job.'}, status=400)
-    if no_change_requested(instructions) and not correction_image:
+    if not correction_image:
         artifacts=latest_generated_artifacts(job,request.user)
         artifacts={key:path for key,path in artifacts.items() if (create_cv and key.startswith('cv_')) or (create_letter and key.startswith('letter_'))}
-        task_id=start_cv_noop_task(job.id,request.user.id,artifacts)
-        return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
+        if no_change_requested(instructions):
+            task_id=start_cv_noop_task(job.id,request.user.id,artifacts)
+            return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
+        exact_updates=exact_revision_plan([source_cv if create_cv else None,source_letter if create_letter else None],instructions)
+        if exact_updates == {}:
+            task_id=start_cv_noop_task(job.id,request.user.id,artifacts)
+            return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
+        if exact_updates:
+            report={'changed_files':[Path(path).name for path in exact_updates],'main_changes':['Applied exact OLD/NEW replacements without AI.'],'unsupported_requirements_not_claimed':[]}
+            task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv if create_cv else None,source_letter if create_letter else None,source_updates=exact_updates,task_report=report)
+            return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
     try:
         validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal')
     except ValueError as exc:

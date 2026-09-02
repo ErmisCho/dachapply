@@ -486,6 +486,62 @@ def latest_generated_artifacts(job, user=None):
     return artifacts
 
 
+def exact_revision_plan(sources, instructions):
+    lines=(instructions or '').replace('\r\n','\n').split('\n')
+    pairs=[]
+    index=0
+    while index < len(lines):
+        if lines[index].strip().casefold() != 'old:':
+            index+=1
+            continue
+        old=[]; index+=1
+        while index < len(lines) and lines[index].strip().casefold() != 'new:':
+            if lines[index].strip(): old.append(lines[index].strip())
+            index+=1
+        if len(old) != 1 or index == len(lines): return None
+        index+=1
+        new=[]
+        while index < len(lines):
+            value=lines[index].strip()
+            if value.casefold() == 'old:' or re.match(r'^(?:\d+\.|keep\b|do not\b|submit\b|constraints?\b)',value,re.IGNORECASE): break
+            if value: new.append(value)
+            index+=1
+        if len(new) != 1 or not old[0] or not new[0]: return None
+        pairs.append((old[0],new[0]))
+    if not pairs: return None
+    documents={}
+    for path in sources:
+        if path and Path(path).is_file():
+            with Path(path).open(encoding='utf-8',newline='') as source:
+                documents[str(path)]=source.read()
+    if len(documents) != len([path for path in sources if path]): return None
+    changed=set()
+    def latex(value): return re.sub(r'(?<!\\)([&%$#_])',r'\\\1',value)
+    for old,new in pairs:
+        variants=[(old,new)]
+        escaped=(latex(old),latex(new))
+        if escaped != variants[0]: variants.append(escaped)
+        selected=None
+        candidate_counts=[]
+        for candidate,replacement in variants:
+            matches=[path for path,text in documents.items() for _ in range(text.count(candidate))]
+            candidate_counts.append(len(matches))
+            if len(matches) == 1:
+                selected=(matches[0],candidate,replacement)
+                break
+        if selected is None and not any(candidate_counts):
+            for candidate,replacement in variants:
+                if sum(text.count(replacement) for text in documents.values()) == 1:
+                    selected=('',candidate,replacement)
+                    break
+        if selected is None: return None
+        path,candidate,replacement=selected
+        if path:
+            documents[path]=documents[path].replace(candidate,replacement,1)
+            changed.add(path)
+    return {path:documents[path] for path in changed}
+
+
 def _unique_destination(directory, filename):
     directory.mkdir(parents=True, exist_ok=True)
     path=directory/filename
@@ -803,10 +859,12 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
     cv_name, letter_name=_target_names(job, applicant_name(requesting_user))
     filename=f'application-{job.id}-{cv_key}.zip'
     cache_paths=None
-    if settings.CODEX_CV_CACHE and not is_revision:
-        sources=[cv_text.encode('utf-8'),bytes(photo.image) if photo else b''] if create_cv else []
-        sources += [letter_text.encode('utf-8')] if create_letter else []
-        cache_paths=_package_cache(workspace,job,profile,sources,[cv_key,letter_key,create_cv,create_letter,provider,model,effort,speed],user_id)
+    cache_options=[cv_key,letter_key,create_cv,create_letter,provider,model,effort,speed,' '.join((revision_instructions or '').split()),correction_image[1] if correction_image else '']
+    cache_sources=[cv_text.encode('utf-8'),bytes(photo.image) if photo else b''] if create_cv else []
+    cache_sources += [letter_text.encode('utf-8')] if create_letter else []
+    cache_sources += [correction_image[0]] if correction_image else []
+    if settings.CODEX_CV_CACHE:
+        cache_paths=_package_cache(workspace,job,profile,cache_sources,cache_options,user_id)
         cached=_cached_package(*cache_paths,create_cv,create_letter)
         if cached:
             report(97,'Using saved package')
@@ -950,16 +1008,24 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
             bundle.writestr('generation-report.json', json.dumps(generation_report, ensure_ascii=False, indent=2))
         package=archive.getvalue()
         if cache_paths:
-            try:
-                cache_paths[0].parent.mkdir(exist_ok=True)
-                cache_paths[0].write_bytes(package)
-                cache_paths[1].write_text(json.dumps({'filename':filename,'artifacts':saved,'tex_hashes':{key:hashlib.sha256(Path(value).read_bytes()).hexdigest() for key,value in saved.items() if key.endswith('_tex')}}),encoding='utf-8')
-            except OSError:
-                pass
+            cache_targets=[cache_paths]
+            if is_revision:
+                output_sources=[Path(saved['cv_tex']).read_bytes(),bytes(photo.image) if photo else b''] if create_cv else []
+                output_sources += [Path(saved['letter_tex']).read_bytes()] if create_letter else []
+                output_sources += [correction_image[0]] if correction_image else []
+                cache_targets.append(_package_cache(workspace,job,profile,output_sources,cache_options,user_id))
+            metadata=json.dumps({'filename':filename,'artifacts':saved,'tex_hashes':{key:hashlib.sha256(Path(value).read_bytes()).hexdigest() for key,value in saved.items() if key.endswith('_tex')}})
+            for zip_path,metadata_path in cache_targets:
+                try:
+                    zip_path.parent.mkdir(exist_ok=True)
+                    zip_path.write_bytes(package)
+                    metadata_path.write_text(metadata,encoding='utf-8')
+                except OSError:
+                    pass
         return package,filename,saved
 
 
-def recompile_generated_package(job, cv_key, source_cv=None, source_letter=None, progress=None, cancelled=None, user_id=None):
+def recompile_generated_package(job, cv_key, source_cv=None, source_letter=None, progress=None, cancelled=None, user_id=None, source_updates=None):
     sources=[('cv',Path(source_cv))] if source_cv else []
     if source_letter:
         sources.append(('letter',Path(source_letter)))
@@ -969,23 +1035,35 @@ def recompile_generated_package(job, cv_key, source_cv=None, source_letter=None,
     # workspace -- the previously generated .tex still says \includegraphics{./Picture.jpg}, and
     # before TASK-99a that one file was whoever's photo happened to be on the machine.
     photo=user_photo(get_user_model().objects.filter(pk=user_id).first() if user_id else None)
+    source_updates=source_updates or {}
     with tempfile.TemporaryDirectory(prefix='dachapply-compile-') as temp:
         output=Path(temp)
         if photo:
             (output/(photo.filename or PHOTO_FILENAME)).write_bytes(bytes(photo.image))
         saved={}
         archive=io.BytesIO()
+        compiled=[]
         for index,(kind,source) in enumerate(sources):
             _ensure_active(cancelled)
-            shutil.copy2(source,output/source.name)
+            needs_compile=not source_updates or str(source) in source_updates or not source.with_suffix('.pdf').is_file()
+            if not needs_compile:
+                continue
+            if str(source) in source_updates:
+                (output/source.name).write_text(source_updates[str(source)],encoding='utf-8',newline='\n')
+            else:
+                shutil.copy2(source,output/source.name)
             if progress:
                 progress(70 if kind == 'cv' else 85,'Compiling CV' if kind == 'cv' else 'Compiling motivation letter')
             _compile_pdf(output,source.name,kind == 'cv',cancelled)
-            pdf=source.with_suffix('.pdf')
-            shutil.copy2(output/source.with_suffix('.pdf').name,pdf)
-            saved.update({f'{kind}_tex':str(source),f'{kind}_pdf':str(pdf)})
+            compiled.append((kind,source))
             if progress:
                 progress(82 if kind == 'cv' else 95,'CV compiled' if kind == 'cv' else 'Motivation letter compiled')
+        for kind,source in sources:
+            if (kind,source) in compiled:
+                if str(source) in source_updates:
+                    shutil.copy2(output/source.name,source)
+                shutil.copy2(output/source.with_suffix('.pdf').name,source.with_suffix('.pdf'))
+            saved.update({f'{kind}_tex':str(source),f'{kind}_pdf':str(source.with_suffix('.pdf'))})
         with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as bundle:
             for kind,source in sources:
                 bundle.write(source,source.name)

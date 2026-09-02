@@ -318,15 +318,18 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         close_old_connections()
 
 
-def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, cancel_event):
+def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, source_updates, task_report, cancel_event):
     close_old_connections()
     try:
         job=JobLead.objects.get(id=job_id)
-        archive,filename,artifacts=recompile_generated_package(job,cv_key,source_cv,source_letter,lambda progress,stage:_update(task_id,status='running',progress=progress,stage=stage),cancelled=cancel_event.is_set,user_id=user_id)
+        compile_kwargs={'cancelled':cancel_event.is_set,'user_id':user_id}
+        if source_updates:
+            compile_kwargs['source_updates']=source_updates
+        archive,filename,artifacts=recompile_generated_package(job,cv_key,source_cv,source_letter,lambda progress,stage:_update(task_id,status='running',progress=progress,stage=stage),**compile_kwargs)
         if cancel_event.is_set():
             raise GenerationCancelled
         clipboard_tex=_clipboard_contents(artifacts)
-        _update(task_id,status='ready',progress=100,stage='Ready',archive=archive,filename=filename,artifacts=artifacts,clipboard_tex=clipboard_tex,clipboard_copied=bool(clipboard_tex and _copy_to_clipboard(clipboard_tex)))
+        _update(task_id,status='ready',progress=100,stage='Ready',archive=archive,filename=filename,artifacts=artifacts,report=task_report,clipboard_tex=clipboard_tex,clipboard_copied=bool(clipboard_tex and _copy_to_clipboard(clipboard_tex)))
     except GenerationCancelled:
         _update(task_id,status='cancelled',stage='Cancelled',error='')
     except Exception as exc:
@@ -355,16 +358,18 @@ def start_cv_noop_task(job_id, user_id, artifacts):
     return task_id
 
 
-def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter=None):
+def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter=None, source_updates=None, task_report=None):
     _cleanup()
     task_id=uuid.uuid4().hex
     now=time.monotonic()
     cancel_event=Event()
-    plan=(['compiling_cv','cv_compiled'] if source_cv else [])+(['compiling_letter','letter_compiled'] if source_letter else [])
+    compile_cv=source_cv and (not source_updates or str(source_cv) in source_updates or not Path(source_cv).with_suffix('.pdf').is_file())
+    compile_letter=source_letter and (not source_updates or str(source_letter) in source_updates or not Path(source_letter).with_suffix('.pdf').is_file())
+    plan=(['compiling_cv','cv_compiled'] if compile_cv else [])+(['compiling_letter','letter_compiled'] if compile_letter else [])
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('compile-only',bool(source_cv),bool(source_letter)),'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':task_report,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('compile-only',bool(compile_cv),bool(compile_letter)),'_stage_times':{},'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in _tasks[task_id]['_stage_plan'])
-    Thread(target=_run_compile,args=(task_id,job_id,user_id,cv_key,source_cv,source_letter,cancel_event),name=f'cv-compile-{task_id[:8]}',daemon=True).start()
+    Thread(target=_run_compile,args=(task_id,job_id,user_id,cv_key,source_cv,source_letter,source_updates or {},task_report,cancel_event),name=f'cv-compile-{task_id[:8]}',daemon=True).start()
     return task_id
 
 
