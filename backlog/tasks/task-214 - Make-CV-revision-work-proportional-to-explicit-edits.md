@@ -1,11 +1,11 @@
 ---
 id: TASK-214
 title: Make CV revision work proportional to explicit edits
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-02 07:38'
-updated_date: '2026-09-02 08:03'
+updated_date: '2026-09-02 08:11'
 labels:
   - backend
   - cv
@@ -29,13 +29,13 @@ Specific one-line CV changes currently pay the same full-document model cost as 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 One or more single-line OLD:/NEW: replacements that each match exactly once bypass the model and preserve all other TeX bytes
-- [ ] #2 An already-applied exact replacement returns the current artifacts without model or compiler invocation
-- [ ] #3 Ambiguous, missing, multiline, or non-replacement instructions continue through the existing AI revision path
-- [ ] #4 Correction-image revisions always continue through the AI revision path
-- [ ] #5 Identical semantic revisions can reuse a cache keyed by owner, current source bytes, normalized instructions, correction image, job/profile, and model settings
-- [ ] #6 Exact replacements compile only selected changed documents and preserve current artifacts if compilation fails
-- [ ] #7 Focused tests prove routing, byte preservation, cache invalidation, owner scoping, and no-model behavior
+- [x] #1 One or more single-line OLD:/NEW: replacements that each match exactly once bypass the model and preserve all other TeX bytes
+- [x] #2 An already-applied exact replacement returns the current artifacts without model or compiler invocation
+- [x] #3 Ambiguous, missing, multiline, or non-replacement instructions continue through the existing AI revision path
+- [x] #4 Correction-image revisions always continue through the AI revision path
+- [x] #5 Identical semantic revisions can reuse a cache keyed by owner, current source bytes, normalized instructions, correction image, job/profile, and model settings
+- [x] #6 Exact replacements compile only selected changed documents and preserve current artifacts if compilation fails
+- [x] #7 Focused tests prove routing, byte preservation, cache invalidation, owner scoping, and no-model behavior
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -48,4 +48,12 @@ Specific one-line CV changes currently pay the same full-document model cost as 
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented the layered route. Exact single-line OLD:/NEW: pairs are accepted only when every OLD has one unique owner-scoped match; plain ampersands map safely to LaTeX, CRLF/LF bytes outside replacements are retained, already-applied pairs return the current artifacts, and all ambiguous/multiline/image requests fall back to AI. Exact edits compile atomically and skip unchanged selected documents. Semantic revisions now use the existing content cache with normalized instructions/image bytes and an output-source alias, so exact retries avoid a second model call; owner/source/job/profile/model/image changes invalidate. Added an inline format hint. Verification: 7 focused tests, 28 CV/evidence tests, 1,053 full backend tests, 206 frontend tests/build, Django/migration checks, compileall, diff check, and npm audit 0 passed.
+
+Released through PR #124 as 7eda8f303b158146ba8224f8f0798aac2e7cd784. A real pdflatex run against a disposable copy of the current Salesforce CV applied one exact replacement in 1.62s, produced the expected PDF, preserved every non-target byte, left the original CV hash unchanged, and recorded 0 database writes and 0 model calls. Main run 33606864413 passed full backend/frontend gates, image build, Azure deployment, and public verification. Local ports 5173/8000 are healthy at the release SHA. Asian Dad: PERFECT (self-graded disclosed).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added proportional CV revisions: unique single-line OLD/NEW pairs use atomic compile-only updates, already-applied pairs return immediately, identical semantic retries use owner/content/model-scoped cache aliases, and every ambiguous or image request retains AI fallback. Released exact compilation measured 1.62s with zero model calls and unchanged original artifact.
+<!-- SECTION:FINAL_SUMMARY:END -->
