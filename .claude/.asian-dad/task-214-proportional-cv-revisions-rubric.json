@@ -1,0 +1,50 @@
+{
+  "task_prompt": "okay, implement so",
+  "created_at": "2026-09-02T07:40:00Z",
+  "authored_by_grader": true,
+  "criteria": [
+    {
+      "id": 1,
+      "description": "Specific unambiguous OLD:/NEW: revisions bypass AI and preserve all non-target text.",
+      "authority": "explicit",
+      "source": "implement the proposed deterministic exact-text patch path",
+      "verification": "Apply multiple exact pairs with model sentinels and byte-compare all non-target content."
+    },
+    {
+      "id": 2,
+      "description": "Repeated identical semantic revisions use a content-addressed cache and avoid a second model call.",
+      "authority": "explicit",
+      "source": "implement the proposed revision cache",
+      "verification": "Run the same semantic revision twice and count model calls while checking cache metadata."
+    },
+    {
+      "id": 3,
+      "description": "Cache identity changes with owner, source content, normalized instruction meaning, correction image, job/profile, or model settings.",
+      "authority": "implied",
+      "source": "baseline: cached personal CV output must not cross inputs or accounts",
+      "verification": "Compare cache keys and invalidation behavior across each load-bearing input."
+    },
+    {
+      "id": 4,
+      "description": "Ambiguous edits and correction images retain the existing AI path.",
+      "authority": "explicit",
+      "source": "AI only as the fallback",
+      "verification": "Exercise missing, ambiguous, multiline, semantic, and image instructions against route sentinels."
+    },
+    {
+      "id": 5,
+      "description": "Exact replacement compilation is atomic and owner-scoped.",
+      "authority": "implied",
+      "source": "baseline: optimization must not corrupt or expose current application artifacts",
+      "verification": "Force compilation failure, compare original hashes, and test another account's endpoint."
+    },
+    {
+      "id": 6,
+      "description": "Load-bearing timing, route, cache, and preservation claims are measured.",
+      "authority": "implied",
+      "source": "baseline: a claim that decides the verdict must be measured",
+      "verification": "Review elapsed times, call counts, cache hits/keys, paths, and hashes."
+    }
+  ],
+  "superseded": []
+}
