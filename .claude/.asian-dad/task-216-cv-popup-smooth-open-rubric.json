@@ -1,0 +1,43 @@
+{
+  "task_prompt": "works but now make it that the button generate CV and Motivation Letter opens fully smoothly instead of halff opening instantly and then waiting for 6 seconds for hte full window to open",
+  "created_at": "2026-09-02T13:52:12.993Z",
+  "authored_by_grader": true,
+  "criteria": [
+    {
+      "id": 1,
+      "description": "Clicking Generate CV and Motivation Letter renders the popup at its complete final geometry immediately.",
+      "authority": "explicit",
+      "source": "\"opens fully smoothly instead of halff opening instantly\"",
+      "verification": "record popup bounding box and rendered sections immediately after click and after slow initialization completes"
+    },
+    {
+      "id": 2,
+      "description": "The popup does not resize or reposition during the delayed initialization period.",
+      "authority": "explicit",
+      "source": "\"instead of halff opening instantly and then waiting for 6 seconds for hte full window to open\"",
+      "verification": "compare popup bounding boxes sampled before and after deliberately delayed provider/preview responses"
+    },
+    {
+      "id": 3,
+      "description": "The Generate CV and Motivation Letter button still opens a usable generator popup.",
+      "authority": "implied",
+      "source": "baseline: the requested button interaction must remain functional",
+      "verification": "exercise the button in a browser and verify the dialog and controls remain operable"
+    },
+    {
+      "id": 4,
+      "description": "The frontend compiles and its relevant regression tests pass.",
+      "authority": "implied",
+      "source": "baseline: changed application code must build and run without error",
+      "verification": "run the focused frontend regression test and production build"
+    },
+    {
+      "id": 5,
+      "description": "Claims that determine whether opening is immediate and stable are measured rather than asserted.",
+      "authority": "implied",
+      "source": "baseline: a claim that decides the verdict must be measured",
+      "verification": "capture timed browser observations and geometry values under delayed initialization"
+    }
+  ],
+  "superseded": []
+}
