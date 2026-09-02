@@ -638,6 +638,24 @@ def test_exact_revision_plan_is_conservative_and_byte_local(tmp_path):
     assert exact_revision_plan([cv],'Please rewrite the profile.') is None
 
 
+def test_multiline_and_bounded_wildcard_revision_plan_is_conservative(tmp_path):
+    from jobradar.services.cv_generator import exact_revision_plan
+
+    cv=tmp_path/'cv.tex'
+    before='prefix\n\\begin{center}\n  old header\n\\end{center}\nmiddle\nold education\nold certification\nsuffix'
+    cv.write_text(before,encoding='utf-8',newline='\n')
+    instructions='''1. HEADER\nReplace the entire header block from:\n\n\\begin{center}\n  ...\n\\end{center}\n\nwith:\n\n\\begin{center}\n  new header\n  with picture\n\\end{center}\n\n2. EDUCATION\nOLD:\nold education\nold certification\n\nNEW:\nnew education\nnew certification\n\n3. KEEP EVERYTHING ELSE UNCHANGED.'''
+    expected=before.replace('\\begin{center}\n  old header\n\\end{center}','\\begin{center}\n  new header\n  with picture\n\\end{center}').replace('old education\nold certification','new education\nnew certification')
+    assert exact_revision_plan([cv],instructions)=={str(cv):expected}
+    cv.write_text(expected,encoding='utf-8',newline='\n')
+    assert exact_revision_plan([cv],instructions)=={}
+
+    cv.write_text(before+'\n\\begin{center}\n  second header\n\\end{center}',encoding='utf-8')
+    assert exact_revision_plan([cv],instructions) is None
+    assert exact_revision_plan([cv],'OLD:\n...\n\\end{center}\nNEW:\nreplacement') is None
+    assert exact_revision_plan([cv],'OLD:\n\\begin{center}\n...\nNEW:\nreplacement') is None
+
+
 def test_revision_cache_identity_covers_private_and_generation_inputs(job, tmp_path):
     from jobradar.services.cv_generator import _package_cache
 
@@ -671,6 +689,10 @@ def test_exact_revision_route_bypasses_ai_but_semantic_and_image_requests_do_not
     assert exact.status_code==202 and exact.data['task_id']=='exact-task' and ai==[]
     assert compiled[0][1]['source_updates']=={str(cv):'prefix NEW text suffix'}
     assert compiled[0][1]['task_report']['changed_files']==['current.tex']
+    cv.write_text('prefix NEW text suffix',encoding='utf-8')
+    already=client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/',{**base,'instructions':'OLD:\nOLD text\nNEW:\nNEW text'},format='json')
+    assert already.status_code==202 and already.data['status']=='ready' and already.data['stage']=='No changes requested'
+    assert len(compiled)==1 and ai==[]
     other=User.objects.create_user('exact-other@example.test',email='exact-other@example.test')
     other_client=APIClient(); other_client.force_authenticate(other)
     assert other_client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/',{**base,'instructions':'OLD:\nOLD text\nNEW:\nNEW text'},format='json').status_code==404
@@ -793,6 +815,9 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     # The workspace is still where generated documents land; the templates and photo it used to
     # hold are CvAsset rows on the generating account now (TASK-99a), seeded below.
     (tmp_path/'CVs').mkdir()
+    temp_calls=[]
+    temporary_directory=cv_generator.tempfile.TemporaryDirectory
+    monkeypatch.setattr(cv_generator.tempfile,'TemporaryDirectory',lambda *args,**kwargs:(temp_calls.append(kwargs) or temporary_directory(*args,**kwargs)))
     settings.CODEX_CV_WORKSPACE=str(tmp_path); settings.CODEX_CV_OPEN_OUTPUT_FOLDER=True; settings.CODEX_CV_CACHE=False
     opened=[]; monkeypatch.setattr(cv_generator.os, 'startfile', lambda path: opened.append(__import__('pathlib').Path(path)), raising=False)
     monkeypatch.setattr('jobradar.services.cv_generator.shutil.which', lambda command: command)
@@ -923,6 +948,8 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     assert not any(command[0]=='latexmk' for command in commands)
     assert any(command[0]=='claude' and '--json-schema' in command for command in commands)
     assert any(command[0]=='codex' and '--oss' in command and command[command.index('--local-provider')+1]=='ollama' for command in commands)
+    assert {'dachapply-cv-','dachapply-compile-'} <= {call['prefix'] for call in temp_calls}
+    assert all(call['ignore_cleanup_errors'] is True for call in temp_calls)
     # The stored templates are read-only inputs: nothing in a generation writes back over the
     # account's own CV or letter source.
     from jobradar.models import CvAsset

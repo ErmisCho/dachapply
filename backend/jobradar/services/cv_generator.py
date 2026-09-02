@@ -490,24 +490,31 @@ def exact_revision_plan(sources, instructions):
     lines=(instructions or '').replace('\r\n','\n').split('\n')
     pairs=[]
     index=0
+    def block(values):
+        while values and not values[0].strip(): values.pop(0)
+        while values and not values[-1].strip(): values.pop()
+        return '\n'.join(values)
+    def old_marker(value):
+        value=value.casefold()
+        return value in ('old:','from:') or value.startswith('replace ') and value.endswith(' from:')
+    def new_marker(value): return value.casefold() in ('new:','with:')
+    def boundary(value):
+        return old_marker(value) or bool(re.match(r'^(?:\d+\.|keep\b|do not\b|submit\b|constraints?\b)',value,re.IGNORECASE))
     while index < len(lines):
-        if lines[index].strip().casefold() != 'old:':
+        if not old_marker(lines[index].strip()):
             index+=1
             continue
         old=[]; index+=1
-        while index < len(lines) and lines[index].strip().casefold() != 'new:':
-            if lines[index].strip(): old.append(lines[index].strip())
-            index+=1
-        if len(old) != 1 or index == len(lines): return None
+        while index < len(lines) and not new_marker(lines[index].strip()):
+            old.append(lines[index]); index+=1
+        if index == len(lines): return None
         index+=1
         new=[]
-        while index < len(lines):
-            value=lines[index].strip()
-            if value.casefold() == 'old:' or re.match(r'^(?:\d+\.|keep\b|do not\b|submit\b|constraints?\b)',value,re.IGNORECASE): break
-            if value: new.append(value)
-            index+=1
-        if len(new) != 1 or not old[0] or not new[0]: return None
-        pairs.append((old[0],new[0]))
+        while index < len(lines) and not boundary(lines[index].strip()):
+            new.append(lines[index]); index+=1
+        old,new=block(old),block(new)
+        if not old or not new: return None
+        pairs.append((old,new))
     if not pairs: return None
     documents={}
     for path in sources:
@@ -518,26 +525,40 @@ def exact_revision_plan(sources, instructions):
     changed=set()
     def latex(value): return re.sub(r'(?<!\\)([&%$#_])',r'\\\1',value)
     for old,new in pairs:
+        old_lines=old.split('\n')
+        wildcard_lines=[line for line,value in enumerate(old_lines) if value.strip() == '...']
+        if wildcard_lines and (len(wildcard_lines) != 1 or wildcard_lines[0] in (0,len(old_lines)-1)):
+            return None
+        wildcard_parts=('\n'.join(old_lines[:wildcard_lines[0]]),'\n'.join(old_lines[wildcard_lines[0]+1:])) if wildcard_lines else None
         variants=[(old,new)]
-        escaped=(latex(old),latex(new))
-        if escaped != variants[0]: variants.append(escaped)
+        if '\n' not in old and '\\' not in old+new:
+            escaped=(latex(old),latex(new))
+            if escaped != variants[0]: variants.append(escaped)
+        variants += [(candidate.replace('\n','\r\n'),replacement.replace('\n','\r\n')) for candidate,replacement in list(variants) if '\n' in candidate]
         selected=None
         candidate_counts=[]
         for candidate,replacement in variants:
-            matches=[path for path,text in documents.items() for _ in range(text.count(candidate))]
+            if wildcard_lines:
+                separator='\r\n' if '\r\n' in candidate else '\n'
+                prefix,suffix=(part.replace('\n',separator) for part in wildcard_parts)
+                pattern=re.compile(re.escape(prefix)+'.*?'+re.escape(suffix),re.DOTALL)
+                matches=[(path,match.start(),match.end(),replacement) for path,text in documents.items() for match in pattern.finditer(text)]
+            else:
+                matches=[(path,match.start(),match.end(),replacement) for path,text in documents.items() for match in re.finditer(re.escape(candidate),text)]
             candidate_counts.append(len(matches))
             if len(matches) == 1:
-                selected=(matches[0],candidate,replacement)
+                selected=matches[0]
                 break
         if selected is None and not any(candidate_counts):
-            for candidate,replacement in variants:
-                if sum(text.count(replacement) for text in documents.values()) == 1:
-                    selected=('',candidate,replacement)
+            for _,replacement in variants:
+                matches=[path for path,text in documents.items() for _ in range(text.count(replacement))]
+                if len(matches) == 1:
+                    selected=('',0,0,replacement)
                     break
         if selected is None: return None
-        path,candidate,replacement=selected
-        if path:
-            documents[path]=documents[path].replace(candidate,replacement,1)
+        path,start,end,replacement=selected
+        if path and documents[path][start:end] != replacement:
+            documents[path]=documents[path][:start]+replacement+documents[path][end:]
             changed.add(path)
     return {path:documents[path] for path in changed}
 
@@ -875,7 +896,9 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
     if not shutil.which('pdflatex') or provider == 'anthropic' and not claude or provider != 'anthropic' and not codex:
         raise RuntimeError('The selected model CLI and pdflatex must be installed on the generation server.')
 
-    with tempfile.TemporaryDirectory(prefix='dachapply-cv-') as temp:
+    # Windows child processes can briefly retain a disposable handle after they exit; successful
+    # persisted artifacts must not become a failed task solely because temp cleanup has to wait.
+    with tempfile.TemporaryDirectory(prefix='dachapply-cv-',ignore_cleanup_errors=True) as temp:
         output=Path(temp)
         if create_cv:
             # newline='\n' because these used to be shutil.copy2'd: without it Windows rewrites
@@ -1036,7 +1059,7 @@ def recompile_generated_package(job, cv_key, source_cv=None, source_letter=None,
     # before TASK-99a that one file was whoever's photo happened to be on the machine.
     photo=user_photo(get_user_model().objects.filter(pk=user_id).first() if user_id else None)
     source_updates=source_updates or {}
-    with tempfile.TemporaryDirectory(prefix='dachapply-compile-') as temp:
+    with tempfile.TemporaryDirectory(prefix='dachapply-compile-',ignore_cleanup_errors=True) as temp:
         output=Path(temp)
         if photo:
             (output/(photo.filename or PHOTO_FILENAME)).write_bytes(bytes(photo.image))
