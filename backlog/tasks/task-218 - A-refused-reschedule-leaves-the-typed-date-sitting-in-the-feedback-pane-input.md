@@ -1,9 +1,10 @@
 ---
 id: TASK-218
 title: A refused reschedule leaves the typed date sitting in the feedback-pane input
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-07 13:57'
+updated_date: '2026-09-07 15:51'
 labels:
   - frontend
   - board
@@ -21,7 +22,7 @@ The feedback-deadline row's date control is uncontrolled (defaultValue={row.feed
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 After a refused reschedule the date input shows the value still stored on the server
-- [ ] #2 A successful reschedule still shows the newly saved date without a reload
-- [ ] #3 A synthetic frontend regression fails if the input goes back to keeping the unsaved value
+- [x] #1 After a refused reschedule the date input shows the value still stored on the server
+- [x] #2 A successful reschedule still shows the newly saved date without a reload
+- [x] #3 A synthetic frontend regression fails if the input goes back to keeping the unsaved value
 <!-- AC:END -->
