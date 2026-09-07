@@ -1,6 +1,6 @@
 import {describe,expect,it,vi} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {FeedbackDueList,FeedbackDuePaneHeader,FeedbackDueRow,JobMailboxConversationCard,applyFeedbackDueWrite,feedbackStatusPatch,loadFeedbackMailbox,locateFeedbackJob,updateFeedbackDueJob} from './App'
+import {FeedbackDueList,FeedbackDuePaneHeader,FeedbackDueRow,JobMailboxConversationCard,applyFeedbackDueWrite,feedbackDueEmptyMessage,feedbackStatusPatch,loadFeedbackMailbox,locateFeedbackJob,refreshFeedbackDueRows,updateFeedbackDueJob} from './App'
 import type {FeedbackDueRow as FeedbackRow,JobMailboxPayload} from './types'
 
 const row:FeedbackRow={id:208,company:'Synthetic GmbH',title:'Backend Engineer',status:'interview',feedback_due_date:'2026-09-09',gmail_search_url:'https://mail.google.test/#search/Synthetic%20GmbH'}
@@ -164,5 +164,64 @@ describe('feedback deadline writes (TASK-208 AC5)',()=>{
     expect(onStatusChange).toHaveBeenCalledWith(upcomingRow,'rejected')
     expect(onReschedule).toHaveBeenCalledWith(overdueRow,'2026-09-30')
     expect(onEmail).toHaveBeenCalledWith(upcomingRow)
+  })
+})
+
+
+// TASK-217. The pane's READ, which the two blocks above never touched: they proved a refused WRITE is
+// visible, while a refused refresh emptied the rows and printed "No actionable job has a feedback
+// deadline right now." - a claim about the server made when the server never answered, and printed
+// immediately after a status change, where it is indistinguishable from the lead having been filtered
+// out. All synthetic: invented companies, .test domains, a hand-rolled request fake, no network.
+const staleRows:FeedbackRow[]=[{...row,id:210,company:'Nordlicht Systeme GmbH',title:'Site Reliability Engineer',status:'applied',feedback_due_date:'2026-09-10',gmail_search_url:'https://mail.google.test/#search/Nordlicht'}]
+
+function paneState(initial:FeedbackRow[]=[]){
+  const state:{rows:FeedbackRow[];error:any}={rows:initial,error:null}
+  return {state,setRows:(rows:any[])=>{state.rows=rows as FeedbackRow[]},setError:(e:any)=>{state.error=e}}
+}
+
+describe('feedback deadline refresh (TASK-217)',()=>{
+  it('reports a failed refresh instead of emptying the pane behind it',async()=>{
+    const pane=paneState(staleRows)
+    const request=vi.fn().mockRejectedValue({detail:'synthetic gateway timeout'})
+
+    expect(await refreshFeedbackDueRows(pane.setRows,pane.setError,request)).toBe(false)
+
+    expect(request).toHaveBeenCalledWith('/jobs/feedback-due/')
+    expect(pane.state.rows).toEqual(staleRows)
+    expect(pane.state.error).not.toBeNull()
+    const header=renderToStaticMarkup(<FeedbackDuePaneHeader showOverdue showUpcoming loading={false} error={pane.state.error} onShowOverdue={vi.fn()} onShowUpcoming={vi.fn()}/>)
+    expect(header).toContain('role="alert"')
+    expect(header).toContain('may be out of date')
+    expect(header).toContain('synthetic gateway timeout')
+  })
+
+  it('renders the refreshed rows with no error when the refresh lands',async()=>{
+    const pane=paneState([])
+    const request=vi.fn().mockResolvedValue(staleRows)
+
+    expect(await refreshFeedbackDueRows(pane.setRows,pane.setError,request)).toBe(true)
+
+    expect(pane.state.rows).toEqual(staleRows)
+    expect(pane.state.error).toBeNull()
+    expect(renderToStaticMarkup(<FeedbackDueList overdue={[]} upcoming={pane.state.rows} followedUpJobIds={new Set<number>()} onGo={vi.fn()} onEmail={vi.fn()} onFollowedUp={vi.fn()} onReschedule={vi.fn()} onStatusChange={vi.fn()}/>)).toContain('Nordlicht Systeme GmbH')
+    expect(renderToStaticMarkup(<FeedbackDuePaneHeader showOverdue showUpcoming loading={false} error={pane.state.error} onShowOverdue={vi.fn()} onShowUpcoming={vi.fn()}/>)).not.toContain('role="alert"')
+  })
+
+  it('claims the pane is empty only when the server actually returned zero rows',async()=>{
+    const empty=paneState(staleRows)
+    expect(await refreshFeedbackDueRows(empty.setRows,empty.setError,vi.fn().mockResolvedValue([]))).toBe(true)
+    expect(feedbackDueEmptyMessage(false,empty.state.error,empty.state.rows.length,0)).toBe('No actionable job has a feedback deadline right now.')
+
+    const failed=paneState(staleRows)
+    expect(await refreshFeedbackDueRows(failed.setRows,failed.setError,vi.fn().mockRejectedValue(new Error('synthetic network failure')))).toBe(false)
+    expect(feedbackDueEmptyMessage(false,failed.state.error,0,0)).toBeNull()
+    expect(feedbackDueEmptyMessage(false,failed.state.error,failed.state.rows.length,0)).toBeNull()
+  })
+
+  it('keeps the two honest sentences apart and says nothing while loading',()=>{
+    expect(feedbackDueEmptyMessage(true,null,0,0)).toBeNull()
+    expect(feedbackDueEmptyMessage(false,null,3,0)).toBe('Those deadline groups are hidden.')
+    expect(feedbackDueEmptyMessage(false,null,3,3)).toBeNull()
   })
 })
