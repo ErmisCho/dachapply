@@ -1,9 +1,10 @@
 ---
 id: TASK-217
 title: 'A failed feedback-pane refresh reads as an empty pane, not an error'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-09-07 13:47'
+updated_date: '2026-09-07 15:35'
 labels:
   - frontend
   - board
@@ -22,7 +23,7 @@ loadFeedbackDuePanel() in frontend/src/App.tsx ends with catch{setFeedbackDueRow
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A failed feedback-due refresh surfaces an error instead of an empty pane
-- [ ] #2 The empty-state sentence is shown only when the server actually returned zero rows
-- [ ] #3 A synthetic frontend regression fails if the catch is restored to silently emptying the rows
+- [x] #1 A failed feedback-due refresh surfaces an error instead of an empty pane
+- [x] #2 The empty-state sentence is shown only when the server actually returned zero rows
+- [x] #3 A synthetic frontend regression fails if the catch is restored to silently emptying the rows
 <!-- AC:END -->
