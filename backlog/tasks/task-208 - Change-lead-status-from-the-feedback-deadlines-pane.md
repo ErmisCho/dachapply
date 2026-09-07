@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-08-31 13:50'
-updated_date: '2026-08-31 14:40'
+updated_date: '2026-09-07 13:57'
 labels:
   - frontend
   - board
@@ -34,11 +34,11 @@ Each lead in the Feedback deadlines pane already supports recording a follow-up 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every feedback-deadline row offers the existing feedback-date reschedule control and a status selector using the application's real job statuses
-- [ ] #2 Changing status updates the owner-scoped job through the existing job update path and refreshes the pane without a full page reload
-- [ ] #3 Moving a lead to a non-actionable status removes it from the pane; actionable status changes remain visible with the new status
-- [ ] #4 A failed status or date update is reported and does not appear to succeed
-- [ ] #5 Synthetic backend/frontend regressions cover reschedule plus status changes without using owner data
+- [x] #1 Every feedback-deadline row offers the existing feedback-date reschedule control and a status selector using the application's real job statuses
+- [x] #2 Changing status updates the owner-scoped job through the existing job update path and refreshes the pane without a full page reload
+- [x] #3 Moving a lead to a non-actionable status removes it from the pane; actionable status changes remain visible with the new status
+- [x] #4 A failed status or date update is reported and does not appear to succeed
+- [x] #5 Synthetic backend/frontend regressions cover reschedule plus status changes without using owner data
 <!-- AC:END -->
 
 ## Implementation Plan
