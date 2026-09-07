@@ -225,3 +225,69 @@ describe('feedback deadline refresh (TASK-217)',()=>{
     expect(feedbackDueEmptyMessage(false,null,3,3)).toBeNull()
   })
 })
+
+// TASK-218. The reschedule control's own DISPLAY, which none of the blocks above touched: they proved a
+// refused write changes no state and is visible in the pane, while the input itself kept showing the date
+// the owner typed - a value the server never stored - until a page reload. Measured live on 2026-09-07 by
+// answering the PATCH with a 500: the alert appeared and the server value stayed 2026-09-08, but the input
+// still read 2026-10-15. All synthetic: invented company, .test domain, hand-rolled fakes, no network.
+const dateRow:FeedbackRow={id:218,company:'Kaltwasser Analytik GmbH',title:'Data Engineer',status:'applied',feedback_due_date:'2026-09-08',gmail_search_url:'https://mail.google.test/#search/Kaltwasser'}
+
+function rescheduleInput(current:FeedbackRow,onReschedule:(due:string)=>Promise<boolean>){
+  return elements(FeedbackDueRow({...props(),row:current,onReschedule})).find(x=>x.type==='input'&&x.props.type==='date')
+}
+
+describe('feedback deadline reschedule display (TASK-218)',()=>{
+  it('puts the stored date back in the input when the write is refused',async()=>{
+    const update=vi.fn().mockResolvedValue({updated:null,error:{detail:'synthetic refusal'}})
+    const setError=vi.fn()
+    const setJobs=vi.fn()
+    const reload=vi.fn()
+    const input=rescheduleInput(dateRow,due=>applyFeedbackDueWrite(dateRow.id,{feedback_due_date:due},setError,setJobs,reload,update))
+    const target={value:'2026-10-15'}
+
+    await input.props.onBlur({target})
+
+    expect(update).toHaveBeenCalledWith(218,{feedback_due_date:'2026-10-15'})
+    expect(setJobs).not.toHaveBeenCalled()
+    expect(reload).not.toHaveBeenCalled()
+    expect(target.value).toBe('2026-09-08')
+  })
+
+  it('keeps and renders the newly saved date after a successful write, with no reload',async()=>{
+    const saved={...dateRow,feedback_due_date:'2026-10-15'}
+    const update=vi.fn().mockResolvedValue({updated:saved,error:null})
+    let jobs:any[]=[{id:218,feedback_due_date:'2026-09-08'}]
+    const setJobs=vi.fn((updater:any)=>{jobs=updater(jobs)})
+    let paneRows:FeedbackRow[]=[dateRow]
+    const reload=vi.fn(async()=>{paneRows=[saved]})
+    const input=rescheduleInput(dateRow,due=>applyFeedbackDueWrite(dateRow.id,{feedback_due_date:due},vi.fn(),setJobs,reload,update))
+    const target={value:'2026-10-15'}
+
+    await input.props.onBlur({target})
+
+    expect(target.value).toBe('2026-10-15')
+    expect(jobs).toEqual([saved])
+    expect(reload).toHaveBeenCalledOnce()
+    const html=renderToStaticMarkup(<FeedbackDueRow {...props()} row={paneRows[0]}/>)
+    expect(html).toContain('value="2026-10-15"')
+    expect(html).not.toContain('value="2026-09-08"')
+  })
+
+  it('leaves segment entry alone - the control has no keystroke binding that could fight it',()=>{
+    const input=rescheduleInput(dateRow,async()=>true)
+    expect(input.props.defaultValue).toBe('2026-09-08')
+    expect(input.props.value).toBeUndefined()
+    expect(input.props.onChange).toBeUndefined()
+    expect(input.props.onInput).toBeUndefined()
+  })
+
+  it('does not overwrite a date the owner started typing while the refusal was in flight',async()=>{
+    const target={value:'2026-10-15'}
+    const input=rescheduleInput(dateRow,async()=>{target.value='2026-11-02';return false})
+
+    await input.props.onBlur({target})
+
+    expect(target.value).toBe('2026-11-02')
+  })
+})
