@@ -3843,6 +3843,34 @@ def test_feedback_due_job_status_patch_removes_closed_lead_and_keeps_actionable_
     assert len(rows)==1 and rows[0]['id']==active.id and rows[0]['status']=='offer'
 
 
+def test_feedback_due_reschedule_patch_persists_the_new_date_and_regroups_the_pane(client):
+    """TASK-208 AC5, the reschedule half. rescheduleFeedback() (App.tsx) PATCHes the job with
+    {feedback_due_date} and nothing else, then re-reads the pane. The status-patch test above only
+    asserts the date SURVIVES a status change -- that stays true if feedback_due_date went
+    read-only on PATCH and every reschedule in the app silently no-opped. Assert against the DB,
+    not the response body: a serializer that echoes its input would pass a broken write."""
+    today=timezone.localdate()
+    overdue=make_job(client, company='Rescheduled GmbH', title='Platform Engineer', status='interview', feedback_due_date=today-timezone.timedelta(days=3))
+    untouched=make_job(client, company='Untouched AG', title='Data Engineer', status='interview', feedback_due_date=today+timezone.timedelta(days=1))
+    new_due=today+timezone.timedelta(days=5)
+
+    r=client.patch(f'/api/jobs/{overdue.id}/', {'feedback_due_date': new_due.isoformat()}, format='json')
+
+    assert r.status_code==200
+    overdue.refresh_from_db()
+    untouched.refresh_from_db()
+    assert overdue.feedback_due_date==new_due
+    assert overdue.status=='interview'
+    assert untouched.feedback_due_date==today+timezone.timedelta(days=1)
+    # The pane the frontend re-reads afterwards: the rescheduled row stopped being overdue and now
+    # sorts after the row it used to precede.
+    rows=client.get('/api/jobs/feedback-due/').data
+    assert [(row['company'], row['feedback_due_date'], row['overdue']) for row in rows]==[
+        ('Untouched AG', today+timezone.timedelta(days=1), False),
+        ('Rescheduled GmbH', new_due, False),
+    ]
+
+
 def test_feedback_due_pauses_only_strictly_future_interviews_without_mutating_dates(client, monkeypatch):
     now=timezone.now()
     monkeypatch.setattr('jobradar.views.timezone.now', lambda: now)

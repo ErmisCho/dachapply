@@ -1,6 +1,6 @@
 import {describe,expect,it,vi} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {FeedbackDueRow,JobMailboxConversationCard,loadFeedbackMailbox,locateFeedbackJob,updateFeedbackDueJob} from './App'
+import {FeedbackDueList,FeedbackDuePaneHeader,FeedbackDueRow,JobMailboxConversationCard,applyFeedbackDueWrite,feedbackStatusPatch,loadFeedbackMailbox,locateFeedbackJob,updateFeedbackDueJob} from './App'
 import type {FeedbackDueRow as FeedbackRow,JobMailboxPayload} from './types'
 
 const row:FeedbackRow={id:208,company:'Synthetic GmbH',title:'Backend Engineer',status:'interview',feedback_due_date:'2026-09-09',gmail_search_url:'https://mail.google.test/#search/Synthetic%20GmbH'}
@@ -90,5 +90,79 @@ describe('feedback deadline row controls (TASK-208)',()=>{
 
     expect(callbacks.onReschedule).toHaveBeenCalledWith('2026-09-15')
     expect(callbacks.onStatusChange).toHaveBeenCalledWith('rejected')
+  })
+})
+
+
+// TASK-209 (TASK-208 AC5). The middle of the two pane actions, which the block above never touched:
+// it proved the row emits a status and that the PATCH helper reports a refusal, but nothing proved
+// what the status change SENDS, that a success reaches the board row and refetches the pane, that a
+// refusal changes nothing, or that a refusal is visible at all. All synthetic - invented company, a
+// .test recipient domain, hand-rolled fakes for every collaborator, no network.
+const overdueRow:FeedbackRow={...row,id:208}
+const upcomingRow:FeedbackRow={...row,id:209,company:'Beispiel Datentechnik AG',title:'Platform Engineer',status:'applied',feedback_due_date:'2026-09-30'}
+
+describe('feedback deadline writes (TASK-208 AC5)',()=>{
+  it('sends the status metadata the board writes, and clears what the new status does not carry',()=>{
+    expect(feedbackStatusPatch('interview','2026-09-07')).toEqual({status:'interview',status_date:'2026-09-07',last_update_date:'2026-09-07',interview_stage:1,interview_total:5})
+    expect(feedbackStatusPatch('offer','2026-09-07')).toEqual({status:'offer',status_date:'2026-09-07',last_update_date:'2026-09-07',interview_stage:null,interview_total:null})
+    expect(feedbackStatusPatch('rejected','2026-09-07')).toEqual({status:'rejected',status_date:'2026-09-07',last_update_date:null,interview_stage:null,interview_total:null})
+    expect(feedbackStatusPatch('withdrawn','2026-09-07')).toEqual({status:'withdrawn',status_date:null,last_update_date:null,interview_stage:null,interview_total:null})
+  })
+
+  it('lands a successful write on the board row and refetches the pane',async()=>{
+    const saved={id:208,status:'offer',feedback_due_date:'2026-09-30'}
+    const update=vi.fn().mockResolvedValue({updated:saved,error:null})
+    const setError=vi.fn()
+    const reload=vi.fn().mockResolvedValue(undefined)
+    let jobs:any[]=[{id:207,status:'applied'},{id:208,status:'applied'}]
+    const setJobs=vi.fn((updater:any)=>{jobs=updater(jobs)})
+
+    expect(await applyFeedbackDueWrite(208,feedbackStatusPatch('offer','2026-09-07'),setError,setJobs,reload,update)).toBe(true)
+
+    expect(update).toHaveBeenCalledWith(208,{status:'offer',status_date:'2026-09-07',last_update_date:'2026-09-07',interview_stage:null,interview_total:null})
+    expect(jobs).toEqual([{id:207,status:'applied'},saved])
+    expect(reload).toHaveBeenCalledOnce()
+    expect(setError.mock.calls).toEqual([[null]])
+  })
+
+  it('lets a refused write change nothing at all, including the pane',async()=>{
+    const update=vi.fn().mockResolvedValue({updated:null,error:{detail:'synthetic refusal'}})
+    const setError=vi.fn()
+    const setJobs=vi.fn()
+    const reload=vi.fn().mockResolvedValue(undefined)
+
+    expect(await applyFeedbackDueWrite(208,{feedback_due_date:'2026-09-30'},setError,setJobs,reload,update)).toBe(false)
+
+    expect(setError.mock.calls).toEqual([[null],[{detail:'synthetic refusal'}]])
+    expect(setJobs).not.toHaveBeenCalled()
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('shows a refused write in the pane instead of swallowing it',()=>{
+    const header=(error:any)=>renderToStaticMarkup(<FeedbackDuePaneHeader showOverdue showUpcoming loading={false} error={error} onShowOverdue={vi.fn()} onShowUpcoming={vi.fn()}/>)
+    const failed=header({detail:'synthetic refusal'})
+    expect(failed).toContain('role="alert"')
+    expect(failed).toContain('synthetic refusal')
+    expect(header(null)).not.toContain('role="alert"')
+  })
+
+  it('wires every row control to that row, not to the first or to nothing',()=>{
+    const onReschedule=vi.fn()
+    const onStatusChange=vi.fn()
+    const onEmail=vi.fn()
+    const list=FeedbackDueList({overdue:[overdueRow],upcoming:[upcomingRow],followedUpJobIds:new Set<number>(),onGo:vi.fn(),onEmail,onFollowedUp:vi.fn(),onReschedule,onStatusChange})
+    const rows=elements(list).filter(x=>x.type===FeedbackDueRow)
+
+    expect(rows.map(x=>x.props.row.id)).toEqual([208,209])
+    expect(rows.map(x=>x.props.overdue)).toEqual([true,false])
+
+    rows[1].props.onStatusChange('rejected')
+    rows[0].props.onReschedule('2026-09-30')
+    rows[1].props.onEmail()
+
+    expect(onStatusChange).toHaveBeenCalledWith(upcomingRow,'rejected')
+    expect(onReschedule).toHaveBeenCalledWith(overdueRow,'2026-09-30')
+    expect(onEmail).toHaveBeenCalledWith(upcomingRow)
   })
 })
