@@ -1,11 +1,11 @@
 ---
 id: TASK-216
 title: Open the CV generator popup fully and smoothly
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-02 09:00'
-updated_date: '2026-09-02 14:20'
+updated_date: '2026-09-07 13:37'
 labels:
   - frontend
   - bug
@@ -44,9 +44,18 @@ Clicking Generate CV and Motivation Letter currently mounts a partially populate
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Root cause reproduced in synthetic Chrome with a delayed preview: the compact popup grew from 81.28px to 1028.60px (+947.32px) because max-height reserved no space while preview-gated controls were absent. Implemented a fixed compact shell, immediate loading/close affordances, and existing focus/Escape behavior. Initial focused test was blocked because the new worktree had no node_modules; debug artifact 1-2 records the setup failure before npm ci.
+Closed 2026-09-07 after independent coordinator verification (TW-003/TW-004), not on the implementer's report.
 
-Verification passed: MutationObserver saw the complete 704x1168.86px compact shell mount in 38.3ms; synthetic 6-second preview discovery produced 0px x/y/width/height shift; dialog focus, Escape, Close, and trigger-focus restoration passed in Chrome. Frontend: 12 files / 207 tests passed and production build passed. Backend: 1054 tests passed. npm ci audit found 0 vulnerabilities. Asian Dad verdict: PERFECT (self-graded disclosure).
+Re-measured in Chrome against the running app (main-runtime at e144e4e, Vite 5173 via the 8000 redirect) with GET /api/jobs/{id}/cv-generation/ shimmed to resolve 6s late:
+- mount at 68.1ms, dialog 704x1312 at (225.14, 329)
+- 41 bounding-box samples over 10.0s: max delta dx 0, dy 0, dw 0, dh 0; one distinct size throughout
+- operability exercised, not just observed: focus lands inside the dialog, Close button closes it, reopen works, Escape closes it
+
+Gate re-run on current main: 1054 backend tests, 207 frontend tests / 12 files, tsc --noEmit clean, production build exit 0.
+
+Asian Dad: PERFECT, all 5 sealed criteria PASS (self-graded disclosure stands).
+
+Caveat recorded for future readers: frontend/src/cvPopup.test.tsx asserts the literal class h-[80vh] in static SSR markup. That pins a class name, not a rendered box - it would stay green if the popup grew on load. Criteria 1, 2 and 5 are carried by the browser measurement above, not by that test.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
