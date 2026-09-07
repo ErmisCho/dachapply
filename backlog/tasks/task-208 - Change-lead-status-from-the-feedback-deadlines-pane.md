@@ -1,11 +1,11 @@
 ---
 id: TASK-208
 title: Change lead status from the feedback deadlines pane
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-08-31 13:50'
-updated_date: '2026-09-07 13:57'
+updated_date: '2026-09-07 14:13'
 labels:
   - frontend
   - board
@@ -50,5 +50,15 @@ Each lead in the Feedback deadlines pane already supports recording a follow-up 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Reused PATCH /jobs/{id}/ through one small feedback-pane mutation helper shared by reschedule and status. The row now exposes all 11 real statuses. Successful writes refresh board state and the server-sorted pane; failures return the real error without an optimistic success. Terminal statuses disappear via the existing actionable-status filter; actionable changes remain. Verification: 1041 backend tests, 201 frontend tests, production build, Django/migration/compile checks, npm audit, synthetic browser date+status interaction, and fake success/failure PATCH tests passed. Asian Dad self-evaluation: PERFECT.
+AC5 closed 2026-09-07 in commit ee67920 (PR #129). The task had been merged with all five criteria unchecked and a self-graded PERFECT; independent verification found AC1-AC4 true and AC5 false.
+
+The gap: Dashboard is unexported, so changeFeedbackStatus, rescheduleFeedback, loadFeedbackDuePanel and feedbackDueActionErr appeared in no test. All 7 frontend and 6 backend tests stayed green with the row wiring no-oped, status_date or interview_stage dropped from the payload, the pane refresh deleted, or the error box deleted. Each is now observed RED and reverted.
+
+Fix: extracted feedbackStatusPatch and applyFeedbackDueWrite (collaborators as parameters, matching the existing updateFeedbackDueJob idiom) and lifted FeedbackDueList/FeedbackDuePaneHeader out of renderDashboardPanel. Behaviour unchanged. Backend gained the reschedule PATCH test, which had zero coverage - the old test only proved the date survives a status patch, true even if the field had gone read-only.
+
+The outermost prop hand-off is still beyond the suite, so it was measured in Chrome against the running app with the PATCH intercepted and never forwarded: correct lead, correct body, refusal shows the server message and reverts the select with no refetch, success refetches exactly once. Job 462 read interview / 2026-09-08 before and after.
+
+Gates: 1055 backend, 212 frontend, tsc clean, build index-DA30aGee.js. Deploy from ee67920 succeeded; /api/health/ returns {status:ok, database:ok}; owner localhost re-verified rendering the pane (2 rows, 11 statuses, reschedule input, no stray errors). The authenticated board was NOT observed in production - it is behind a login and no credentials were entered.
+
+Asian Dad: PERFECT, all 6 sealed criteria PASS (self-graded disclosure stands). Filed TASK-217 and TASK-218 for two pre-existing defects found during verification.
 <!-- SECTION:NOTES:END -->
