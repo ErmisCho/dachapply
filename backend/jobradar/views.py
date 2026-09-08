@@ -2,6 +2,7 @@ import logging
 from collections import Counter
 from html import escape
 from pathlib import Path
+from statistics import median
 
 from django.contrib.auth import authenticate, login, logout, get_user_model
 from django.conf import settings
@@ -162,6 +163,9 @@ def parse_board_ordering(raw):
 # undercounts those. Recording an offer date would be the fix, and needs its own task.
 REACHED_INTERVIEW = Q(status__in=['interview', 'offer', 'accepted']) | Q(interview_stage__isnull=False) | Q(interview_at__isnull=False)
 REACHED_OFFER = Q(status__in=['offer', 'accepted'])
+# Statuses a lead can only be in because a human looked at it. `skipped` is excluded on purpose:
+# it is how a lead is dismissed straight out of `new`, so it proves the opposite of a review.
+REACHED_REVIEWED = [s for s in JobLead.ACTIONABLE_STATUSES if s != 'new'] + ['rejected', 'withdrawn', 'archived']
 
 
 def conversion_rate(numerator, denominator):
@@ -203,6 +207,36 @@ def source_effectiveness(application_rows):
          'interview_rate': conversion_rate(counts[1], counts[0])}
         for source, counts in sorted(grouped.items(), key=lambda item: (-item[1][0], item[0]))
     ]
+
+
+def stall_metrics(stall_rows, today):
+    """Where leads sit still: time to reach applied, age per column, and leads nobody evaluated.
+
+    Never-applied jobs are left out of the time-to-applied sample rather than counted as a huge
+    age -- they have not stalled on the way to applied, they simply have not gone, and folding
+    them in would make the median grow with every untouched lead. An empty sample is None for the
+    same reason `conversion_rate` is: 0 would read as "you apply the same day" instead of "there
+    is nothing to measure yet".
+
+    Ages come from `status_date` when the row has one and `created_at` otherwise, which is how the
+    board already ages dated versus unapplied statuses (JobLead.DATED_STATUSES vs UNAPPLIED_STATUSES).
+    """
+    created_date=lambda row: timezone.localtime(row['created_at']).date()
+    days_to_applied=[(row['applied_at']-created_date(row)).days for row in stall_rows if row['applied_at']]
+    ages={}
+    for row in stall_rows:
+        if row['status'] in JobLead.ACTIONABLE_STATUSES:
+            ages.setdefault(row['status'], []).append((today-(row['status_date'] or created_date(row))).days)
+    return {
+        'median_days_to_applied': float(median(days_to_applied)) if days_to_applied else None,
+        'applied_sample': len(days_to_applied),
+        # Every actionable status is listed even at zero, so an empty column reads as "nobody is
+        # stuck here" rather than vanishing from the chart.
+        'by_status': [{'status': status, 'count': len(ages.get(status, [])),
+                       'median_age_days': float(median(ages[status])) if ages.get(status) else None}
+                      for status in JobLead.ACTIONABLE_STATUSES],
+        'never_evaluated': sum(row['status'] in REACHED_REVIEWED and not row['has_evaluation'] for row in stall_rows),
+    }
 
 
 def password_rejection(password, user=None):
@@ -2111,6 +2145,7 @@ def stats(request):
                          for j in jobs.filter(interview_at__gte=now).exclude(status__in=['rejected','withdrawn','skipped','archived']).order_by('interview_at')[:10]]
     recent_start=today-timezone.timedelta(days=JobLead.FUNNEL_RECENT_DAYS)
     recent_applications=[row for row in application_rows if row['applied_at'] >= recent_start]
+    stall_rows=list(jobs.annotate(has_evaluation=Exists(JobEvaluation.objects.filter(job=OuterRef('pk')))).values('status','status_date','created_at','applied_at','has_evaluation'))
     job_counts=jobs.aggregate(
         total_jobs=Count('id'), interviews=Count('id', filter=Q(status='interview')),
         offers=Count('id', filter=Q(status='offer')), accepted=Count('id', filter=Q(status='accepted')),
@@ -2124,7 +2159,7 @@ def stats(request):
     # change its current values, which TASK-193 explicitly forbids even though it would be cleaner SQL.
     jobs_by_status=dict(jobs.values_list('status').annotate(c=Count('id')))
     evaluation_counts=evaluations.aggregate(average_fit_score=Avg('fit_score'), high_priority_jobs=Count('job', filter=Q(priority='high', job__status='new'), distinct=True))
-    return Response({'total_jobs':job_counts['total_jobs'], 'funnel':funnel, 'source_effectiveness':source_effectiveness(application_rows), 'jobs_by_status':jobs_by_status, 'average_fit_score':evaluation_counts['average_fit_score'] or 0, 'high_priority_jobs':evaluation_counts['high_priority_jobs'], 'applications_sent':len(application_rows), 'applications_this_week':applications_this_week, 'applications_per_workday':round(applications_this_week/max(elapsed_workdays,1), 1), 'workday_applications':workday_applications, 'month_week_applications':month_week_applications, 'weekly_applications':weekly_applications, 'interviews':job_counts['interviews'], 'upcoming_interviews':upcoming_interviews, 'offers':job_counts['offers'], 'accepted':job_counts['accepted'], 'rejected':job_counts['rejected'], 'withdrawn':job_counts['withdrawn'], 'jobs_needing_follow_up':FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).exclude(job__interview_at__gt=now).count()})
+    return Response({'total_jobs':job_counts['total_jobs'], 'funnel':funnel, 'source_effectiveness':source_effectiveness(application_rows), 'stall':stall_metrics(stall_rows, today), 'jobs_by_status':jobs_by_status, 'average_fit_score':evaluation_counts['average_fit_score'] or 0, 'high_priority_jobs':evaluation_counts['high_priority_jobs'], 'applications_sent':len(application_rows), 'applications_this_week':applications_this_week, 'applications_per_workday':round(applications_this_week/max(elapsed_workdays,1), 1), 'workday_applications':workday_applications, 'month_week_applications':month_week_applications, 'weekly_applications':weekly_applications, 'interviews':job_counts['interviews'], 'upcoming_interviews':upcoming_interviews, 'offers':job_counts['offers'], 'accepted':job_counts['accepted'], 'rejected':job_counts['rejected'], 'withdrawn':job_counts['withdrawn'], 'jobs_needing_follow_up':FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).exclude(job__interview_at__gt=now).count()})
 
 @api_view(['GET', 'POST'])
 def export_user_data(request):

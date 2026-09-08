@@ -3345,6 +3345,79 @@ def test_source_effectiveness_groups_applications_and_interview_rate(client):
     assert rows[2]=={'source':'karriere', 'applications':1, 'interviews':1, 'interview_rate':100.0}
 
 
+# --- TASK-219: where leads stall ---------------------------------------------------------------
+
+def _pin_stall_created_at(job, days_ago):
+    """created_at is auto_now_add, so a known age can only be set by going around the model."""
+    JobLead.objects.filter(pk=job.pk).update(created_at=timezone.now()-timezone.timedelta(days=days_ago))
+
+
+def test_stall_median_days_to_applied_ignores_jobs_that_never_applied(client):
+    """Gaps of 2, 8 and 20 days -> median 8. A never-applied lead is not a 0 and not a big age."""
+    today=timezone.localdate()
+    for days_old, gap in [(30, 2), (30, 8), (30, 20)]:
+        job=make_job(client, company=f'Applied {gap}', title='x', status='applied', applied_at=today-timezone.timedelta(days=days_old-gap))
+        _pin_stall_created_at(job, days_old)
+    _pin_stall_created_at(make_job(client, company='Never went', title='y', status='new'), 200)
+
+    stall=client.get('/api/stats/').data['stall']
+    assert stall['median_days_to_applied']==8.0
+    assert stall['applied_sample']==3  # the 200-day-old lead is out of the sample, not a 200 in it
+
+
+def test_stall_median_days_to_applied_is_null_when_nothing_was_applied_to(client):
+    _pin_stall_created_at(make_job(client, company='Lead', title='x', status='new'), 5)
+    stall=client.get('/api/stats/').data['stall']
+    assert stall['median_days_to_applied'] is None  # undefined, not "you apply the same day"
+    assert stall['applied_sample']==0
+
+
+def test_stall_by_status_ages_every_actionable_column_including_empty_ones(client):
+    today=timezone.localdate()
+    # Undated statuses age from created_at ...
+    _pin_stall_created_at(make_job(client, company='New A', title='x', status='new'), 3)
+    _pin_stall_created_at(make_job(client, company='New B', title='x', status='new'), 9)
+    # ... dated ones from status_date, even when the row was created much earlier.
+    old_but_moved=make_job(client, company='Applied', title='x', status='applied', status_date=today-timezone.timedelta(days=4), applied_at=today-timezone.timedelta(days=4))
+    _pin_stall_created_at(old_but_moved, 100)
+
+    by_status={row['status']: row for row in client.get('/api/stats/').data['stall']['by_status']}
+    assert list(by_status)==JobLead.ACTIONABLE_STATUSES  # the constant's own order, all of it
+    assert by_status['new']=={'status':'new', 'count':2, 'median_age_days':6.0}  # median(3, 9)
+    assert by_status['applied']=={'status':'applied', 'count':1, 'median_age_days':4.0}  # status_date, not the 100
+    # An empty column still reports itself, with no age rather than an age of 0.
+    assert by_status['reviewed']=={'status':'reviewed', 'count':0, 'median_age_days':None}
+    assert by_status['offer']=={'status':'offer', 'count':0, 'median_age_days':None}
+
+
+def test_stall_never_evaluated_counts_only_leads_that_moved_past_new(client):
+    make_job(client, company='Reviewed', title='x', status='reviewed')
+    make_job(client, company='Still new', title='y', status='new')  # never looked at, so never overdue
+    make_job(client, company='Skipped', title='z', status='skipped')  # dismissed out of new, not reviewed
+    evaluated=make_job(client, company='Reviewed and judged', title='w', status='reviewed')
+    JobEvaluation.objects.create(job=evaluated, fit_score=7, priority='high', recommendation='apply')
+
+    assert client.get('/api/stats/').data['stall']['never_evaluated']==1
+
+
+def test_stall_figures_only_count_the_requesting_users_jobs(client):
+    today=timezone.localdate()
+    stranger=User.objects.create_user('stall-stranger', password='pw')
+    mine=make_job(client, company='Mine', title='A', status='applied', applied_at=today-timezone.timedelta(days=8), status_date=today-timezone.timedelta(days=8))
+    _pin_stall_created_at(mine, 10)
+    mine_new=make_job(client, company='Mine new', title='B', status='new')
+    _pin_stall_created_at(mine_new, 4)
+    before=client.get('/api/stats/').data['stall']
+
+    theirs=JobLead.objects.create(company='Theirs', title='C', status='applied', applied_at=today, created_by=stranger)
+    JobLead.objects.filter(pk=theirs.pk).update(created_at=timezone.now()-timezone.timedelta(days=90))
+    JobLead.objects.create(company='Their lead', title='D', status='reviewed', created_by=stranger)
+
+    assert client.get('/api/stats/').data['stall']==before
+    assert before['median_days_to_applied']==2.0 and before['applied_sample']==1
+    assert before['never_evaluated']==1  # `mine` reached applied unevaluated; the stranger's does not add a second
+
+
 def test_funnel_only_counts_the_requesting_users_jobs(client):
     today=timezone.localdate()
     stranger=User.objects.create_user('funnel-stranger', password='pw')
