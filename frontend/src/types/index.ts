@@ -113,3 +113,17 @@ export type JobMailboxPayload={messages:JobMailboxMessage[];notes:ApplicationNot
 // not draft replies to the whole mailbox history - see the model docstring for why this is recorded
 // per-run rather than only logged, and check_mailbox.py for the wording this UI mirrors.
 export type MailboxRun={id:number;started_at:string;finished_at:string|null;skipped:boolean;skip_reason:string;fetched_count:number;job_related_count:number;uncertain_count:number;suggestion_count:number;draft_written_count:number;draft_blocked_count:number;drafting_skipped:boolean;error:string;digest_messages:MailboxMessage[]}
+// TASK-220. POST /jobs/evaluate-with-model/ - the same evaluation the copy-paste prompt produces,
+// run through the configured provider instead. `commit` defaults to FALSE on the server, so the
+// first response is always dry_run:true and `created` is 0: preview is what the model WOULD write,
+// nothing is on the board yet. action/replaces_fit_score is the part a fit score alone cannot say -
+// 'replace' means an evaluation already exists and its score is about to be overwritten, and
+// replaces_fit_score is number|null because a replaced evaluation whose old score is unknown must
+// render as words, never as a fabricated 0 (same rule as the funnel rates above).
+// The 400 body is NOT this shape - it is {ok:false, errors:string[], detail?:string}, thrown by
+// api() rather than returned. `detail` carries the provider's own stderr (what the model actually
+// said) and is the only thing that distinguishes "the model is not installed" from "the model
+// answered with unparseable text", so it is rendered in full rather than collapsed into a generic
+// failure message. It is deliberately not typed here: it reaches the UI through a catch, as `any`.
+export type EvaluateWithModelPreviewRow={job_id:number;company:string;title:string;fit_score:number;priority:string;recommendation:string;action:'create'|'replace';replaces_fit_score:number|null}
+export type EvaluateWithModelResult={ok:true;dry_run:boolean;created:number;errors:string[];preview:EvaluateWithModelPreviewRow[]}

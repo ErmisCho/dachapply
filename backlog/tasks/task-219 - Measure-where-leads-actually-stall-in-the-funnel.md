@@ -1,7 +1,7 @@
 ---
 id: TASK-219
 title: Measure where leads actually stall in the funnel
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-08 11:03'
 labels:
