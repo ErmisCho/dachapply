@@ -27,6 +27,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile, InviteCode
 from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxDraftSerializer, MailboxMessageListSerializer, MailboxMessageSerializer, MailboxMessageWithSuggestionsSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, invalid_email_addresses, normalize_job_url
+from .services.job_evaluator import evaluate_jobs
 from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, has_candidate_profile, user_profile_settings
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
@@ -1887,6 +1888,25 @@ def generate_combined_prompt(request):
     if not ids or jobs.count()!=len(set(ids)): return Response({'detail':'Provide valid job_ids'}, status=400)
     profile=user_profile_settings(request.user)
     return Response({'generated_prompt': build_combined_prompt(jobs, request.data.get('custom_instructions',''), build_candidate_profile_text(request.user), profile.combined_prompt_template)})
+
+@api_view(['POST'])
+def evaluate_with_model(request):
+    """TASK-220: the same evaluation, run through the configured provider instead of copy-paste.
+
+    `commit` defaults to false and that default is the point -- the model decides fit_score,
+    priority and recommendation, which drive the board's ordering, so the owner sees what would
+    change before any of it is written. The prompt-and-paste endpoints above are untouched and
+    remain the fallback when no provider is installed.
+    """
+    ids=request.data.get('job_ids') or []
+    jobs=accessible_jobs(request.user).filter(id__in=ids)
+    if not ids or jobs.count()!=len(set(ids)): return Response({'ok':False,'errors':['Provide valid job_ids'],'detail':''}, status=400)
+    provider=request.data.get('provider') or ''; model=request.data.get('model') or ''
+    effort=request.data.get('effort') or 'default'; speed=request.data.get('speed') or 'normal'
+    # The provider/model combination is checked inside evaluate_jobs, against the model picker's own
+    # rules, so this path cannot reach a combination the CV generator would have refused.
+    result=evaluate_jobs(list(jobs.values_list('id', flat=True)), request.user, provider, model, effort, speed, commit=bool(request.data.get('commit')))
+    return Response(result, status=200 if result['ok'] else 400)
 
 @api_view(['POST'])
 def generate_bulk_links_prompt(request):

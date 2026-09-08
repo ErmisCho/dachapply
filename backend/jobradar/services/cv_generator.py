@@ -807,6 +807,72 @@ def validate_model_capability(provider, model, effort, speed):
     return model_option
 
 
+def run_structured_model(prompt, schema, provider, model, effort='default', speed='normal', *, workdir,
+                         cancelled=None, image_path=None, read_tools=False, model_option=None):
+    """Run the configured CLI provider against `prompt`, constrained to `schema`, and return the parsed dict.
+
+    The one place in this project that actually talks to a model. `workdir` is the directory the CLI
+    is allowed to read and where the schema and the result file are written, so a caller hands over a
+    temporary directory already holding whatever the prompt refers to.
+
+    Raises RecoverableGenerationError -- carrying the provider's own stderr/stdout -- when the CLI
+    fails or answers with something that is not a JSON object, so the caller can show the user what
+    the provider actually said rather than a generic failure.
+    """
+    workdir=Path(workdir)
+    schema_path=workdir/'output-schema.json'
+    result_path=workdir/'model-result.json'
+    schema_path.write_text(json.dumps(schema), encoding='utf-8')
+    result_path.unlink(missing_ok=True)
+    if provider == 'anthropic':
+        executable=shutil.which('claude') or shutil.which('claude.exe')
+        if not executable:
+            raise RuntimeError('The claude CLI must be installed on the generation server.')
+        command=[executable, '--print', '--model', model]
+        if read_tools:
+            command += ['--tools', 'Read']
+        command += ['--permission-mode', 'dontAsk', '--no-session-persistence', '--output-format', 'json', '--json-schema', json.dumps(schema)]
+        if effort in CLAUDE_EFFORTS:
+            command += ['--effort', effort]
+        if speed == 'fast':
+            # There is no --fast flag; fastMode is a settings key, which --settings accepts
+            # inline as JSON. Passed as one argv element, so no shell escaping is involved.
+            command += ['--settings', json.dumps({'fastMode': True})]
+        result=_run_command(command, cancelled, cwd=workdir, input=prompt, capture_output=True, text=True, encoding='utf-8', check=False)
+    else:
+        executable=shutil.which('codex') or shutil.which('codex.cmd')
+        if not executable:
+            raise RuntimeError('The codex CLI must be installed on the generation server.')
+        command=[executable, 'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check', '--sandbox', 'read-only', '--model', model]
+        if image_path:
+            command += ['--image', str(image_path)]
+        if provider == 'openai':
+            command += ['--config', f'model_reasoning_effort="{effort}"']
+            if speed == 'fast':
+                command += ['--config', f'service_tier="{model_option["fast_tier"]}"']
+        else:
+            command += ['--oss', '--local-provider', provider]
+        command += ['--cd', str(workdir), '--output-schema', str(schema_path), '--output-last-message', str(result_path), '-']
+        result=_run_command(command, cancelled, input=prompt, capture_output=True, text=True, encoding='utf-8', check=False)
+    if result.returncode or provider != 'anthropic' and not result_path.is_file():
+        detail=(result.stderr or result.stdout or 'No model output was returned.')[-6000:]
+        raise RecoverableGenerationError('The selected model could not complete the request.', detail)
+    _ensure_active(cancelled)
+    try:
+        if provider == 'anthropic':
+            response=json.loads(result.stdout)
+            generated=response.get('structured_output')
+            if not generated and response.get('result'):
+                generated=json.loads(response['result'])
+        else:
+            generated=json.loads(result_path.read_text(encoding='utf-8'))
+        if not isinstance(generated,dict):
+            raise ValueError
+    except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
+        raise RecoverableGenerationError('The selected model returned an invalid response.', str(exc) or 'The structured response was not a JSON object.') from None
+    return generated
+
+
 def _read_generated(path, label):
     """A previously generated document being readjusted, read back off the workspace.
 
@@ -930,51 +996,16 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
             properties['letter_tex']={'type':'string'}
             required.append('letter_tex')
         schema={'type':'object','properties':properties,'required':required,'additionalProperties':False}
-        schema_path=output/'output-schema.json'
-        result_path=output/'model-result.json'
-        schema_path.write_text(json.dumps(schema), encoding='utf-8')
         layout_context=_layout_context(output, source_cv, source_letter, revision_instructions) if revision_instructions else ''
         report(10, 'Generating CV and motivation letter' if create_cv and create_letter else 'Generating CV' if create_cv else 'Generating motivation letter')
         base_prompt=_revision_prompt(job, cv_name, letter_name, cv_key, letter_language, create_letter, revision_instructions, create_cv, layout_context, correction_image_name) if is_revision else _prompt(job, profile, cv_name, letter_name, cv_key, letter_language, create_letter, revision_instructions, create_cv, layout_context, correction_image_name)
         generated_files=([cv_name] if create_cv else []) + ([letter_name] if create_letter else [])
 
         def generate(model_prompt):
-            result_path.unlink(missing_ok=True)
-            if provider == 'anthropic':
-                command=[claude, '--print', '--model', model, '--tools', 'Read', '--permission-mode', 'dontAsk', '--no-session-persistence', '--output-format', 'json', '--json-schema', json.dumps(schema)]
-                if effort in CLAUDE_EFFORTS:
-                    command += ['--effort', effort]
-                if speed == 'fast':
-                    # There is no --fast flag; fastMode is a settings key, which --settings accepts
-                    # inline as JSON. Passed as one argv element, so no shell escaping is involved.
-                    command += ['--settings', json.dumps({'fastMode': True})]
-                result=_run_command(command, cancelled, cwd=output, input=model_prompt, capture_output=True, text=True, encoding='utf-8', check=False)
-            else:
-                command=[codex, 'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check', '--sandbox', 'read-only', '--model', model]
-                if correction_image_name:
-                    command += ['--image', str(output/correction_image_name)]
-                if provider == 'openai':
-                    command += ['--config', f'model_reasoning_effort="{effort}"']
-                    if speed == 'fast':
-                        command += ['--config', f'service_tier="{model_option["fast_tier"]}"']
-                else:
-                    command += ['--oss', '--local-provider', provider]
-                command += ['--cd', str(output), '--output-schema', str(schema_path), '--output-last-message', str(result_path), '-']
-                result=_run_command(command, cancelled, input=model_prompt, capture_output=True, text=True, encoding='utf-8', check=False)
-            if result.returncode or provider != 'anthropic' and not result_path.is_file():
-                detail=(result.stderr or result.stdout or 'No model output was returned.')[-6000:]
-                raise RecoverableGenerationError('The selected model could not generate the application documents.', detail)
-            _ensure_active(cancelled)
+            generated=run_structured_model(model_prompt, schema, provider, model, effort, speed, workdir=output,
+                                           cancelled=cancelled, read_tools=True, model_option=model_option,
+                                           image_path=output/correction_image_name if correction_image_name else None)
             try:
-                if provider == 'anthropic':
-                    response=json.loads(result.stdout)
-                    generated=response.get('structured_output')
-                    if not generated and response.get('result'):
-                        generated=json.loads(response['result'])
-                else:
-                    generated=json.loads(result_path.read_text(encoding='utf-8'))
-                if not isinstance(generated,dict):
-                    raise ValueError
                 cv_tex=generated.get('cv_tex','')
                 letter_tex=generated.get('letter_tex','')
                 def valid_tex(content):
