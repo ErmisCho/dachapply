@@ -15,7 +15,15 @@ export type FeedbackDueRow={id:number;company:string;title:string;status:string;
 export type FunnelCounts={applications:number;interviews:number;offers:number;applied_to_interview_rate:number|null;interview_to_offer_rate:number|null}
 export type Funnel={recent_window_days:number;recent_window_start:string;all_time:FunnelCounts;recent:FunnelCounts;interviews_without_application:number}
 export type SourceEffectiveness={source:string;applications:number;interviews:number;interview_rate:number|null}
-export type Stats={funnel?:Funnel;source_effectiveness?:SourceEffectiveness[];[key:string]:any}
+// TASK-219. /api/stats/ stall rows, optional because an older backend answers without the key at
+// all. Both medians are number|null for the same reason the funnel rates above are: null is "no
+// cohort to take a median over", which must never render as 0 days ("you apply the same day you
+// find a role"). applied_sample is what the median was taken over and is part of the claim, not
+// decoration - a median over three applications is not the same statement as one over thirty, so
+// the panel that renders it says which one it has.
+export type StallStatus={status:string;count:number;median_age_days:number|null}
+export type Stall={median_days_to_applied:number|null;applied_sample:number;by_status:StallStatus[];never_evaluated:number}
+export type Stats={funnel?:Funnel;source_effectiveness?:SourceEffectiveness[];stall?:Stall;[key:string]:any}
 // TASK-125 AC1/AC2/AC5: mailbox_check_enabled is the explicit off switch (never a cadence of 0 --
 // see the model comment on UserProfile.mailbox_check_cadence_minutes for why). The window fields are
 // "HH:MM:SS" strings (DRF TimeField's default representation) interpreted in settings.TIME_ZONE,
