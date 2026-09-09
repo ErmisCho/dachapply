@@ -114,12 +114,29 @@ def evaluate_jobs(job_ids, user, provider, model, effort='default', speed='norma
     # something that can never be committed.
     requested = {job.id: job for job in jobs}
     errors = []
+    seen = {}
     for i, ev in enumerate(data['evaluations']):
         errors += validate_eval(ev, i, require_job_id=True)
-        if isinstance(ev, dict) and ev.get('job_id') not in requested:
+        if not isinstance(ev, dict):
+            continue
+        job_id = ev.get('job_id')
+        if job_id not in requested:
             # A model that invents or wanders onto another job_id must not be able to write to it,
             # even when that job would pass the importer's own ownership check.
-            errors.append(f'evaluation[{i}].job_id was not one of the selected jobs: {ev.get("job_id")}')
+            errors.append(f'evaluation[{i}].job_id was not one of the selected jobs: {job_id}')
+        elif job_id in seen:
+            # TASK-223, and the decision is REJECT the whole response rather than collapse the
+            # duplicates to one. Two entries for one job are two different verdicts on it -- the
+            # measured case emitted fit 90 twice, but nothing says the second one has to agree with
+            # the first, and picking one of two disagreeing answers by list order would make the
+            # board's ranking a function of where the model happened to repeat itself. Collapsing
+            # also hides the signal: a model that contradicts itself about the same job in one
+            # response has not honoured the schema, and the owner is better served re-running it
+            # than approving a tidied version of a response we already know is unreliable.
+            errors.append(f'evaluation[{i}] evaluates job {job_id} a second time; '
+                          f'evaluation[{seen[job_id]}] already did. Re-run the evaluation.')
+        else:
+            seen[job_id] = i
     if errors:
         return {'ok': False, 'errors': errors, 'detail': ''}
 
