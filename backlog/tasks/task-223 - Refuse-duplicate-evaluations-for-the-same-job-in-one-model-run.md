@@ -1,11 +1,11 @@
 ---
 id: TASK-223
 title: Refuse duplicate evaluations for the same job in one model run
-status: In Progress
+status: Done
 assignee:
   - '@ErmisCho'
 created_date: ''
-updated_date: '2026-09-09 14:00'
+updated_date: '2026-09-09 14:16'
 labels:
   - backend
   - llm

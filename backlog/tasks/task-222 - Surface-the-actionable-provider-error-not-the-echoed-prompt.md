@@ -1,11 +1,11 @@
 ---
 id: TASK-222
 title: 'Surface the actionable provider error, not the echoed prompt'
-status: In Progress
+status: Done
 assignee:
   - '@ErmisCho'
 created_date: ''
-updated_date: '2026-09-09 13:59'
+updated_date: '2026-09-09 14:16'
 labels:
   - backend
   - llm
