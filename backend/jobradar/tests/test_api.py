@@ -681,7 +681,7 @@ def test_exact_revision_route_bypasses_ai_but_semantic_and_image_requests_do_not
     compiled=[]; ai=[]
     monkeypatch.setattr('jobradar.views.start_cv_compile_task',lambda *args,**kwargs: compiled.append((args,kwargs)) or 'exact-task')
     monkeypatch.setattr('jobradar.views.start_cv_task',lambda *args,**kwargs: ai.append((args,kwargs)) or 'ai-task')
-    monkeypatch.setattr('jobradar.views.validate_model_capability',lambda *args: None)
+    monkeypatch.setattr('jobradar.views.validate_model_capability',lambda *args,**kwargs: None)
     monkeypatch.setattr('jobradar.views.load_candidate_evidence',lambda *args: 'profile')
     base={'create_cv':True,'create_letter':False,'cv_template':'en','provider':'openai','model':'model','effort':'low'}
 
@@ -795,6 +795,10 @@ def test_cv_model_discovery_includes_anthropic_and_installed_local_models(monkey
 
     monkeypatch.setattr(cv_generator, 'codex_model_options', lambda: [{'provider':'openai','key':'gpt','label':'GPT','efforts':['low'],'default_effort':'low','fast_tier':''}])
     monkeypatch.setattr(cv_generator.shutil, 'which', lambda command: command if command in ('claude','ollama','lms') else None)
+    # TASK-221 gates ollama behind a live probe of the model list codex cannot decode. This test is
+    # about what discovery lists, not about the gate, and stubbing it also keeps the suite hermetic:
+    # unstubbed, the probe makes a real call to localhost:11434 and the result depends on the machine.
+    monkeypatch.setattr(cv_generator, '_codex_can_enumerate_ollama', lambda: True)
     def run(command, **kwargs):
         if command[0]=='ollama': return SimpleNamespace(stdout='NAME ID SIZE MODIFIED\nqwen:latest 1 1GB now\nnomic-embed-text 2 1GB now\n')
         return SimpleNamespace(stdout=json.dumps([{'modelKey':'gemma','displayName':'Gemma'}]))
@@ -1274,6 +1278,10 @@ def test_optional_model_discovery_cannot_hold_the_popup_beyond_four_seconds(monk
     monkeypatch.setattr(cv_generator, 'codex_model_options', lambda: [{'provider':'openai','key':'cloud'}])
     monkeypatch.setattr(cv_generator, 'claude_model_options', lambda: [{'provider':'anthropic','key':'cloud'}])
     monkeypatch.setattr(cv_generator.shutil, 'which', lambda name: name if name in {'ollama','lms'} else None)
+    # TASK-221 put an ollama probe in front of `ollama list`, so it spends from this same budget and
+    # is counted here. A probe that times out returns False, which skips `ollama list` altogether --
+    # so the worst case is probe + lms, not probe + ollama + lms, and the four-second ceiling holds.
+    monkeypatch.setattr(cv_generator, '_codex_can_enumerate_ollama', lambda: timeouts.append(2) or False)
     def timeout(command, **kwargs):
         timeouts.append(kwargs['timeout'])
         raise subprocess.TimeoutExpired(command, kwargs['timeout'])
@@ -1286,6 +1294,7 @@ def test_optional_model_discovery_cannot_hold_the_popup_beyond_four_seconds(monk
 
     class Result:
         def __init__(self, stdout): self.stdout=stdout
+    monkeypatch.setattr(cv_generator, '_codex_can_enumerate_ollama', lambda: True)
     monkeypatch.setattr(cv_generator.subprocess, 'run', lambda command, **kwargs: Result(
         'NAME ID SIZE\nllama:latest abc 1 GB\n' if command[0] == 'ollama'
         else '[{"modelKey":"local-model","displayName":"Local model"}]'

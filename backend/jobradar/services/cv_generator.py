@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.request
 import zipfile
 from pathlib import Path
 from threading import Lock
@@ -19,6 +20,7 @@ from django.utils.text import slugify
 
 from jobradar.models import CvAsset
 from jobradar.services import cv_workspace
+from jobradar.services.json_importer import parse_json_object
 
 
 FALLBACK_MODELS = [
@@ -172,11 +174,33 @@ def available_model_options():
     return options
 
 
+def _codex_can_enumerate_ollama():
+    """Whether this codex build can read this ollama build's model list.
+
+    TASK-221, and this is the exact failure rather than a guess at it: codex-cli 0.146.0 asks ollama
+    for its models over the OpenAI-compatible /v1/models route but decodes the answer with the native
+    /api/tags schema, which is the one with a top-level "models" key. Ollama 0.32.9 answers
+    {"object":"list","data":[...]}, codex reports `missing field models`, and the run ABORTS -- so an
+    ollama model offered in the picker costs the owner a long wait and then fails, every time.
+
+    Probing the same response codex chokes on keeps this honest in both directions: the models come
+    back the moment either side ships a build that agrees, with no flag to remember to unset.
+    """
+    host=(os.environ.get('OLLAMA_HOST') or 'http://localhost:11434').rstrip('/')
+    if not host.startswith('http'):
+        host=f'http://{host}'
+    try:
+        with urllib.request.urlopen(f'{host}/v1/models', timeout=2) as response:
+            return isinstance(json.loads(response.read()).get('models'), list)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
 def _discover_model_options():
     options=codex_model_options()
     options += claude_model_options()
     ollama=shutil.which('ollama') or shutil.which('ollama.exe')
-    if ollama:
+    if ollama and _codex_can_enumerate_ollama():
         try:
             rows=subprocess.run([ollama,'list'], capture_output=True, text=True, timeout=2, check=False).stdout.splitlines()[1:]
             options += [{'provider':'ollama','key':row.split()[0],'label':row.split()[0],'efforts':['default'],'default_effort':'default','fast_tier':''} for row in rows if row.split() and 'embed' not in row.split()[0].lower()]
@@ -186,7 +210,12 @@ def _discover_model_options():
     if lms:
         try:
             models=json.loads(subprocess.run([lms,'ls','--llm','--json'], capture_output=True, text=True, timeout=2, check=False).stdout or '[]')
-            options += [{'provider':'lmstudio','key':model['modelKey'],'label':model.get('displayName') or model['modelKey'],'efforts':['default'],'default_effort':'default','fast_tier':''} for model in models]
+            # TASK-221: `trainedForToolUse` is carried because CV generation cannot work without it.
+            # That prompt opens with "Read the copied LaTeX source files", so the model has to call
+            # codex's file-reading tool; a model that cannot answers from nothing. Measured on the
+            # owner's machine: deepseek-r1-distill-qwen-7b evaluates a job fine and, handed the CV
+            # prompt, replied "I don't have access to probe.tex" and echoed the prompt back.
+            options += [{'provider':'lmstudio','key':model['modelKey'],'label':model.get('displayName') or model['modelKey'],'efforts':['default'],'default_effort':'default','fast_tier':'','tools':bool(model.get('trainedForToolUse'))} for model in models]
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired):
             pass
     return options
@@ -794,10 +823,21 @@ Title: {job.title}
 '''
 
 
-def validate_model_capability(provider, model, effort, speed):
+def validate_model_capability(provider, model, effort, speed, *, needs_tools=False):
+    """Check a provider/model/effort/speed combination, and refuse it here rather than mid-run.
+
+    `needs_tools` is for the callers whose prompt tells the model to READ a file -- CV generation and
+    readjustment. Absent metadata means capable, so cloud providers and every existing caller keep
+    their behaviour; only a local model that declares itself untrained for tool use is refused.
+    """
     model_option=next((option for option in available_model_options() if option['provider'] == provider and option['key'] == model), None)
     if not model_option:
         raise ValueError('Select an available model for the chosen provider.')
+    # TASK-221 AC3: refused up front, because the alternative measured at 41 seconds and three failed
+    # attempts before saying "the selected model could not complete the request" -- with the echoed
+    # prompt as its only detail, which tells the owner nothing about what to pick instead.
+    if needs_tools and not model_option.get('tools', True):
+        raise ValueError(f'{model_option["label"]} is not trained for tool use, so it cannot read the LaTeX templates that CV generation needs. Pick a tool-capable model, or load one in LM Studio. Evaluating a job with it still works, because that prompt carries the job text instead of asking the model to open a file.')
     if effort not in model_option['efforts']:
         raise ValueError(f'"{effort}" effort is not supported by {model_option["label"]}. Supported efforts: {", ".join(model_option["efforts"])}.')
     if speed not in ('normal','fast'):
@@ -863,9 +903,14 @@ def run_structured_model(prompt, schema, provider, model, effort='default', spee
             response=json.loads(result.stdout)
             generated=response.get('structured_output')
             if not generated and response.get('result'):
-                generated=json.loads(response['result'])
+                generated=parse_json_object(response['result'])
         else:
-            generated=json.loads(result_path.read_text(encoding='utf-8'))
+            # TASK-221: parse_json_object, not json.loads. A local model honours --output-schema
+            # loosely and wraps its answer in a ```json fence -- measured with
+            # deepseek-r1-distill-qwen-7b through lmstudio, which returns valid JSON inside a fence
+            # and so failed a bare json.loads. This is the same tolerance the paste path has always
+            # needed for ChatGPT output, so it is reused rather than written a second time here.
+            generated=parse_json_object(result_path.read_text(encoding='utf-8'))
         if not isinstance(generated,dict):
             raise ValueError
     except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
@@ -903,7 +948,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
         raise RuntimeError('Current target TeX files are unavailable for readjustment.')
     if not create_cv and not create_letter:
         raise ValueError('Select at least a CV or a letter.')
-    model_option=validate_model_capability(provider, model, effort, speed)
+    model_option=validate_model_capability(provider, model, effort, speed, needs_tools=True)
 
     # Resolved here rather than passed as a name, so the running task cannot be told to use
     # somebody else's templates or write their name onto a document: only the id of the user the

@@ -1,7 +1,7 @@
 ---
 id: TASK-220
 title: Evaluate a job with the configured LLM provider instead of copy-paste
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-08 11:05'
 labels:

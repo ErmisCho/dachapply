@@ -1956,7 +1956,9 @@ def generate_cv_documents(request, job_id):
     if not create_cv and not create_letter:
         return Response({'detail':'Select at least a CV or a letter.'}, status=400)
     try:
-        validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal')
+        # needs_tools: both endpoints generate or readjust LaTeX, whose prompt tells the model to read
+        # the copied source files (TASK-221 AC3).
+        validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', needs_tools=True)
     except ValueError as exc:
         return Response({'detail':str(exc)}, status=400)
     cv_profile=user_profile_settings(request.user)
@@ -2027,7 +2029,9 @@ def revise_latest_cv_documents(request, job_id):
             task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv if create_cv else None,source_letter if create_letter else None,source_updates=exact_updates,task_report=report)
             return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
     try:
-        validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal')
+        # needs_tools: both endpoints generate or readjust LaTeX, whose prompt tells the model to read
+        # the copied source files (TASK-221 AC3).
+        validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', needs_tools=True)
     except ValueError as exc:
         return Response({'detail':str(exc)}, status=400)
     cv_profile=user_profile_settings(request.user)
