@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.request
 import zipfile
 from pathlib import Path
 from threading import Lock
@@ -19,6 +20,7 @@ from django.utils.text import slugify
 
 from jobradar.models import CvAsset
 from jobradar.services import cv_workspace
+from jobradar.services.json_importer import parse_json_object
 
 
 FALLBACK_MODELS = [
@@ -172,11 +174,33 @@ def available_model_options():
     return options
 
 
+def _codex_can_enumerate_ollama():
+    """Whether this codex build can read this ollama build's model list.
+
+    TASK-221, and this is the exact failure rather than a guess at it: codex-cli 0.146.0 asks ollama
+    for its models over the OpenAI-compatible /v1/models route but decodes the answer with the native
+    /api/tags schema, which is the one with a top-level "models" key. Ollama 0.32.9 answers
+    {"object":"list","data":[...]}, codex reports `missing field models`, and the run ABORTS -- so an
+    ollama model offered in the picker costs the owner a long wait and then fails, every time.
+
+    Probing the same response codex chokes on keeps this honest in both directions: the models come
+    back the moment either side ships a build that agrees, with no flag to remember to unset.
+    """
+    host=(os.environ.get('OLLAMA_HOST') or 'http://localhost:11434').rstrip('/')
+    if not host.startswith('http'):
+        host=f'http://{host}'
+    try:
+        with urllib.request.urlopen(f'{host}/v1/models', timeout=2) as response:
+            return isinstance(json.loads(response.read()).get('models'), list)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
 def _discover_model_options():
     options=codex_model_options()
     options += claude_model_options()
     ollama=shutil.which('ollama') or shutil.which('ollama.exe')
-    if ollama:
+    if ollama and _codex_can_enumerate_ollama():
         try:
             rows=subprocess.run([ollama,'list'], capture_output=True, text=True, timeout=2, check=False).stdout.splitlines()[1:]
             options += [{'provider':'ollama','key':row.split()[0],'label':row.split()[0],'efforts':['default'],'default_effort':'default','fast_tier':''} for row in rows if row.split() and 'embed' not in row.split()[0].lower()]
@@ -863,9 +887,14 @@ def run_structured_model(prompt, schema, provider, model, effort='default', spee
             response=json.loads(result.stdout)
             generated=response.get('structured_output')
             if not generated and response.get('result'):
-                generated=json.loads(response['result'])
+                generated=parse_json_object(response['result'])
         else:
-            generated=json.loads(result_path.read_text(encoding='utf-8'))
+            # TASK-221: parse_json_object, not json.loads. A local model honours --output-schema
+            # loosely and wraps its answer in a ```json fence -- measured with
+            # deepseek-r1-distill-qwen-7b through lmstudio, which returns valid JSON inside a fence
+            # and so failed a bare json.loads. This is the same tolerance the paste path has always
+            # needed for ChatGPT output, so it is reused rather than written a second time here.
+            generated=parse_json_object(result_path.read_text(encoding='utf-8'))
         if not isinstance(generated,dict):
             raise ValueError
     except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
