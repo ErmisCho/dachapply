@@ -180,9 +180,15 @@ measured rather than argued:
 only tool-capable one caps at 32768. A Llama-3.1-8B-Instruct build (128k, tool-trained) is the
 obvious candidate and is **not yet tried**.
 
-Worth the owner's attention independently of this task: **the CV prompt costs 40,654 tokens on every
-provider**, cloud ones included. That is a billing fact, not just a local-model one, and most of it
-is the candidate-evidence context rather than the job text.
+Worth the owner's attention independently of this task: **the CV request costs 40,654 tokens on every
+provider**, cloud ones included. That is a billing fact, not just a local-model one. Filed as
+TASK-224.
+
+*Corrected here rather than left standing:* this first said "most of it is the candidate-evidence
+context". That was an assumption and measuring contradicted it —
+`_compact_candidate_evidence` already removes **68%**, taking the evidence from 26,458 tokens to
+**8,434**, about a fifth of the request. Where the other ~23k goes is not yet measured and is
+TASK-224's first criterion.
 
 ### Suite
 
@@ -218,8 +224,7 @@ What closing AC4 would take, if it is ever picked up:
 
 Open questions this task surfaced but does not own:
 
-- **The CV prompt is 40,654 tokens**, paid on every provider including cloud, and mostly candidate
-  evidence rather than job text. Worth a look on cost grounds alone.
+- **The CV request is 40,654 tokens**, paid on every provider including cloud. Filed as TASK-224.
 - TASK-222 (echoed prompt hides the real error) and TASK-223 (duplicate evaluations) both came out of
   this task's verification.
 <!-- SECTION:NOTES:END -->
