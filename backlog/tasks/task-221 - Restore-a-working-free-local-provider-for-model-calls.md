@@ -148,6 +148,38 @@ or Llama-3.1-Instruct build, something reporting `trainedForToolUse: true` in `l
 The guard added for AC3 is written so the CV path opens by itself the moment one is installed; the
 test `test_a_tool_capable_local_model_is_accepted_for_cv_generation` pins that.
 
+#### Pursued that blocker, and it moved to a harder one — measured, 2026-09-09
+
+`lmstudio-community/Qwen2.5-7B-Instruct-GGUF` was downloaded and it reports
+**`trainedForToolUse: true`**, the first installed model that does. Three things follow, each
+measured rather than argued:
+
+1. **The guard behaves as designed.** The model is accepted for CV generation and reaches the
+   provider, so `test_a_tool_capable_local_model_is_accepted_for_cv_generation` is not a fiction.
+   It also sorts first in the picker, so the LM Studio default is no longer the unloadable
+   `laser-dolphin`.
+2. **Tool use genuinely works.** The same file-read probe deepseek failed now returns the real
+   marker — `ZEBRA-8817-QUILL` — and quotes the file's contents back. So codex's file-reading tool
+   over lmstudio is not the obstacle it looked like.
+3. **The obstacle is context length, and it is a hard ceiling.** LM Studio JIT-loads a model at
+   **8192** tokens, and **codex's own system prompt is 9,448 tokens**, so every local model has to be
+   loaded explicitly first: `lms load <model> --context-length 32768`. That fixed the probe. It did
+   not fix generation, because the **CV prompt is 40,654 tokens** and Qwen2.5-7B's architectural
+   maximum is 32,768:
+
+       Engine protocol predict request returned 400: request (40654 tokens) exceeds the
+       available context size (32768 tokens)
+
+**So AC4 needs a local model meeting BOTH conditions: `trainedForToolUse: true` AND
+`maxContextLength` comfortably above ~48k.** Of what is installed, the only long-context models
+(`deepseek-r1-distill-qwen-7b` and `google/gemma-3-12b`, both 131072) report no tool use, and the
+only tool-capable one caps at 32768. A Llama-3.1-8B-Instruct build (128k, tool-trained) is the
+obvious candidate and is **not yet tried**.
+
+Worth the owner's attention independently of this task: **the CV prompt costs 40,654 tokens on every
+provider**, cloud ones included. That is a billing fact, not just a local-model one, and most of it
+is the candidate-evidence context rather than the job text.
+
 ### Suite
 
 **1084 passed**, full run. Two tests had been broken by this branch and were never caught, because
@@ -167,7 +199,11 @@ The four-second popup ceiling still holds: a probe that times out returns False,
 
 ### Still to do
 
-- Install a tool-capable local model, then re-run CV generation to close AC4.
-- Decide AC3 (see above).
-- Not committed to `main`; branch `task-221-local-provider` has no PR yet.
+- **AC4:** try a long-context tool-capable model (Llama-3.1-8B-Instruct, 128k). Load it with
+  `lms load <model> --context-length 65536` — the JIT default of 8192 does not even fit codex's own
+  prompt. Then re-run CV generation. Expect it to be slow: 40k tokens of prompt processing on a 7-8B
+  local model is minutes, so "works" and "usable" may turn out to be different answers.
+- **AC3:** owner's decision, above.
+- Consider whether 40,654 tokens of CV prompt is intended, since it is paid for on every provider.
+- Branch `task-221-local-provider` is pushed; no PR yet, and merging deploys to production.
 <!-- SECTION:NOTES:END -->
