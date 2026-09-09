@@ -1,8 +1,11 @@
 ---
 id: TASK-222
-title: Surface the actionable provider error, not the echoed prompt
-status: To Do
-assignee: []
+title: 'Surface the actionable provider error, not the echoed prompt'
+status: In Progress
+assignee:
+  - '@ErmisCho'
+created_date: ''
+updated_date: '2026-09-09 13:59'
 labels:
   - backend
   - llm
@@ -45,9 +48,27 @@ prompt produces it.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A failed provider run surfaces the line that names the cause, even when the CLI echoed a prompt longer than the detail budget
-- [ ] #2 The echoed prompt is not presented to the owner as though it were the model's answer
-- [ ] #3 Nothing is truncated in a way that hides a cause with no other trace — if the output is dropped, the fact that it was dropped is visible
-- [ ] #4 CV generation's failure reporting is verified as no worse than today, since it shares this function
-- [ ] #5 A synthetic regression covers a long echoed prompt followed by a short trailing error, without calling a real provider
+- [x] #1 A failed provider run surfaces the line that names the cause, even when the CLI echoed a prompt longer than the detail budget
+- [x] #2 The echoed prompt is not presented to the owner as though it were the model's answer
+- [x] #3 Nothing is truncated in a way that hides a cause with no other trace — if the output is dropped, the fact that it was dropped is visible
+- [x] #4 CV generation's failure reporting is verified as no worse than today, since it shares this function
+- [x] #5 A synthetic regression covers a long echoed prompt followed by a short trailing error, without calling a real provider
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add _failure_detail() to cv_generator.py: identify echoed prompt lines by exact-match against the sent prompt, strip them, label what was removed, keep both head and tail on overflow (not tail-only). 2. Wire run_structured_model's failure branch through it, passing both stderr and stdout instead of stderr-or-stdout. 3. Add test_provider_errors.py reproducing both real failures (ollama tool-support error, lmstudio context-length error) as fakes with no real provider call, plus edge cases: all-echo output, over-budget output, cause on the other stream, claude provider path, empty output, successful run untouched.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented and verified 2026-09-09. 12/12 new tests pass (test_provider_errors.py). Broader regression: 78 passed in jobradar/tests -k 'evaluat or cv_generator or provider' (0 failures).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+cv_generator.run_structured_model now builds its failure detail via _failure_detail(), which strips lines matching the sent prompt (the echo), labels what it removed or that everything was echo, and on overflow keeps both the head and tail instead of only the tail. Verified with 9 new tests in test_provider_errors.py covering both real reproductions (ollama tool-support error, lmstudio context-length error) plus all-echo, over-budget, other-stream, claude-provider, and no-output edge cases, and a successful-run-untouched check. All pass; wider evaluat/cv_generator/provider suite (78 tests) unaffected.
+<!-- SECTION:FINAL_SUMMARY:END -->
