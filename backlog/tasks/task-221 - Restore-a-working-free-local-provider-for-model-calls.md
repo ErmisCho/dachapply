@@ -35,7 +35,7 @@ premise that "Ollama keeps it free" does not hold on this machine right now.
 <!-- AC:BEGIN -->
 - [x] #1 The cause of the model-list decode failure is identified as a version mismatch or a config error, named explicitly, rather than worked around blindly
 - [x] #2 At least one free local provider completes a real structured-output call end to end from inside the app, evidenced by the actual response
-- [ ] #3 The model picker does not offer a local model that cannot satisfy the call, or explains why one is unusable rather than failing at the end of a long wait
+- [x] #3 The model picker does not offer a local model that cannot satisfy the call, or explains why one is unusable rather than failing at the end of a long wait
 - [ ] #4 CV generation and job evaluation both work through the restored local provider, verified separately rather than assumed from a shared code path
 <!-- AC:END -->
 
@@ -121,8 +121,12 @@ codex's message sequence in its Jinja chat template — and **`laser-dolphin` is
 by default the moment lmstudio is chosen**. Neither is knowable without attempting a load, so the
 "does not offer" half cannot be satisfied for them by any probe cheap enough to run at picker time.
 Both now fail in ~7s with the provider's own error rather than after a long wait; making that error
-legible is TASK-222. **Owner's call:** either the "explains why" half closes this AC, or it needs
-rewording through its own task per TW-005.
+legible is TASK-222.
+
+**Owner's ruling, 2026-09-09: the "explains why" half closes this AC.** The gate covers every failure
+knowable in advance; a model that simply will not load cannot be predicted without loading it, and
+fails fast with the provider's own words. AC3 checked on that basis. Incidentally the "default is the
+broken one" complaint went away too: `qwen2.5-7b-instruct` now sorts first in the lmstudio list.
 
 ### AC4 — evaluation works, CV generation does not. Left unchecked
 
@@ -199,11 +203,23 @@ The four-second popup ceiling still holds: a probe that times out returns False,
 
 ### Still to do
 
-- **AC4:** try a long-context tool-capable model (Llama-3.1-8B-Instruct, 128k). Load it with
-  `lms load <model> --context-length 65536` — the JIT default of 8192 does not even fit codex's own
-  prompt. Then re-run CV generation. Expect it to be slow: 40k tokens of prompt processing on a 7-8B
-  local model is minutes, so "works" and "usable" may turn out to be different answers.
-- **AC3:** owner's decision, above.
-- Consider whether 40,654 tokens of CV prompt is intended, since it is paid for on every provider.
-- Branch `task-221-local-provider` is pushed; no PR yet, and merging deploys to production.
+**Owner's ruling, 2026-09-09: stop here — AC4 stays blocked and unchecked.** Llama-3.1-8B-Instruct
+was not pursued. The task therefore stays **In Progress** rather than being marked Done on three of
+four criteria, per TW-005.
+
+What closing AC4 would take, if it is ever picked up:
+
+- A local model that is **both** `trainedForToolUse: true` **and** `maxContextLength` above ~48k;
+  Llama-3.1-8B-Instruct (128k, tool-trained) is the obvious candidate.
+- Load it explicitly — `lms load <model> --context-length 65536`. The JIT default of 8192 does not
+  even fit codex's own 9,448-token system prompt.
+- Expect slow rather than instant: 40k tokens of prompt processing on a 7-8B local model is minutes,
+  so "works" and "usable" may be different answers.
+
+Open questions this task surfaced but does not own:
+
+- **The CV prompt is 40,654 tokens**, paid on every provider including cloud, and mostly candidate
+  evidence rather than job text. Worth a look on cost grounds alone.
+- TASK-222 (echoed prompt hides the real error) and TASK-223 (duplicate evaluations) both came out of
+  this task's verification.
 <!-- SECTION:NOTES:END -->
