@@ -61,6 +61,18 @@ def _reset_model_options_cache():
     cv_generator._model_options_cache.update(at=0.0, options=None)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_ollama_probe(monkeypatch):
+    """TASK-221: model discovery probes a real http://localhost:11434 before offering ollama models.
+
+    Left alone that is a live call from the suite -- non-hermetic, machine-dependent, and up to two
+    seconds each time it has to time out. Defaulted to False here so no test reaches the network by
+    accident; a test about the gate patches it to what it needs, and the probe's own tests hold a
+    direct reference to the real function, so they still exercise it.
+    """
+    monkeypatch.setattr(cv_generator, '_codex_can_enumerate_ollama', lambda: False)
+
+
 @pytest.fixture
 def cv_assets(db):
     """Give an account its own CV templates and photograph (TASK-99a).

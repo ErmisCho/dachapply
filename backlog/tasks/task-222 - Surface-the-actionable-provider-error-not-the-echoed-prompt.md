@@ -27,6 +27,20 @@ was just useless, which for an error message is close enough to the same thing.
 
 This is shared code, so a change here alters CV generation's error text as well as evaluation's,
 which is why it was not done inside TASK-220.
+
+**Reproduced on the CV path too, 2026-09-09** (TASK-221 verification), which settles AC4's premise
+that this function's behaviour is shared. CV generation through
+`lmstudio / deepseek-r1-distill-qwen-7b` failed with *"The selected model could not complete the
+request. Two automatic repair attempts also failed."*, and expanding **Technical details** showed:
+
+    Attempt 1: The selected model could not complete the request.
+    g ingestion and search reliability, evaluating retrieval quality, or creating production-minded
+    AI applications. ... What to penalize ...
+
+— the evaluation prompt's own rules section, cut mid-word, with no trace of the real cause. The real
+cause was that the model never called the file-reading tool and echoed the prompt back instead. So
+this defect is not ollama-specific and not evaluation-specific: any provider that echoes a long
+prompt produces it.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

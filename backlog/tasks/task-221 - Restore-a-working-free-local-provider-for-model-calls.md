@@ -33,8 +33,8 @@ premise that "Ollama keeps it free" does not hold on this machine right now.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The cause of the model-list decode failure is identified as a version mismatch or a config error, named explicitly, rather than worked around blindly
-- [ ] #2 At least one free local provider completes a real structured-output call end to end from inside the app, evidenced by the actual response
+- [x] #1 The cause of the model-list decode failure is identified as a version mismatch or a config error, named explicitly, rather than worked around blindly
+- [x] #2 At least one free local provider completes a real structured-output call end to end from inside the app, evidenced by the actual response
 - [ ] #3 The model picker does not offer a local model that cannot satisfy the call, or explains why one is unusable rather than failing at the end of a long wait
 - [ ] #4 CV generation and job evaluation both work through the restored local provider, verified separately rather than assumed from a shared code path
 <!-- AC:END -->
@@ -82,18 +82,92 @@ rejects codex's message sequence (`Conversation roles must alternate user/assist
   0 models, lmstudio offers 4, anthropic/openai unaffected.
 - `backend/jobradar/tests/test_local_provider.py`, 8 tests, no provider launched.
 
+### AC2 — DONE. Measured in the running app, 2026-09-09
+
+Board at `localhost:8000` (bundle `index-CSa-U3oB.js`, matching `frontend/dist/index.html`), one job
+selected, Evaluate with model, provider `lmstudio`, model `deepseek-r1-distill-qwen-7b`, effort
+`default`, speed `normal`, Preview evaluation:
+
+> Magenta Telekom — AI Platform Developer f/m/d · **fit 90 · priority high · recommendation apply**
+> · "Replaces current fit 94"
+
+**24 seconds**, correctly presented as a dry run with nothing saved. That is a real structured-output
+call completing end to end from inside the app. Nothing was committed.
+
+The same run surfaced a defect that is **not** this task's: one selected job produced **two identical
+preview rows** and a "Save 2 evaluations" button. `evaluate_jobs` never requires the model's job_ids
+to be distinct. Filed as **TASK-223**; nothing was saved.
+
+### AC3 — the tool-use half is now closed, one class remains
+
+`lms ls --llm --json` reports **`trainedForToolUse: false` for all four installed models**, including
+the one that evaluates correctly. That is the discriminator between the two paths, so the guard is
+built on it rather than on a blocklist:
+
+- lmstudio options now carry `tools` from `trainedForToolUse`.
+- `validate_model_capability(..., needs_tools=True)` — the one gate all four call sites already route
+  through — refuses a model that cannot read files, for CV generation and readjustment only.
+- Absent metadata means capable, so anthropic, openai and every existing caller are untouched.
+
+Measured before and after, same job, same model, in the app:
+
+| | before | after |
+|---|---|---|
+| CV generation with `deepseek-r1-distill-qwen-7b` | **41s**, three failed attempts, detail was the echoed prompt | **1.0s**, names the cause and what to pick instead |
+
+Left unchecked deliberately. `laser-dolphin-mixtral-2x7b-dpo` cannot load at all (LM Studio:
+`llama-server ... exited before becoming healthy, exitCode=1`) and `google/gemma-3-12b` rejects
+codex's message sequence in its Jinja chat template — and **`laser-dolphin` is what the picker selects
+by default the moment lmstudio is chosen**. Neither is knowable without attempting a load, so the
+"does not offer" half cannot be satisfied for them by any probe cheap enough to run at picker time.
+Both now fail in ~7s with the provider's own error rather than after a long wait; making that error
+legible is TASK-222. **Owner's call:** either the "explains why" half closes this AC, or it needs
+rewording through its own task per TW-005.
+
+### AC4 — evaluation works, CV generation does not. Left unchecked
+
+Verified separately, as the AC demands, and they disagree:
+
+- **Job evaluation through lmstudio: works.** Evidence above.
+- **CV generation through lmstudio: does not.** Run for real in the app before the guard existed:
+  *"The selected model could not complete the request. Two automatic repair attempts also failed."*
+
+The cause is measured, not inferred. A minimal probe — one `.tex` file in the working directory, the
+same codex flags the app builds, asked only for a marker string and a line count — got this back:
+
+> "Since I don't have access to `probe.tex`, but based on your request, here's how you can obtain the
+> information: `tac probe.tex | grep ...`"
+
+The model never called the file-reading tool, ignored `--output-schema`, and **codex still exited 0
+and wrote the result file**, so the runner's `returncode or not result_path.is_file()` check waves it
+through and only `parse_json_object` catches it.
+
+**Blocker, and it is not a code defect:** no local model on this machine is trained for tool use, so
+no code change can close AC4. It needs a tool-capable GGUF loaded in LM Studio — a Qwen2.5-Instruct
+or Llama-3.1-Instruct build, something reporting `trainedForToolUse: true` in `lms ls --llm --json`.
+The guard added for AC3 is written so the CV path opens by itself the moment one is installed; the
+test `test_a_tool_capable_local_model_is_accepted_for_cv_generation` pins that.
+
+### Suite
+
+**1084 passed**, full run. Two tests had been broken by this branch and were never caught, because
+the earlier pass ran only the 8 new tests plus a previously-green count:
+
+- `test_cv_model_discovery_includes_anthropic_and_installed_local_models`
+- `test_optional_model_discovery_cannot_hold_the_popup_beyond_four_seconds`
+
+Both asserted ollama is offered, which the new gate withholds. Both now stub the probe. That also
+fixed a hermeticity leak: unstubbed, `_codex_can_enumerate_ollama` made a **live call to
+`localhost:11434` from the test suite**, machine-dependent and up to 2s each time. An autouse fixture
+in `conftest.py` now defaults it off for every test. The suite got **120 seconds faster** (521s ->
+401s), which is the measure of how often it was firing.
+
+The four-second popup ceiling still holds: a probe that times out returns False, which skips
+`ollama list` entirely, so the worst case is probe + lms rather than probe + ollama + lms.
+
 ### Still to do
 
-- **AC2 end to end from inside the app** — not yet run. The dev server was restarted with this code
-  but the browser run was not completed. Select a job, pick lmstudio / deepseek-r1-distill-qwen-7b,
-  press Preview, record the returned fit/priority/recommendation and the elapsed time.
-- **AC3** — currently satisfied by the "does not offer" half. Unusable ollama models now vanish from
-  the picker **silently**; if that is judged confusing, the AC's other half ("explains why one is
-  unusable") needs frontend work.
-- **AC4** — CV generation through lmstudio is NOT verified and is the real risk in this task. The CV
-  prompt opens with "Read the copied LaTeX source files", so that path genuinely depends on codex's
-  file-reading tools, which a plain chat completion would not provide. It must be run for real, not
-  argued from the code.
-- Full backend suite has not been run since these edits; only the 8 new tests plus the previously
-  green 1074.
+- Install a tool-capable local model, then re-run CV generation to close AC4.
+- Decide AC3 (see above).
+- Not committed to `main`; branch `task-221-local-provider` has no PR yet.
 <!-- SECTION:NOTES:END -->

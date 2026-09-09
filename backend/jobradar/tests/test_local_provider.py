@@ -17,7 +17,8 @@ from unittest.mock import patch
 import pytest
 
 from jobradar.services import cv_generator
-from jobradar.services.cv_generator import RecoverableGenerationError, _codex_can_enumerate_ollama, available_model_options
+from jobradar.services.cv_generator import (RecoverableGenerationError, _codex_can_enumerate_ollama,
+                                            available_model_options, validate_model_capability)
 
 
 class FakeResponse:
@@ -103,3 +104,57 @@ def test_an_answer_with_no_json_at_all_is_still_a_recoverable_error(tmp_path):
     """Tolerating fences must not turn 'the model refused' into a silent success."""
     with pytest.raises(RecoverableGenerationError):
         _run_with_result_file(tmp_path, 'I cannot help with that.')
+
+
+# --- TASK-221 AC3: a model that cannot read a file must not be offered the job of reading one. ---
+#
+# Measured on the owner's machine, and the reason this is a capability check rather than a blocklist:
+# `lms ls --llm --json` reports trainedForToolUse false for ALL FOUR installed models. Evaluation is
+# unaffected -- its prompt carries the job text -- so the two paths genuinely differ and the guard has
+# to differ with them.
+LMS_LISTING = json.dumps([
+    {'modelKey': 'deepseek-r1-distill-qwen-7b', 'displayName': 'DeepSeek R1 Distill Qwen 7B', 'trainedForToolUse': False},
+    {'modelKey': 'qwen3-coder-tool-capable', 'displayName': 'Qwen3 Coder', 'trainedForToolUse': True},
+])
+
+
+def _with_lmstudio_models():
+    completed = type('R', (), {'returncode': 0, 'stdout': LMS_LISTING, 'stderr': ''})()
+    return patch('jobradar.services.cv_generator.shutil.which', side_effect=lambda name: '/usr/bin/lms' if 'lms' in name else None), \
+        patch('jobradar.services.cv_generator.subprocess.run', return_value=completed)
+
+
+def test_lmstudio_options_carry_the_tool_capability_lms_reports():
+    which, run = _with_lmstudio_models()
+    with which, run:
+        tools = {option['key']: option['tools'] for option in available_model_options() if option['provider'] == 'lmstudio'}
+    assert tools == {'deepseek-r1-distill-qwen-7b': False, 'qwen3-coder-tool-capable': True}
+
+
+def test_cv_generation_refuses_a_local_model_that_cannot_read_files():
+    """The measured alternative was 41 seconds and three failed attempts, then an unhelpful error."""
+    which, run = _with_lmstudio_models()
+    with which, run, pytest.raises(ValueError) as exc:
+        validate_model_capability('lmstudio', 'deepseek-r1-distill-qwen-7b', 'default', 'normal', needs_tools=True)
+    assert 'tool use' in str(exc.value)
+
+
+def test_the_same_model_is_still_allowed_for_evaluation():
+    """The discriminator, not a blanket ban: evaluation needs no tools and measurably works."""
+    which, run = _with_lmstudio_models()
+    with which, run:
+        assert validate_model_capability('lmstudio', 'deepseek-r1-distill-qwen-7b', 'default', 'normal')['key'] == 'deepseek-r1-distill-qwen-7b'
+
+
+def test_a_tool_capable_local_model_is_accepted_for_cv_generation():
+    """The guard reads reported capability, so the CV path opens by itself once such a model exists."""
+    which, run = _with_lmstudio_models()
+    with which, run:
+        assert validate_model_capability('lmstudio', 'qwen3-coder-tool-capable', 'default', 'normal', needs_tools=True)['tools'] is True
+
+
+def test_a_model_option_with_no_capability_reported_is_treated_as_capable():
+    """Cloud providers report nothing here; absent metadata must not lock the owner out of Claude."""
+    with patch('jobradar.services.cv_generator.available_model_options',
+               return_value=[{'provider': 'anthropic', 'key': 'sonnet', 'label': 'Claude Sonnet', 'efforts': ['default'], 'default_effort': 'default', 'fast_tier': ''}]):
+        assert validate_model_capability('anthropic', 'sonnet', 'default', 'normal', needs_tools=True)['key'] == 'sonnet'
