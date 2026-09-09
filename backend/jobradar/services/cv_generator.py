@@ -847,6 +847,39 @@ def validate_model_capability(provider, model, effort, speed, *, needs_tools=Fal
     return model_option
 
 
+def _failure_detail(stderr, stdout, prompt, budget=6000):
+    """The provider's own words for a failed run, with the prompt it echoed back taken out.
+
+    TASK-222. This used to be the last 6000 characters of the output, and these prompts are several
+    times that: when a CLI ends a failed run by echoing the prompt -- measured on ollama, and again
+    on LM Studio through the CV path -- the tail is all prompt and the one line naming the cause has
+    been pushed out of the window. The echo is identified by what was just sent rather than by any
+    one provider's error prefix, so codex, claude, lmstudio and ollama are all covered. Nothing
+    disappears quietly: removed echo and omitted overflow are counted in the text the owner reads,
+    and both ends of the output survive, because the cause is not reliably at either one.
+    """
+    lines=[line for part in (stderr, stdout) if part for line in part.splitlines() if line.strip()]
+    if not lines:
+        return 'No model output was returned.'
+    # The exact-line set first, then the substring test, so a CLI that re-wraps the echo is still
+    # recognised without paying a scan of the whole prompt for every line of a long transcript.
+    sent={line.strip() for line in prompt.splitlines() if line.strip()}
+    kept=[line for line in lines if line.strip() not in sent and line.strip() not in prompt]
+    notes=[]
+    if not kept:
+        notes.append(f'[every one of the {len(lines)} line(s) below is the prompt echoed back, not the model\'s answer]')
+    elif len(kept) < len(lines):
+        notes.append(f'[{len(lines)-len(kept)} line(s) of echoed prompt removed]')
+    detail='\n'.join(notes+(kept or lines))
+    if len(detail) > budget:
+        # 80 characters of the budget reserved for the marker, so the result still fits the window
+        # the repair prompt and the task record slice it with.
+        keep=budget-80
+        head=keep//3
+        detail=f'{detail[:head]}\n[... {len(detail)-keep} character(s) omitted ...]\n{detail[len(detail)-(keep-head):]}'
+    return detail
+
+
 def run_structured_model(prompt, schema, provider, model, effort='default', speed='normal', *, workdir,
                          cancelled=None, image_path=None, read_tools=False, model_option=None):
     """Run the configured CLI provider against `prompt`, constrained to `schema`, and return the parsed dict.
@@ -895,8 +928,10 @@ def run_structured_model(prompt, schema, provider, model, effort='default', spee
         command += ['--cd', str(workdir), '--output-schema', str(schema_path), '--output-last-message', str(result_path), '-']
         result=_run_command(command, cancelled, input=prompt, capture_output=True, text=True, encoding='utf-8', check=False)
     if result.returncode or provider != 'anthropic' and not result_path.is_file():
-        detail=(result.stderr or result.stdout or 'No model output was returned.')[-6000:]
-        raise RecoverableGenerationError('The selected model could not complete the request.', detail)
+        # Both streams, not the first non-empty one: which of them carries the cause and which
+        # carries the transcript differs by CLI, and dropping a stream wholesale can drop the cause.
+        raise RecoverableGenerationError('The selected model could not complete the request.',
+                                         _failure_detail(result.stderr, result.stdout, prompt))
     _ensure_active(cancelled)
     try:
         if provider == 'anthropic':

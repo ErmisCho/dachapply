@@ -1,8 +1,11 @@
 ---
 id: TASK-223
 title: Refuse duplicate evaluations for the same job in one model run
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@ErmisCho'
+created_date: ''
+updated_date: '2026-09-09 14:00'
 labels:
   - backend
   - llm
@@ -42,12 +45,41 @@ TASK-220's, so a change here needs its own acceptance criteria and its own regre
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A model response containing two entries for the same job_id is rejected, or collapsed to one, by an explicit decision recorded in the code rather than by accident of iteration order
-- [ ] #2 The count offered on the commit button equals the number of jobs that would actually be written, for every response the preview will accept
-- [ ] #3 A commit cannot write more JobEvaluation rows for a job than the run evaluated it times, verified against the database rather than the response
-- [ ] #4 A synthetic regression covers a duplicated job_id without calling a real provider, and fails if the guard is removed
-- [ ] #5 The existing single-evaluation and multi-job paths are unchanged, evidenced by the current tests still passing untouched
+- [x] #1 A model response containing two entries for the same job_id is rejected, or collapsed to one, by an explicit decision recorded in the code rather than by accident of iteration order
+- [x] #2 The count offered on the commit button equals the number of jobs that would actually be written, for every response the preview will accept
+- [x] #3 A commit cannot write more JobEvaluation rows for a job than the run evaluated it times, verified against the database rather than the response
+- [x] #4 A synthetic regression covers a duplicated job_id without calling a real provider, and fails if the guard is removed
+- [x] #5 The existing single-evaluation and multi-job paths are unchanged, evidenced by the current tests still passing untouched
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. In job_evaluator.py::evaluate_jobs, track seen job_id -> index while validating entries. 2. On a repeat job_id, reject the whole response with an explicit error naming both entries, rather than collapsing to one (a model that contradicts itself about one job in one response is not trustworthy input, and collapsing would hide that plus make the kept row a function of list order). 3. Add test_evaluation_duplicates.py: same job twice is rejected (not collapsed); a duplicated response commits nothing, verified against the DB; the previewed count equals rows actually written for a normal two-job response.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+Implemented and verified 2026-09-09. 3/3 new tests pass (`test_evaluation_duplicates.py`), reusing
+`test_job_evaluator`'s fixtures and response builder so a rejection here is only ever about the
+duplicate and never about a differently-shaped payload.
+
+**Verified by the coordinator independently of the implementing agent**, per TW-003:
+
+- With `elif job_id in seen:` disabled, **2 of the 3 new tests fail**; restored, 19 pass. The
+  regression is real rather than vacuous.
+- Row counts are asserted against the database (`JobEvaluation.objects.filter(...).count()`), not
+  against the response, as AC3 requires.
+- No pre-existing test was modified — AC5 is about the old tests passing *untouched*, and they do.
+- AC2 needed no frontend change: the button renders ``Save ${previewRows.length} evaluation`` from
+  `result.preview` (`frontend/src/App.tsx:401`), and rejecting duplicates means every accepted
+  preview has distinct ids, so the count is the number of rows a commit writes.
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+evaluate_jobs now rejects a model response containing two entries for the same job_id (reject, not collapse — recorded as a deliberate decision in the code comment, since two entries are two different verdicts and collapsing would hide a model that contradicts itself). Verified: a duplicated job_id fails validation with an explicit error naming both entries; a duplicated response commits zero rows even when the caller passes commit=True, checked against JobEvaluation.objects.count() rather than the response; the previewed count for a normal two distinct-job response equals both result['created'] and the DB row count. Existing test_job_evaluator suite passes unchanged.
+<!-- SECTION:FINAL_SUMMARY:END -->
 
 ## Notes
 <!-- SECTION:NOTES:BEGIN -->
