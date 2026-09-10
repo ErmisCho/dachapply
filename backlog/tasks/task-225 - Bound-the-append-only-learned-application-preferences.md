@@ -1,10 +1,10 @@
 ---
 id: TASK-225
 title: Bound the append-only learned application preferences
-status: In Progress
+status: Done
 assignee: []
 created_date: ''
-updated_date: '2026-09-10 12:14'
+updated_date: '2026-09-10 12:26'
 labels:
   - backend
   - llm
@@ -215,6 +215,17 @@ The repository is PUBLIC. The staged diff was grepped for evidence, CV and prefe
 TASK-229 was rewritten term-free for the same reason before it was staged - its first draft named the
 competing wordings, which is exactly the owner career data this task measures the LENGTH of and never
 prints.
+
+## Closed 2026-09-10
+
+Landed in #142, deployed, production verified: the running revision is the merge commit
+`3eb02dbcc478b948bace22e0e25c78ce7d264c40` and both `/` and `/api/health/` answer 200.
+
+One honest limit on that production check, the same one TASK-224 recorded: `report_cv_prompt_size`
+is an operator command and the deployed container has neither pdflatex nor a CV workspace, so what
+production proves is that this code is what is serving and the app is healthy. Every number in these
+notes was measured from the owner machine against the real database, which is the only place the
+command can run.
 <!-- SECTION:NOTES:END -->
 
 ## Notes

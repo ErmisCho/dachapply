@@ -3,6 +3,8 @@ id: TASK-221
 title: Restore a working free local provider for model calls
 status: In Progress
 assignee: []
+created_date: ''
+updated_date: '2026-09-10 12:26'
 labels:
   - backend
   - llm
@@ -38,6 +40,32 @@ premise that "Ollama keeps it free" does not hold on this machine right now.
 - [x] #3 The model picker does not offer a local model that cannot satisfy the call, or explains why one is unusable rather than failing at the end of a long wait
 - [ ] #4 CV generation and job evaluation both work through the restored local provider, verified separately rather than assumed from a shared code path
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## The AC4 blocker moved, 2026-09-10 (TASK-225)
+
+AC4 was left blocked because a local model needed BOTH `trainedForToolUse: true` AND a context
+ceiling above the 40,654-token CV request, and `qwen2.5-7b-instruct` - the only tool-capable model
+installed - caps at 32,768.
+
+TASK-225 changed the second half of that. The learned-preference blob was 58.9% of the prompt; a
+newest-first character budget took the whole request from 152,452 to **78,586 chars, ~19,646
+estimated prompt tokens**. With the template read (~2,981) and codex own system prompt (9,448) that
+is about **32k estimated**, and about **29k** at the 4.7 chars/token ratio LM Studio own tokenizer
+actually measured on this text.
+
+So the request may now fit under 32,768 where it previously overshot by 8k. **Not claimed - not
+measured against a local model.** It is borderline rather than comfortable, and the honest next step
+is the same one already written below, now actually worth running:
+
+    lms load qwen2.5-7b-instruct --context-length 32768
+
+then one CV generation through the app with provider `lmstudio`. Expect slow: ~30k prompt tokens on
+a 7B is minutes, so "works" and "usable" may still be different answers. AC4 stays unchecked until
+someone runs it.
+<!-- SECTION:NOTES:END -->
 
 ## State of play (handoff, 2026-09-09)
 <!-- SECTION:NOTES:BEGIN -->
