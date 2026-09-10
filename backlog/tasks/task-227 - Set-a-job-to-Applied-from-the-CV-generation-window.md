@@ -4,7 +4,7 @@ title: Set a job to Applied from the CV generation window
 status: In Progress
 assignee: []
 created_date: '2026-09-10 11:49'
-updated_date: '2026-09-10 21:33'
+updated_date: '2026-09-10 21:46'
 labels:
   - frontend
   - backend
@@ -82,4 +82,15 @@ The job was restored to its recorded pre-test state afterwards (`status=new`, al
 
 Neither is a defect found; both are verification this session could not complete. They close by
 loading the board after merge.
+
+## Merged and in production, 2026-09-10
+
+PR #144, merge commit `0d425db`, deploy green, `/api/health/` 200. The change is observable in what
+production actually serves, not just inferred from a green workflow: the deployed bundle
+`index-BSPnwo3G.js` contains `Mark applied`.
+
+Still **In Progress**, not Done: AC4 and AC5 remain unchecked. Both need the board loaded from a
+build of this code, which is now possible for the first time -- the runtime worktree at
+`AppData/Local/dachapply/main-runtime` picks this up the next time the local launcher syncs to
+deployed main.
 <!-- SECTION:NOTES:END -->

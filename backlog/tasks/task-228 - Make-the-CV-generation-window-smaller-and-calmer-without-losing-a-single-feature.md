@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-09-10 11:49'
-updated_date: '2026-09-10 21:33'
+updated_date: '2026-09-10 21:46'
 labels:
   - frontend
 dependencies:
@@ -103,4 +103,12 @@ why verifying TASK-227 write needed a throwaway backend on 8001 with that origin
 harness used here was reverted; none of it is in the commit.
 
 This closes by loading localhost after the merge lands and the runtime worktree syncs.
+
+## Merged and in production, 2026-09-10
+
+PR #144, merge commit `0d425db`, deploy green, `/api/health/` 200. The deployed bundle
+`index-BSPnwo3G.js` contains `h-[50rem]`, so the sizing change is observable in what production
+serves rather than argued from the merge.
+
+Still **In Progress**: AC4 (360px / 430px) and the served-bundle half of AC5 remain unchecked.
 <!-- SECTION:NOTES:END -->
