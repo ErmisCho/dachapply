@@ -140,6 +140,16 @@ CODEX_CV_CACHE = env_bool('CODEX_CV_CACHE', True)
 CODEX_CANDIDATE_EVIDENCE_PATH = os.getenv('CODEX_CANDIDATE_EVIDENCE_PATH', str(Path(os.getenv('DACHAPPLY_SOURCE_REPO', BASE_DIR.parent))/'Ermis-Chorinopoulos-Candidate-Evidence.md') if DEBUG else '')
 CODEX_APPLICATION_RULES_PATH = os.getenv('CODEX_APPLICATION_RULES_PATH', str(BASE_DIR.parent/'job-application-adaptation-rules.md'))
 CODEX_CV_OPEN_OUTPUT_FOLDER = env_bool('CODEX_CV_OPEN_OUTPUT_FOLDER', DEBUG)
+# TASK-225: UserProfile.learned_application_preferences is one line per CV readjustment, appended by
+# cv_tasks._learn_application_preference and never pruned -- measured today at 89,743 chars, 58.9% of
+# a 152,452-char CV generation prompt, across 40 entries whose lengths span 67-4,979 chars (a 74x
+# spread). That spread is why cv_generator.bound_learned_preferences caps CHARACTERS reaching the
+# prompt rather than entry count: last-10 could cost ~670 chars or ~49,790 depending on which ten.
+# The stored field itself is never touched, only what the prompt is built from. 16,000 is roughly the
+# last 10 entries as the field stands today, takes the field from 58.9% of the prompt to about 20%,
+# and brings the whole request within reach of a 32k-context model (TASK-221's blocker). A
+# calibration knob, not a law -- raise it if a 32k-context model stops being the constraint.
+CODEX_LEARNED_PREFERENCES_BUDGET = int(os.getenv('CODEX_LEARNED_PREFERENCES_BUDGET', '16000'))
 
 # TASK-109/TASK-195: Gmail credentials have no code default. Locally they come from .env; the hourly
 # cloud ingestion workflow passes OAuth values as GitHub repository secrets. An unset transport still

@@ -258,6 +258,40 @@ def _compact_candidate_evidence(content):
     return canonical.strip()
 
 
+def bound_learned_preferences(raw, budget):
+    """Newest-first character budget over the learned-preferences field, for the prompt only.
+
+    TASK-225: measured on the real field, entries span 67-4,979 chars (a 74x spread), so a cap on
+    entry COUNT does not bound what this costs the prompt -- last-10 could be ~670 chars or ~49,790
+    depending on which ten. A cap on characters does. Entries are `raw`'s non-blank lines, newest
+    last; kept entries are taken from the end backwards while the running total stays within budget,
+    and the original (chronological) order is preserved in the returned text.
+
+    Floor: the newest entry is always included, even alone over budget -- returning nothing because
+    one entry is huge would silently drop the account's most recent instruction, the one that matters
+    most. `budget<=0` is unbounded: today's behaviour, verbatim (the escape hatch). Never raises --
+    the profile UI edits this field as free text, so blank lines and odd shapes are expected input.
+    Never touches `raw`; this only bounds what reaches the prompt.
+
+    Returns (text, kept, total) so the caller can say when entries were left out.
+    """
+    entries=[line for line in (raw or '').splitlines() if line.strip()]
+    if not entries:
+        return '', 0, 0
+    if budget <= 0 or len('\n'.join(entries)) <= budget:
+        return raw.strip(), len(entries), len(entries)
+    kept=[]
+    total=0
+    for entry in reversed(entries):
+        cost=len(entry)+(1 if kept else 0)
+        if kept and total+cost > budget:
+            break
+        kept.append(entry)
+        total+=cost
+    kept.reverse()
+    return '\n'.join(kept), len(kept), len(entries)
+
+
 def load_candidate_evidence(profile, learned_preferences='', stored_evidence=''):
     def load(path_value, label):
         path=Path(path_value) if path_value else None
@@ -293,7 +327,13 @@ def load_candidate_evidence(profile, learned_preferences='', stored_evidence='')
         except OSError:
             pass
     rules=load(settings.CODEX_APPLICATION_RULES_PATH, 'Application adaptation rules')
-    learned=f'\n\nLEARNED ACCOUNT APPLICATION PREFERENCES (newer entries override older ones):\n{learned_preferences.strip()}' if learned_preferences.strip() else ''
+    bounded,kept,total=bound_learned_preferences(learned_preferences, settings.CODEX_LEARNED_PREFERENCES_BUDGET)
+    # Byte-identical to the pre-TASK-225 header when nothing was dropped, so an account under budget
+    # sees no change at all. Once entries are left out, the model is told so -- a list presented as
+    # complete when it is not is a false premise the model would otherwise reason from.
+    header=('LEARNED ACCOUNT APPLICATION PREFERENCES (newer entries override older ones):' if kept >= total
+            else f'LEARNED ACCOUNT APPLICATION PREFERENCES -- most recent {kept} of {total} entries (newer entries override older ones):')
+    learned=f'\n\n{header}\n{bounded}' if bounded else ''
     return f'AUTHORITATIVE CANDIDATE EVIDENCE:\n{evidence}\n\nMANDATORY APPLICATION ADAPTATION RULES:\n{rules}{learned}\n\nDACHAPPLY PROFILE NOTES:\n{profile}'
 
 
