@@ -1,7 +1,7 @@
 ---
 id: TASK-224
 title: Find out what the 40k-token CV request is actually made of
-status: In Progress
+status: Done
 assignee:
   - '@ErmisCho'
 created_date: ''
@@ -150,6 +150,17 @@ preference, deduplicated but never pruned:
 It measured 85,004 chars on 2026-09-09 and 89,675 on 2026-09-10 — it grew by ~4,700 characters in a
 day of normal use, and every CV generation pays for the whole accumulated history. Filed as
 **TASK-225**.
+
+### Shipped
+
+Merged as `1a0812a` (PR #140), deployed, production health green. Rollback image recorded before the
+merge: `ghcr.io/ermischo/dachapply:0f3e5d88b4a4afd02aea5b8c68d1cf9854392f27`. No migrations.
+
+One honest limit on the TW-00A "observable in what production serves" step: this is an **operator
+command**, not a web surface, and the deployed container has neither `pdflatex` nor a CV workspace.
+So what was verified in production is that the deploy landed and the app is healthy — the command
+itself was verified by running it against the real database from the owner's machine, which is the
+only place it can run.
 
 ### Parallel-session collision, resolved
 
