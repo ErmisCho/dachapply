@@ -65,7 +65,14 @@ ollama's own `/v1/chat/completions` with `response_format: json_schema` — meas
 ### AC2 — a working free local provider EXISTS: lmstudio
 
 `codex exec --oss --local-provider lmstudio --model deepseek-r1-distill-qwen-7b` completes a real
-structured-output call and writes its result file. lmstudio does **not** hit the model-list bug at all.
+structured-output call and writes its result file.
+
+*Corrected 2026-09-09 from a real run during TASK-222:* this first said lmstudio "does not hit the
+model-list bug at all". It does — LM Studio also answers `/v1/models` in the OpenAI shape, and codex
+logs `failed to refresh available models: ... missing field 'models'` against it too. The difference
+is **severity, not presence**: against lmstudio it is a non-fatal model-list refresh and the run
+proceeds; against ollama it aborts the run. The gate below is still right to withhold ollama and
+right to leave lmstudio alone — only the wording was too strong.
 Note `lms server start` is required first; it was not running.
 
 `google/gemma-3-12b` fails on lmstudio for a third, unrelated reason — its Jinja chat template

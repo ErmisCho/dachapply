@@ -64,7 +64,44 @@ prompt produces it.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Implemented and verified 2026-09-09. 12/12 new tests pass (test_provider_errors.py). Broader regression: 78 passed in jobradar/tests -k 'evaluat or cv_generator or provider' (0 failures).
+Implemented and verified 2026-09-09. 12/12 new tests pass (test_provider_errors.py). Broader regression: 78 passed in jobradar/tests -k 'evaluat or cv_generator or provider' (0 failures). Full backend suite on main afterwards: **1102 passed**.
+
+### Verified against a REAL provider failure, 2026-09-09 (post-merge)
+
+The implementing agent said plainly that it could not do this — every one of its tests is synthetic,
+built from the strings recorded above, so "the owner now sees the cause" was proven against a
+faithful fake rather than against the machine. That gap is closed here, per TW-004.
+
+A genuine failure was forced through the real code path: the real CV prompt (140,478 chars, built by
+`_prompt` from the owner's own profile and a real job) sent to `lmstudio / qwen2.5-7b-instruct`,
+whose 32,768-token context the request overflows. What `RecoverableGenerationError.diagnostics` now
+carries — **2,039 characters**, against 6,000 characters of rules text before:
+
+    [1093 line(s) of echoed prompt removed]
+    OpenAI Codex v0.146.0
+    model: qwen2.5-7b-instruct
+    provider: lmstudio
+    ...
+    ERROR: stream disconnected before completion: Engine protocol predict request returned 400:
+    {"error":{"code":400,"message":"request (39129 tokens) exceeds the available context size
+    (32768 tokens), try increasing it","type":"exceed_context_size_error"}}
+
+So AC1 (the cause survives), AC2 (no prompt text posing as the model's answer) and AC3 (the removal
+is counted, not silent) are measured rather than argued. 1,093 lines of echo were subtracted and the
+subtraction is stated.
+
+### A correction to TASK-221 that this run produced
+
+TASK-221 recorded that lmstudio "does not hit the model-list bug at all". Not quite: codex logs the
+same decode failure against LM Studio —
+
+    ERROR codex_models_manager::manager: failed to refresh available models:
+    failed to decode models response: missing field `models`
+
+— because LM Studio also answers `/v1/models` in the OpenAI shape. The difference is severity, not
+presence: against LM Studio it is a non-fatal model-list refresh and the run proceeds, whereas
+against ollama it aborts the run. The TASK-221 gate is still right to withhold ollama and still right
+to leave lmstudio alone; only the wording was too strong.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
