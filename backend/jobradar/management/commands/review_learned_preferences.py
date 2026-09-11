@@ -345,9 +345,7 @@ class Command(BaseCommand):
         pairs, duplicates, compared = _conflict_pairs(analysed)
         # Over the whole field, never over the page: entry 3 can contradict entry 40, and a pair that
         # only showed up when both halves happened to land in the same sitting would be worthless.
-        self.stdout.write('
-
-POSSIBLE CONTRADICTIONS -- same subject, opposite request, whole field (AC5)')
+        self.stdout.write('\n\nPOSSIBLE CONTRADICTIONS -- same subject, opposite request, whole field (AC5)')
         self.stdout.write(f'  A repeat is not a contradiction. Of the {compared:,} entries compared pairwise, {duplicates:,} pair(s) '
                           f'were at least {NEAR_DUP_RATIO:.0%}')
         self.stdout.write('  similar (difflib, the rule report_cv_prompt_size --learned already uses) and were dropped as duplicates,')
