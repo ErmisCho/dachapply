@@ -4,7 +4,7 @@ title: Restore a working free local provider for model calls
 status: In Progress
 assignee: []
 created_date: ''
-updated_date: '2026-09-10 12:26'
+updated_date: '2026-09-11 06:27'
 labels:
   - backend
   - llm
@@ -65,6 +65,50 @@ is the same one already written below, now actually worth running:
 then one CV generation through the app with provider `lmstudio`. Expect slow: ~30k prompt tokens on
 a 7B is minutes, so "works" and "usable" may still be different answers. AC4 stays unchecked until
 someone runs it.
+
+## AC4 retried 2026-09-11 after TASK-225. The context blocker is GONE; a different one replaced it
+
+Conditions finally met: `qwen2.5-7b-instruct` reports `trainedForToolUse: true` and was already loaded
+at **context 32768** (`lms ps`: IDLE, 4.68 GB). TASK-225 took the CV prompt from 40,654 tokens to
+**67,345 chars / ~16,836 estimated tokens**. So this is the first time the request could be attempted
+at all.
+
+    lmstudio / qwen2.5-7b-instruct, effort default, job 1488, learned-preference budget 16,000
+
+       0s   5%  Preparing templates
+       2s  10%  Generating CV
+      22s  10%  Repairing generated documents (1/2)
+      82s  10%  Repairing generated documents (2/2)
+     143s      FAILED
+
+**It failed -- but not the way it used to, and the difference is the finding.** Before TASK-225 the
+provider refused outright:
+
+    request (40654 tokens) exceeds the available context size (32768 tokens)
+
+Now the request is accepted, runs for 143 seconds, and makes all three attempts. What fails is the
+OUTPUT:
+
+    Attempt 1: Expecting property name enclosed in double quotes: line 11 column 10 (char 334)
+    Attempt 2: Expecting property name enclosed in double quotes: line 20 column 59 (char 1045)
+    Attempt 3: Expecting property name enclosed in double quotes: line 5 column 12 (char 286)
+
+That is malformed JSON -- an unquoted property name -- not a fence or a wrapper, so
+`parse_json_object`, which already tolerates the ```json fencing deepseek produces, cannot rescue it.
+A 7B model is simply not emitting strictly valid JSON for a document of this size.
+
+### What this changes
+
+AC4 stays **unchecked**, but its blocker has moved and should be restated for whoever picks it up:
+
+- **Was:** no installed model is both tool-capable and large enough in context. Believed to need a
+  Llama-3.1-8B-Instruct-class model at 128k.
+- **Is now:** context is sufficient. The tool-capable local model reaches the provider, runs, and
+  returns invalid JSON three times in a row. The next question is output reliability, not size --
+  either a stronger local model, or constrained/grammar-based JSON decoding (LM Studio supports a
+  response_format json_schema, which the codex path does not currently use for this call).
+
+Nothing was spent: this run was free and local. The failure changed nothing in the database.
 <!-- SECTION:NOTES:END -->
 
 ## State of play (handoff, 2026-09-09)
