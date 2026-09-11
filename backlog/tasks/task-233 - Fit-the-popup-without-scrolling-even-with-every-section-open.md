@@ -1,10 +1,10 @@
 ---
 id: TASK-233
 title: Fit the popup without scrolling even with every section open
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-11 11:21'
-updated_date: '2026-09-11 20:26'
+updated_date: '2026-09-11 20:54'
 labels:
   - frontend
 dependencies:
@@ -76,4 +76,25 @@ The height is verified on a 1532x740 viewport, which is the 1536x864-at-125% cas
 **not** verified on a 1366x768 laptop, where the viewport is around 700px and the fully-open content
 would still overflow. Whether that machine matters is the owner call, so the task stays open rather
 than being closed on the viewport that happened to pass.
+
+## 1366x768 closed too, 2026-09-11
+
+The task was left open because the fully-open state fitted 1536x864 but not a 1366x768 laptop. It does
+now. Measured at 1363x697 (a 1366x768 laptop, viewport after browser chrome):
+
+| viewport | popup | collapsed overflow | fully-open overflow |
+|---|---|---|---|
+| **1363 x 697** (1366x768 laptop) | 768 x 662 | **0** | **0** (660 in 660) |
+| 1532 x 740 (1536x864 @125%) | 768 x 688 | **0** | **0** |
+| 356 (360px phone) | 324, one column | scrolls | scrolls - the safety net, kept |
+
+Two changes, both small: shell padding `p-3` -> `p-2`, and the cap `max-h-[92vh]` -> `max-h-[95vh]`.
+Together they moved the 1366 case from 23px of overflow to none.
+
+**Widening was tried first and rejected on measurement.** At 1366, `w-[56rem]` and above do fit -- but
+only because `max-w-[calc(100vw-2rem)]` clamps the popup to **1331px**, which is the whole screen. That
+satisfies the scrolling criterion by breaking AC3, so it was not taken. The final shell stays
+`w-[48rem]` (768px).
+
+Final: `h-[43rem] max-h-[95vh] w-[48rem] max-w-[calc(100vw-2rem)] overflow-y-auto ... p-2`.
 <!-- SECTION:NOTES:END -->
