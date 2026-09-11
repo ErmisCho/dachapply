@@ -823,6 +823,10 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     temporary_directory=cv_generator.tempfile.TemporaryDirectory
     monkeypatch.setattr(cv_generator.tempfile,'TemporaryDirectory',lambda *args,**kwargs:(temp_calls.append(kwargs) or temporary_directory(*args,**kwargs)))
     settings.CODEX_CV_WORKSPACE=str(tmp_path); settings.CODEX_CV_OPEN_OUTPUT_FOLDER=True; settings.CODEX_CV_CACHE=False
+    # TASK-232: the automatic open is off by default now, so a test that asserts WHICH folder it
+    # opens has to ask for it. The default is pinned separately by
+    # test_a_finished_generation_does_not_open_a_folder_by_itself.
+    settings.CODEX_CV_OPEN_FOLDER_ON_FINISH=True
     opened=[]; monkeypatch.setattr(cv_generator.os, 'startfile', lambda path: opened.append(__import__('pathlib').Path(path)), raising=False)
     monkeypatch.setattr('jobradar.services.cv_generator.shutil.which', lambda command: command)
     monkeypatch.setattr('jobradar.services.cv_generator.available_model_options', lambda: [
@@ -4263,3 +4267,35 @@ def test_api_responses_are_compressed_on_the_wire(client):
     assert r['Content-Encoding'] == 'gzip'
     assert 'Accept-Encoding' in r['Vary']
     assert len(gzip.decompress(r.content)) > len(r.content)
+
+
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test',
+                   CODEX_CV_OPEN_OUTPUT_FOLDER=True, CODEX_CV_OPEN_FOLDER_ON_FINISH=False)
+def test_a_finished_run_does_not_open_a_folder_by_itself_while_reveal_still_does(client, owner, tmp_path, monkeypatch):
+    """TASK-232. The owner asked for the window that appears unasked after every generation to stop,
+    NOT for the Reveal button to stop working. Those two shared one flag, which is why the automatic
+    one could not be switched off without also losing the button, so they are now separate settings
+    and this pins both halves at once: with the master switch ON and the finish switch OFF, finishing
+    a run opens nothing, and an explicit reveal still opens the folder."""
+    import pathlib
+    from jobradar.services import cv_generator, cv_tasks
+
+    opened=[]
+    monkeypatch.setattr(cv_generator.os, 'startfile', lambda folder: opened.append(str(folder)), raising=False)
+    output=tmp_path/'run'; output.mkdir()
+    (output/'cv.tex').write_text('x', encoding='utf-8'); (output/'cv.pdf').write_bytes(b'%PDF')
+    workspace=tmp_path/'ws'; (workspace/'CVs').mkdir(parents=True)
+
+    # The finish-time branch itself, not a whole generation: persist_generated_files is where the
+    # automatic open lives (cv_generator.py:664) and calling it is what proves the gate, rather than
+    # a block that asserts an empty list without running anything.
+    saved=cv_generator.persist_generated_files(output, workspace, cv_name='cv.tex')
+
+    assert saved['cv_tex'] and opened == []  # files written, nothing opened by itself
+
+    pdf=pathlib.Path(saved['cv_pdf'])
+    task_id=_reveal_task(owner, {'cv_pdf':str(pdf)})
+    response=client.post(f'/api/cv-generation/tasks/{task_id}/reveal/', {'key':'cv_pdf'}, format='json')
+
+    assert response.status_code==200 and opened==[str(pdf.parent)]  # the click still works
+    cv_tasks._tasks.clear()

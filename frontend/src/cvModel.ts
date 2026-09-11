@@ -32,3 +32,36 @@ export function stepText(task:any){
   const completed=Math.min(Math.max(0,Number(task?.step_completed)||0),total)
   return `${label||'Working'} · step ${completed}/${total}`
 }
+
+export type CvPick={provider:string;model:string;effort:string;speed:string}
+export const emptyCvPick:CvPick={provider:'openai',model:'',effort:'',speed:'normal'}
+
+// The one normalizer every selection change goes through -- restoring a remembered pick, changing
+// provider, changing model, changing effort or speed. TASK-231: a remembered model that is no longer
+// offered (LM Studio models come and go, TASK-221) falls back to the first model of its provider and
+// then to the first model offered at all, and an effort or speed the resolved model does not support
+// is replaced by that model's default rather than sent. The result satisfies comboValid whenever the
+// resolved model lists any efforts at all, which is what gates both Generate and Readjust.
+export function cvPick(models:any[], want?:Partial<CvPick>|null):CvPick{
+  const list=models||[]
+  const sameProvider=list.filter((x:any)=>x.provider===want?.provider)
+  const model=sameProvider.find((x:any)=>x.key===want?.model)||sameProvider[0]||list[0]
+  if(!model) return emptyCvPick
+  const kept=model.provider===want?.provider&&model.key===want?.model
+  const effort=kept&&(model.efforts||[]).includes(want?.effort)?String(want?.effort):modelEffort(model)
+  const speed=kept&&want?.speed?(want.speed==='fast'&&!model.fast_tier?'normal':want.speed):modelSpeed(model)
+  return {provider:model.provider,model:model.key,effort,speed}
+}
+
+// TASK-231. Scoped per account so a second user on the same browser does not inherit a selection,
+// and wrapped because localStorage throws outright in private mode or with site data blocked -- a
+// popup that forgets the last model is much better than one that will not open.
+const cvPicksKey=(account:string)=>`dachapply_cv_picks_${account}`
+
+export function readCvPicks(account:string):{generate?:CvPick;adjust?:CvPick}{
+  try{return JSON.parse(localStorage.getItem(cvPicksKey(account))||'{}')||{}}catch{return {}}
+}
+
+export function writeCvPicks(account:string, picks:{generate:CvPick;adjust:CvPick}){
+  try{localStorage.setItem(cvPicksKey(account),JSON.stringify(picks))}catch{/* storage unavailable */}
+}

@@ -20,8 +20,9 @@ describe('compact CV generator popup (TASK-216)',()=>{
     expect(html).toContain('aria-label="Generate CV and Motivation Letter"')
     expect(html).toContain('tabindex="-1"')
     expect(html).toContain('Loading generator options…')
-    expect(html).toContain('>Close</button>')
-    expect(html).not.toContain('Detected language')
+    expect(html).toContain('aria-label="Close"')   // TASK-234: the word became a glyph, the name stayed
+    expect(html).toContain('title="Close"')        // ...and an icon-only control also needs the tooltip
+    expect(html).not.toContain('Adjust latest')
   })
 
   it('still commits to a FIXED height, so slow provider discovery cannot resize it',()=>{
@@ -32,16 +33,24 @@ describe('compact CV generator popup (TASK-216)',()=>{
     const html=popup()
 
     expect(html).toMatch(/class="[^"]*\bh-\[\d+rem\]/)   // a fixed height, not only a ceiling
-    expect(html).toContain('max-h-[85vh]')               // ...capped, so a short viewport still fits
+    expect(html).toMatch(/max-h-\[\d+vh\]/)                 // ...capped, so a short viewport still fits.
+    // The exact vh is a calibration number, not the contract: TASK-233 moved it from 85 to 92 to fit
+    // the fully-open state on a laptop. What must not regress is that a cap EXISTS beside the fixed
+    // height, so pin the shape and let the number be tuned by measurement.
     expect(html).not.toContain('h-[80vh]')               // the old viewport-proportional height
   })
 
-  it('is narrower than it was, and still fits a 360px screen',()=>{
-    // TASK-228 AC2/AC4. Measured in the browser, same job and state: 704x1459 -> 608x800.
+  it('trades width for height, and still fits a 360px screen',()=>{
+    // TASK-228 made it 608x800 to stop it filling the screen. TASK-233 has to fit the FULLY OPEN
+    // state into 85vh of a 744px laptop viewport (~632px) while TASK-230 adds a second model picker,
+    // and a single column cannot do that: the body is two independent columns at lg and up -- the
+    // same 1024px line where index.css stops forcing 44px touch targets -- so the box goes wider and
+    // much shorter. max-w keeps the 360px case, where lg never matches and the columns stack again.
     const html=popup()
 
-    expect(html).toContain('w-[38rem]')
+    expect(html).toContain('w-[48rem]')
     expect(html).toContain('max-w-[calc(100vw-2rem)]')
+    expect(html).toContain('overflow-y-auto')   // AC2: scrolling stays as the safety net
   })
 })
 
