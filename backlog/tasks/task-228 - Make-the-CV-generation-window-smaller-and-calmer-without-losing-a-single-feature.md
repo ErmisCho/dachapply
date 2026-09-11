@@ -3,10 +3,10 @@ id: TASK-228
 title: >-
   Make the CV generation window smaller and calmer without losing a single
   feature
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-10 11:49'
-updated_date: '2026-09-10 21:46'
+updated_date: '2026-09-11 07:09'
 labels:
   - frontend
 dependencies:
@@ -32,8 +32,8 @@ Smaller and calmer are different things and both are wanted: fewer pixels, and l
 - [x] #1 Every control listed in the description is still reachable after the change, checked off one at a time against the running window rather than asserted as a group
 - [x] #2 The window is measurably smaller: rendered width and height in pixels are stated before and after, for the same job in the same state
 - [x] #3 The common case - opening the window to generate, before any report exists - needs no inner scrolling, or the scrolling that remains is named and justified
-- [ ] #4 It still works at 360px and 430px wide, verified by a stated measurement method rather than by reading the CSS
-- [ ] #5 Frontend tests cover anything newly collapsible staying reachable, and the result is verified in the served bundle at localhost:8000 after `cd frontend && npm run build`
+- [x] #4 It still works at 360px and 430px wide, verified by a stated measurement method rather than by reading the CSS
+- [x] #5 Frontend tests cover anything newly collapsible staying reachable, and the result is verified in the served bundle at localhost:8000 after `cd frontend && npm run build`
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -111,4 +111,29 @@ PR #144, merge commit `0d425db`, deploy green, `/api/health/` 200. The deployed 
 serves rather than argued from the merge.
 
 Still **In Progress**: AC4 (360px / 430px) and the served-bundle half of AC5 remain unchecked.
+
+## AC4 and AC5 closed 2026-09-11
+
+**AC4 -- measured, not reasoned from the CSS.** Method: two same-origin iframes at fixed widths on a
+dev server running this code, then `getBoundingClientRect()` plus a `scrollWidth`/`clientWidth`
+comparison inside each. This is the technique that works in this repo -- window resizing does not
+change the page viewport and Chrome floors the window width well above 360px, but an iframe gives an
+exact viewport.
+
+| viewport | popup width | clipped horizontally | page scrolls sideways | controls |
+|---|---|---|---|---|
+| **360 px** | **328 px** (= 360 - 2rem) | no (`scrollWidth == clientWidth == 309`) | no | 24 |
+| **430 px** | **398 px** (= 430 - 2rem) | no (`scrollWidth == clientWidth == 380`) | no | 24 |
+
+No descendant is wider than the popup at either width, so nothing is cut off. Height is 697px at both,
+because `max-h-[85vh]` correctly takes over from `h-[50rem]` on a short viewport -- the popup scrolls
+vertically there, which is expected at phone height and is not the AC3 common case.
+
+**AC5.** Frontend tests pass (241), and the result was verified in the **built** bundle rather than
+the dev server: the runtime build produced `index-BSPnwo3G.js`, the same hash production serves,
+Django served it at `localhost:8000` with no redirect, and the window rendered with both disclosures
+collapsed. The build was moved aside afterwards and the `:8000` -> `:5173` redirect restored.
+
+Also confirmed on the real board popup rather than the harness: **608 x 800 px**, identical to the
+measurement taken through the job-page harness, so the harness was measuring the right thing.
 <!-- SECTION:NOTES:END -->

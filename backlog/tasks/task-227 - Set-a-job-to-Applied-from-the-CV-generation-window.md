@@ -1,10 +1,10 @@
 ---
 id: TASK-227
 title: Set a job to Applied from the CV generation window
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-10 11:49'
-updated_date: '2026-09-10 21:46'
+updated_date: '2026-09-11 07:09'
 labels:
   - frontend
   - backend
@@ -28,8 +28,8 @@ The backend already does the right thing once the status is set: JobLead.save (m
 - [x] #1 A control in the CV generation window sets the job status to Applied without leaving the window
 - [x] #2 The change is persisted, not just optimistic: after a full page reload the job still reads Applied, and applied_at is stamped exactly as the board own status change stamps it
 - [x] #3 The control reflects the job current status rather than offering the same action twice - a job already Applied shows that instead of an active Apply button
-- [ ] #4 The board row behind the window reflects the new status without a manual refresh
-- [ ] #5 Frontend tests cover the control, and it is verified in the served bundle at localhost:8000 after `cd frontend && npm run build` - a passing test alone does not close this
+- [x] #4 The board row behind the window reflects the new status without a manual refresh
+- [x] #5 Frontend tests cover the control, and it is verified in the served bundle at localhost:8000 after `cd frontend && npm run build` - a passing test alone does not close this
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -93,4 +93,31 @@ Still **In Progress**, not Done: AC4 and AC5 remain unchecked. Both need the boa
 build of this code, which is now possible for the first time -- the runtime worktree at
 `AppData/Local/dachapply/main-runtime` picks this up the next time the local launcher syncs to
 deployed main.
+
+## AC4 and AC5 closed 2026-09-11, on the real board
+
+The blocker recorded above was **wrong and is corrected here** rather than left standing. It said the
+board selection is "a drag-select rig that neither synthetic events nor a calibrated real click could
+drive". It is not: the row checkbox is an ordinary controlled input --
+`<input type="checkbox" className="row-select" onChange={e=>selectJob(...)}>` -- and a plain
+`element.click()` drives it correctly. What actually failed was the browser tab, which had wedged
+(every CDP evaluation timing out); a fresh tab selected the row first try. A wedged tab was diagnosed
+as a product behaviour, which is exactly the mistake TASK-134 is on record for.
+
+Once the runtime worktree was synced to deployed main, the whole flow ran on the real board:
+
+- one row selected -> `1 selected` -> the Generate CV and Motivation Letter trigger appears
+- popup opens at **608 x 800 px**, matching the harness measurement exactly
+- board row status before the click: `new` (read from the row own `<select>` value)
+- clicked **Mark applied** inside the popup
+- **board row status immediately after: `applied`** -- no refresh, no reload (**AC4**)
+- the popup stayed open throughout, and its button was replaced by a non-interactive `Applied`
+
+**AC5.** Frontend tests pass (241) and the result was verified in the **built** bundle, not the dev
+server: `npm run build` in the runtime worktree produced `index-BSPnwo3G.js` -- the same hash
+production serves -- Django served it at `localhost:8000` with no redirect, and the CV window rendered
+there with Mark applied and both collapsed disclosures present. The build was then moved aside and the
+`:8000` -> `:5173` redirect restored, so the owner dev loop is exactly as it was.
+
+Job 1467 was restored to its recorded pre-test state (`status=new`, all four date fields `None`).
 <!-- SECTION:NOTES:END -->
