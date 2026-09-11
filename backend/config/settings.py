@@ -1,4 +1,6 @@
+import ipaddress
 import os
+import socket
 import sys
 import time
 from pathlib import Path
@@ -192,6 +194,69 @@ GMAIL_OAUTH_CLIENT_SECRET = os.getenv('GMAIL_OAUTH_CLIENT_SECRET', '')
 # instead of an env var (a long-lived refresh token belongs in neither `.env` nor git).
 GMAIL_OAUTH_TOKEN_PATH = os.getenv('GMAIL_OAUTH_TOKEN_PATH', str(BASE_DIR.parent / 'dachapply-gmail-oauth-token.json'))
 
+
+def lan_addresses(override=()):
+    """Private IPv4 addresses this host actually holds. Never a guess, never a wildcard.
+
+    Measured on the owner's machine (2026-09-11) the host has three IPv4 addresses -- 192.168.8.130,
+    the LAN one a phone can reach, plus 172.21.208.1 and 172.22.48.1, two WSL/Hyper-V virtual
+    adapters -- and `socket.gethostbyname_ex` returns them in that order, virtual ones first. So no
+    single address is picked: every one of them is enumerated and every one is trusted. They are all
+    this same host, so trusting the two virtual ones widens nothing a phone could not already reach
+    through the real one, whereas taking [0] would have produced a config that looks right and still
+    refuses the phone.
+
+    Detection is a convenience, not the contract: DACHAPPLY_LAN_HOSTS replaces it outright for the
+    case where the enumeration is wrong (a VPN, a second NIC, an address Windows has not registered).
+    Either way anything public, loopback, link-local (169.254.x, what Windows keeps when DHCP failed)
+    or not an IPv4 literal is dropped, so a failed lookup yields an empty list and widens nothing --
+    there is no path here that can return '*'. A DACHAPPLY_LAN_HOSTS that survives none of that is a
+    typo, and a typo that silently widened nothing is exactly the "looks configured, still refuses
+    the phone" failure this function exists to avoid, so it raises instead.
+    """
+    if override:
+        candidates = list(override)
+    else:
+        try:
+            candidates = socket.gethostbyname_ex(socket.gethostname())[2]
+        except OSError:
+            return []
+    addresses = set()
+    for candidate in candidates:
+        try:
+            address = ipaddress.IPv4Address(str(candidate).strip())
+        except ValueError:
+            continue
+        if (address.is_private and not address.is_loopback and not address.is_link_local
+                and not address.is_unspecified):
+            addresses.add(str(address))
+    if override and not addresses:
+        raise ImproperlyConfigured(
+            'DACHAPPLY_LAN_HOSTS holds no usable address. It takes private IPv4 literals, comma '
+            f'separated (e.g. 192.168.8.130); got {list(override)!r}.'
+        )
+    return sorted(addresses)
+
+
+def lan_widened(allowed_hosts, csrf_trusted_origins, addresses):
+    """Append `addresses` (and only their http://<address>:8000 origin) to the two lists, deduped.
+
+    Port 8000 because that is the one scripts/dachapply-local-runtime.cmd binds and the one Django
+    serves the built SPA from, which is the whole point: the LAN device talks to a single origin, so
+    the login POST is same-origin and needs neither a CORS entry nor a relaxed CSRF check. With an
+    empty `addresses` the return value equals the input, which is what the un-opted-in path gets.
+    """
+    hosts = list(allowed_hosts)
+    origins = list(csrf_trusted_origins)
+    for address in addresses:
+        if address not in hosts:
+            hosts.append(address)
+        origin = f'http://{address}:8000'
+        if origin not in origins:
+            origins.append(origin)
+    return hosts, origins
+
+
 SECRET_KEY = os.getenv('SECRET_KEY')
 if DEBUG:
     SECRET_KEY = SECRET_KEY or 'dev-only-change-me'
@@ -210,6 +275,27 @@ else:
     if not CSRF_TRUSTED_ORIGINS:
         raise ImproperlyConfigured('CSRF_TRUSTED_ORIGINS must be set when DEBUG=False.')
     CORS_ALLOWED_ORIGINS = env_list('CORS_ALLOWED_ORIGINS')
+
+# TASK-226: reaching the local server from a phone or laptop on the same home network. One flag
+# turns the whole thing on, because three settings have to move together and any two of them without
+# the third produces a setup that looks correct and still serves nothing:
+#   1. the bind -- scripts/dachapply-local-runtime.cmd reads the same flag and binds 0.0.0.0:8000
+#      instead of 127.0.0.1:8000;
+#   2. host and CSRF validation -- the addresses below;
+#   3. the root URL -- the launcher builds frontend/dist so Django serves the SPA itself at /, since
+#      config/urls.py otherwise redirects / to FRONTEND_URL (http://localhost:5173) and a phone
+#      resolves that `localhost` to ITSELF. See the LAN branch in config/urls.py.
+# Unset -- the default -- every line here is inert: no address is looked up, the two lists above are
+# what they have always been, and the launcher still binds loopback only. Gated on DEBUG as well
+# because this is a local-runtime convenience; a stray env var must never widen the deployed
+# container's host list. What this exposes when it IS on is real: the local runtime runs DEBUG=True
+# against the PRODUCTION database, so the board, the mailbox data and the CV workspace become
+# reachable by anything on the home LAN, behind the Django login and nothing else. Hence opt-in, and
+# hence the firewall rule stays scoped to the private profile and the local subnet (see README).
+LAN_ACCESS = DEBUG and env_bool('DACHAPPLY_LAN_ACCESS', False)
+if LAN_ACCESS:
+    ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS = lan_widened(
+        ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS, lan_addresses(env_list('DACHAPPLY_LAN_HOSTS')))
 
 INSTALLED_APPS = [
  'django.contrib.admin','django.contrib.auth','django.contrib.contenttypes','django.contrib.sessions','django.contrib.messages','django.contrib.staticfiles',
