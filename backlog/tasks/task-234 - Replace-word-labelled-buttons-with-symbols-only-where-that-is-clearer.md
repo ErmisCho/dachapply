@@ -4,6 +4,7 @@ title: Replace word-labelled buttons with symbols only where that is clearer
 status: To Do
 assignee: []
 created_date: '2026-09-11 11:23'
+updated_date: '2026-09-11 20:08'
 labels:
   - frontend
 dependencies:
@@ -36,10 +37,33 @@ The rule this should follow, because "more minimalistic" and "more intuitive" pu
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every button that becomes icon-only has an accessible name (aria-label or equivalent) and a tooltip, so the action is discoverable without clicking it
-- [ ] #2 No button whose action is destructive, ambiguous, or a state change keeps its meaning only in a glyph - that list includes Mark applied and the two compile actions, and any exception is argued in the task rather than assumed
-- [ ] #3 The measured width of the button row goes down, stated in pixels before and after for the same job and viewport
-- [ ] #4 Icons come from one set at one stroke weight and optical size - a glyph, an ASCII mark and a pictogram mixed together is what this task exists to remove
-- [ ] #5 Keyboard operation and focus order are unchanged, and the icon-only controls are still reachable and announced
-- [ ] #6 Frontend tests cover the accessible names, and the result is verified in the served bundle at localhost:8000
+- [ ] #1 Every icon-only control has both a tooltip and an accessible name, so the action is discoverable on hover and announced to a screen reader
+- [ ] #2 A control that changes state may be an icon, but the resulting STATE stays visible without hovering - you can see that a job is Applied without touching anything
+- [ ] #3 The primary action keeps a word: Generate is what the popup is for and is not a glyph
+- [ ] #4 Two actions that are already easy to confuse do not become two similar glyphs - Readjust and compile versus Recompile saved PDFs either keep distinguishing words or get visibly different icons, argued in the task
+- [ ] #5 Prose is cut, not just buttons: the standing explanatory paragraphs in the popup are removed or moved behind the control they describe, and the character count of visible prose is stated before and after
+- [ ] #6 The measured width of the button row and the height of the popup both go down, stated in pixels for the same job and viewport
+- [ ] #7 Icons come from one set at one stroke weight and optical size
+- [ ] #8 Keyboard operation and focus order are unchanged, and frontend tests cover the accessible names
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Decision, owner, 2026-09-11
+
+"I would prefer intuitive icons with tooltips", and text should be minimised aggressively so the
+popup fits a laptop screen fully open (TASK-233). That overrides the earlier draft, which had ruled
+icon-only out for state-changing actions. It is allowed now, with one property kept: a tooltip makes
+the ACTION discoverable, and the resulting STATE must still be readable without hovering - you can see
+that a job is Applied without pointing at anything.
+
+Prose is explicitly in scope, not only buttons. The standing paragraphs are the cheapest height to
+give back:
+
+- "Review the detected language and change either template if needed."
+- "Fastest practical setting: Low effort + 1.5x Fast. xhigh performs substantially more reasoning and
+  can take several minutes."
+- "Available before, during, or after generation and after a server restart. It uses the latest saved
+  files for this job."
+<!-- SECTION:NOTES:END -->
