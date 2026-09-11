@@ -658,7 +658,10 @@ def persist_generated_files(output, workspace, cv_name=None, letter_name=None, c
         shutil.copy2(output/letter_name, letter_tex)
         shutil.copy2(output/Path(letter_name).with_suffix('.pdf'), letter_pdf)
         saved.update(letter_tex=str(letter_tex),letter_pdf=str(letter_pdf))
-    if settings.CODEX_CV_OPEN_OUTPUT_FOLDER and getattr(os, 'startfile', None):
+    # TASK-232: both flags. The master one may forbid opening a folder at all; the second decides
+    # whether a FINISHED run opens one by itself, and defaults off -- the artifact paths and their
+    # copy controls are already on screen, so this window only ever stole focus.
+    if settings.CODEX_CV_OPEN_OUTPUT_FOLDER and settings.CODEX_CV_OPEN_FOLDER_ON_FINISH and getattr(os, 'startfile', None):
         os.startfile(cv_dir if cv_name else letter_dir)
     return saved
 

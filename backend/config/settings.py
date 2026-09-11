@@ -142,6 +142,17 @@ CODEX_CV_CACHE = env_bool('CODEX_CV_CACHE', True)
 CODEX_CANDIDATE_EVIDENCE_PATH = os.getenv('CODEX_CANDIDATE_EVIDENCE_PATH', str(Path(os.getenv('DACHAPPLY_SOURCE_REPO', BASE_DIR.parent))/'Ermis-Chorinopoulos-Candidate-Evidence.md') if DEBUG else '')
 CODEX_APPLICATION_RULES_PATH = os.getenv('CODEX_APPLICATION_RULES_PATH', str(BASE_DIR.parent/'job-application-adaptation-rules.md'))
 CODEX_CV_OPEN_OUTPUT_FOLDER = env_bool('CODEX_CV_OPEN_OUTPUT_FOLDER', DEBUG)
+# TASK-232: the flag above is the MASTER kill switch -- with it off the server may not open a folder
+# at all, including for the explicit Reveal action, which is what
+# test_reveal_artifact_respects_the_open_output_folder_kill_switch pins (disabled server-side, not
+# merely hidden in the UI). This second flag is narrower and is the one the owner asked about: whether
+# a finished generation or readjustment opens the folder BY ITSELF. Two settings rather than one
+# because the two behaviours are genuinely different -- Reveal is a click, this is a window appearing
+# unasked -- and conflating them is exactly why the automatic one could not be switched off without
+# also losing the button. Default off: when the automatic open was written the popup had no other way
+# to reach the files, and it now shows every artifact path with a copy control beside it, so a window
+# stealing focus after every run is a worse answer than the one already on screen.
+CODEX_CV_OPEN_FOLDER_ON_FINISH = env_bool('CODEX_CV_OPEN_FOLDER_ON_FINISH', False)
 # TASK-225: UserProfile.learned_application_preferences is one line per CV readjustment, appended by
 # cv_tasks._learn_application_preference and never pruned -- measured today at 89,743 chars, 58.9% of
 # a 152,452-char CV generation prompt, across 40 entries whose lengths span 67-4,979 chars (a 74x
