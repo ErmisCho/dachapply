@@ -4,7 +4,7 @@ title: Restore a working free local provider for model calls
 status: In Progress
 assignee: []
 created_date: ''
-updated_date: '2026-09-11 06:27'
+updated_date: '2026-09-11 07:23'
 labels:
   - backend
   - llm
@@ -109,6 +109,53 @@ AC4 stays **unchecked**, but its blocker has moved and should be restated for wh
   response_format json_schema, which the codex path does not currently use for this call).
 
 Nothing was spent: this run was free and local. The failure changed nothing in the database.
+
+## The AC4 blocker located precisely, 2026-09-11 -- it is codex, not the model and not the context
+
+Measured directly against LM Studio, bypassing codex, with the SAME model that had just failed three
+times (`qwen2.5-7b-instruct`, loaded at context 32768):
+
+    POST localhost:1234/v1/chat/completions
+      response_format: {"type":"json_schema","json_schema":{"name":"cv","strict":true,"schema":{...}}}
+
+    -> VALID JSON, all four required keys present, array and object types correct
+
+So the model **can** produce strictly valid structured output on this machine. What it cannot do is
+produce it when the schema is merely *described* rather than *enforced*:
+
+| path | result |
+|---|---|
+| `codex exec --oss --local-provider lmstudio --output-schema FILE` (what generate_cv_package builds) | invalid JSON on all three attempts |
+| LM Studio `response_format: json_schema` with `strict: true` | valid JSON |
+
+`codex exec --help` on **codex-cli 0.146.0** offers exactly one relevant flag, and its own wording is
+the tell:
+
+    --output-schema <FILE>   Path to a JSON Schema file describing the model's final response shape
+
+*Describing*. For `openai` that maps onto the provider own structured-output enforcement, so it holds;
+for `--oss --local-provider` it is a hint the model is free to ignore, and a 7B model does.
+
+### So AC4 is blocked on ONE thing, and it is now a specific thing
+
+Not "no local model has enough context" (fixed by TASK-225), and not "the model is too weak"
+(disproved above). It is: **the structured call for CV generation goes through codex, and codex does
+not enforce a schema against a local provider.**
+
+Why that is awkward rather than trivial: CV generation needs **tool use** -- the prompt tells the
+model to read the copied `.tex` files, and that is why codex is in the path at all. A direct
+`/v1/chat/completions` call with `response_format` gets valid JSON but cannot read files. So the two
+requirements pull apart, and the options are:
+
+1. a codex build that forwards `response_format` to the local provider (upstream, not ours);
+2. splitting the local path in two -- codex (with tools) to gather, then one direct schema-enforced
+   call to emit the final JSON. Two provider round-trips, and the second one pays the context again;
+3. a stronger local model that emits valid JSON unprompted -- possible, but unmeasured, and the
+   evidence above says the weakness is enforcement rather than capability.
+
+None of these is a small change, so **AC4 stays unchecked** and this is written down for whoever picks
+it up rather than attempted now. Everything above was free and local; nothing was spent and nothing
+was written.
 <!-- SECTION:NOTES:END -->
 
 ## State of play (handoff, 2026-09-09)
