@@ -24,6 +24,17 @@ import tempfile
 
 os.environ['DATABASE_URL'] = ''
 os.environ.setdefault('DEBUG', '1')
+# TASK-226: same reason as DATABASE_URL above, and it has to be blanked BEFORE the import for
+# the same reason -- config.settings reads DACHAPPLY_LAN_ACCESS at import and, when it is on,
+# appends this host's private addresses to ALLOWED_HOSTS and CSRF_TRUSTED_ORIGINS there and
+# then. Setting LAN_ACCESS = False after the star-import would be too late: the two lists would
+# already carry them. Turning LAN access on is the documented way to reach the app from a phone
+# (README), so the owner's .env will have this line, and without blanking it here
+# test_settings.py::test_local_root_redirects_to_vite_when_frontend_build_is_missing fails on
+# that machine and only there -- measured at 503 instead of 302 -- while CI, which ships no
+# .env, stays green. Whether LAN access is on is a property of the machine, never of the code
+# under test; tests that want it set it themselves via the `settings` fixture.
+os.environ['DACHAPPLY_LAN_ACCESS'] = ''
 
 from .settings import *  # noqa: F401,F403
 

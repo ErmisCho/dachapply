@@ -122,6 +122,55 @@ python manage.py runserver 127.0.0.1:8000
 
 Open `http://127.0.0.1:8000`.
 
+## Reaching the app from another device on your network
+
+Off by default: with nothing set, the backend binds `127.0.0.1:8000` and only this machine can
+reach it. To let a phone or a second laptop on the same home network open the board, put one line
+in the repo-root `.env` (it survives a reboot, and both the launcher and Django read it):
+
+```text
+DACHAPPLY_LAN_ACCESS=1
+```
+
+That single flag moves the three things that have to move together:
+
+- `scripts/dachapply-local-runtime.cmd` binds `0.0.0.0:8000` instead of `127.0.0.1:8000`;
+- it also runs `npm run build`, so Django serves the built app itself at `http://<this-host>:8000/`.
+  Without the build, `/` redirects to `FRONTEND_URL` (`http://localhost:5173`) and a phone resolves
+  that `localhost` to **itself** — the one failure that survives a correct bind and a correct
+  `ALLOWED_HOSTS`. Serving from `:8000` also keeps the login POST same-origin, so no CSRF or CORS
+  rule is relaxed;
+- `ALLOWED_HOSTS` and `CSRF_TRUSTED_ORIGINS` gain this host's own private IPv4 addresses, detected
+  at startup with `socket.gethostbyname_ex`, and their `http://<address>:8000` origins. Never `*`,
+  never a public address. If detection is wrong (VPN, second NIC), name the addresses yourself:
+  `DACHAPPLY_LAN_HOSTS=192.168.8.130`.
+
+Then open `http://<this-host-lan-ip>:8000/` on the other device — `ipconfig` prints the address.
+
+### Opening the Windows firewall for port 8000
+
+Inbound 8000 is blocked by default, so this is required and is a one-time step. Run it in an
+**elevated** `cmd` (Run as administrator). The rule is persistent — it survives a reboot:
+
+```text
+netsh advfirewall firewall add rule name="DACHApply LAN 8000" dir=in action=allow protocol=TCP localport=8000 profile=private remoteip=localsubnet
+```
+
+`profile=private` keeps it off public Wi-Fi networks and `remoteip=localsubnet` limits it to the
+local subnet. To remove it again (also elevated):
+
+```text
+netsh advfirewall firewall delete rule name="DACHApply LAN 8000"
+```
+
+### What this exposes
+
+The local runtime runs with `DEBUG=True` **against the production database**, so while LAN access is
+on, the real board, the real mailbox data and the real CV workspace are reachable by anything on the
+home network. The only thing in front of them is the Django login. That is why it is opt-in, why the
+firewall rule is scoped to the private profile and the local subnet, and why it is worth turning
+back off (remove the `.env` line, delete the rule) when you no longer need it.
+
 ## User data export/import
 Logged-in users can open `/export` and export jobs/application data, dashboard preferences, or both. Each export option supports JSON, CSV, and XLSX. Preferences include theme, column visibility, skill overrides, and work-mode badge colors. Exports do not include passwords, sessions, tokens, permissions, admin logs, invite codes, or secrets.
 

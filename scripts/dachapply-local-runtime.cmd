@@ -46,7 +46,38 @@ call npm ci --prefer-offline --no-audit
 if errorlevel 1 goto start_failed
 popd
 
-start /b "" cmd /c "call .venv\Scripts\activate.bat && cd backend && python manage.py runserver 127.0.0.1:8000"
+rem TASK-226: LAN access is opt-in and off by default. Without DACHAPPLY_LAN_ACCESS nothing below
+rem changes anything: BIND stays 127.0.0.1:8000 and no frontend build runs, exactly as before.
+rem The flag is read from the same .env Django reads (hard-linked above), so one line there
+rem configures both halves and survives a reboot; a value already in this environment wins, matching
+rem load_env_file's os.environ.setdefault. The child process inherits it, so the backend sees it too.
+rem Opening the Windows firewall is a separate, one-time, elevated step -- see README.md,
+rem "Reaching the app from another device on your network", for the exact add and delete commands.
+if exist "%RUNTIME%\.env" (
+  for /f "usebackq eol=# tokens=1,* delims==" %%k in ("%RUNTIME%\.env") do (
+    if /i "%%k"=="DACHAPPLY_LAN_ACCESS" if not defined DACHAPPLY_LAN_ACCESS set DACHAPPLY_LAN_ACCESS=%%l
+  )
+)
+set "BIND=127.0.0.1:8000"
+if defined DACHAPPLY_LAN_ACCESS (
+  set LAN_FLAG=!DACHAPPLY_LAN_ACCESS:"=!
+  rem Same truthy set as settings.py's env_bool, so the launcher and Django can never disagree.
+  for %%v in (1 true yes on) do if /i "!LAN_FLAG!"=="%%v" set "BIND=0.0.0.0:8000"
+)
+
+if "!BIND!"=="0.0.0.0:8000" (
+  rem A LAN device is served by Django itself at :8000 out of frontend\dist. Without this build dist
+  rem does not exist in the runtime worktree, config/urls.py has no SPA to serve, and / would
+  rem otherwise redirect to http://localhost:5173 -- an address a phone resolves to itself. The Vite
+  rem server started below is left exactly as it was and is not part of the LAN path at all.
+  echo Building the frontend so LAN devices can be served from this host on port 8000 ...
+  pushd frontend
+  call npm run build
+  if errorlevel 1 goto start_failed
+  popd
+)
+
+start /b "" cmd /c "call .venv\Scripts\activate.bat && cd backend && python manage.py runserver !BIND!"
 pushd frontend
 call npm run dev
 popd
