@@ -163,6 +163,23 @@ CODEX_CV_OPEN_FOLDER_ON_FINISH = env_bool('CODEX_CV_OPEN_FOLDER_ON_FINISH', Fals
 # and brings the whole request within reach of a 32k-context model (TASK-221's blocker). A
 # calibration knob, not a law -- raise it if a 32k-context model stops being the constraint.
 CODEX_LEARNED_PREFERENCES_BUDGET = int(os.getenv('CODEX_LEARNED_PREFERENCES_BUDGET', '16000'))
+# TASK-236: the budget above cannot tell a preference from a pasted application brief, so it spends
+# itself in arrival order. Measured on the real field (47 entries, 103,387 chars) the newest 9 that
+# reach the prompt under the 16,000-char budget are 5 briefs carrying 12,607 chars (86.7% of the
+# block) against 4 preference-shaped entries carrying 1,942 chars (13.3%) -- and of the 17
+# preference-shaped entries in the whole field only those 4 reach the model. This is the length above
+# which an entry is read as a brief rather than a preference, applied at READ time in
+# cv_generator.preference_exclusion; the stored field is never touched. 1,000 is not a round number:
+# sorted, the real entry lengths have their largest gap in the lower half between 961 and 1,242, and
+# 1,000 sits inside it, so anything from ~970 to ~1,240 separates exactly the same entries -- the
+# choice is insensitive to roughly +-200. 0 disables the length rule entirely (the escape hatch).
+CODEX_PREFERENCE_MAX_CHARS = int(os.getenv('CODEX_PREFERENCE_MAX_CHARS', '1000'))
+# TASK-236 AC3: ten of those entries (4,888-4,979 chars, 47.9% of the stored field) are briefs that
+# views.py:2043 cut with instructions[:5000] BEFORE storing them, so they are durable preferences
+# made of half a sentence. They are excluded by proximity to that wire cap plus a mid-cut ending,
+# never by a length threshold, so the rule still fires with CODEX_PREFERENCE_MAX_CHARS=0. Set both
+# off and load_candidate_evidence builds the pre-TASK-236 prompt byte for byte.
+CODEX_PREFERENCE_SKIP_TRUNCATED = env_bool('CODEX_PREFERENCE_SKIP_TRUNCATED', True)
 
 # TASK-109/TASK-195: Gmail credentials have no code default. Locally they come from .env; the hourly
 # cloud ingestion workflow passes OAuth values as GitHub repository secrets. An unset transport still

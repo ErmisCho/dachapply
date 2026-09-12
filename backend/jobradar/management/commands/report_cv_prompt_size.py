@@ -32,10 +32,11 @@ from django.core.management.base import BaseCommand, CommandError
 
 from jobradar.models import UserProfile
 from jobradar.services.access import accessible_jobs
-from jobradar.services.cv_generator import (_compact_candidate_evidence, _prompt, _target_names,
+from jobradar.services.cv_generator import (LEARNED_ENTRY as cv_generator_LEARNED_ENTRY,
+                                            _compact_candidate_evidence, _prompt, _target_names,
                                             applicant_name, bound_learned_preferences,
                                             detect_job_language, load_candidate_evidence,
-                                            user_templates)
+                                            preference_entries, user_templates)
 from jobradar.services.prompt_builder import build_candidate_profile_text
 
 # generate_cv_package's retry loop, restated here because both constants live inside that function
@@ -79,7 +80,9 @@ MEASURED_REQUEST_TOKENS = 39129
 LEARNED_SCOPES = ('CV', 'Letter', 'CV + letter')
 # Case-sensitive on purpose: the writer only ever emits those three, so a differently-cased scope is
 # a hand edit, and the report's job is to say so rather than to tidy it away.
-LEARNED_ENTRY = re.compile(r'^-\s*\[\s*([^]]*?)\s*\]\s*(.*)$')
+# Imported, not redefined: cv_generator.preference_exclusion parses the same shape to decide
+# what reaches the prompt, and two regexes for one stored format is how they drift apart.
+LEARNED_ENTRY = cv_generator_LEARNED_ENTRY
 LEARNED_NOISE = re.compile(r'[^\w\s]+')  # so that "four lines." and "four lines" normalise the same
 # ponytail: the near-duplicate pass is O(n^2) and runs over the NEWEST entries only. 400 is ~80k
 # difflib comparisons of short strings, well under a second; the whole field would be several times
@@ -269,7 +272,11 @@ class Command(BaseCommand):
         # has. It is NOT what ships: entries span 67-4,979 chars here, so last-K buys an unknown
         # number of chars. The live rule is a character budget, and this is the row that is real.
         budget = settings.CODEX_LEARNED_PREFERENCES_BUDGET
-        bounded, kept_entries, _ = bound_learned_preferences(blob, budget)
+        # TASK-236: the live rule is preference_entries THEN the budget, so this composes both --
+        # the same composition load_candidate_evidence makes. Measuring the raw field here printed
+        # the pre-change answer under a label reading IN FORCE, and the main table above, which does
+        # compose them, would then contradict this row inside a single run of the same report.
+        bounded, kept_entries, _ = bound_learned_preferences(preference_entries(blob), budget)
         # No digits in the label: the row parser reads the first number on the line as the entry
         # count, so a budget printed inside the label would be swallowed as one.
         label = 'IN FORCE: the character budget' if budget > 0 else 'IN FORCE: unbounded'
@@ -342,9 +349,17 @@ class Command(BaseCommand):
         # cv_generator.bound_learned_preferences and _prompt was built through it above, so calling
         # the same helper here is what stops the report and generation from ever disagreeing --
         # measuring the raw field instead would push the whole difference into `residual` unseen.
+        # TASK-236 put preference_entries in front of the bound in load_candidate_evidence, so the
+        # composition -- not just the bound -- is what the prompt carries. Composing only one of the
+        # two here is the exact failure the paragraph above describes, and it would be invisible:
+        # the excluded chars would land in `residual` and the report would still add up.
+        eligible = preference_entries(profile.learned_application_preferences)
         bounded, kept_entries, total_entries = bound_learned_preferences(
-            profile.learned_application_preferences, settings.CODEX_LEARNED_PREFERENCES_BUDGET)
+            eligible, settings.CODEX_LEARNED_PREFERENCES_BUDGET)
         stored_learned = len(profile.learned_application_preferences.strip())
+        stored_entries = len([l for l in profile.learned_application_preferences.splitlines() if l.strip()])
+        excluded_entries = stored_entries - total_entries
+        excluded_chars = stored_learned - len(eligible.strip())
         parts = [
             ('learned application preferences', len(bounded)),
             ('candidate evidence (after compaction)', len(evidence)),
@@ -378,6 +393,11 @@ class Command(BaseCommand):
         # by design (AC3), so the owner can still read and edit every entry in account settings.
         # What this line reports is the gap between what is KEPT and what is SENT, which is the only
         # number the bound can move and the one AC6 re-reads to check the bound still holds.
+        if excluded_entries:
+            self.stdout.write(f'  {excluded_entries:,} of {stored_entries:,} stored entries are not durable preferences '
+                              f'(CODEX_PREFERENCE_MAX_CHARS, CODEX_PREFERENCE_SKIP_TRUNCATED):')
+            self.stdout.write(f'  {excluded_chars:,} chars of pasted brief were dropped BEFORE the budget was spent, so the '
+                              f'{total_entries:,} real preferences compete for it instead. Run review_learned_preferences to see each one.')
         if settings.CODEX_LEARNED_PREFERENCES_BUDGET > 0 and kept_entries < total_entries:
             self.stdout.write(f'  Learned preferences are bounded at {settings.CODEX_LEARNED_PREFERENCES_BUDGET:,} chars '
                               f'(CODEX_LEARNED_PREFERENCES_BUDGET): the newest {kept_entries:,} of')

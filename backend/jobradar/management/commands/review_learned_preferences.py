@@ -25,6 +25,15 @@ normalised text is near-identical is excluded by the same difflib rule report_cv
 TASK-225, and a pair that names the same quantity for the same unit is read as agreement rather than
 as conflict.
 
+TASK-236 adds one column and no judgement: every entry is marked with whether it may reach the CV
+prompt as a durable preference, by the SAME rule the prompt builder applies -- imported from
+cv_generator, never a second copy, for the reason the parsing helpers above are imported too. That
+mark is a mechanical fact about length and about the 5,000-char cap the readjustment box applies at
+views.py:2043, not a verdict on the entry: an entry can be excluded from the prompt and still be the
+truest and most important thing in the field. Nothing is dropped from this listing -- every entry the
+field holds is still printed, excluded ones included, with the reason next to them, because TASK-229's
+by-hand review of the claims in this field is still open and depends on seeing all of them.
+
 Read-only, and more strictly than a report usually needs to be: no save(), no update(), no provider,
 no migration, and the evidence is read without going through load_candidate_evidence, which would
 refresh a compaction snapshot on the workspace. The stored field is byte-identical after a run --
@@ -44,7 +53,8 @@ from django.core.management.base import BaseCommand, CommandError
 from jobradar.management.commands.report_cv_prompt_size import (LEARNED_ENTRY, NEAR_DUP_RATIO, _console_safe,
                                                                 _learned_entries, _learned_key, _resolve_user)
 from jobradar.models import UserProfile
-from jobradar.services.cv_generator import _compact_candidate_evidence
+from jobradar.services.cv_generator import (WIRE_INSTRUCTION_CAP, _compact_candidate_evidence,
+                                            preference_exclusion)
 
 # The same field report_cv_prompt_size --learned measures, parsed by the same imported helpers rather
 # than by a second copy of the rules: two reports that disagreed about what an entry IS would be worse
@@ -111,6 +121,8 @@ MIN_TOPIC_WORDS = 2  # containment over a single shared word is noise, not a top
 PAIR_CEILING = 400
 
 LABEL_STYLE, LABEL_FACT, LABEL_UNCLEAR = 'likely-STYLE', 'likely-FACT', 'unclear'
+# TASK-236 --prompt, worded as the two sides of one mechanical question rather than as good/bad.
+REACH_WORDS = {'reaching': 'reaching the prompt', 'excluded': 'excluded from the prompt'}
 
 
 def _body(line):
@@ -212,9 +224,15 @@ def _analyse(index, scope, line, evidence_tokens):
     else:
         label = LABEL_STYLE if style else LABEL_UNCLEAR
     return {'index': index, 'scope': scope, 'line': line, 'label': label, 'style': style,
+            # TASK-236: the prompt builder's own rule, asked here rather than re-derived.
+            'exclusion': preference_exclusion(line),
             'absent': absent, 'years': years, 'fact_quantities': facts, 'by_unit': by_unit,
             'topic': set(topic), 'subjects': topic, 'key': _learned_key(line), 'axes': axes,
             'both': bool(style) and bool(absent or years or facts)}
+
+
+def _chars(entries):
+    return sum(len(entry['line']) for entry in entries)
 
 
 def _style_signal(entry):
@@ -328,6 +346,9 @@ class Command(BaseCommand):
                             help='First entry to print (default 1), so a long field is reviewed in sittings rather than in one wall of text.')
         parser.add_argument('--label', choices=('all', 'fact', 'style', 'unclear'), default='all',
                             help='Print only entries carrying this label. The counts underneath always cover the whole field.')
+        parser.add_argument('--prompt', choices=('all', 'reaching', 'excluded'), default='all',
+                            help='Print only the entries that may reach the CV prompt as durable preferences, or only '
+                                 'the ones excluded from it (TASK-236). The counts underneath always cover the whole field.')
         parser.add_argument('--chars', type=int, default=300,
                             help='Characters of each entry to print (default 300, 0 for the whole entry).')
 
@@ -336,10 +357,30 @@ class Command(BaseCommand):
 
     def _print_entry(self, entry, chars):
         scope = f'[{entry["scope"]}]' if entry['scope'] else '[hand-edited]'
-        self.stdout.write(_console_safe(f'\n#{entry["index"]}  {entry["label"]:<12}  {scope:<15}{len(entry["line"]):>7,} chars'))
+        mark = '  EXCLUDED from the prompt' if entry['exclusion'] else ''
+        self.stdout.write(_console_safe(f'\n#{entry["index"]}  {entry["label"]:<12}  {scope:<15}{len(entry["line"]):>7,} chars{mark}'))
         self.stdout.write(_console_safe(f'    style signal: {_style_signal(entry)}'))
         self.stdout.write(_console_safe(f'    fact signal : {_fact_signal(entry)}'))
+        if entry['exclusion']:
+            # The reason, and then what the reason is NOT: it is about the shape of the text, and the
+            # entry is still stored and still printed below it whatever it says.
+            self.stdout.write(_console_safe(f'    excluded    : {entry["exclusion"]} (a fact about length, not about whether the entry is true)'))
         self.stdout.write(_console_safe(f'    text        : {self._excerpt(entry["line"], chars)}'))
+
+    def _print_reach(self, analysed):
+        """TASK-236 AC5: what the prompt is given and what it is not, with the excluded half still
+        listed above rather than quietly gone."""
+        reaching = [entry for entry in analysed if not entry['exclusion']]
+        excluded = [entry for entry in analysed if entry['exclusion']]
+        self.stdout.write(f'\n\nWHAT REACHES THE CV PROMPT, OF ALL {len(analysed):,} ENTRIES (TASK-236)')
+        self.stdout.write(f'  reaching  {len(reaching):>5} entries  {_chars(reaching):>9,} chars  sent as durable preferences, '
+                          'as far as the budget goes')
+        self.stdout.write(f'  excluded  {len(excluded):>5} entries  {_chars(excluded):>9,} chars  not sent as durable preferences')
+        self.stdout.write('  EXCLUDED IS NOT A VERDICT ON THE ENTRY. It is a mechanical fact about how long the text is and')
+        self.stdout.write(f'  about the {WIRE_INSTRUCTION_CAP:,}-char cap the readjustment box applies (views.py:2043). It says the entry is')
+        self.stdout.write('  shaped like a one-off brief, never that it is untrue or unimportant -- an excluded entry can be the')
+        self.stdout.write('  most important thing in this field. Nothing is deleted: the stored field still holds every entry,')
+        self.stdout.write('  each is printed above with its own reason, and --prompt excluded pages through exactly those.')
 
     def _print_conflicts(self, analysed, chars):
         pairs, duplicates, compared = _conflict_pairs(analysed)
@@ -399,12 +440,15 @@ class Command(BaseCommand):
         self.stdout.write('  a false claim either -- it can be a company from a posting or a technology named as a target,')
         self.stdout.write('  which is why AC1 reported 381 as an upper bound rather than as a count of unsupported claims.')
 
-        wanted = opts['label']
+        wanted, reach = opts['label'], opts['prompt']
         by_flag = {'fact': LABEL_FACT, 'style': LABEL_STYLE, 'unclear': LABEL_UNCLEAR}
-        selected = [entry for entry in analysed if wanted == 'all' or entry['label'] == by_flag[wanted]]
+        selected = [entry for entry in analysed
+                    if (wanted == 'all' or entry['label'] == by_flag[wanted])
+                    and (reach == 'all' or bool(entry['exclusion']) == (reach == 'excluded'))]
         start = max(1, opts['start'])
         page = selected[start - 1:] if opts['limit'] <= 0 else selected[start - 1:start - 1 + opts['limit']]
-        labelled = f' labelled {wanted}' if wanted != 'all' else ''
+        labelled = ((f' labelled {wanted}' if wanted != 'all' else '')
+                    + (f' {REACH_WORDS[reach]}' if reach != 'all' else ''))
         if not page:
             self.stdout.write(f'\nENTRIES: none at --start {start:,} of {len(selected):,}{labelled}.')
         else:
@@ -424,4 +468,5 @@ class Command(BaseCommand):
             self.stdout.write(f'  {both:,} of {len(analysed):,} entries carry BOTH kinds of signal. That is the finding, not a defect in')
             self.stdout.write('  the rule: those have to be split by hand before anything can be moved into candidate evidence (AC2).')
 
+        self._print_reach(analysed)
         self._print_conflicts(analysed, opts['chars'])

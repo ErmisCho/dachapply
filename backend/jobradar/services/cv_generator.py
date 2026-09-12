@@ -258,6 +258,105 @@ def _compact_candidate_evidence(content):
     return canonical.strip()
 
 
+# The stored shape cv_tasks._learn_application_preference writes: '- [scope] body'. Defined here,
+# at the layer the prompt is built in, because the exclusion rule below has to parse it and the two
+# management commands that report on the field already import their parsing from this module.
+LEARNED_ENTRY = re.compile(r'^-\s*\[\s*([^]]*?)\s*\]\s*(.*)$')
+
+WIRE_INSTRUCTION_CAP = 5000  # views.py:2043 -- instructions[:5000]
+# How far under that cap a stored BODY may land and still be one that hit it. The readjustment text
+# is cut at exactly WIRE_INSTRUCTION_CAP and only then normalised for storage -- whitespace collapsed
+# and a '- [scope] ' prefix added (cv_tasks._learn_application_preference) -- so a truncated entry
+# stores a little short of the cap rather than at it: the ten in the real field sit at 4,888-4,979,
+# i.e. 21-112 chars under. 250 covers that with 138 chars to spare and still clears the nearest
+# non-truncated entry, at 4,106, by 644.
+#
+# ponytail: this window is fitted to how much whitespace the observed briefs carried, not to the
+# mechanism -- collapsing is what puts a truncated entry under the cap, and that scales with the
+# pasted text's whitespace density rather than with its length. Measured: a brief pasted with blank
+# lines and indentation collapses by 348 and falls OUT of the window, so it is caught by the length
+# rule instead of by this one. The honest upgrade is to record truncation at WRITE time (views.py
+# knows len(instructions) > 5000); until an entry carries that flag this is an inference from
+# shape, and is bounded by it.
+TRUNCATION_ALLOWANCE = 250
+SENTENCE_END = ('.', '!', '?', '\u2026')
+# A sentence ending inside a quote or bracket -- `... keep three lines."` -- still ended. Without
+# this the closing mark reads as a mid-cut ending and a genuine entry near the cap is called
+# truncated. Only reachable within TRUNCATION_ALLOWANCE of the cap, i.e. on the AC3 path.
+CLOSING_MARKS = '"\'\u201d\u2019\u00bb)]}'
+
+
+def _preference_body(entry):
+    """The entry without the `- [scope] ` prefix cv_tasks adds AFTER the wire cut.
+
+    Which half is measured is not cosmetic. views.py:2043 caps the INSTRUCTION; the prefix is added
+    afterwards, so the body is what was capped and WIRE_INSTRUCTION_CAP - len(body) is the real
+    distance from the cap. Measuring the whole stored line instead puts a brief with no whitespace
+    to collapse at 5,007-5,016 chars -- PAST the cap -- and the 0 <= test then stops seeing it at
+    all: measured slack -7 / -11 / -16 for scopes `CV`, `Letter` and `CV + letter`. Those are
+    precisely the entries this rule exists to catch, so the defect was silent in the direction that
+    mattered, and invisible under the default config because the length rule caught them instead --
+    which is the dependence on a threshold that AC3 says must not exist.
+    """
+    match = LEARNED_ENTRY.match(entry)
+    return (match.group(2) if match else entry).strip()
+
+
+def preference_exclusion(line):
+    """'' if this entry may reach the prompt as a durable preference, else a short reason why not.
+
+    Read-time only: nothing stored is read back differently, edited or deleted, and switching both
+    settings off restores the previous prompt byte for byte (settings.CODEX_PREFERENCE_MAX_CHARS=0,
+    CODEX_PREFERENCE_SKIP_TRUNCATED=False). The reason is shown to the owner by
+    `manage.py review_learned_preferences`, so it is written to be read by a person.
+
+    Two independent rules, and the truncation one deliberately does not depend on a threshold:
+
+    - Truncated at the wire cap. views.py caps a readjustment at WIRE_INSTRUCTION_CAP chars before
+      it is ever stored, so an entry that lands within TRUNCATION_ALLOWANCE of that cap AND does not
+      end at a sentence boundary was cut mid-thought by the transport, not written that way. Both
+      halves are needed, measured on the real field: all 10 entries at the cap end mid-token (8
+      mid-word, 2 on '{' and '='), but so do 12 of the other 37 -- a mid-cut ending alone would throw
+      away a third of the genuine entries, including short preference-shaped ones. Proximity alone is
+      what separates them: the nearest non-truncated entry is 4,106 chars, 782 below the lowest
+      truncated one. This rule fires with the length limit off, which is AC3.
+    - Too long to be a durable preference. See settings.CODEX_PREFERENCE_MAX_CHARS for why 1,000,
+      derived from the 961 -> 1,242 gap in the real length distribution rather than picked round.
+    """
+    entry = (line or '').strip()
+    if not entry:
+        return ''  # a blank line is not an entry; bound_learned_preferences drops it anyway
+    body = _preference_body(entry)
+    if (settings.CODEX_PREFERENCE_SKIP_TRUNCATED
+            and 0 <= WIRE_INSTRUCTION_CAP - len(body) <= TRUNCATION_ALLOWANCE
+            and not body.rstrip(CLOSING_MARKS).endswith(SENTENCE_END)):
+        return f'cut off at the {WIRE_INSTRUCTION_CAP:,}-char input cap'
+    if 0 < settings.CODEX_PREFERENCE_MAX_CHARS < len(entry):
+        return f'{len(entry):,} chars: a pasted brief, not a preference'
+    return ''
+
+
+def preference_entries(raw):
+    """`raw` with the entries preference_exclusion rejects removed, for the prompt only.
+
+    Runs BEFORE bound_learned_preferences, which is the whole point: an excluded brief must free the
+    budget its few thousand chars were consuming, so the preferences behind it can reach the model
+    rather than being dropped after the budget has already been spent on the brief.
+
+    Returns `raw` itself, untouched, when nothing is excluded -- so an account with no briefs, and
+    the both-settings-off escape hatch, reach bound_learned_preferences with the exact same string
+    they did before this existed, interior blank lines and hand-edited shapes included.
+
+    Public because it is now half of the answer to "what does the prompt carry": anything measuring
+    that -- report_cv_prompt_size does, by calling bound_learned_preferences itself -- has to compose
+    the two the same way load_candidate_evidence does, or it reports a field the prompt no longer
+    holds and hides the difference in its residual row.
+    """
+    entries = [line for line in (raw or '').splitlines() if line.strip()]
+    kept = [line for line in entries if not preference_exclusion(line)]
+    return (raw or '') if len(kept) == len(entries) else '\n'.join(kept)
+
+
 def bound_learned_preferences(raw, budget):
     """Newest-first character budget over the learned-preferences field, for the prompt only.
 
@@ -327,10 +426,18 @@ def load_candidate_evidence(profile, learned_preferences='', stored_evidence='')
         except OSError:
             pass
     rules=load(settings.CODEX_APPLICATION_RULES_PATH, 'Application adaptation rules')
-    bounded,kept,total=bound_learned_preferences(learned_preferences, settings.CODEX_LEARNED_PREFERENCES_BUDGET)
+    bounded,kept,total=bound_learned_preferences(preference_entries(learned_preferences), settings.CODEX_LEARNED_PREFERENCES_BUDGET)
     # Byte-identical to the pre-TASK-225 header when nothing was dropped, so an account under budget
     # sees no change at all. Once entries are left out, the model is told so -- a list presented as
     # complete when it is not is a false premise the model would otherwise reason from.
+    # TASK-236: `total` therefore counts entries eligible as durable preferences, not lines in the
+    # stored field. That is the honest meaning for a sentence the MODEL reads: it says how much of
+    # the list it is being shown was withheld for space, and a one-off brief was never part of that
+    # list to withhold. Counting excluded briefs in `total` would tell the model there are 47
+    # preferences it is seeing 9 of, when there are 17 -- overstating what it is missing and
+    # inviting it to hedge about instructions that do not exist. The owner's view of the field is a
+    # separate surface and keeps the full count: review_learned_preferences lists every entry with
+    # its exclusion reason (AC5), which is where "what was dropped and why" belongs.
     header=('LEARNED ACCOUNT APPLICATION PREFERENCES (newer entries override older ones):' if kept >= total
             else f'LEARNED ACCOUNT APPLICATION PREFERENCES -- most recent {kept} of {total} entries (newer entries override older ones):')
     learned=f'\n\n{header}\n{bounded}' if bounded else ''

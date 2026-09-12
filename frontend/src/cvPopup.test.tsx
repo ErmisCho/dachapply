@@ -4,7 +4,8 @@
 // the Applied write are measured in the browser instead, and the numbers live in the task notes.
 import {describe,expect,it,vi} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {CvGenerator,feedbackStatusPatch} from './App'
+import {CvGenerator,LearnedPreferenceNote,feedbackStatusPatch} from './App'
+import appSource from './App.tsx?raw'   // vite serves the file's text; no DOM and no new dependency
 import type {Job} from './types'
 
 const storage={getItem:vi.fn(()=>JSON.stringify({can_generate_cv:true})),removeItem:vi.fn()}
@@ -71,5 +72,72 @@ describe('marking a job Applied from the generator (TASK-227)',()=>{
     // moved interview -> applied would keep a stage it is no longer in.
     expect(feedbackStatusPatch('interview','2026-09-10').interview_stage).toBe(1)
     expect(feedbackStatusPatch('applied','2026-09-10').interview_stage).toBeNull()
+  })
+})
+describe('what the popups claim was learned (TASK-236 AC8)',()=>{
+  // TASK-236 keeps STORING every readjustment - nothing is deleted and the field stays byte-identical
+  // - but it stops long and truncated entries from reaching the CV prompt. So `learned_preference`
+  // still comes back non-empty for an entry that will never be sent again, and the line both popups
+  // used to render unconditionally ("learned for future applications") became false for it. The
+  // backend now says which case it is in `learned_preference_exclusion`: '' means the entry reaches
+  // the prompt, anything else is the reason it does not.
+  //
+  // Neither popup can be rendered with a finished task here: `task` and `rows` are filled by effects,
+  // and renderToStaticMarkup runs none. That is why the line lives in one small exported component -
+  // it is the only part of either popup a DOM-less test can actually render. Both surfaces are
+  // asserted separately below rather than one standing in for the other, and the last test pins that
+  // each popup really does route through it.
+  const entry='- [CV] Prefer three-line role summaries'
+  const excluded={learned_preference:entry,learned_preference_exclusion:'1,842 chars: a pasted brief, not a preference'}
+  const kept={learned_preference:entry,learned_preference_exclusion:''}
+  const note=(task:any,row=false)=>renderToStaticMarkup(<LearnedPreferenceNote task={task} row={row}/>)
+
+  it('single popup: says the adjustment was used once, not learned, when it will not reach the prompt',()=>{
+    const html=note(excluded)
+
+    expect(html).toContain('Adjustment applied to this job only, not reused for future applications.')
+    expect(html).not.toContain('Adjustment learned for future applications.')
+    expect(html).toContain('status-message-info')   // informational, not a success tick
+  })
+
+  it('single popup: keeps the green affirmation exactly as it was for an entry that does reach it',()=>{
+    const html=note(kept)
+
+    expect(html).toContain('Adjustment learned for future applications.')
+    expect(html).toContain('status-message-success')
+    expect(html).not.toContain('not reused for future applications')
+  })
+
+  it('batch popup: says the same thing in the row shape, and does not claim it was learned',()=>{
+    const html=note(excluded,true)
+
+    expect(html).toContain('Adjustment applied to this job only, not reused for future applications.')
+    expect(html).not.toContain('Adjustment learned for future applications.')
+    expect(html).toContain('text-slate-500')
+    expect(html).not.toContain('text-green-700')
+  })
+
+  it('batch popup: keeps its own green row line for an entry that does reach the prompt',()=>{
+    const html=note(kept,true)
+
+    expect(html).toContain('<div class="mt-1 text-xs text-green-700">Adjustment learned for future applications.</div>')
+    expect(html).not.toContain('not reused for future applications')
+  })
+
+  it('says nothing at all when no preference was written',()=>{
+    expect(note({learned_preference:'',learned_preference_exclusion:''})).toBe('')
+    expect(note(null)).toBe('')
+    expect(note(undefined,true)).toBe('')
+  })
+
+  it('is what BOTH popups render - neither keeps a copy of the claim of its own',()=>{
+    // A repo memory: a fix verified on one surface gets assumed to cover the other. The four tests
+    // above prove the component; this proves the single and the batch popup both go through it, and
+    // that the old unconditional sentence survives nowhere else in the file.
+    expect(appSource).toContain('<LearnedPreferenceNote task={task}/>')      // single popup
+    expect(appSource).toContain('<LearnedPreferenceNote task={row} row/>')   // batch popup, per row
+    // Both remaining copies of the old sentence are the two branches inside the component itself
+    // (single popup and batch row); a third would mean a popup grew its own unconditional claim again.
+    expect(appSource.split('Adjustment learned for future applications.').length-1).toBe(2)
   })
 })
