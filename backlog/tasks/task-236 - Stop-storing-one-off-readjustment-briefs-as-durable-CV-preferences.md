@@ -1,7 +1,7 @@
 ---
 id: TASK-236
 title: Stop storing one-off readjustment briefs as durable CV preferences
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-12 09:44'
 updated_date: '2026-09-12 19:20'
@@ -166,3 +166,20 @@ field keeps growing at the ~10k chars/day this task measured. This filters what 
 which is what AC2 requires and what makes the change reversible by configuration alone. Trimming the
 stored field is the owner's call and is not attempted here.
 <!-- SECTION:NOTES:END -->
+
+## Done 2026-09-12 -- merged and verified in production
+
+- Squash-merged as `f0d8a93` (PR #153). Rollback image recorded before the merge:
+  `IMAGE_NAME:c8868baa6277cd241f82fda0a44991224f3df1b5`. Not needed.
+- Deploy run `34707998038`: `test` and `build-and-push` both success.
+- **Production verified by the change itself, not by the green workflow.** The served bundle moved
+  `index-Buq10h7s.js` -> `index-COYwtBqj.js`, and that bundle carries `learned_preference_exclusion`
+  and the new wording *"Adjustment applied to this job only, not reused for future applications."*
+  The old sentence is still present too, which is correct -- it remains what a non-excluded entry
+  shows, and it doubles as the control proving the probe could see either string.
+- `/api/health/` 200 before and after. The backend filter ships in the same image as that bundle.
+
+A probe correction worth recording: the first check fetched `/assets/<bundle>.js` and got 528 bytes
+of the SPA fallback HTML, which read as "the change is not deployed". Static files are served under
+`/static/assets/`. The control probe -- looking for the OLD string, which had to be present -- is
+what exposed the bad path instead of a bad deploy.
