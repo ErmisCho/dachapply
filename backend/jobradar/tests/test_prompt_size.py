@@ -21,6 +21,11 @@ from jobradar.services import cv_generator
 # Deliberately lopsided the way the real prompt is: the learned preferences dwarf everything else,
 # and the job description -- the only part that differs between two generations -- is one line.
 LEARNED = 'Always keep the professional summary to four lines. ' * 200
+# One 10,399-char line, so TASK-236's preference_entries reads it as a pasted brief and drops it
+# before the budget is applied. Tests below that are about the BUDGET switch the exclusion axis off
+# with this, rather than being reworded around it: a budget test that silently measured exclusion
+# would still pass, and would stop testing the budget.
+NO_EXCLUSION = dict(CODEX_PREFERENCE_MAX_CHARS=0, CODEX_PREFERENCE_SKIP_TRUNCATED=False)
 EVIDENCE = '# Candidate Evidence\n' + 'Shipped an ingestion pipeline end to end. ' * 60
 PROFILE = 'Backend engineer working in Python and Django. ' * 20
 CV_SOURCE = '\\documentclass{article}\\begin{document}' + 'SECRET-CV-BODY ' * 50 + '\\end{document}'
@@ -87,8 +92,10 @@ def learned_report(user, *args):
     return report(user, '--learned', *args)
 
 
-def test_the_parts_add_up_to_the_prompt_and_the_biggest_one_is_named(account):
+def test_the_parts_add_up_to_the_prompt_and_the_biggest_one_is_named(account, settings):
     """AC1. The table is only worth reading if the components account for the whole prompt."""
+    for key, value in NO_EXCLUSION.items():
+        setattr(settings, key, value)
     sizes = chars(report(account))
     parts = ['learned application preferences', 'candidate evidence (after compaction)',
              'DACHApply profile notes', 'mandatory application adaptation rules',
@@ -262,6 +269,8 @@ def test_an_unbounded_budget_is_reported_as_unbounded(account, settings):
     """The escape hatch has to be visible: a report that looked identical either way would let the
     bound be switched off without anyone noticing it had been."""
     settings.CODEX_LEARNED_PREFERENCES_BUDGET = 0
+    for key, value in NO_EXCLUSION.items():
+        setattr(settings, key, value)
 
     text = report(account)
 
@@ -283,6 +292,35 @@ def test_the_cap_table_names_the_rule_that_is_actually_in_force(account, setting
     assert size <= 4000 and 0 < kept < 60
 
 
+def test_the_in_force_row_measures_the_composition_not_the_raw_field(account, settings):
+    """TASK-236. The row labelled IN FORCE has to compose preference_entries with the budget, the
+    way load_candidate_evidence does. Measuring the raw field printed the PRE-change answer under
+    that label, so the --learned table contradicted the main table inside one run of the report --
+    and AC4 is measured with this artifact.
+
+    The fixture must contain a brief for this test to be able to fail at all: with only short
+    entries both paths return the same string, which is why the neighbouring last-K test could not
+    catch this. The final assertion pins that the fixture really does separate them.
+    """
+    briefs = [f'- [CV] brief {index} ' + 'padding ' * 400 for index in range(3)]
+    prefs = [f'- [CV] Preference number {index} ' + 'padding ' * 40 for index in range(20)]
+    # Briefs NEWEST, or the budget never reaches them and both paths agree by accident --
+    # the falsification assertion at the end of this test caught exactly that.
+    field = '\n'.join(prefs + briefs)
+    UserProfile.objects.filter(user=account).update(learned_application_preferences=field)
+    settings.CODEX_LEARNED_PREFERENCES_BUDGET = 6000
+    settings.CODEX_PREFERENCE_MAX_CHARS = 1000
+
+    kept, size = counted(report(account, '--learned'))['IN FORCE: the character budget']
+
+    expected, expected_kept, _ = cv_generator.bound_learned_preferences(
+        cv_generator.preference_entries(field), 6000)
+    assert (kept, size) == (expected_kept, len(expected))
+
+    raw_bounded, raw_kept, _ = cv_generator.bound_learned_preferences(field, 6000)
+    assert (raw_kept, len(raw_bounded)) != (expected_kept, len(expected)),         'fixture cannot distinguish the two paths, so the assertion above proves nothing'
+
+
 def test_no_share_column_can_read_negative_or_over_a_hundred(account, settings):
     """The bound made `prompt_chars` the BOUNDED prompt, so every share denominator that assumed the
     whole field was in there inverted. It printed -375.6% before this was caught, and a percentage
@@ -297,3 +335,39 @@ def test_no_share_column_can_read_negative_or_over_a_hundred(account, settings):
 
     assert shares, 'no share column was printed at all, so this test proved nothing'
     assert all(0 <= share <= 100 for share in shares), [share for share in shares if not 0 <= share <= 100]
+
+
+def test_the_parts_still_add_up_with_briefs_excluded(account, settings):
+    """TASK-236. The failure this guards is silent: when the report bounded the stored field while
+    the prompt bounded the composed one, the excluded chars landed in `residual` and every row still
+    summed to TOTAL. So summing is not the assertion -- the learned row matching what load_candidate_
+    evidence actually carries is."""
+    settings.CODEX_PREFERENCE_MAX_CHARS = 1000
+    settings.CODEX_PREFERENCE_SKIP_TRUNCATED = True
+    # LEARNED_MIX alone cannot fail this: every one of its entries is short, so composing or not
+    # composing preference_entries gives the same string and the assertion below passes either way.
+    # The field has to contain a brief for the two paths to differ at all -- found by falsifying.
+    field = LEARNED_MIX + '\n- [CV] ' + 'A pasted application brief sentence. ' * 60
+    UserProfile.objects.filter(user=account).update(learned_application_preferences=field)
+
+    sizes = chars(report(account))
+    parts = ['learned application preferences', 'candidate evidence (after compaction)',
+             'DACHApply profile notes', 'mandatory application adaptation rules',
+             'job description (the only per-job part)', 'prompt scaffolding, headers, evaluation JSON']
+    assert sum(sizes[part] for part in parts) == sizes['TOTAL']
+
+    bounded, _, _ = cv_generator.bound_learned_preferences(
+        cv_generator.preference_entries(field), settings.CODEX_LEARNED_PREFERENCES_BUDGET)
+    assert sizes['learned application preferences'] == len(bounded)
+
+
+def test_a_single_pasted_brief_is_reported_as_excluded_not_as_absent(account, settings):
+    """TASK-236. The one-line fixture IS a brief. The report must say it was excluded rather than
+    show a 0 the reader would read as 'this account has no preferences'."""
+    settings.CODEX_PREFERENCE_MAX_CHARS = 1000
+
+    text = report(account)
+
+    assert 'not durable preferences' in text
+    assert chars(text)['learned application preferences'] == 0
+

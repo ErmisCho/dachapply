@@ -12,7 +12,7 @@ from django.conf import settings
 from django.db import close_old_connections
 
 from jobradar.models import ApplicationNote, JobLead, UserProfile
-from jobradar.services.cv_generator import GenerationCancelled, generate_cv_package, recompile_generated_package
+from jobradar.services.cv_generator import GenerationCancelled, generate_cv_package, preference_exclusion, recompile_generated_package
 
 
 _tasks={}
@@ -304,11 +304,16 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         # end with the documents already produced.
         close_old_connections()
         learned_preference=_learn_application_preference(user_id, revision_instructions, create_cv, create_letter)
+        # TASK-236 AC8: the entry above is still stored verbatim -- nothing is deleted -- but
+        # cv_generator.preference_exclusion decides whether it will ever be sent as a durable
+        # preference again. '' means it will; anything else is the reason it will not, and the CV
+        # popups render that instead of claiming the adjustment was learned for future applications.
+        learned_exclusion=preference_exclusion(learned_preference)
         clipboard_tex=_clipboard_contents(artifacts)
         clipboard_copied=bool(clipboard_tex and _copy_to_clipboard(clipboard_tex))
         if 'base_templates' in artifacts:
             _record_base_templates(job,artifacts['base_templates'])
-        _update(task_id, status='ready', progress=100, stage='Ready', archive=archive, filename=filename, artifacts=artifacts, report=artifacts.get('report'), clipboard_tex=clipboard_tex, clipboard_copied=clipboard_copied, learned_preference=learned_preference)
+        _update(task_id, status='ready', progress=100, stage='Ready', archive=archive, filename=filename, artifacts=artifacts, report=artifacts.get('report'), clipboard_tex=clipboard_tex, clipboard_copied=clipboard_copied, learned_preference=learned_preference, learned_preference_exclusion=learned_exclusion)
     except GenerationCancelled:
         _update(task_id, status='cancelled', stage='Cancelled', error='')
     except Exception as exc:
@@ -354,7 +359,7 @@ def start_cv_noop_task(job_id, user_id, artifacts):
     task_id=uuid.uuid4().hex
     now=time.monotonic()
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'ready','progress':100,'stage':'No changes requested','error':'','archive':archive.getvalue(),'filename':f'application-{job_id}-current.zip','artifacts':artifacts,'report':{'changed_files':[],'main_changes':['Current files retained unchanged.'],'unsupported_requirements_not_claimed':[]},'clipboard_tex':_clipboard_contents(artifacts),'clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_created_at':now,'_started_at':now,'_finished_at':now,'_stage_key':'ready','_stage_started_at':now,'_stage_plan':[],'_stage_defaults':{},'_estimate_key':('no-change',),'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'ready','progress':100,'stage':'No changes requested','error':'','archive':archive.getvalue(),'filename':f'application-{job_id}-current.zip','artifacts':artifacts,'report':{'changed_files':[],'main_changes':['Current files retained unchanged.'],'unsupported_requirements_not_claimed':[]},'clipboard_tex':_clipboard_contents(artifacts),'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_created_at':now,'_started_at':now,'_finished_at':now,'_stage_key':'ready','_stage_started_at':now,'_stage_plan':[],'_stage_defaults':{},'_estimate_key':('no-change',),'_stage_times':{},'updated_at':time.time()}
     return task_id
 
 
@@ -367,7 +372,7 @@ def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter
     compile_letter=source_letter and (not source_updates or str(source_letter) in source_updates or not Path(source_letter).with_suffix('.pdf').is_file())
     plan=(['compiling_cv','cv_compiled'] if compile_cv else [])+(['compiling_letter','letter_compiled'] if compile_letter else [])
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':task_report,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('compile-only',bool(compile_cv),bool(compile_letter)),'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':task_report,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('compile-only',bool(compile_cv),bool(compile_letter)),'_stage_times':{},'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in _tasks[task_id]['_stage_plan'])
     Thread(target=_run_compile,args=(task_id,job_id,user_id,cv_key,source_cv,source_letter,source_updates or {},task_report,cancel_event),name=f'cv-compile-{task_id[:8]}',daemon=True).start()
     return task_id
@@ -380,7 +385,7 @@ def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, p
     plan,defaults,estimate_key=_task_timing(provider,model,effort,speed,create_cv,create_letter,bool(source_cv or source_letter or revision_instructions or correction_image))
     cancel_event=Event()
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','diagnostics':'','repair_attempts':0,'_config':{'profile':profile,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'create_cv':create_cv,'provider':provider,'model':model,'effort':effort,'speed':speed},'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_config':{'profile':profile,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'create_cv':create_cv,'provider':provider,'model':model,'effort':effort,'speed':speed},'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'_stage_times':{},'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in plan)
     # ponytail: one local CLI agent per task; add a concurrency cap if large batches exhaust the workstation.
     Thread(target=_run, args=(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv, source_letter, revision_instructions, create_cv, correction_image, base_templates, cancel_event), name=f'cv-agent-{task_id[:8]}', daemon=True).start()

@@ -1022,7 +1022,7 @@ def test_cv_revision_uses_minimal_prompt_and_preserves_unrelated_tex(db, tmp_pat
     assert len(revision_prompt) < len(initial_prompt)*.5
 
 
-def test_cv_task_completes_and_is_user_scoped(job, monkeypatch, tmp_path):
+def test_cv_task_completes_and_is_user_scoped(job, monkeypatch, tmp_path, settings):
     import time
     from jobradar.services import cv_tasks
 
@@ -1084,6 +1084,19 @@ def test_cv_task_completes_and_is_user_scoped(job, monkeypatch, tmp_path):
     learned='- [CV + letter] Shorten the profile'
     assert revision_task['learned_preference']==learned
     assert learned_calls==[(job.created_by_id,'Shorten the profile',True,True)]
+    # TASK-236 AC8: the entry is stored either way -- nothing is deleted -- but a pasted brief will
+    # never be sent to the model again as a durable preference, so the task says which case it is and
+    # the popups stop claiming "learned for future applications" for one that will not reach a prompt.
+    settings.CODEX_PREFERENCE_MAX_CHARS=1000
+    assert revision_task['learned_preference_exclusion']==''
+    brief='Rewrite the profile section for this specific role. '*25   # invented filler, 1,300 chars
+    brief_id=cv_tasks.start_cv_revision(revision_id, job.created_by_id, brief)
+    for _ in range(100):
+        brief_task=cv_tasks.get_cv_task(brief_id, job.created_by_id)
+        if brief_task['status']=='ready': break
+        time.sleep(.01)
+    assert brief_task['learned_preference']=='- [CV + letter] '+brief.strip()   # still written
+    assert brief_task['learned_preference_exclusion']=='1,315 chars: a pasted brief, not a preference'
     before=list(learned_calls); provenance_before_failure=list(provenance)
     generation_error=RuntimeError('full compiler output'); generation_error.public_message='LaTeX could not compile the CV after repair.'; generation_error.diagnostics='line 42: undefined control sequence'; generation_error.repair_attempts=2
     monkeypatch.setattr(cv_tasks, 'generate_cv_package', lambda *args,**kwargs: (_ for _ in ()).throw(generation_error))

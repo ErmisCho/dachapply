@@ -5,6 +5,12 @@ the owner's career record and this repository is public (CLAUDE.md), so no real 
 or number appears here. That rule bites harder in this test than in test_prompt_size.py, because the
 command under test PRINTS entry text -- fixture text is the only text it may ever be handed in CI.
 
+TASK-236's entries are invented here too, and built by repeating one neutral sentence to a LENGTH:
+length is the only property the exclusion rule reads, so a fixture needs a size and nothing else. The
+tests below never restate that rule -- they ask cv_generator.preference_exclusion what it says about
+the fixture and assert that the report prints exactly that, because a second copy of the rule living
+in a test is the same defect as a second copy living in the command.
+
 What each test defends is named in its docstring. The load-bearing ones are the two the brief calls
 out: a label is never printed without the signal that produced it (AC3), and two entries that agree
 are never reported as contradicting each other (AC5) -- a report that flagged every near-duplicate
@@ -18,6 +24,7 @@ from django.contrib.auth.models import User
 from django.core.management import CommandError, call_command
 
 from jobradar.models import UserProfile
+from jobradar.services.cv_generator import WIRE_INSTRUCTION_CAP, preference_exclusion
 
 # Deliberately thin: it has to corroborate a couple of fixture terms and nothing else, so that a term
 # reported as absent is absent because the entry invented it, not because the evidence is short.
@@ -42,7 +49,17 @@ CONFLICT_ON_SIZE = ['- [CV] Keep the professional summary to four lines.',
 CONFLICT_ON_DIRECTION = ['- [Letter] Shorten the closing paragraph as much as possible.',
                          '- [Letter] The closing paragraph should be expanded with a sentence about relocation.']
 
+# TASK-236. Two shapes that are not preferences, both invented, both defined by their length only:
+# a mid-size pasted brief, and one cut off mid-word at the wire cap exactly as views.py:2043 cuts it.
+SENTENCE = 'Rework the summary for this posting and keep the tooling paragraph. '
+BRIEF = ('- [CV] ' + SENTENCE * 30).strip()   # stored normalised, so no trailing space to strip
+# Sized the way a real one lands: cv_tasks stores the capped instruction with a scope prefix after
+# normalising it, so a truncated entry sits a little UNDER the cap and ends mid-word, never on a
+# full stop. The exact offset is invented; only the fact that it ends mid-word is load-bearing.
+TRUNCATED = ('- [CV] ' + SENTENCE * 100)[:WIRE_INSTRUCTION_CAP - 60]
+
 ENTRY = re.compile(r'^#(?P<index>\d+)\s+(?P<label>likely-FACT|likely-STYLE|unclear)\s')
+REACH = re.compile(r'^\s+(?P<group>reaching|excluded)\s+(?P<entries>[\d,]+) entries\s+(?P<chars>[\d,]+) chars')
 PAIR = re.compile(r'^\s+#(?P<first>\d+) vs #(?P<second>\d+)\b')
 
 
@@ -73,13 +90,20 @@ def blocks(text):
     for line in text.splitlines():
         match = ENTRY.match(line)
         if match:
-            current = found.setdefault(int(match['index']), {'label': match['label']})
+            current = found.setdefault(int(match['index']), {'label': match['label'], 'header': line})
         elif not line.startswith('    '):
             current = None  # the summary and contradiction sections are not part of an entry block
         elif current is not None and ':' in line:
             key, _, value = line.strip().partition(':')
             current[key.strip()] = value.strip()
     return found
+
+
+def reach(text):
+    """{'reaching' | 'excluded': (entries, chars)} from the TASK-236 summary block."""
+    matches = (REACH.match(line) for line in text.splitlines())
+    return {match['group']: (int(match['entries'].replace(',', '')), int(match['chars'].replace(',', '')))
+            for match in matches if match}
 
 
 def pairs(text):
@@ -241,3 +265,90 @@ def test_an_empty_field_and_an_unknown_account_are_handled_without_a_traceback(a
     with pytest.raises(CommandError, match='No such account'):
         call_command('review_learned_preferences', '--user', 'nobody@example.test', stdout=StringIO())
 
+
+
+def test_an_excluded_entry_is_still_listed_marked_and_given_its_reason(account):
+    """TASK-236 AC5. The field is not pruned, so the review list must not prune either: an entry the
+    prompt no longer sees is exactly the entry TASK-229's by-hand review still has to read."""
+    reason = preference_exclusion(BRIEF)
+    assert reason, 'the fixture has to be excluded by the shared rule for this test to mean anything'
+
+    text = review(account, [STYLE_ENTRY, BRIEF])
+    entries = blocks(text)
+
+    assert set(entries) == {1, 2}
+    assert 'EXCLUDED from the prompt' in entries[2]['header']
+    assert entries[2]['excluded'].startswith(reason)
+    assert entries[2]['text']                      # still printed in full, not summarised away
+    assert 'EXCLUDED' not in entries[1]['header'] and 'excluded' not in entries[1]
+
+
+def test_the_exclusion_is_printed_as_a_fact_about_length_and_not_as_a_verdict(account):
+    """The standard this command's own header sets: it says where the owner reads it what its labels
+    do NOT mean. An entry can be excluded from the prompt and still be the truest line in the field,
+    and an owner working through this list must not read 'excluded' as 'wrong' or 'dropped'."""
+    text = review(account, [STYLE_ENTRY, BRIEF])
+
+    assert 'not about whether the entry is true' in text
+    assert 'EXCLUDED IS NOT A VERDICT ON THE ENTRY' in text
+    assert 'Nothing is deleted' in text
+
+
+def test_each_excluded_entry_is_given_its_own_reason_not_one_blanket_sentence(account):
+    """Two entries excluded for two different reasons -- one cut off at the wire cap, one merely long
+    -- have to be distinguishable in the listing, because they are different things to do something
+    about. The wording is cv_generator's; what is asserted here is that the report carries it per
+    entry rather than printing one summary sentence over both."""
+    cut, long = preference_exclusion(TRUNCATED), preference_exclusion(BRIEF)
+    assert cut and long and cut != long, 'the two fixtures are meant to trip different halves of the rule'
+
+    entries = blocks(review(account, [TRUNCATED, BRIEF]))
+
+    assert set(entries) == {1, 2}
+    assert entries[1]['excluded'].startswith(cut)
+    assert entries[2]['excluded'].startswith(long)
+    assert all('EXCLUDED from the prompt' in entry['header'] for entry in entries.values())
+
+
+def test_the_summary_counts_both_groups_and_the_chars_each_one_carries(account):
+    """AC5's other half is a number the owner can act on: how much of the field the prompt is being
+    given. Counts and chars for both sides, over the whole field rather than over the page."""
+    field = [STYLE_ENTRY, CORROBORATED_ENTRY, BRIEF, TRUNCATED]
+    sent = [line for line in field if not preference_exclusion(line)]
+    held = [line for line in field if preference_exclusion(line)]
+    assert len(sent) == 2 and len(held) == 2, 'the fixtures are meant to sit two on each side'
+
+    text = review(account, field)
+
+    assert reach(text) == {'reaching': (2, sum(len(line) for line in sent)),
+                           'excluded': (2, sum(len(line) for line in held))}
+    assert 'OF ALL 4 ENTRIES' in text
+
+
+def test_the_prompt_flag_pages_through_one_side_at_a_time(account):
+    """--label's shape, applied to the new column: it narrows the LISTING and never the counts, and
+    the entry numbers stay the field's own so a filtered page can be quoted back unambiguously."""
+    field = [STYLE_ENTRY, BRIEF, CORROBORATED_ENTRY, TRUNCATED]
+
+    whole = review(account, field)
+    reaching = review(account, field, '--prompt', 'reaching')
+    excluded = review(account, field, '--prompt', 'excluded')
+
+    assert set(blocks(whole)) == {1, 2, 3, 4}
+    assert set(blocks(reaching)) == {1, 3}
+    assert set(blocks(excluded)) == {2, 4}
+    assert reach(reaching) == reach(excluded) == reach(whole)
+    assert 'LABELS OVER ALL 4 ENTRIES' in excluded
+
+
+def test_the_exclusion_column_changes_nothing_the_report_already_said(account):
+    """TASK-229 AC3/AC5 are not being rebuilt. Same labels, same signals, same contradiction pairs --
+    a column was added beside them, and a regression here would mean the review list was rewritten."""
+    field = CONFLICT_ON_SIZE + [FACT_ENTRY, BRIEF]
+
+    entries = blocks(review(account, field))
+
+    assert pairs(review(account, field)) == {(1, 2)}
+    assert entries[3]['label'] == 'likely-FACT'
+    assert 'Zephyr' in entries[3]['fact signal']
+    assert entries[1]['label'] == 'likely-STYLE' and entries[1]['fact signal'] == 'none'
