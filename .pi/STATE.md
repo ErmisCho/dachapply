@@ -6,7 +6,7 @@ session-type: feature
 branch: task-221-local-provider-finish
 issues: [TASK-221]
 started_at: 2026-09-13T10:16:00Z
-status: active
+status: completed
 current-wave: 5
 total-waves: 5
 mission-status:
@@ -29,12 +29,13 @@ mission-status:
   - id: m-5
     task: "Evaluate, commit, push, merge, verify production, and close TASK-221"
     wave: 5
-    status: in-dev
+    status: completed
+updated: 2026-09-14T10:04:00Z
 ---
 
 ## Current Wave
 
-Wave 5 — Finalization
+Wave 5 — Complete
 
 ## Session Plan
 
@@ -72,6 +73,11 @@ Wave 5 — Finalization
 - Browser real local evaluation returned 85/high/apply in 17.695 seconds. Separate uncached real CV generation reached Ready in 186 seconds after one repair and produced a 2-page PDF.
 - Real Anthropic Haiku compatibility smoke returned strict `{answer: cloud-ok}` in 4.78 seconds.
 - Asian Dad: PERFECT across the sealed TASK-221 rubric.
+
+### Wave 5 — Finalization (complete)
+- Squash-merged PR #155 as `520d1192bf7c8ec2c4317186b9842ab777404585`.
+- Main CI passed backend and frontend checks, container build/push, Azure deployment, and public-app verification.
+- TASK-221 is Done with zero carryover.
 
 ## Deviations
 
