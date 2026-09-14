@@ -141,7 +141,7 @@ def test_run_chat_turn_refuses_a_model_not_offered_by_available_model_options(mo
 
 def test_run_chat_turn_refuses_an_effort_the_selected_model_does_not_support(monkeypatch):
     monkeypatch.setattr(draft_chat, '_run', _refusing_run())
-    result = run_chat_turn('Dear X.', [], 'shorter', 'ollama', 'llama3.1:8b', 'high')
+    result = run_chat_turn('Dear X.', [], 'shorter', 'anthropic', 'sonnet', 'default')
     assert result.revised_text == ''
     assert 'effort' in result.reason.lower()
 
@@ -221,23 +221,12 @@ def test_run_chat_turn_refuses_when_the_process_itself_raises(monkeypatch):
     assert result.reason
 
 
-def test_run_chat_turn_codex_dispatch_for_a_non_anthropic_provider_uses_oss_local_provider(monkeypatch):
-    """Provider dispatch coverage for the non-anthropic (codex --oss --local-provider) path."""
-    captured = {}
-
-    def _run(command, **kwargs):
-        captured['command'] = command
-        index = command.index('--output-last-message')
-        from pathlib import Path
-        Path(command[index + 1]).write_text(json.dumps({'revised_text': 'Dear X, revised via ollama.'}), encoding='utf-8')
-        return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
-
-    monkeypatch.setattr(draft_chat, '_binary_for', lambda provider: 'C:\\fake\\codex.cmd')
-    monkeypatch.setattr(draft_chat, '_run', _run)
+def test_run_chat_turn_immediately_explains_and_refuses_incompatible_ollama_path(monkeypatch):
+    monkeypatch.setattr(draft_chat, '_binary_for', lambda provider: (_ for _ in ()).throw(AssertionError('must refuse before CLI lookup')))
+    monkeypatch.setattr(draft_chat, '_run', _refusing_run())
     result = run_chat_turn('Dear X.', [], 'shorter', 'ollama', 'llama3.1:8b', 'default')
-    assert result == ChatTurnResult('Dear X, revised via ollama.', '')
-    assert '--oss' in captured['command'] and '--local-provider' in captured['command']
-    assert 'ollama' in captured['command']
+    assert result.revised_text == ''
+    assert 'Ollama' in result.reason and 'Codex local-provider path is incompatible' in result.reason
 
 
 # --- AC8: an explicit timeout always reaches the subprocess call ---------------------------------

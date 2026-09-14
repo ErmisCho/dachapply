@@ -1,18 +1,21 @@
 import base64
 import binascii
 import hashlib
+import http.client
 import io
+import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
-import urllib.request
+import urllib.parse
 import zipfile
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock, Thread
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -174,48 +177,35 @@ def available_model_options():
     return options
 
 
-def _codex_can_enumerate_ollama():
-    """Whether this codex build can read this ollama build's model list.
-
-    TASK-221, and this is the exact failure rather than a guess at it: codex-cli 0.146.0 asks ollama
-    for its models over the OpenAI-compatible /v1/models route but decodes the answer with the native
-    /api/tags schema, which is the one with a top-level "models" key. Ollama 0.32.9 answers
-    {"object":"list","data":[...]}, codex reports `missing field models`, and the run ABORTS -- so an
-    ollama model offered in the picker costs the owner a long wait and then fails, every time.
-
-    Probing the same response codex chokes on keeps this honest in both directions: the models come
-    back the moment either side ships a build that agrees, with no flag to remember to unset.
-    """
-    host=(os.environ.get('OLLAMA_HOST') or 'http://localhost:11434').rstrip('/')
-    if not host.startswith('http'):
-        host=f'http://{host}'
-    try:
-        with urllib.request.urlopen(f'{host}/v1/models', timeout=2) as response:
-            return isinstance(json.loads(response.read()).get('models'), list)
-    except (OSError, ValueError, json.JSONDecodeError):
-        return False
-
-
 def _discover_model_options():
     options=codex_model_options()
     options += claude_model_options()
     ollama=shutil.which('ollama') or shutil.which('ollama.exe')
-    if ollama and _codex_can_enumerate_ollama():
+    if ollama:
         try:
-            rows=subprocess.run([ollama,'list'], capture_output=True, text=True, timeout=2, check=False).stdout.splitlines()[1:]
-            options += [{'provider':'ollama','key':row.split()[0],'label':row.split()[0],'efforts':['default'],'default_effort':'default','fast_tier':''} for row in rows if row.split() and 'embed' not in row.split()[0].lower()]
+            result=subprocess.run([ollama,'list'], capture_output=True, text=True, timeout=2, check=False)
+            rows=result.stdout.splitlines()[1:] if not result.returncode else []
+            for row in rows:
+                name=row.split()[0] if row.split() else ''
+                if not name or 'embed' in name.lower():
+                    continue
+                shown=subprocess.run([ollama,'show',name], capture_output=True, text=True, timeout=2, check=False)
+                tools=not shown.returncode and bool(re.search(r'^\s+tools\s*$', shown.stdout, re.MULTILINE))
+                # ponytail: CV eligibility is evidence-based; widen this after another model completes a real package.
+                cv_capable=tools and name == 'qwen3-coder:latest'
+                options.append({'provider':'ollama','key':name,'label':name if cv_capable else f'{name} (evaluation only)','efforts':['default'],'default_effort':'default','fast_tier':'','tools':tools,'cv':cv_capable})
         except (OSError, subprocess.TimeoutExpired):
             pass
     lms=shutil.which('lms') or shutil.which('lms.exe')
     if lms:
         try:
             models=json.loads(subprocess.run([lms,'ls','--llm','--json'], capture_output=True, text=True, timeout=2, check=False).stdout or '[]')
-            # TASK-221: `trainedForToolUse` is carried because CV generation cannot work without it.
-            # That prompt opens with "Read the copied LaTeX source files", so the model has to call
-            # codex's file-reading tool; a model that cannot answers from nothing. Measured on the
-            # owner's machine: deepseek-r1-distill-qwen-7b evaluates a job fine and, handed the CV
-            # prompt, replied "I don't have access to probe.tex" and echoed the prompt back.
-            options += [{'provider':'lmstudio','key':model['modelKey'],'label':model.get('displayName') or model['modelKey'],'efforts':['default'],'default_effort':'default','fast_tier':'','tools':bool(model.get('trainedForToolUse'))} for model in models]
+            # Keep LM Studio's reported metadata for display, but CV generation does not depend on
+            # tool training: that path sends the current TeX inline to the local HTTP endpoint.
+            for model in models:
+                tools=bool(model.get('trainedForToolUse'))
+                label=model.get('displayName') or model['modelKey']
+                options.append({'provider':'lmstudio','key':model['modelKey'],'label':f'{label} (evaluation only)','efforts':['default'],'default_effort':'default','fast_tier':'','tools':tools,'cv':False})
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired):
             pass
     return options
@@ -976,18 +966,14 @@ Title: {job.title}
 def validate_model_capability(provider, model, effort, speed, *, needs_tools=False):
     """Check a provider/model/effort/speed combination, and refuse it here rather than mid-run.
 
-    `needs_tools` is for the callers whose prompt tells the model to READ a file -- CV generation and
-    readjustment. Absent metadata means capable, so cloud providers and every existing caller keep
-    their behaviour; only a local model that declares itself untrained for tool use is refused.
+    `needs_tools` marks the stricter CV/document path. Local discovery only marks a model CV-capable
+    after a real package succeeds; cloud providers and older option fixtures keep their behaviour.
     """
     model_option=next((option for option in available_model_options() if option['provider'] == provider and option['key'] == model), None)
     if not model_option:
         raise ValueError('Select an available model for the chosen provider.')
-    # TASK-221 AC3: refused up front, because the alternative measured at 41 seconds and three failed
-    # attempts before saying "the selected model could not complete the request" -- with the echoed
-    # prompt as its only detail, which tells the owner nothing about what to pick instead.
-    if needs_tools and not model_option.get('tools', True):
-        raise ValueError(f'{model_option["label"]} is not trained for tool use, so it cannot read the LaTeX templates that CV generation needs. Pick a tool-capable model, or load one in LM Studio. Evaluating a job with it still works, because that prompt carries the job text instead of asking the model to open a file.')
+    if needs_tools and not model_option.get('cv', model_option.get('tools', True)):
+        raise ValueError(f'{model_option["label"]} is available for job evaluation only. Pick a tool-capable local model for CV generation.')
     if effort not in model_option['efforts']:
         raise ValueError(f'"{effort}" effort is not supported by {model_option["label"]}. Supported efforts: {", ".join(model_option["efforts"])}.')
     if speed not in ('normal','fast'):
@@ -1030,24 +1016,125 @@ def _failure_detail(stderr, stdout, prompt, budget=6000):
     return detail
 
 
+def _ollama_base_url():
+    raw=(os.environ.get('OLLAMA_HOST') or 'http://localhost:11434').strip()
+    candidate=raw if '://' in raw else f'http://{raw}'
+    try:
+        parsed=urllib.parse.urlsplit(candidate)
+        host=(parsed.hostname or '').rstrip('.').lower()
+        loopback=host == 'localhost' or ipaddress.ip_address(host).is_loopback
+        parsed.port  # validate malformed ports before any candidate evidence is sent
+    except ValueError:
+        raise ValueError('OLLAMA_HOST must be an HTTP loopback address (localhost, 127.0.0.0/8, or ::1).') from None
+    if (parsed.scheme != 'http' or not loopback or parsed.username or parsed.password
+            or parsed.path not in ('','/') or parsed.query or parsed.fragment):
+        raise ValueError('OLLAMA_HOST must be an HTTP loopback address (localhost, 127.0.0.0/8, or ::1).')
+    return candidate.rstrip('/')
+
+
+def _post_local_json(url, payload, cancelled):
+    """POST to a loopback model server while allowing another thread to cancel the socket."""
+    parsed=urllib.parse.urlsplit(url)
+    connection=http.client.HTTPConnection(parsed.hostname, parsed.port or 80)
+    result={}
+    stop=Event()
+
+    def send():
+        try:
+            connection.request('POST', parsed.path, json.dumps(payload).encode('utf-8'), {'Content-Type':'application/json'})
+            if stop.is_set():
+                return
+            response=connection.getresponse()
+            result['response']=response
+            result.update(status=response.status, reason=response.reason,
+                          body=response.read().decode('utf-8', errors='replace'))
+        except Exception as exc:
+            result['error']=exc
+        finally:
+            connection.close()
+
+    thread=Thread(target=send, daemon=True)
+    thread.start()
+    while thread.is_alive():
+        thread.join(.05)
+        if cancelled and cancelled():
+            stop.set()
+            deadline=time.monotonic()+5
+            while thread.is_alive() and time.monotonic() < deadline:
+                sock=connection.sock
+                if sock:
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                response=result.get('response')
+                if response:
+                    try:
+                        response.close()
+                    except OSError:
+                        pass
+                connection.close()
+                thread.join(.05)
+            raise GenerationCancelled
+    if 'error' in result:
+        raise result['error']
+    if result['status'] >= 400:
+        raise OSError(f'HTTP {result["status"]} {result["reason"]}: {result["body"]}')
+    return result['body']
+
+
 def run_structured_model(prompt, schema, provider, model, effort='default', speed='normal', *, workdir,
-                         cancelled=None, image_path=None, read_tools=False, model_option=None):
-    """Run the configured CLI provider against `prompt`, constrained to `schema`, and return the parsed dict.
+                         cancelled=None, image_path=None, read_tools=False, model_option=None, tex_files=()):
+    """Run the configured provider against `prompt`, constrained to `schema`, and return the parsed dict.
 
-    The one place in this project that actually talks to a model. `workdir` is the directory the CLI
-    is allowed to read and where the schema and the result file are written, so a caller hands over a
-    temporary directory already holding whatever the prompt refers to.
+    Local providers use their localhost APIs directly. Cloud providers keep their existing CLI
+    paths. CV callers pass `tex_files`, which are read on each call so a repair receives the files
+    written by the failed attempt immediately before it.
 
-    Raises RecoverableGenerationError -- carrying the provider's own stderr/stdout -- when the CLI
-    fails or answers with something that is not a JSON object, so the caller can show the user what
-    the provider actually said rather than a generic failure.
+    Raises RecoverableGenerationError with the provider's own diagnostics when a run fails or its
+    answer is not a JSON object.
     """
     workdir=Path(workdir)
     schema_path=workdir/'output-schema.json'
     result_path=workdir/'model-result.json'
     schema_path.write_text(json.dumps(schema), encoding='utf-8')
     result_path.unlink(missing_ok=True)
-    if provider == 'anthropic':
+    if provider in ('lmstudio','ollama'):
+        if tex_files:
+            label='LM STUDIO' if provider == 'lmstudio' else 'OLLAMA'
+            prompt+=f'\n\n{label} CURRENT TEX FILES (use these inline contents; do not try to read files):\n'+''.join(
+                f'\n===== BEGIN {Path(path).name} =====\n{Path(path).read_text(encoding="utf-8")}\n===== END {Path(path).name} =====\n'
+                for path in tex_files)
+        if provider == 'lmstudio':
+            content=prompt
+            if image_path:
+                suffix=Path(image_path).suffix.lower()
+                mime=next((mime for mime,extension in CORRECTION_IMAGE_TYPES.items() if extension == suffix), None)
+                if not mime:
+                    raise RuntimeError('Correction image must be a PNG, JPEG, or WebP file.')
+                content=[{'type':'text','text':prompt},{'type':'image_url','image_url':{'url':f'data:{mime};base64,{base64.b64encode(Path(image_path).read_bytes()).decode()}'}}]
+            payload={
+                'model':model,
+                'messages':[{'role':'user','content':content}],
+                'response_format':{'type':'json_schema','json_schema':{'name':'structured_response','strict':True,'schema':schema}},
+            }
+            url='http://localhost:1234/v1/chat/completions'
+        else:
+            message={'role':'user','content':prompt}
+            if image_path:
+                message['images']=[base64.b64encode(Path(image_path).read_bytes()).decode()]
+            payload={'model':model,'messages':[message],'stream':False,'format':schema,
+                     'options':{'num_ctx':int(os.environ.get('OLLAMA_NUM_CTX') or 32768)}}
+            url=f'{_ollama_base_url()}/api/chat'
+        _ensure_active(cancelled)
+        try:
+            local_response=_post_local_json(url, payload, cancelled)
+        except GenerationCancelled:
+            raise
+        except Exception as exc:
+            raise RecoverableGenerationError('The selected model could not complete the request.',
+                                             _failure_detail(str(exc), '', prompt)) from None
+    elif provider == 'anthropic':
         executable=shutil.which('claude') or shutil.which('claude.exe')
         if not executable:
             raise RuntimeError('The claude CLI must be installed on the generation server.')
@@ -1077,24 +1164,25 @@ def run_structured_model(prompt, schema, provider, model, effort='default', spee
             command += ['--oss', '--local-provider', provider]
         command += ['--cd', str(workdir), '--output-schema', str(schema_path), '--output-last-message', str(result_path), '-']
         result=_run_command(command, cancelled, input=prompt, capture_output=True, text=True, encoding='utf-8', check=False)
-    if result.returncode or provider != 'anthropic' and not result_path.is_file():
+    if provider not in ('lmstudio','ollama') and (result.returncode or provider != 'anthropic' and not result_path.is_file()):
         # Both streams, not the first non-empty one: which of them carries the cause and which
         # carries the transcript differs by CLI, and dropping a stream wholesale can drop the cause.
         raise RecoverableGenerationError('The selected model could not complete the request.',
                                          _failure_detail(result.stderr, result.stdout, prompt))
     _ensure_active(cancelled)
     try:
-        if provider == 'anthropic':
+        if provider in ('lmstudio','ollama'):
+            response=json.loads(local_response)
+            if response.get('error'):
+                raise ValueError(json.dumps(response['error'], ensure_ascii=False))
+            content=response['choices'][0]['message']['content'] if provider == 'lmstudio' else response['message']['content']
+            generated=parse_json_object(content)
+        elif provider == 'anthropic':
             response=json.loads(result.stdout)
             generated=response.get('structured_output')
             if not generated and response.get('result'):
                 generated=parse_json_object(response['result'])
         else:
-            # TASK-221: parse_json_object, not json.loads. A local model honours --output-schema
-            # loosely and wraps its answer in a ```json fence -- measured with
-            # deepseek-r1-distill-qwen-7b through lmstudio, which returns valid JSON inside a fence
-            # and so failed a bare json.loads. This is the same tolerance the paste path has always
-            # needed for ChatGPT output, so it is reused rather than written a second time here.
             generated=parse_json_object(result_path.read_text(encoding='utf-8'))
         if not isinstance(generated,dict):
             raise ValueError
@@ -1189,8 +1277,8 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
 
     codex=shutil.which('codex') or shutil.which('codex.cmd')
     claude=shutil.which('claude') or shutil.which('claude.exe')
-    if not shutil.which('pdflatex') or provider == 'anthropic' and not claude or provider != 'anthropic' and not codex:
-        raise RuntimeError('The selected model CLI and pdflatex must be installed on the generation server.')
+    if not shutil.which('pdflatex') or provider == 'anthropic' and not claude or provider not in ('anthropic','lmstudio','ollama') and not codex:
+        raise RuntimeError('The selected model provider and pdflatex must be available on the generation server.')
 
     # Windows child processes can briefly retain a disposable handle after they exit; successful
     # persisted artifacts must not become a failed task solely because temp cleanup has to wait.
@@ -1230,11 +1318,14 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
         report(10, 'Generating CV and motivation letter' if create_cv and create_letter else 'Generating CV' if create_cv else 'Generating motivation letter')
         base_prompt=_revision_prompt(job, cv_name, letter_name, cv_key, letter_language, create_letter, revision_instructions, create_cv, layout_context, correction_image_name) if is_revision else _prompt(job, profile, cv_name, letter_name, cv_key, letter_language, create_letter, revision_instructions, create_cv, layout_context, correction_image_name)
         generated_files=([cv_name] if create_cv else []) + ([letter_name] if create_letter else [])
+        wrote_generated_tex=False
 
         def generate(model_prompt):
+            nonlocal wrote_generated_tex
             generated=run_structured_model(model_prompt, schema, provider, model, effort, speed, workdir=output,
                                            cancelled=cancelled, read_tools=True, model_option=model_option,
-                                           image_path=output/correction_image_name if correction_image_name else None)
+                                           image_path=output/correction_image_name if correction_image_name else None,
+                                           tex_files=[output/name for name in generated_files] if provider in ('lmstudio','ollama') else ())
             try:
                 cv_tex=generated.get('cv_tex','')
                 letter_tex=generated.get('letter_tex','')
@@ -1251,6 +1342,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
                 (output/cv_name).write_text(cv_tex, encoding='utf-8')
             if create_letter:
                 (output/letter_name).write_text(letter_tex, encoding='utf-8')
+            wrote_generated_tex=True
             return generated
 
         def compile_documents():
@@ -1267,8 +1359,10 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
             if attempt:
                 report(reported_progress, f'Repairing generated documents ({attempt}/2)')
             repair=f'''\n\nAUTOMATIC REPAIR ATTEMPT {attempt}/2:\nThe previous generated documents failed validation. Read the current copied TeX files, fix the issue below without changing supported facts, and return complete corrected documents.\n\nFAILURE TO FIX:\n{failure.summary}\n{failure.diagnostics[-6000:]}''' if failure else ''
+            model_prompt=(_revision_prompt(job, cv_name, letter_name, cv_key, letter_language, create_letter, repair, create_cv, layout_context, correction_image_name)
+                          if repair and wrote_generated_tex else base_prompt+repair)
             try:
-                generated=generate(base_prompt+repair)
+                generated=generate(model_prompt)
                 report(65, 'CV and letter generated' if create_cv and create_letter else 'CV generated' if create_cv else 'Letter generated')
                 compile_documents()
                 break

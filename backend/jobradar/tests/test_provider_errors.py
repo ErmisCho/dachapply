@@ -29,7 +29,7 @@ LMSTUDIO_CAUSE = ('Engine protocol predict request returned 400: request (40654 
 OLLAMA_CAUSE = 'ERROR: gemma3:4b does not support tools'
 
 
-def _failed_run(tmp_path, prompt, stdout='', stderr='', provider='lmstudio'):
+def _failed_run(tmp_path, prompt, stdout='', stderr='', provider='openai'):
     """A CLI that exits non-zero and writes no result file, which is what a failed run leaves behind."""
     def fake_run(command, cancelled=None, **kwargs):
         return type('R', (), {'returncode': 1, 'stdout': stdout, 'stderr': stderr})()
@@ -114,5 +114,5 @@ def test_a_successful_run_is_untouched(tmp_path):
 
     with patch('jobradar.services.cv_generator.shutil.which', return_value='/usr/bin/codex'), \
          patch('jobradar.services.cv_generator._run_command', side_effect=fake_run):
-        assert cv_generator.run_structured_model(RULES_PROMPT, {'type': 'object'}, 'lmstudio', 'deepseek',
+        assert cv_generator.run_structured_model(RULES_PROMPT, {'type': 'object'}, 'openai', 'deepseek',
                                                  workdir=tmp_path) == {'answer': 'ok'}
