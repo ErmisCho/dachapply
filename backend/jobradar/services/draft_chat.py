@@ -225,6 +225,8 @@ def run_chat_turn(
     """
     if mode not in {'revise', 'understand'}:
         return ChatTurnResult('', 'mode must be revise or understand')
+    if provider == 'ollama':
+        return ChatTurnResult('', 'Ollama is unavailable for draft chat because its Codex local-provider path is incompatible; use Claude or OpenAI instead.')
     try:
         model_option = validate_model_capability(provider, model, effort, speed)
     except ValueError as exc:

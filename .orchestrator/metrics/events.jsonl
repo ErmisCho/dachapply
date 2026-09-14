@@ -1554,3 +1554,708 @@
 {"timestamp":"2026-08-30T07:04:49.820Z","event":"orchestrator.session.completed","session_id":"01a0432f-8243-7150-8255-task200scroll","semantic_session_id":"task-200-2026-08-29-bugfix-1","mode":"feature","branch":"task-200-scroll-chaining","status":"completed","carryover":0}
 {"timestamp":"2026-08-30T07:40:44.955Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"1f9cfe9ab66e4ca4bb141023aa30515454b6b542","duration_ms":0}
 {"timestamp":"2026-08-30T07:43:47.902Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-08-30T12:49:12.957Z","event":"orchestrator.session.stopped","session_id":"a6f64297-ab19-4cd9-b7bd-ca272762bf06","wave":5,"branch":"main","commit":"284c470472865dcb79ada8c2a678a4acdbfc0e05","duration_ms":0}
+{"timestamp":"2026-08-30T13:59:09.050Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"284c470472865dcb79ada8c2a678a4acdbfc0e05","duration_ms":0}
+{"timestamp":"2026-08-30T14:03:02.138Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"284c470472865dcb79ada8c2a678a4acdbfc0e05","duration_ms":0}
+{"timestamp":"2026-08-30T14:07:48.124Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"284c470472865dcb79ada8c2a678a4acdbfc0e05","duration_ms":0}
+{"timestamp":"2026-08-30T14:08:34.718Z","event":"orchestrator.session.stopped","session_id":"a6f64297-ab19-4cd9-b7bd-ca272762bf06","wave":5,"branch":"main","commit":"284c470472865dcb79ada8c2a678a4acdbfc0e05","duration_ms":0}
+{"timestamp":"2026-08-30T14:08:37.890Z","event":"orchestrator.session.ended","session_id":"a6f64297-ab19-4cd9-b7bd-ca272762bf06","reason":"reload","duration_ms":23867171}
+{"timestamp":"2026-08-30T14:08:41.209Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"main","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":38.7,"cpu_load_pct":17,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-08-30T14:10:25.230Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"284c470472865dcb79ada8c2a678a4acdbfc0e05","duration_ms":0}
+{"timestamp":"2026-08-30T14:12:16.566Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"284c470472865dcb79ada8c2a678a4acdbfc0e05","duration_ms":0}
+{"timestamp":"2026-08-30T14:18:31.556Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"284c470472865dcb79ada8c2a678a4acdbfc0e05","duration_ms":0}
+{"timestamp":"2026-08-30T14:22:05.586Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"284c470472865dcb79ada8c2a678a4acdbfc0e05","duration_ms":0}
+{"timestamp":"2026-08-30T14:40:17.525Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ba97477872cf0de95dd05252d88ffcebf9057291","duration_ms":0}
+{"timestamp":"2026-08-30T14:41:15.348Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ba97477872cf0de95dd05252d88ffcebf9057291","duration_ms":0}
+{"timestamp":"2026-08-30T14:43:26.324Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-30T14:47:02.570Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-30T15:08:13.056Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-30T15:14:14.971Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-30T15:15:23.270Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T07:35:42.306Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T07:36:00.413Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T07:36:13.860Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:06:54.346Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:09:59.586Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:10:16.307Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:11:14.800Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:13:56.278Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:21:04.496Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:22:45.254Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:25:26.234Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:25:32.083Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:27:49.497Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:28:21.389Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:30:22.066Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:30:59.474Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:32:07.796Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:32:38.061Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T08:41:20.008Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"ad4ef3facbec21a3ee669a89cf3e1914c3a7ef19","duration_ms":0}
+{"timestamp":"2026-08-31T09:02:48.013Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"6a17c8a16d8754acb96d5e0f7346bebc46921dbd","duration_ms":0}
+{"timestamp":"2026-08-31T09:12:27.649Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"6a17c8a16d8754acb96d5e0f7346bebc46921dbd","duration_ms":0}
+{"timestamp":"2026-08-31T09:41:09.266Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"6a17c8a16d8754acb96d5e0f7346bebc46921dbd","duration_ms":0}
+{"timestamp":"2026-08-31T09:50:50.697Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"6a17c8a16d8754acb96d5e0f7346bebc46921dbd","duration_ms":0}
+{"timestamp":"2026-08-31T10:01:39.582Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"6a17c8a16d8754acb96d5e0f7346bebc46921dbd","duration_ms":0}
+{"timestamp":"2026-08-31T10:22:38.217Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"6a17c8a16d8754acb96d5e0f7346bebc46921dbd","duration_ms":0}
+{"timestamp":"2026-08-31T12:39:59.137Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"6a17c8a16d8754acb96d5e0f7346bebc46921dbd","duration_ms":0}
+{"timestamp":"2026-08-31T13:52:53.082Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"6a17c8a16d8754acb96d5e0f7346bebc46921dbd","duration_ms":0}
+{"timestamp":"2026-08-31T14:22:35.178Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"2c5c03b6f6156916849bac999f2bd0799ac6ffbe","duration_ms":0}
+{"timestamp":"2026-08-31T15:05:22.856Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-08-31T18:19:10.566Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-08-31T18:19:12.989Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-08-31T18:19:17.413Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-08-31T18:19:36.491Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-01T09:00:26.030Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-01T09:41:58.863Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-01T11:32:00.425Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-01T16:13:33.109Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-01T18:38:04.636Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-01T20:37:53.350Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-01T21:53:49.918Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-01T22:14:06.972Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-01T22:26:52.480Z","event":"orchestrator.session.stopped","session_id":"b1b9a0e3-85c1-4426-a06e-85f6642566f1","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-01T22:26:55.247Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-02T06:03:21.530Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T06:03:24.303Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T06:03:28.995Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T06:03:37.471Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T06:10:31.120Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T07:29:41.421Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T07:31:43.443Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T07:33:36.238Z","event":"orchestrator.loop.warning","tool":"Bash","args_hash":"5f46b2078bf2c818","count":3}
+{"timestamp":"2026-09-02T07:34:10.539Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T07:45:26.179Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T08:12:41.543Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T08:27:06.511Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T08:46:42.634Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T09:01:24.943Z","event":"orchestrator.session.stopped","session_id":"09da2a3d-17be-46ad-a961-c59f21a362db","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T09:29:32.445Z","event":"orchestrator.session.lock.acquired","session_id":"90219987-0d53-4924-8628-e760887bc2f6","semantic_session_id":"main-2026-09-02-session-1","mode":"session","pid":226232,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-02T09:29:32.604Z","event":"orchestrator.session.started","platform":"claude","project":"dachapply","branch":"main","session_id":"90219987-0d53-4924-8628-e760887bc2f6","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":45.9,"cpu_load_pct":16,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-02T09:29:35.045Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"main","session_id":"082368c2-16a5-4451-a0e3-552776210acb","peer_count":1,"host_class":"windows-x86_64","ram_free_gb":45.8,"cpu_load_pct":16,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":1}
+{"timestamp":"2026-09-02T09:29:40.699Z","event":"orchestrator.session.started","platform":"claude","project":"dachapply","branch":"main","session_id":"c79482e6-5d00-4c57-a2db-a4d7dbae1f2e","peer_count":2,"host_class":"windows-x86_64","ram_free_gb":44.8,"cpu_load_pct":16,"claude_processes_count":null,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":2}
+{"timestamp":"2026-09-02T09:29:40.824Z","event":"orchestrator.session.started","platform":"claude","project":"dachapply","branch":"main","session_id":"40ec9219-7d7a-42d7-b66a-6af4a5081135","peer_count":3,"host_class":"windows-x86_64","ram_free_gb":44.6,"cpu_load_pct":16,"claude_processes_count":null,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":2}
+{"timestamp":"2026-09-02T09:31:48.124Z","event":"orchestrator.session.started","platform":"claude","project":"dachapply","branch":"main","session_id":"d7399d0c-dda3-4152-8e40-d0cdcc8dff55","peer_count":5,"host_class":"windows-x86_64","ram_free_gb":41.9,"cpu_load_pct":16,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":5}
+{"timestamp":"2026-09-02T09:32:47.154Z","event":"orchestrator.session.started","platform":"claude","project":"dachapply","branch":"main","session_id":"40ec9219-7d7a-42d7-b66a-6af4a5081135","peer_count":5,"host_class":"windows-x86_64","ram_free_gb":42,"cpu_load_pct":16,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":6}
+{"timestamp":"2026-09-02T09:34:17.167Z","event":"orchestrator.session.stopped","session_id":"c79482e6-5d00-4c57-a2db-a4d7dbae1f2e","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T09:34:18.658Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-02T09:34:20.109Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-02T09:36:17.818Z","event":"orchestrator.session.stopped","session_id":"c79482e6-5d00-4c57-a2db-a4d7dbae1f2e","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T09:38:39.771Z","event":"orchestrator.session.ended","session_id":"d7399d0c-dda3-4152-8e40-d0cdcc8dff55","reason":"other","duration_ms":0}
+{"timestamp":"2026-09-02T09:38:39.775Z","event":"orchestrator.session.ended","session_id":"90219987-0d53-4924-8628-e760887bc2f6","reason":"other","duration_ms":0}
+{"timestamp":"2026-09-02T09:38:39.782Z","event":"orchestrator.session.lock.released","session_id":"90219987-0d53-4924-8628-e760887bc2f6","lock_session_id":"90219987-0d53-4924-8628-e760887bc2f6","semantic_session_id":null,"end_reason":"other","caller":"on-session-end","outcome":"deleted","verified":true}
+{"timestamp":"2026-09-02T09:39:20.895Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-02T12:55:31.159Z","event":"orchestrator.session.stopped","session_id":"40ec9219-7d7a-42d7-b66a-6af4a5081135","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T13:47:24.413Z","event":"orchestrator.session.stopped","session_id":"40ec9219-7d7a-42d7-b66a-6af4a5081135","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-02T14:35:02.223Z","event":"orchestrator.session.stopped","session_id":"40ec9219-7d7a-42d7-b66a-6af4a5081135","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-03T06:50:12.246Z","event":"orchestrator.session.stopped","session_id":"40ec9219-7d7a-42d7-b66a-6af4a5081135","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-04T09:50:41.650Z","event":"orchestrator.session.stopped","session_id":"40ec9219-7d7a-42d7-b66a-6af4a5081135","wave":5,"branch":"main","commit":"131ea48e5a1e0fc4214aae16e8ff379a579098f5","duration_ms":0}
+{"timestamp":"2026-09-07T13:20:14.978Z","event":"orchestrator.session.ended","session_id":"40ec9219-7d7a-42d7-b66a-6af4a5081135","reason":"quit","duration_ms":445647977}
+{"timestamp":"2026-09-07T13:20:26.874Z","event":"orchestrator.session.lock.acquired","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","semantic_session_id":"main-2026-09-07-session-1","mode":"session","pid":25164,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-07T13:20:27.039Z","event":"orchestrator.session.started","platform":"claude","project":"dachapply","branch":"main","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":39.4,"cpu_load_pct":15,"claude_processes_count":null,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-07T13:27:02.129Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:27:12.918Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:27:19.442Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:27:34.235Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:27:45.002Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:28:06.031Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:28:16.509Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:28:38.195Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:28:48.405Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:29:10.250Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:29:21.884Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:29:43.178Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:29:55.002Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:30:15.622Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:30:16.774Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:qa-strategist"}
+{"timestamp":"2026-09-07T13:30:48.342Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:31:24.088Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:32:35.868Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:session-reviewer"}
+{"timestamp":"2026-09-07T13:33:52.086Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:34:24.248Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:34:43.795Z","event":"orchestrator.agent.stopped","agent":"project-quality-gate"}
+{"timestamp":"2026-09-07T13:36:25.395Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:36:39.715Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:36:58.543Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:37:12.418Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:37:38.600Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:37:46.008Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:38:11.460Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:38:18.616Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:38:36.277Z","event":"orchestrator.session.stopped","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","wave":5,"branch":"main","commit":"e144e4e1b12d207869d6c815ee4a8d944688aeeb","duration_ms":0}
+{"timestamp":"2026-09-07T13:38:38.773Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:38:38.835Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:38:46.460Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:38:46.474Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:39:19.437Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:39:19.457Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:39:21.958Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:39:21.964Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:39:52.999Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:39:53.019Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:40:06.671Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:40:06.727Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:40:19.179Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:40:19.186Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:40:26.647Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:40:26.666Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:40:29.513Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:40:29.542Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:40:38.875Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:40:38.892Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:40:45.720Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:40:45.772Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:40:50.736Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:40:50.770Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:41:00.706Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:41:00.779Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:41:03.722Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:41:03.744Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:41:19.628Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:41:19.680Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:41:22.783Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:41:22.832Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:41:26.071Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:41:26.105Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:41:28.918Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:41:28.955Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:41:32.906Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:41:32.922Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:41:33.793Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:41:33.825Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:41:42.736Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:41:42.745Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:41:47.397Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:41:47.441Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:42:00.479Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:00.498Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:42:05.417Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:05.456Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:42:06.628Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:06.669Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:42:08.197Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:08.236Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:42:16.200Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:16.266Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:42:19.036Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:19.096Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:42:22.672Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:22.704Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:42:25.442Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:25.511Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:42:35.798Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:35.893Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:38.763Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:42:38.783Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:41.169Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:42:41.211Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:42:41.790Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:41.819Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:45.263Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:42:45.264Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:42:53.990Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:54.023Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:42:58.097Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:42:58.110Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:43:01.153Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:43:01.200Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:43:04.257Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:43:04.297Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:43:11.814Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:43:11.834Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:43:14.280Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:43:14.308Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:43:16.503Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:43:16.520Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:43:19.368Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:43:19.426Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:43:27.005Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:43:27.039Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:43:47.254Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:43:47.272Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:44:20.790Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:44:20.834Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:44:54.871Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:44:54.893Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:45:11.769Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:test-writer"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:45:11.817Z","agent":"session-orchestrator:test-writer","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:45:21.306Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:45:21.345Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:45:27.762Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:45:27.790Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:45:36.802Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:test-writer"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:45:36.826Z","agent":"session-orchestrator:test-writer","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:46:00.926Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-07T13:46:00.970Z","agent":"unknown","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","claim_text":"**Synced first** — local `main` was 17 commits behind `origin/main`. TASK-209…216 had shipped in an earlier session and were never pulled here. Fast-forwarded; no parallel session is running."}
+{"timestamp":"2026-09-07T13:46:38.651Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:47:12.953Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:47:26.125Z","event":"orchestrator.session.stopped","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","wave":5,"branch":"main","commit":"e144e4e1b12d207869d6c815ee4a8d944688aeeb","duration_ms":0}
+{"timestamp":"2026-09-07T13:47:29.319Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:47:45.751Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:48:18.798Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T13:48:48.481Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:code-implementer"}
+{"timestamp":"2026-09-07T14:04:56.659Z","event":"orchestrator.session.stopped","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","wave":5,"branch":"task-208-ac5-close","commit":"b28a1c7de634b71d08fb972235a75a4b201a8cfa","duration_ms":0}
+{"timestamp":"2026-09-07T14:23:24.330Z","event":"orchestrator.session.stopped","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","wave":5,"branch":"main","commit":"547af8d817690001bb952c4f920a792c8d98de33","duration_ms":0}
+{"timestamp":"2026-09-07T14:26:27.343Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:26:51.797Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:27:14.878Z","event":"orchestrator.session.stopped","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","wave":5,"branch":"main","commit":"547af8d817690001bb952c4f920a792c8d98de33","duration_ms":0}
+{"timestamp":"2026-09-07T15:27:25.121Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:27:57.758Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:28:30.523Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:29:03.192Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:29:35.730Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:30:08.545Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:30:41.277Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:31:15.066Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:31:34.505Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:code-implementer"}
+{"timestamp":"2026-09-07T15:40:48.286Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:42:20.157Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:42:53.091Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:43:25.904Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:43:59.463Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:44:32.262Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:45:05.666Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:45:06.427Z","event":"orchestrator.session.stopped","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","wave":5,"branch":"main","commit":"862bd4dd6f74e2f960d27b0e2905efa029876578","duration_ms":0}
+{"timestamp":"2026-09-07T15:45:48.580Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-07T15:46:00.036Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:code-implementer"}
+{"timestamp":"2026-09-07T16:11:52.827Z","event":"orchestrator.session.stopped","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","wave":5,"branch":"main","commit":"0a2698d8003cc47d6c3e125d64b1c871f0b16118","duration_ms":0}
+{"timestamp":"2026-09-07T16:14:38.618Z","event":"orchestrator.session.stopped","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","wave":5,"branch":"main","commit":"0a2698d8003cc47d6c3e125d64b1c871f0b16118","duration_ms":0}
+{"timestamp":"2026-09-07T16:24:10.244Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:05:52.390Z","event":"orchestrator.session.ended","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","reason":"other","duration_ms":78325523}
+{"timestamp":"2026-09-08T11:05:52.403Z","event":"orchestrator.session.lock.released","session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","lock_session_id":"fcc46d6f-dacf-4685-864a-936ba30eccf6","semantic_session_id":"main-2026-09-07-session-1","end_reason":"other","caller":"on-session-end","outcome":"deleted","verified":true}
+{"timestamp":"2026-09-08T11:06:21.706Z","event":"orchestrator.session.lock.acquired","session_id":"3da70aa4-0c6b-4560-85f2-9c95a54ac54a","semantic_session_id":"main-2026-09-08-session-1","mode":"session","pid":267664,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-08T11:06:21.917Z","event":"orchestrator.session.started","platform":"claude","project":"dachapply","branch":"main","session_id":"3da70aa4-0c6b-4560-85f2-9c95a54ac54a","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":40.8,"cpu_load_pct":15,"claude_processes_count":null,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-08T11:40:39.333Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:41:01.604Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:41:11.200Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:41:33.420Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:41:43.366Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:42:05.273Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:42:15.710Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:42:37.449Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:42:47.638Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:43:03.327Z","event":"orchestrator.session.stopped","session_id":"3da70aa4-0c6b-4560-85f2-9c95a54ac54a","wave":5,"branch":"task-219-funnel-stall-stats","commit":"0a2698d8003cc47d6c3e125d64b1c871f0b16118","duration_ms":0}
+{"timestamp":"2026-09-08T11:43:09.386Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:43:19.394Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:43:41.097Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:43:51.253Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:44:12.842Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:44:45.022Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T11:45:17.008Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:40:52.660Z","event":"orchestrator.auq_clarity.allowed","session_id":"3da70aa4-0c6b-4560-85f2-9c95a54ac54a","questions":2,"skipped":0,"hurdles":[],"soft":{"K1":2,"K7":2}}
+{"timestamp":"2026-09-08T14:47:54.894Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:49:56.594Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:50:28.751Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:51:03.670Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:51:36.663Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:52:42.850Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:53:08.927Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:56:44.674Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:57:10.922Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:57:16.448Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:57:43.155Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:57:48.126Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:58:14.999Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:59:20.294Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T14:59:52.216Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:00:24.201Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:00:56.195Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:01:27.974Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:02:30.132Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:04:02.507Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:05:04.636Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:06:06.292Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:08:16.765Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:08:45.737Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:code-implementer"}
+{"timestamp":"2026-09-08T15:08:53.360Z","event":"orchestrator.session.stopped","session_id":"3da70aa4-0c6b-4560-85f2-9c95a54ac54a","wave":5,"branch":"task-220-llm-evaluation","commit":"35bb50bb75948561f6863f396d6927633b9f5e28","duration_ms":0}
+{"timestamp":"2026-09-08T15:09:08.122Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:09:40.084Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:10:12.661Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:10:44.465Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:12:46.285Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:13:18.030Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:13:49.849Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:14:22.465Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:14:54.496Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:15:26.576Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:15:58.566Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:16:30.695Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:17:32.905Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:18:04.913Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:18:36.964Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:19:08.680Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:20:10.626Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:20:42.502Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:21:15.028Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:21:47.065Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:22:18.798Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:30:51.760Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-08T15:31:09.263Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:ui-developer"}
+{"timestamp":"2026-09-08T21:06:44.113Z","event":"orchestrator.auq_clarity.allowed","session_id":"3da70aa4-0c6b-4560-85f2-9c95a54ac54a","questions":1,"skipped":0,"hurdles":[],"soft":{"K7":1}}
+{"timestamp":"2026-09-09T06:58:53.793Z","event":"orchestrator.session.stopped","session_id":"3da70aa4-0c6b-4560-85f2-9c95a54ac54a","wave":5,"branch":"task-221-local-provider","commit":"e892fafb302aee386e6b56d29c5d1c7221f1b75e","duration_ms":0}
+{"timestamp":"2026-09-09T06:58:56.210Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T07:00:22.621Z","event":"orchestrator.session.ended","session_id":"3da70aa4-0c6b-4560-85f2-9c95a54ac54a","reason":"other","duration_ms":71640943}
+{"timestamp":"2026-09-09T07:00:22.628Z","event":"orchestrator.session.lock.released","session_id":"3da70aa4-0c6b-4560-85f2-9c95a54ac54a","lock_session_id":"3da70aa4-0c6b-4560-85f2-9c95a54ac54a","semantic_session_id":"main-2026-09-08-session-1","end_reason":"other","caller":"on-session-end","outcome":"deleted","verified":true}
+{"timestamp":"2026-09-09T07:00:51.804Z","event":"orchestrator.session.lock.acquired","session_id":"143ac6e5-f4e3-452d-a0bd-da46948164d7","semantic_session_id":"task-221-local-provider-2026-09-09-session-1","mode":"session","pid":190992,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-09T07:00:51.962Z","event":"orchestrator.session.started","platform":"claude","project":"dachapply","branch":"task-221-local-provider","session_id":"143ac6e5-f4e3-452d-a0bd-da46948164d7","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":33.2,"cpu_load_pct":15,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-09T07:00:55.489Z","event":"orchestrator.session.ended","session_id":"143ac6e5-f4e3-452d-a0bd-da46948164d7","reason":"prompt_input_exit","duration_ms":3692}
+{"timestamp":"2026-09-09T07:00:55.495Z","event":"orchestrator.session.lock.released","session_id":"143ac6e5-f4e3-452d-a0bd-da46948164d7","lock_session_id":"143ac6e5-f4e3-452d-a0bd-da46948164d7","semantic_session_id":"task-221-local-provider-2026-09-09-session-1","end_reason":"prompt_input_exit","caller":"on-session-end","outcome":"deleted","verified":true}
+{"timestamp":"2026-09-09T07:01:23.606Z","event":"orchestrator.session.lock.acquired","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","semantic_session_id":"task-221-local-provider-2026-09-09-session-2","mode":"session","pid":264976,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-09T07:01:23.769Z","event":"orchestrator.session.started","platform":"claude","project":"dachapply","branch":"task-221-local-provider","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","peer_count":1,"host_class":"windows-x86_64","ram_free_gb":32.5,"cpu_load_pct":15,"claude_processes_count":null,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":1}
+{"timestamp":"2026-09-09T09:11:27.875Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"task-221-local-provider","commit":"e892fafb302aee386e6b56d29c5d1c7221f1b75e","duration_ms":0}
+{"timestamp":"2026-09-09T09:16:23.023Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"task-221-local-provider","commit":"e892fafb302aee386e6b56d29c5d1c7221f1b75e","duration_ms":0}
+{"timestamp":"2026-09-09T09:19:25.972Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T09:24:03.296Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"task-221-local-provider","commit":"2159e81440a567a1aaa9174290fbca31571db882","duration_ms":0}
+{"timestamp":"2026-09-09T09:27:55.593Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"task-221-local-provider","commit":"2159e81440a567a1aaa9174290fbca31571db882","duration_ms":0}
+{"timestamp":"2026-09-09T09:43:38.123Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"task-221-local-provider","commit":"2159e81440a567a1aaa9174290fbca31571db882","duration_ms":0}
+{"timestamp":"2026-09-09T09:52:02.187Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"task-221-local-provider","commit":"2159e81440a567a1aaa9174290fbca31571db882","duration_ms":0}
+{"timestamp":"2026-09-09T09:55:57.608Z","event":"orchestrator.auq_clarity.allowed","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","questions":3,"skipped":0,"hurdles":[],"soft":{}}
+{"timestamp":"2026-09-09T11:44:46.694Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"main","commit":"3debf3d7505957d3a5053410ef57adaf42875129","duration_ms":0}
+{"timestamp":"2026-09-09T11:47:50.068Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:17:10.944Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"task-224-cv-prompt-size","commit":"bdd4c840c3a55260a87bdc8d766ba7b5fc6631fe","duration_ms":0}
+{"timestamp":"2026-09-09T13:20:54.900Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"task-224-cv-prompt-size","commit":"bdd4c840c3a55260a87bdc8d766ba7b5fc6631fe","duration_ms":0}
+{"timestamp":"2026-09-09T13:41:38.700Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:41:55.720Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:43:40.757Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:43:57.868Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:44:12.707Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:44:29.665Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:44:44.954Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:45:02.035Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:45:34.071Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:46:36.067Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:46:46.902Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:47:08.372Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:47:40.398Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:48:18.858Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:48:51.046Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:49:22.792Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:50:25.202Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:50:57.137Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:51:59.240Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:52:05.368Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"tasks-222-223-provider-errors","commit":"1aba13352155292de9067568e5d1421534b9d09b","duration_ms":0}
+{"timestamp":"2026-09-09T13:52:08.412Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:52:31.378Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:55:42.099Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T13:56:13.721Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:code-implementer"}
+{"timestamp":"2026-09-09T13:56:14.063Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T14:01:03.236Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T14:04:05.462Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T14:04:37.695Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T14:05:34.908Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"tasks-222-223-provider-errors","commit":"7a95e55f82bbfe0f5c6978c799357c98517e8ace","duration_ms":0}
+{"timestamp":"2026-09-09T14:05:36.859Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T14:05:40.213Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T14:06:12.315Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T14:06:44.618Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T14:07:16.927Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T14:08:18.988Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T14:08:51.936Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T14:17:54.361Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-09T14:18:10.060Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:code-implementer"}
+{"timestamp":"2026-09-10T06:07:05.749Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T06:07:37.621Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T06:59:39.849Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:00:32.421Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"task-224-prompt-size","commit":"05e8e38a5e4ab6f43dacd4ba7679cc59c76fc11b","duration_ms":0}
+{"timestamp":"2026-09-10T07:00:42.682Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:01:45.201Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:02:17.222Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:02:49.889Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:03:25.240Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"task-224-prompt-size","commit":"05e8e38a5e4ab6f43dacd4ba7679cc59c76fc11b","duration_ms":0}
+{"timestamp":"2026-09-10T07:03:51.967Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:05:54.073Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:06:26.915Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:08:28.844Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:09:01.074Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:10:03.190Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:11:06.950Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:12:09.140Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:13:11.332Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:13:44.181Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:14:16.184Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:14:49.136Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:15:21.180Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:15:53.715Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:16:26.190Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:16:58.125Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:17:31.066Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:18:02.868Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:18:35.562Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:25:37.472Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:26:09.609Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:26:42.702Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:27:15.490Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:27:47.274Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:33:19.153Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:33:35.286Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:code-implementer"}
+{"timestamp":"2026-09-10T07:40:59.210Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"task-224-prompt-size","commit":"4d2164b5d57854bf1bbf5f5d8a3f1d97ac24b839","duration_ms":0}
+{"timestamp":"2026-09-10T07:44:02.582Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:47:21.629Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"task-224-prompt-size","commit":"4d2164b5d57854bf1bbf5f5d8a3f1d97ac24b839","duration_ms":0}
+{"timestamp":"2026-09-10T07:50:24.980Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T07:55:25.018Z","event":"orchestrator.session.stopped","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","wave":5,"branch":"main","commit":"1a0812aa092d85a988a38c90a99d9c541927e1bc","duration_ms":0}
+{"timestamp":"2026-09-10T07:58:28.384Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T08:14:18.988Z","event":"orchestrator.session.ended","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","reason":"other","duration_ms":90775391}
+{"timestamp":"2026-09-10T08:14:18.994Z","event":"orchestrator.session.lock.released","session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","lock_session_id":"1df81097-9f44-47c1-89a1-0bc7bd8c0073","semantic_session_id":"task-221-local-provider-2026-09-09-session-2","end_reason":"other","caller":"on-session-end","outcome":"deleted","verified":true}
+{"timestamp":"2026-09-10T08:14:28.058Z","event":"orchestrator.session.lock.acquired","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","semantic_session_id":"task-224-close-2026-09-10-session-1","mode":"session","pid":272340,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-10T08:14:28.212Z","event":"orchestrator.session.started","platform":"claude","project":"dachapply","branch":"task-224-close","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","peer_count":2,"host_class":"windows-x86_64","ram_free_gb":35.8,"cpu_load_pct":15,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":2}
+{"timestamp":"2026-09-10T08:23:20.742Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T08:25:09.974Z","event":"orchestrator.auq_clarity.allowed","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","questions":2,"skipped":0,"hurdles":[],"soft":{"K1":1,"K7":2}}
+{"timestamp":"2026-09-10T08:27:22.436Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T08:27:54.440Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T08:28:25.908Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T08:28:57.759Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T08:29:29.499Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T11:51:39.247Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T11:53:11.327Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T11:53:43.127Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T11:55:14.678Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T11:55:46.236Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T11:56:17.741Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T11:56:47.197Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:code-implementer"}
+{"timestamp":"2026-09-10T12:30:06.575Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T12:30:38.469Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T12:31:10.364Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T12:31:42.153Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T12:32:13.713Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T21:57:51.227Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"main","commit":"9871915e6d67e5a78dd2fc7e1ebc399ed9c14fe4","duration_ms":0}
+{"timestamp":"2026-09-10T22:05:24.046Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:07:25.839Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:07:57.561Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:09:29.506Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:10:01.245Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:10:33.405Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:11:05.123Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:11:37.116Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:12:08.859Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:12:40.898Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:13:42.989Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:14:15.380Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:15:17.453Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:16:19.058Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:17:20.989Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:17:52.664Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:18:24.469Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:18:56.731Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:19:28.579Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:20:00.366Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:20:32.128Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:29:03.814Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:29:35.487Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:30:07.365Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:30:39.402Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-10T22:31:17.006Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:code-implementer"}
+{"timestamp":"2026-09-11T06:36:32.426Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"main","commit":"619d5c5d46830a6482f1702de966f9b006b108b8","duration_ms":0}
+{"timestamp":"2026-09-11T06:39:35.275Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T06:47:09.570Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"main","commit":"619d5c5d46830a6482f1702de966f9b006b108b8","duration_ms":0}
+{"timestamp":"2026-09-11T06:50:12.117Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T06:52:59.558Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"main","commit":"619d5c5d46830a6482f1702de966f9b006b108b8","duration_ms":0}
+{"timestamp":"2026-09-11T06:54:01.682Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"main","commit":"619d5c5d46830a6482f1702de966f9b006b108b8","duration_ms":0}
+{"timestamp":"2026-09-11T06:55:19.150Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"main","commit":"619d5c5d46830a6482f1702de966f9b006b108b8","duration_ms":0}
+{"timestamp":"2026-09-11T06:55:20.384Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T06:58:09.466Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"main","commit":"619d5c5d46830a6482f1702de966f9b006b108b8","duration_ms":0}
+{"timestamp":"2026-09-11T06:58:10.587Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T06:59:48.095Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"main","commit":"619d5c5d46830a6482f1702de966f9b006b108b8","duration_ms":0}
+{"timestamp":"2026-09-11T07:02:36.761Z","event":"orchestrator.auq_clarity.denied","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","questions":2,"skipped":0,"hurdles":["H1"],"soft":{"K1":2,"K7":2}}
+{"timestamp":"2026-09-11T07:02:40.651Z","event":"orchestrator.auq_clarity.allowed","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","questions":2,"skipped":0,"hurdles":[],"soft":{"K1":2,"K7":2}}
+{"timestamp":"2026-09-11T07:09:06.964Z","event":"orchestrator.destructive_guard.blocked","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","rule":"rm-rf-destructive","command_hash":"043fdd6d35ae16f1"}
+{"timestamp":"2026-09-11T07:22:41.521Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T07:23:12.965Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T07:24:44.706Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T07:25:16.113Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T07:25:47.441Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T07:26:19.004Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T07:26:50.888Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T07:27:22.474Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T07:27:54.183Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T07:28:25.524Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T07:36:27.175Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T07:36:58.570Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T11:24:03.997Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"task-230-234-cv-popup","commit":"e66a59a76020fb65735a53f70444014f08231f3e","duration_ms":0}
+{"timestamp":"2026-09-11T11:27:06.315Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T13:18:32.257Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"task-230-234-cv-popup","commit":"e66a59a76020fb65735a53f70444014f08231f3e","duration_ms":0}
+{"timestamp":"2026-09-11T20:10:25.624Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T20:10:57.173Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T20:11:58.849Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T20:12:30.506Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T20:13:02.051Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T20:13:33.953Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T20:14:05.611Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T20:14:37.300Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T20:15:08.981Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T20:15:40.570Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T20:16:11.991Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-11T20:16:27.143Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:ui-developer"}
+{"timestamp":"2026-09-11T20:45:33.419Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"main","commit":"96a3dd019e9c491176c1c83f4e1b544ada22591d","duration_ms":0}
+{"timestamp":"2026-09-11T21:06:28.658Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"main","commit":"c222c024b3db68512a954a3ee36a2fd485d3f93b","duration_ms":0}
+{"timestamp":"2026-09-12T09:35:48.130Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"main","commit":"c8868baa6277cd241f82fda0a44991224f3df1b5","duration_ms":0}
+{"timestamp":"2026-09-12T09:41:19.692Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:41:19.751Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"- **Didn't extract a shared model picker.** The batch popup has one picker, the single one now has two with independent state and different labels; the genuinely shared part is ~20 lines of select mar"}
+{"timestamp":"2026-09-12T09:41:22.897Z","event":"orchestrator.session.lock.acquired","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","semantic_session_id":"main-2026-09-12-session-1","mode":"session","pid":22904,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-12T09:41:23.061Z","event":"orchestrator.session.started","platform":"claude","project":"dachapply","branch":"main","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":26,"cpu_load_pct":15,"claude_processes_count":null,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-12T09:47:13.438Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T09:47:21.863Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T09:47:45.080Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T09:47:53.707Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T09:48:16.656Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T09:48:25.155Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T09:48:32.754Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"task-236-preference-intake","commit":"c8868baa6277cd241f82fda0a44991224f3df1b5","duration_ms":0}
+{"timestamp":"2026-09-12T09:48:48.232Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:48:48.333Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:48:48.335Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:48:54.432Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:48:54.517Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:48:54.519Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:48:57.689Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:48:57.748Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:48:57.751Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:49:20.083Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:49:20.160Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:49:20.162Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:49:25.990Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:49:26.102Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:49:26.104Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:49:29.250Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:49:29.313Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:49:29.315Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:49:57.769Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:49:57.823Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:49:57.825Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:50:00.814Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:50:00.883Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:50:00.885Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:50:29.528Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:50:29.649Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:50:29.651Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:51:01.084Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:51:01.152Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:51:01.154Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:51:33.032Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:51:33.279Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:51:33.281Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:52:04.695Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:52:04.699Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:52:04.701Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:52:36.215Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:52:36.270Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:52:36.272Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:54:37.855Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:54:37.997Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:54:37.999Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:55:09.253Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:55:09.322Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:55:09.324Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:58:51.705Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:58:51.707Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:58:51.719Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T09:59:23.213Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:59:23.277Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:59:23.279Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:59:32.596Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:59:32.604Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:59:32.606Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T09:59:55.085Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:59:55.118Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T09:59:55.120Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T10:00:04.005Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T10:00:04.067Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T10:00:04.069Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T10:00:17.222Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:code-implementer"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T10:00:17.269Z","agent":"session-orchestrator:code-implementer","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T10:00:17.271Z","agent":"session-orchestrator:code-implementer","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T10:00:26.793Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T10:00:26.866Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T10:00:26.868Z","agent":"unknown","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T10:00:34.497Z","event":"orchestrator.agent.stopped","agent":"session-orchestrator:code-implementer"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T10:00:34.591Z","agent":"session-orchestrator:code-implementer","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"**My first stated cause was wrong, and measuring killed it.** I wrote that those truncated briefs were eating the prompt budget. They aren't — they're old, and *none* reaches the prompt. What actually"}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T10:00:34.593Z","agent":"session-orchestrator:code-implementer","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","claim_text":"One thing I added mid-flight: both popups render **\"Adjustment learned for future applications.\"** after every readjustment. Since excluded entries are still *stored*, that line would keep appearing w"}
+{"timestamp":"2026-09-12T10:02:10.710Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T10:02:42.171Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T10:05:43.772Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T10:06:15.154Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T10:09:28.512Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T10:09:59.877Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T10:12:01.307Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T10:12:21.442Z","event":"orchestrator.session.stopped","session_id":"0c92a468-e2e3-41cf-a244-e93691b51743","wave":5,"branch":"task-236-preference-intake","commit":"c8868baa6277cd241f82fda0a44991224f3df1b5","duration_ms":0}
+{"timestamp":"2026-09-12T10:12:32.879Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T16:42:38.844Z","event":"orchestrator.session.lock.acquired","session_id":"f49fa2f0-7d60-45ca-b1b3-937a2e18870c","semantic_session_id":"task-236-preference-intake-2026-09-12-session-1","mode":"session","pid":17996,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-12T16:42:38.993Z","event":"orchestrator.session.started","platform":"claude","project":"dachapply","branch":"task-236-preference-intake","session_id":"f49fa2f0-7d60-45ca-b1b3-937a2e18870c","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":61.3,"cpu_load_pct":6,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-12T16:48:21.225Z","event":"orchestrator.auq_clarity.allowed","session_id":"f49fa2f0-7d60-45ca-b1b3-937a2e18870c","questions":2,"skipped":0,"hurdles":[],"soft":{"K1":2}}
+{"timestamp":"2026-09-12T16:48:35.600Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T16:49:06.972Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T16:49:38.259Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T16:50:09.870Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T16:50:21.485Z","event":"orchestrator.agent.stopped","agent":"project-code-review"}
+{"timestamp":"2026-09-12T16:57:52.298Z","event":"orchestrator.session.stopped","session_id":"f49fa2f0-7d60-45ca-b1b3-937a2e18870c","wave":5,"branch":"task-236-preference-intake","commit":"c8868baa6277cd241f82fda0a44991224f3df1b5","duration_ms":0}
+{"timestamp":"2026-09-12T17:13:07.557Z","event":"orchestrator.session.stopped","session_id":"f49fa2f0-7d60-45ca-b1b3-937a2e18870c","wave":5,"branch":"task-236-preference-intake","commit":"61741c1f2b06c9050b2b1a83b001bfc46cf8a631","duration_ms":0}
+{"timestamp":"2026-09-12T17:15:33.947Z","event":"orchestrator.session.stopped","session_id":"f49fa2f0-7d60-45ca-b1b3-937a2e18870c","wave":5,"branch":"task-236-preference-intake","commit":"61741c1f2b06c9050b2b1a83b001bfc46cf8a631","duration_ms":0}
+{"timestamp":"2026-09-12T17:18:35.549Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T17:18:35.598Z","agent":"unknown","session_id":"f49fa2f0-7d60-45ca-b1b3-937a2e18870c","claim_text":"**What shipped:** commit `61741c1`, PR #153, 13 files, 820 insertions. Branch fully pushed (`--not origin/` empty)."}
+{"timestamp":"2026-09-12T17:22:51.955Z","event":"orchestrator.session.stopped","session_id":"f49fa2f0-7d60-45ca-b1b3-937a2e18870c","wave":5,"branch":"task-236-preference-intake","commit":"61741c1f2b06c9050b2b1a83b001bfc46cf8a631","duration_ms":0}
+{"timestamp":"2026-09-12T17:22:52.926Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T17:25:53.557Z","event":"orchestrator.agent.stopped","agent":""}
+{"timestamp":"2026-09-12T17:28:33.726Z","event":"orchestrator.session.stopped","session_id":"f49fa2f0-7d60-45ca-b1b3-937a2e18870c","wave":5,"branch":"task-236-close","commit":"ec2f090e9d71177cbb16ab764edcbd7d7e606b2c","duration_ms":0}
+{"timestamp":"2026-09-12T17:33:53.996Z","event":"orchestrator.session.stopped","session_id":"f49fa2f0-7d60-45ca-b1b3-937a2e18870c","wave":5,"branch":"main","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-12T17:33:59.270Z","event":"orchestrator.session.stopped","session_id":"f49fa2f0-7d60-45ca-b1b3-937a2e18870c","wave":5,"branch":"main","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-12T17:37:00.810Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T17:37:00.812Z","agent":"unknown","session_id":"f49fa2f0-7d60-45ca-b1b3-937a2e18870c","claim_text":"All 17 preference-shaped entries now reach the model instead of 4, in less than half the prompt space. Stored field untouched: `sha256 4781cd3a`, 47 entries, identical before and after."}
+{"event":"discovery_validator_violation","timestamp":"2026-09-12T17:37:00.813Z","agent":"unknown","session_id":"f49fa2f0-7d60-45ca-b1b3-937a2e18870c","claim_text":"- **TASK-229** — AC2 says the owner confirms each factual claim, not a model. `manage.py review_learned_preferences` prints the list; 35 of 43 entries carry both fact and style signals, so they need s"}
+{"timestamp":"2026-09-13T09:40:19.925Z","event":"orchestrator.session.lock.acquired","session_id":"a1985b85-b782-47ef-975c-90dbacc337b5","semantic_session_id":"main-2026-09-13-session-1","mode":"session","pid":44952,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-13T09:40:20.112Z","event":"orchestrator.session.started","platform":"claude","project":"dachapply","branch":"main","session_id":"a1985b85-b782-47ef-975c-90dbacc337b5","peer_count":2,"host_class":"windows-x86_64","ram_free_gb":72.8,"cpu_load_pct":35,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":2}
+{"timestamp":"2026-09-13T09:41:45.775Z","event":"orchestrator.session.stopped","session_id":"a1985b85-b782-47ef-975c-90dbacc337b5","wave":5,"branch":"main","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T09:44:47.344Z","event":"orchestrator.agent.stopped","agent":""}
+{"event":"discovery_validator_violation","timestamp":"2026-09-13T09:44:47.376Z","agent":"unknown","session_id":"a1985b85-b782-47ef-975c-90dbacc337b5","claim_text":"6 stale `origin/*` branches whose work is already squash-merged, ~12 stale locals, and 3 worktrees pointing at deleted branches. Say the word and I'll prune — I won't touch them otherwise, per PSA-003"}
+{"timestamp":"2026-09-13T09:59:48.245Z","event":"orchestrator.session.ended","session_id":"a1985b85-b782-47ef-975c-90dbacc337b5","reason":"prompt_input_exit","duration_ms":1168330}
+{"timestamp":"2026-09-13T09:59:48.253Z","event":"orchestrator.session.lock.released","session_id":"a1985b85-b782-47ef-975c-90dbacc337b5","lock_session_id":"a1985b85-b782-47ef-975c-90dbacc337b5","semantic_session_id":"main-2026-09-13-session-1","end_reason":"prompt_input_exit","caller":"on-session-end","outcome":"deleted","verified":true}
+{"timestamp":"2026-09-13T09:59:53.778Z","event":"orchestrator.session.lock.acquired","session_id":"9ed08f10-e498-4354-b26c-ba2184febc6b","semantic_session_id":"main-2026-09-13-session-2","mode":"session","pid":25536,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-13T09:59:54.087Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"main","session_id":"9ed08f10-e498-4354-b26c-ba2184febc6b","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":67,"cpu_load_pct":20,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-13T10:04:14.079Z","event":"orchestrator.session.stopped","session_id":"9ed08f10-e498-4354-b26c-ba2184febc6b","wave":5,"branch":"main","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T10:07:22.858Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"main","session_id":"59969585-da45-4caa-9ba0-e13a835be319","peer_count":2,"host_class":"windows-x86_64","ram_free_gb":65.3,"cpu_load_pct":17,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":2}
+{"timestamp":"2026-09-13T10:09:33.774Z","event":"orchestrator.session.stopped","session_id":"59969585-da45-4caa-9ba0-e13a835be319","wave":5,"branch":"main","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T10:16:41.174Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"task-221-local-provider-finish","session_id":"7ad36f6d-d1df-41bf-a9cc-2daa73583286","peer_count":3,"host_class":"windows-x86_64","ram_free_gb":65.5,"cpu_load_pct":16,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":3}
+{"timestamp":"2026-09-13T10:21:32.650Z","event":"orchestrator.session.stopped","session_id":"7ad36f6d-d1df-41bf-a9cc-2daa73583286","wave":5,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T10:21:33.670Z","event":"orchestrator.session.ended","session_id":"7ad36f6d-d1df-41bf-a9cc-2daa73583286","reason":"quit","duration_ms":292673}
+{"timestamp":"2026-09-13T10:23:21.936Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"task-221-local-provider-finish","session_id":"4bac4e12-5e56-45dd-bafa-cb124cffe234","peer_count":2,"host_class":"windows-x86_64","ram_free_gb":65.3,"cpu_load_pct":15,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":2}
+{"timestamp":"2026-09-13T10:29:32.865Z","event":"orchestrator.session.stopped","session_id":"4bac4e12-5e56-45dd-bafa-cb124cffe234","wave":2,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T10:29:33.875Z","event":"orchestrator.session.ended","session_id":"4bac4e12-5e56-45dd-bafa-cb124cffe234","reason":"quit","duration_ms":372116}
+{"timestamp":"2026-09-13T10:34:11.175Z","event":"orchestrator.session.stopped","session_id":"4bac4e12-5e56-45dd-bafa-cb124cffe234","wave":2,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T10:34:13.544Z","event":"orchestrator.session.stopped","session_id":"4bac4e12-5e56-45dd-bafa-cb124cffe234","wave":2,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T10:34:17.899Z","event":"orchestrator.session.stopped","session_id":"4bac4e12-5e56-45dd-bafa-cb124cffe234","wave":2,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T10:34:36.893Z","event":"orchestrator.session.stopped","session_id":"4bac4e12-5e56-45dd-bafa-cb124cffe234","wave":2,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T12:26:24.032Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"task-221-local-provider-finish","session_id":"93ffc03e-72d1-497b-b78c-01b1f116b543","peer_count":1,"host_class":"windows-x86_64","ram_free_gb":48.9,"cpu_load_pct":8,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":1}
+{"timestamp":"2026-09-13T12:30:58.165Z","event":"orchestrator.session.stopped","session_id":"93ffc03e-72d1-497b-b78c-01b1f116b543","wave":3,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T12:30:59.316Z","event":"orchestrator.session.ended","session_id":"93ffc03e-72d1-497b-b78c-01b1f116b543","reason":"quit","duration_ms":275459}
+{"timestamp":"2026-09-13T12:32:19.506Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"task-221-local-provider-finish","session_id":"3fba3304-e8be-470e-984b-634a36b526c1","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":60.6,"cpu_load_pct":8,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-13T12:34:07.363Z","event":"orchestrator.session.stopped","session_id":"3fba3304-e8be-470e-984b-634a36b526c1","wave":3,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T12:34:08.500Z","event":"orchestrator.session.ended","session_id":"3fba3304-e8be-470e-984b-634a36b526c1","reason":"quit","duration_ms":109167}
+{"timestamp":"2026-09-13T12:41:42.669Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"task-221-local-provider-finish","session_id":"23b42355-d821-42be-8441-f584c3236cbd","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":49.1,"cpu_load_pct":10,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-13T12:53:48.339Z","event":"orchestrator.session.stopped","session_id":"23b42355-d821-42be-8441-f584c3236cbd","wave":3,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T12:53:49.474Z","event":"orchestrator.session.ended","session_id":"23b42355-d821-42be-8441-f584c3236cbd","reason":"quit","duration_ms":726972}
+{"timestamp":"2026-09-13T12:59:21.310Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"task-221-local-provider-finish","session_id":"b4bec461-71b2-449c-9e82-4fa378e533df","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":47.9,"cpu_load_pct":10,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-13T13:06:00.612Z","event":"orchestrator.session.stopped","session_id":"b4bec461-71b2-449c-9e82-4fa378e533df","wave":4,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T13:06:01.800Z","event":"orchestrator.session.ended","session_id":"b4bec461-71b2-449c-9e82-4fa378e533df","reason":"quit","duration_ms":400659}
+{"timestamp":"2026-09-13T13:08:23.343Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"task-221-local-provider-finish","session_id":"70f5c511-a6f1-4921-9501-2be36afb96ef","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":61.3,"cpu_load_pct":10,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-13T13:21:08.291Z","event":"orchestrator.session.stopped","session_id":"70f5c511-a6f1-4921-9501-2be36afb96ef","wave":4,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T13:21:09.547Z","event":"orchestrator.session.ended","session_id":"70f5c511-a6f1-4921-9501-2be36afb96ef","reason":"quit","duration_ms":766371}
+{"timestamp":"2026-09-13T13:23:59.556Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"task-221-local-provider-finish","session_id":"d539c993-04d2-4ede-82eb-43bdb058c708","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":61,"cpu_load_pct":10,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-13T13:25:40.737Z","event":"orchestrator.session.stopped","session_id":"d539c993-04d2-4ede-82eb-43bdb058c708","wave":4,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T13:25:41.890Z","event":"orchestrator.session.ended","session_id":"d539c993-04d2-4ede-82eb-43bdb058c708","reason":"quit","duration_ms":102504}
+{"timestamp":"2026-09-13T13:25:48.795Z","event":"orchestrator.session.stopped","session_id":"d539c993-04d2-4ede-82eb-43bdb058c708","wave":4,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T20:25:56.389Z","event":"orchestrator.session.lock.acquired","session_id":"c0b8949b-0527-450a-8559-00693987b1a2","semantic_session_id":"task-221-local-provider-finish-2026-09-13-session-1","mode":"session","pid":58692,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-13T20:25:56.583Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"task-221-local-provider-finish","session_id":"c0b8949b-0527-450a-8559-00693987b1a2","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":60.4,"cpu_load_pct":6,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-13T20:25:57.066Z","event":"orchestrator.session.stopped","session_id":"c0b8949b-0527-450a-8559-00693987b1a2","wave":4,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T20:25:58.187Z","event":"orchestrator.session.ended","session_id":"c0b8949b-0527-450a-8559-00693987b1a2","reason":"quit","duration_ms":1805}
+{"timestamp":"2026-09-13T20:25:58.195Z","event":"orchestrator.session.lock.released","session_id":"c0b8949b-0527-450a-8559-00693987b1a2","lock_session_id":"c0b8949b-0527-450a-8559-00693987b1a2","semantic_session_id":"task-221-local-provider-finish-2026-09-13-session-1","end_reason":"quit","caller":"on-session-end","outcome":"deleted","verified":true}
+{"timestamp":"2026-09-13T20:26:09.152Z","event":"orchestrator.session.lock.acquired","session_id":"ad23788c-5c5a-4623-84ae-b3744a313ac4","semantic_session_id":"task-221-local-provider-finish-2026-09-13-session-2","mode":"session","pid":52312,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-13T20:26:09.329Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"task-221-local-provider-finish","session_id":"ad23788c-5c5a-4623-84ae-b3744a313ac4","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":61,"cpu_load_pct":6,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-13T20:37:10.677Z","event":"orchestrator.session.stopped","session_id":"ad23788c-5c5a-4623-84ae-b3744a313ac4","wave":4,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T20:37:11.977Z","event":"orchestrator.session.ended","session_id":"ad23788c-5c5a-4623-84ae-b3744a313ac4","reason":"quit","duration_ms":662834}
+{"timestamp":"2026-09-13T20:37:11.987Z","event":"orchestrator.session.lock.released","session_id":"ad23788c-5c5a-4623-84ae-b3744a313ac4","lock_session_id":"ad23788c-5c5a-4623-84ae-b3744a313ac4","semantic_session_id":"task-221-local-provider-finish-2026-09-13-session-2","end_reason":"quit","caller":"on-session-end","outcome":"deleted","verified":true}
+{"timestamp":"2026-09-13T20:43:59.717Z","event":"orchestrator.session.lock.acquired","session_id":"fe2dbc02-ba55-4db0-b54e-c036f61785ce","semantic_session_id":"task-221-local-provider-finish-2026-09-13-session-3","mode":"session","pid":58500,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-13T20:43:59.888Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"task-221-local-provider-finish","session_id":"fe2dbc02-ba55-4db0-b54e-c036f61785ce","peer_count":0,"host_class":"windows-x86_64","ram_free_gb":65.9,"cpu_load_pct":6,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":0}
+{"timestamp":"2026-09-13T21:07:18.508Z","event":"orchestrator.session.stopped","session_id":"fe2dbc02-ba55-4db0-b54e-c036f61785ce","wave":4,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T21:07:19.575Z","event":"orchestrator.session.ended","session_id":"fe2dbc02-ba55-4db0-b54e-c036f61785ce","reason":"quit","duration_ms":1399864}
+{"timestamp":"2026-09-13T21:07:19.584Z","event":"orchestrator.session.lock.released","session_id":"fe2dbc02-ba55-4db0-b54e-c036f61785ce","lock_session_id":"fe2dbc02-ba55-4db0-b54e-c036f61785ce","semantic_session_id":"task-221-local-provider-finish-2026-09-13-session-3","end_reason":"quit","caller":"on-session-end","outcome":"deleted","verified":true}
+{"timestamp":"2026-09-13T22:01:16.813Z","event":"orchestrator.session.stopped","session_id":"fe2dbc02-ba55-4db0-b54e-c036f61785ce","wave":5,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T22:01:19.185Z","event":"orchestrator.session.stopped","session_id":"fe2dbc02-ba55-4db0-b54e-c036f61785ce","wave":5,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T22:01:23.555Z","event":"orchestrator.session.stopped","session_id":"fe2dbc02-ba55-4db0-b54e-c036f61785ce","wave":5,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-13T22:01:35.585Z","event":"orchestrator.session.stopped","session_id":"fe2dbc02-ba55-4db0-b54e-c036f61785ce","wave":5,"branch":"task-221-local-provider-finish","commit":"6c12bad61ccafa9fabc6078c7ad9beceb1c46c9b","duration_ms":0}
+{"timestamp":"2026-09-14T09:46:12.965Z","event":"orchestrator.session.lock.acquired","session_id":"4fc63c88-093b-4066-bb56-392cdbd83be7","semantic_session_id":"task-221-local-provider-finish-2026-09-14-session-1","mode":"session","pid":43388,"host":"Caren","ttl_hours":4}
+{"timestamp":"2026-09-14T09:46:13.236Z","event":"orchestrator.session.started","platform":"pi","project":"dachapply","branch":"task-221-local-provider-finish","session_id":"4fc63c88-093b-4066-bb56-392cdbd83be7","peer_count":1,"host_class":"windows-x86_64","ram_free_gb":54.2,"cpu_load_pct":7,"claude_processes_count":0,"ram_available_gb":null,"memory_pressure_pct_free":null,"peer_sessions_count":1}

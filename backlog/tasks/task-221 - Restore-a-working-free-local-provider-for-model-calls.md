@@ -2,9 +2,10 @@
 id: TASK-221
 title: Restore a working free local provider for model calls
 status: In Progress
-assignee: []
+assignee:
+  - '@pi'
 created_date: ''
-updated_date: '2026-09-11 07:23'
+updated_date: '2026-09-14 09:55'
 labels:
   - backend
   - llm
@@ -38,8 +39,18 @@ premise that "Ollama keeps it free" does not hold on this machine right now.
 - [x] #1 The cause of the model-list decode failure is identified as a version mismatch or a config error, named explicitly, rather than worked around blindly
 - [x] #2 At least one free local provider completes a real structured-output call end to end from inside the app, evidenced by the actual response
 - [x] #3 The model picker does not offer a local model that cannot satisfy the call, or explains why one is unusable rather than failing at the end of a long wait
-- [ ] #4 CV generation and job evaluation both work through the restored local provider, verified separately rather than assumed from a shared code path
+- [x] #4 CV generation and job evaluation both work through the restored local provider, verified separately rather than assumed from a shared code path
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Discovery: verify the current LM Studio API and trace the shared structured-model path for CV generation and evaluation.
+2. Impl-Core: make LM Studio use its native strict JSON-schema response path and provide CV source files in the prompt instead of relying on Codex local-provider schema enforcement.
+3. Impl-Polish: run real job evaluation and CV generation through LM Studio; fix only failures demonstrated by those runs.
+4. Quality: run focused tests, the full backend suite, frontend production build, and localhost rendered-page verification.
+5. Finalization: Asian Dad evaluation, commit, push, squash-merge, production verification, then mark TASK-221 Done in a post-merge change.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -156,7 +167,49 @@ requirements pull apart, and the options are:
 None of these is a small change, so **AC4 stays unchecked** and this is written down for whoever picks
 it up rather than attempted now. Everything above was free and local; nothing was spent and nothing
 was written.
+
+2026-09-13: Resuming AC4 on branch `task-221-local-provider-finish`. The prior session lock was reclaimed with owner approval after its recorded PID no longer existed. The existing sealed rubric parsed successfully before this session began implementation.
+
+## AC4 resumed, 2026-09-13 -- transport fixed; small models exposed the next boundary
+
+The branch now calls LM Studio directly with native `response_format: json_schema` and sends the current TeX inline on every attempt. A real dry-run evaluation for job 1488 passed (`ok=True`, one preview row, no errors). CV generation reached JSON-valid output and compilation, proving the old Codex/schema blocker is gone, but qwen2.5-7b-instruct failed 2/2 complete runs and all six repair attempts with malformed TeX; Gemma 3 12B also failed all three compile attempts. Strict JSON can enforce the envelope, not LaTeX semantics. Debug evidence is in `.orchestrator/debug/59969585-da45-4caa-9ba0-e13a835be319-2.md`.
+
+The next measured candidate is the already-installed `qwen3-coder:latest` (30.5B, 262k context, coding-specialized) through Ollama native schema output. Ollama 0.34.0 serves this model directly; the Codex model-list mismatch is irrelevant once the app stops routing Ollama through Codex.
+
+## AC4 real verification passed, 2026-09-13
+
+After native local-provider schema enforcement and compact repair prompts:
+
+- **Job evaluation:** `ollama / qwen3-coder:latest`, real owner job 1488, dry-run through `evaluate_jobs`: `ok=True`, `dry_run=True`, `preview_count=1`, `errors=[]`. No database write.
+- **CV generation:** same provider/model and job, CV-only through `start_cv_task`: reached Compiling CV, needed one focused repair, then `status=ready` in **193 seconds**. Persisted `cv_tex` and `cv_pdf`; report carried all four expected sections.
+
+This is separate evidence for both halves of AC4, not an inference from the shared runner. The preceding qwen2.5-7b-instruct and Gemma 3 12B runs reached strict-schema output but failed TeX validation; `.orchestrator/debug/59969585-da45-4caa-9ba0-e13a835be319-2.md` records why compact repair was needed.
+
+## Final candidate verification, 2026-09-13
+
+- Read-only review found and the branch fixed four boundary regressions: loopback-only direct HTTP with no proxy use, immediate Ollama refusal in the still-Codex draft-chat path, full-context retry before any valid TeX has been written, and socket/response shutdown for cancellation both before headers and during body reads. A second independent review returned mergeable.
+- Focused affected suite: **314 passed**.
+- Full backend suite: **1187 passed**.
+- Frontend production build: passed (`tsc && vite build`). Existing bundle-size warning only.
+- Browser, built SPA on `127.0.0.1:8010` with throwaway SQLite: authenticated Board rendered with no alerts; Evaluate dialog offered providers `openai`, `anthropic`, `ollama`, `lmstudio`; selecting Ollama rendered `qwen3-coder:latest` and left Preview evaluation enabled. Temporary user/database/server/browser were removed/stopped.
+- Final transport re-verification bypassed cache: real Ollama/qwen3-coder evaluation returned `ok=True`, one preview, no errors; real CV generation called the model, compiled, repaired once, and reached Ready in **186 seconds**. Persisted CV TeX (11,936 bytes) and two-page PDF (1,359,638 bytes).
+
+## Asian Dad evidence set
+
+- Root cause reconfirmed on installed `codex-cli 0.146.0` + Ollama 0.34.0: `/v1/models` returns OpenAI keys `data, object`, while native `/api/tags` returns `models`; Codex mixed the endpoint/decoder contracts.
+- Browser real local evaluation (`ollama / qwen3-coder:latest`): fit score **85**, priority **high**, recommendation **apply**, resource duration **17.695 s**; preview was not saved.
+- Browser AC3: `gemma3:4b (evaluation only)` and `dolphin-mixtral:latest (evaluation only)` were labelled before use; `qwen3-coder:latest` was offered without that restriction. CV endpoints reject evaluation-only models before starting work.
+- Real Anthropic compatibility smoke through the unchanged shared runner: Haiku returned `{answer: cloud-ok}` in **4.78 s**.
+- Final frontend tests: **256 passed**; `npx tsc --noEmit` passed.
+
+2026-09-14 continuation verification: full backend suite passed again (1187 tests in 436.93s) and the frontend production build passed again (tsc + Vite). Asian Dad re-evaluated the sealed rubric against the recorded real browser/local-provider/cloud-smoke evidence: PERFECT.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Restored free local structured model calls by bypassing incompatible Codex local-provider handling and using loopback-only native LM Studio/Ollama schema APIs. Current TeX is supplied inline; retries keep full context until valid TeX exists, then use focused repair context. Local capability labels prevent unsuitable models reaching CV generation, and draft chat refuses its incompatible Ollama path immediately. Verified with a real browser evaluation (85/high/apply in 17.695 s), a separate uncached real two-page CV generation (Ready in 186 s after one repair), 1187 backend tests, 256 frontend tests, TypeScript/build checks, browser rendering, and a real Anthropic compatibility smoke.
+<!-- SECTION:FINAL_SUMMARY:END -->
 
 ## State of play (handoff, 2026-09-09)
 <!-- SECTION:NOTES:BEGIN -->

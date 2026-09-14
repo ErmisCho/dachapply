@@ -795,13 +795,9 @@ def test_cv_model_discovery_includes_anthropic_and_installed_local_models(monkey
 
     monkeypatch.setattr(cv_generator, 'codex_model_options', lambda: [{'provider':'openai','key':'gpt','label':'GPT','efforts':['low'],'default_effort':'low','fast_tier':''}])
     monkeypatch.setattr(cv_generator.shutil, 'which', lambda command: command if command in ('claude','ollama','lms') else None)
-    # TASK-221 gates ollama behind a live probe of the model list codex cannot decode. This test is
-    # about what discovery lists, not about the gate, and stubbing it also keeps the suite hermetic:
-    # unstubbed, the probe makes a real call to localhost:11434 and the result depends on the machine.
-    monkeypatch.setattr(cv_generator, '_codex_can_enumerate_ollama', lambda: True)
     def run(command, **kwargs):
-        if command[0]=='ollama': return SimpleNamespace(stdout='NAME ID SIZE MODIFIED\nqwen:latest 1 1GB now\nnomic-embed-text 2 1GB now\n')
-        return SimpleNamespace(stdout=json.dumps([{'modelKey':'gemma','displayName':'Gemma'}]))
+        if command[0]=='ollama': return SimpleNamespace(returncode=0, stdout='NAME ID SIZE MODIFIED\nqwen:latest 1 1GB now\nnomic-embed-text 2 1GB now\n')
+        return SimpleNamespace(returncode=0, stdout=json.dumps([{'modelKey':'gemma','displayName':'Gemma'}]))
     monkeypatch.setattr(cv_generator.subprocess, 'run', run)
     options=cv_generator.available_model_options()
     assert {'openai','anthropic','ollama','lmstudio'} <= {option['provider'] for option in options}
@@ -834,7 +830,7 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
         {'provider':'anthropic','key':'sonnet','label':'Claude Sonnet','efforts':cv_generator.CLAUDE_EFFORTS,'default_effort':'medium','fast_tier':''},
         {'provider':'ollama','key':'qwen','label':'qwen','efforts':['default'],'default_effort':'default','fast_tier':''},
     ])
-    commands=[]; prompts=[]; correction_dirs=[]; page_counts={'CV':2,'Letter':1}; compile_failures=[]; invalid_outputs=[]
+    commands=[]; prompts=[]; local_prompts=[]; correction_dirs=[]; page_counts={'CV':2,'Letter':1}; compile_failures=[]; invalid_outputs=[]
     correction_image=cv_generator.decode_correction_image(PNG_DATA_URL)
     generated={'cv_tex':'\\documentclass{article}\\begin{document}tailored cv\\end{document}','letter_tex':'\\documentclass{article}\\begin{document}tailored letter\\end{document}','changed_files':['cv.tex','letter.tex'],'main_changes':['Tailored content'],'unsupported_requirements_not_claimed':['Unsupported tool'],'confirmations':{'cv_max_2_pages':True,'letter_max_1_page':True,'no_orphaned_employer_headings':True,'no_text_overlap':True,'nothing_after_end_document':True,'links_work':True,'photo_loads_if_used':True,'no_invented_tools_or_overclaims':True}}
 
@@ -874,7 +870,21 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
         (output/__import__('pathlib').Path(command[-1]).with_suffix('.pdf')).write_bytes(b'pdf')
         return SimpleNamespace(returncode=0, stdout='ok', stderr='')
 
+    class LocalResponse:
+        status=200; reason='OK'
+        def __init__(self, payload): self.payload=json.dumps(payload).encode()
+        def read(self): return self.payload
+    class LocalConnection:
+        sock=None
+        def __init__(self, host, port): pass
+        def request(self, method, path, body, headers):
+            payload=json.loads(body)
+            local_prompts.append(payload['messages'][0]['content'])
+        def getresponse(self): return LocalResponse({'message':{'content':json.dumps(generated)}})
+        def close(self): pass
+
     monkeypatch.setattr('jobradar.services.cv_generator.subprocess.run', fake_run)
+    monkeypatch.setattr(cv_generator.http.client, 'HTTPConnection', LocalConnection)
     user=User.objects.create_user('cv-owner')
     cv_assets(user)
     job=JobLead.objects.create(company='Firma', title='Entwickler', raw_description='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben.', created_by=user)
@@ -955,7 +965,7 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
         generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', create_cv=False, user_id=user.id)
     assert not any(command[0]=='latexmk' for command in commands)
     assert any(command[0]=='claude' and '--json-schema' in command for command in commands)
-    assert any(command[0]=='codex' and '--oss' in command and command[command.index('--local-provider')+1]=='ollama' for command in commands)
+    assert local_prompts and not any(command[0]=='codex' and '--oss' in command for command in commands)
     assert {'dachapply-cv-','dachapply-compile-'} <= {call['prefix'] for call in temp_calls}
     assert all(call['ignore_cleanup_errors'] is True for call in temp_calls)
     # The stored templates are read-only inputs: nothing in a generation writes back over the
@@ -1295,10 +1305,6 @@ def test_optional_model_discovery_cannot_hold_the_popup_beyond_four_seconds(monk
     monkeypatch.setattr(cv_generator, 'codex_model_options', lambda: [{'provider':'openai','key':'cloud'}])
     monkeypatch.setattr(cv_generator, 'claude_model_options', lambda: [{'provider':'anthropic','key':'cloud'}])
     monkeypatch.setattr(cv_generator.shutil, 'which', lambda name: name if name in {'ollama','lms'} else None)
-    # TASK-221 put an ollama probe in front of `ollama list`, so it spends from this same budget and
-    # is counted here. A probe that times out returns False, which skips `ollama list` altogether --
-    # so the worst case is probe + lms, not probe + ollama + lms, and the four-second ceiling holds.
-    monkeypatch.setattr(cv_generator, '_codex_can_enumerate_ollama', lambda: timeouts.append(2) or False)
     def timeout(command, **kwargs):
         timeouts.append(kwargs['timeout'])
         raise subprocess.TimeoutExpired(command, kwargs['timeout'])
@@ -1306,12 +1312,11 @@ def test_optional_model_discovery_cannot_hold_the_popup_beyond_four_seconds(monk
 
     options=cv_generator._discover_model_options()
 
-    assert sum(timeouts) <= 4
+    assert timeouts == [2, 2]
     assert {option['provider'] for option in options} == {'openai','anthropic'}
 
     class Result:
-        def __init__(self, stdout): self.stdout=stdout
-    monkeypatch.setattr(cv_generator, '_codex_can_enumerate_ollama', lambda: True)
+        def __init__(self, stdout): self.returncode=0; self.stdout=stdout
     monkeypatch.setattr(cv_generator.subprocess, 'run', lambda command, **kwargs: Result(
         'NAME ID SIZE\nllama:latest abc 1 GB\n' if command[0] == 'ollama'
         else '[{"modelKey":"local-model","displayName":"Local model"}]'
