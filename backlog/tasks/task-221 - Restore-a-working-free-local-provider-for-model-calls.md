@@ -1,11 +1,11 @@
 ---
 id: TASK-221
 title: Restore a working free local provider for model calls
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: ''
-updated_date: '2026-09-14 09:55'
+updated_date: '2026-09-14 10:04'
 labels:
   - backend
   - llm
@@ -203,6 +203,8 @@ This is separate evidence for both halves of AC4, not an inference from the shar
 - Final frontend tests: **256 passed**; `npx tsc --noEmit` passed.
 
 2026-09-14 continuation verification: full backend suite passed again (1187 tests in 436.93s) and the frontend production build passed again (tsc + Vite). Asian Dad re-evaluated the sealed rubric against the recorded real browser/local-provider/cloud-smoke evidence: PERFECT.
+
+Merged implementation PR #155 as squash commit 520d119 on 2026-09-14. GitHub Actions run 34830868835 passed backend tests, frontend typecheck/tests, container build/push, Azure deployment, and public-app verification.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
