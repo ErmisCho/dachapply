@@ -34,6 +34,7 @@ from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
 from .services.access import accessible_jobs, job_create_defaults, owned_by, submitted_away_jobs
 from .services.cleaning import clean_job_location
+from .services.posting_fetch import fetch_posting_text, normalized
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_MAIL_PREFIX, DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user, is_demo_user
 from .services.interview_coach import analyze_answer, suggest_questions
@@ -1937,6 +1938,42 @@ def cv_generation_preview(request, job_id):
     if not job:
         return Response({'detail':'Job not found.'}, status=404)
     return Response(generation_preview(job, request.user))
+
+
+@api_view(['GET'])
+@throttle_classes([ImportUserThrottle])
+def job_source_text_live(request, job_id):
+    """TASK-237: what the job's URL actually says, right now.
+
+    Read-only on purpose -- the stored text is never overwritten from here (AC4). Adopting the
+    fetched body stays the user's explicit act through the existing PATCH jobs/<id>/source-text/
+    action, so a hand-corrected original can only be replaced by someone who chose to. Throttled
+    on the existing import_user bucket because it dials an arbitrary third-party host per call.
+    """
+    # Same gate as cv_generation_preview above: this panel is only ever rendered inside the CV
+    # generation flow, so the accounts that can make this server dial a third-party host are exactly
+    # the accounts that can see the control. CODEX_CV_ENABLED is DEBUG-only by deployment, so the
+    # deployed container exposes no outbound fetcher at all.
+    if not is_cv_owner(request.user):
+        return Response({'detail':'Not found.'}, status=404)
+    job=accessible_jobs(request.user).filter(id=job_id).first()
+    if not job:
+        return Response({'detail':'Job not found.'}, status=404)
+    url=(job.url or '').strip()
+    if not url:
+        return Response({'detail':'This job has no original listing URL.'}, status=400)
+    result=fetch_posting_text(url)
+    fetched_at=timezone.now().isoformat()
+    if not result['ok']:
+        return Response({'ok':False,'url':url,'error':result['error'],'fetched_at':fetched_at})
+    stored=job.source_text or ''
+    return Response({
+        'ok':True,'url':url,'final_url':result['final_url'],'text':result['text'],
+        'chars':len(result['text']),'stored_chars':len(stored),
+        # Normalised, not byte-equal: the stored copy and the live page differ in wrapping first.
+        'matches_stored':normalized(result['text'])==normalized(stored),
+        'fetched_at':fetched_at,
+    })
 
 
 def _started_cv_task(task_id, user_id):
