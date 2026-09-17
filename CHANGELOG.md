@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- CV and letter generation now show the job text they will actually use, and say where it came from: the posting collected for that job, or the cleaned description when no posting was ever collected. One click reads the listing at its own URL and shows that body beside the stored text, so a summary that was never the posting is visible before anything is generated - and nothing is replaced unless you say so. A dead or blocked link says what went wrong instead of quietly showing something else.
+- Each job in the generation flow links straight to its original listing, opening in a new tab.
 - Reply and reply-all can now be composed from the conversation itself: every message carries a
   Reply control that shows exactly who will receive the draft before it is saved, with To and Cc
   editable in place; the saved Gmail draft contains exactly what was shown.
