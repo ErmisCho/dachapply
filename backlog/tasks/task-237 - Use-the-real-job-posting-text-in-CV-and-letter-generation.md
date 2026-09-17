@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-14 14:40'
-updated_date: '2026-09-17 13:48'
+updated_date: '2026-09-17 14:01'
 labels:
   - frontend
   - backend
@@ -125,4 +125,35 @@ workflow half is true (rubric sealed before implementation, two agents in separa
 coordinator verification, graded against the sealed rubric). The sequencing half is not: TASK-226 is
 still In Progress because its AC1/AC3/AC4 need a second physical device and a reboot, which is owner
 action rather than engineering. The owner asked for the remaining engineering tasks to proceed.
+
+## Merged, but NOT Done: production cannot be verified
+
+PR #157 squash-merged to main as 71b3049 with CI green (test job passed). The branch
+`task-237-238-real-posting-text` is deliberately NOT deleted, because TW-00A step 5 comes after step
+6 and step 6 cannot be reached.
+
+**The deploy job failed on an external condition, not on this change:**
+
+    ERROR: (ReadOnlyDisabledSubscription) The subscription 'f0d59028-5822-491c-8ab1-693dfd9c0057'
+    is disabled and therefore marked as read only. You cannot perform any write actions on this
+    subscription until it is re-enabled.
+
+That is also why production itself is unreachable: `GET https://dachapply.livelysea-3461ad21.westeurope.azurecontainerapps.io/api/health/`
+fails at TCP connect (DNS resolves to 20.23.217.200; curl reports connect=0.000000s, timing out at
+21s on every attempt). The uptime-monitor workflow has failed on every scheduled run since
+2026-09-16T09:25Z; the last success was 2026-09-16T04:03Z. **This predates this work by about 36
+hours and no change in this repository can fix it** -- the Azure subscription has to be re-enabled by
+the owner.
+
+Rollback image recorded before the merge, per TW-006:
+`ghcr.io/ermischo/dachapply:02b08c829ecc826ca3ddc48eff7dac5a67709691`.
+
+**Verified on the owner's machine instead (CLAUDE.md 'finish on the owner's machine'):** the runtime
+worktree at AppData/Local/dachapply/main-runtime was synced to 71b3049 and rebuilt; localhost:8000 now
+serves `assets/index-Bq6sDx6K.js`, which matches that worktree's `frontend/dist/index.html`,
+`/api/health/` returns 200, and the page renders (1,705 chars, no error boundary). Note the feature
+is local-only in effect anyway: CODEX_CV_ENABLED is DEBUG-only by deployment, so the generation flow
+-- and therefore this panel and this endpoint -- do not exist in the deployed container.
+
+Status stays In Progress until the subscription is re-enabled and a deploy reaches production.
 <!-- SECTION:NOTES:END -->
