@@ -1451,7 +1451,8 @@ def test_latest_generated_artifacts_survive_a_restart_by_reading_the_workspace(t
     from jobradar.services import cv_generator
 
     settings.CODEX_CV_WORKSPACE=str(tmp_path)
-    job=SimpleNamespace(id=1, company='ACME', title='AI Engineer', raw_description='', language_requirements='', source_text='')
+    # url/original_source_text: generation_preview's TASK-237 'job' key reads them off the job.
+    job=SimpleNamespace(id=1, company='ACME', title='AI Engineer', url='', raw_description='', language_requirements='', source_text='', original_source_text='')
     user=SimpleNamespace(first_name='Jane', last_name='Doe', email='jane@example.test', username='jane@example.test')
     cv_name,letter_name=cv_generator._target_names(job,cv_generator.applicant_name(user))
     (tmp_path/'CVs').mkdir(parents=True)

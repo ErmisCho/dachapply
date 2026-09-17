@@ -576,6 +576,13 @@ def generation_preview(job, user=None):
     return {
         'language': language,
         'language_label': 'German' if language == 'de' else 'English',
+        # TASK-237: the text generation will actually be tailored to, plus the link it should have
+        # come from, in the same response the generation dialog already fetches. source_is_fallback
+        # is provenance: True means this is the cleaned description, not a collected original, so
+        # the dialog can say so instead of presenting a summary as the posting.
+        'job': {'id': job.id, 'company': job.company, 'title': job.title, 'url': job.url,
+                'source_text': job.source_text, 'source_chars': len(job.source_text or ''),
+                'source_is_fallback': not job.original_source_text and bool(job.raw_description)},
         'selected_cv': selected_cv,
         'selected_letter': selected_letter,
         'cvs': cvs,

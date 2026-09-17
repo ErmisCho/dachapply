@@ -127,3 +127,17 @@ export type MailboxRun={id:number;started_at:string;finished_at:string|null;skip
 // failure message. It is deliberately not typed here: it reaches the UI through a catch, as `any`.
 export type EvaluateWithModelPreviewRow={job_id:number;company:string;title:string;fit_score:number;priority:string;recommendation:string;action:'create'|'replace';replaces_fit_score:number|null}
 export type EvaluateWithModelResult={ok:true;dry_run:boolean;created:number;errors:string[];preview:EvaluateWithModelPreviewRow[]}
+// TASK-237/TASK-238. GET /api/jobs/<id>/cv-generation/ gained a `job` key: the job's identity plus
+// the exact source text the generation prompt is built from, in the SAME payload the CV popups
+// already fetch, so neither of them has to request /jobs/<id>/ a second time to show it.
+// source_is_fallback true means what is stored is the cleaned description, NOT a collected original
+// posting - labelling those two the same is precisely what TASK-237 AC3 forbids, so the flag is
+// part of the wire shape rather than something the client infers. url is '' on a job entered by
+// hand with no listing link, and TASK-238's external-posting control renders nothing at all then.
+export type PostingJob={id:number;company:string;title:string;url:string;source_text:string;source_chars:number;source_is_fallback:boolean}
+// GET /api/jobs/<id>/source-text/live/ - reads the posting from the job's own URL server-side and
+// NEVER writes; adopting what it read is a separate PATCH the owner has to ask for (TASK-237 AC4,
+// so a hand-corrected source text is never overwritten behind their back). Both outcomes arrive as
+// 200 and are discriminated by `ok`; a 400 (no URL) or 404 is thrown by api() instead, and the
+// callers normalise it into this same ok:false shape so there is one failure path in the UI.
+export type LiveSourceText={ok:true;url:string;final_url:string;text:string;chars:number;stored_chars:number;matches_stored:boolean;fetched_at:string}|{ok:false;url?:string;error:string;fetched_at?:string}
