@@ -7,6 +7,15 @@ on:
   pull_request:
   workflow_dispatch:
 
+# TASK-239: merging two PRs seconds apart on 2026-09-21 ran two deploys at once, and the second
+# died with `(ContainerAppOperationInProgress) Cannot modify a container app 'dachapply' because
+# there is an active provisioning operation in progress`. Azure refuses concurrent writes to one
+# app, so the runs have to queue. cancel-in-progress stays false on purpose: cancelling a deploy
+# mid-apply can leave a half-applied revision, and waiting a few minutes costs nothing.
+concurrency:
+  group: deploy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   packages: write
