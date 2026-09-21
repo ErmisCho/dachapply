@@ -2,9 +2,10 @@
 id: TASK-226
 title: Reach the local server from other devices on the home network
 status: In Progress
-assignee: []
+assignee:
+  - '@pi'
 created_date: '2026-09-10 11:48'
-updated_date: '2026-09-11 06:12'
+updated_date: '2026-09-21 07:40'
 labels:
   - backend
   - infrastructure
@@ -25,12 +26,22 @@ This has a real exposure to state rather than gloss over: the local runtime runs
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A second physical device on the same network loads the board at http://<host-lan-ip>:8000/ and completes a login - verified from that device, not from a second browser on the host, and not inferred from a successful bind
+- [x] #1 A second physical device on the same network loads the board at http://<host-lan-ip>:8000/ and completes a login - verified from that device, not from a second browser on the host, and not inferred from a successful bind
 - [x] #2 The bind address is configurable rather than hard-coded, and loopback-only stays the default for anyone who does not opt in
-- [ ] #3 ALLOWED_HOSTS and CSRF_TRUSTED_ORIGINS accept the host LAN address, evidenced by a login POST succeeding from the second device rather than by reading the settings
+- [x] #3 ALLOWED_HOSTS and CSRF_TRUSTED_ORIGINS accept the host LAN address, evidenced by a login POST succeeding from the second device rather than by reading the settings
 - [ ] #4 Any host firewall rule the change needs is written down as the exact command that creates it, and the whole setup still works after a reboot of the host
 - [x] #5 The task records what became reachable on the network and what protects it, given the local runtime runs DEBUG=True against the production database
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Confirm the merged LAN-access implementation is on main and inspect the host's current LAN flag, firewall rule, address, and listeners.
+2. Opt in through the repo-root .env, add the documented private/localsubnet firewall rule, sync the disposable runtime to origin/main, and start Django on 0.0.0.0:8000.
+3. Verify the board and CSRF-capable login surface through the host LAN IP without relaxing the requirement for a second physical device.
+4. Have the owner complete login from a second device, then reboot/restart and repeat before checking AC1, AC3, and AC4.
+5. If the physical checks pass, rerun required gates and Asian Dad, record evidence, commit/push/squash-merge the closeout, and mark Done post-merge.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -122,4 +133,39 @@ the real CV workspace. What protects it: the Django login, and nothing else. Hen
 default, hence `profile=private remoteip=localsubnet` on the firewall rule so it is scoped to the local
 subnet and never public Wi-Fi, and hence the flag is gated on `DEBUG` so it can never widen the
 deployed container. Recorded in README.md and in the `settings.py` comment as well as here.
+
+2026-09-14 host preflight: enabled DACHAPPLY_LAN_ACCESS=1 in the private repo-root .env, synced the disposable runtime to main commit 02b08c8, built the SPA, and started Django on 0.0.0.0:8000. From the host LAN address, GET /api/health/ returned 200 with database ok, GET / returned 200 with the DACHApply SPA, and a tokenized same-origin login POST reached authentication (400 Invalid credentials, not a CSRF 403). Ethernet is a Private network. The documented firewall rule is still absent and this shell is not elevated; AC1/AC3/AC4 remain unchecked pending the owner's elevated rule, second-device login, and post-reboot repeat.
+
+2026-09-15: created the documented Windows firewall rule through UAC. Verified it is enabled, inbound, TCP local port 8000, Private profile only, RemoteAddress LocalSubnet. Django remains listening on 0.0.0.0:8000 and host-LAN GETs to http://192.168.8.130:8000/api/health/ and / both return 200. A physical-device login and the post-reboot repeat are still required.
+
+## AC1 and AC3 closed 2026-09-21, from a second physical device
+
+The owner loaded the board at http://192.168.8.130:8000/ from their **laptop** on the same network
+and completed a login. That is the measurement both criteria were waiting for:
+
+- **AC1** asked for a second physical device, not a second browser on the host and not an inferred
+  bind. A laptop on the LAN is that device, and the board rendered for it.
+- **AC3** asked for a login POST to succeed from that device rather than for the settings to be read.
+  It did. A login is a state-changing POST, so it exercises both halves at once: the Host header had
+  to pass ALLOWED_HOSTS and the origin had to pass the CSRF check. Neither a 400 DisallowedHost nor
+  a 403 CSRF failure appeared.
+
+Host state at the time, verified here rather than assumed: Django listening on 0.0.0.0:8000, this
+host holding 192.168.8.130 (plus two virtual-adapter addresses), the documented firewall rule
+'DACHApply LAN 8000' present and Enabled -- In / Private / LocalSubnet / TCP 8000 -- and the Ethernet
+profile Private. From the host, http://192.168.8.130:8000/ returned 200 and /api/health/ reported
+{"status":"ok","database":"ok"}.
+
+## AC4 is the only one left
+
+It needs the setup to survive a host reboot. The owner will reboot at a natural point and retest
+from the device; nothing is checked until they do. The parts that should survive are a persistent
+firewall rule and a flag in the repo-root .env -- which is reasoning, not a measurement, and is
+exactly why the criterion asks for the reboot.
+
+## Related: the name, not the address
+
+Reaching the server by the computer's name rather than 192.168.8.130 is a separate request, filed as
+TASK-241 rather than folded in here. Today a request with Host: Caren:8000 gets 400 DisallowedHost,
+because lan_addresses() trusts private IPv4 literals only.
 <!-- SECTION:NOTES:END -->

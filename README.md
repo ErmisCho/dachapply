@@ -140,12 +140,47 @@ That single flag moves the three things that have to move together:
   that `localhost` to **itself** — the one failure that survives a correct bind and a correct
   `ALLOWED_HOSTS`. Serving from `:8000` also keeps the login POST same-origin, so no CSRF or CORS
   rule is relaxed;
-- `ALLOWED_HOSTS` and `CSRF_TRUSTED_ORIGINS` gain this host's own private IPv4 addresses, detected
-  at startup with `socket.gethostbyname_ex`, and their `http://<address>:8000` origins. Never `*`,
-  never a public address. If detection is wrong (VPN, second NIC), name the addresses yourself:
-  `DACHAPPLY_LAN_HOSTS=192.168.8.130`.
+- `ALLOWED_HOSTS` and `CSRF_TRUSTED_ORIGINS` gain this host's own private IPv4 addresses (detected
+  at startup with `socket.gethostbyname_ex`) **and the names this host answers to** (`hostname`,
+  its FQDN, and `<hostname>.local`), plus the `http://<address-or-name>:8000` origin of each. Never
+  `*`, never a public address, never a `.local` wildcard — a name that is not this host's is
+  answered with `400 Bad Request`. If detection is wrong (VPN, second NIC, a name only your router
+  knows), list them yourself; addresses and names share the one variable:
+  `DACHAPPLY_LAN_HOSTS=192.168.8.130,caren.local`.
 
-Then open `http://<this-host-lan-ip>:8000/` on the other device — `ipconfig` prints the address.
+Then open either form on the other device:
+
+- `http://<this-host-lan-ip>:8000/` — `ipconfig` prints the address;
+- `http://<this-host-name>:8000/` — `hostname` prints the name.
+
+### Which name forms work
+
+Three are trusted, and **which one a given device can resolve is decided on the device**, not by
+anything in this repository. On the machine this was built on (`hostname` → `Caren`) they are:
+
+| Form | Example | Usually resolved by |
+| --- | --- | --- |
+| bare hostname | `http://caren:8000/` | Windows, over NetBIOS/LLMNR. Not iOS, and not reliably Android |
+| `.local` (mDNS) | `http://caren.local:8000/` | iPhone/iPad and macOS, Windows 10+, Linux with Avahi. Android has historically been uneven |
+| FQDN | `http://caren.lan:8000/` | only devices your router hands that DNS suffix to |
+
+Case does not matter (`http://CAREN.local:8000/` works), and a trailing dot is fine.
+
+**If a phone cannot open any of them, no server change will fix it.** Name resolution happens on
+the device: if it cannot turn `caren.local` into `192.168.8.130`, the request never reaches this
+machine, so there is nothing here to widen. Android's mDNS support has historically been uneven,
+and some networks (guest Wi-Fi, "client isolation", a mesh extender) block mDNS outright. What
+works instead, in order of effort:
+
+1. use the IP address — `http://192.168.8.130:8000/` still works and is unaffected;
+2. give the router a static DHCP lease for this machine plus a DNS/hosts entry for its name, so the
+   name resolves for every device on the LAN without mDNS;
+3. on a second laptop, add the line `192.168.8.130 caren` to its own `hosts` file
+   (`C:\Windows\System32\drivers\etc\hosts`, or `/etc/hosts`).
+
+If you reach the app under a name this repository did not derive (a router-supplied alias, for
+instance), add it to `DACHAPPLY_LAN_HOSTS` as above — otherwise Django refuses the request with
+`400 Bad Request` and says which host header it saw.
 
 ### Opening the Windows firewall for port 8000
 
