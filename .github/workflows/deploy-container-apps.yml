@@ -14,6 +14,13 @@ permissions:
 env:
   IMAGE_NAME: ghcr.io/ermischo/dachapply
   CONTAINER_APP_NAME: dachapply
+  # TASK-239: named here rather than discovered. The deploy used to read the resource group back
+  # from `az containerapp list`, which returns nothing when the app itself is gone -- the exact
+  # case this deploy now has to recover from. The managed environment is the piece that survived
+  # the 2026-09-16 outage, and it is what makes a rebuilt app answer on the original hostname:
+  # the FQDN is <app name>.<environment defaultDomain>, and DNS already points there.
+  RESOURCE_GROUP: rg-dachapply
+  CONTAINER_APP_ENVIRONMENT: dachapply-env
 
 jobs:
   # Gate. Nothing reaches production unless this passes -- previously the image was built and
@@ -92,54 +99,116 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Deploy image to Azure Container Apps
+      # TASK-239: create-or-update from deploy/containerapp.yaml, which is now the whole app
+      # definition. This step used to be `registry set` + `update --image --set-env-vars`, and
+      # --set-env-vars is additive by design, so every other production variable lived only on the
+      # Azure resource. When the 2026-09-16 outage blanked that resource, the settings went with
+      # it and an update had nothing to update. The spec is the source of truth now: a rebuild is
+      # a workflow run, and a healthy app is reconciled against the repo on every deploy.
+      - name: Deploy to Azure Container Apps
         shell: bash
         env:
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
-          # Repository variable, not a secret: it is a notification address, not a credential, and
-          # keeping it here rather than in the repo means the address is not a string in a public
-          # file. Unset (a fork, or before anyone configures it) resolves to empty, which is exactly
-          # the inert default settings.py already documents -- alerting stays off rather than
-          # half-configured. Set it with: gh variable set ERROR_ALERT_EMAILS --body "you@example.com"
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BREVO_EMAIL_HOST_USER: ${{ secrets.BREVO_EMAIL_HOST_USER }}
+          BREVO_EMAIL_HOST_PASSWORD: ${{ secrets.BREVO_EMAIL_HOST_PASSWORD }}
+          # Repository variables, not secrets: both are addresses, not credentials, and keeping
+          # them here rather than in the repo means neither is a string in a public file. Unset
+          # ERROR_ALERT_EMAILS (a fork, or before anyone configures it) resolves to empty, which is
+          # exactly the inert default settings.py already documents -- alerting stays off rather
+          # than half-configured. BREVO_DEFAULT_FROM_EMAIL is not optional in the same way: it is
+          # the verified Brevo sender, and settings.py refuses to start without it once
+          # EMAIL_PROVIDER=brevo, so the guard below treats it as required.
+          #   gh variable set ERROR_ALERT_EMAILS --body "you@example.com"
+          #   gh variable set BREVO_DEFAULT_FROM_EMAIL --body "DACHApply <you@example.com>"
           ERROR_ALERT_EMAILS: ${{ vars.ERROR_ALERT_EMAILS }}
+          BREVO_DEFAULT_FROM_EMAIL: ${{ vars.BREVO_DEFAULT_FROM_EMAIL }}
         run: |
+          set -euo pipefail
+          missing=0
+          [ -n "${SECRET_KEY:-}" ] || { echo "::error::secret SECRET_KEY is not set"; missing=1; }
+          [ -n "${DATABASE_URL:-}" ] || { echo "::error::secret DATABASE_URL is not set"; missing=1; }
+          [ -n "${GHCR_PASSWORD:-}" ] || { echo "::error::secret GHCR_PULL_TOKEN is not set"; missing=1; }
+          # TASK-239: all three are required, for two different reasons. Without
+          # BREVO_DEFAULT_FROM_EMAIL the container will not start at all (settings.py:498-501).
+          # Without the login and key it starts fine and every password-reset and verification
+          # mail fails at SMTP AUTH -- silent, and worse. All three lived only on the Azure
+          # resource until now; read them back from it with
+          # `az containerapp show -n dachapply -g rg-dachapply --query "properties.template.containers[0].env"`.
+          [ -n "${BREVO_EMAIL_HOST_USER:-}" ] || { echo "::error::secret BREVO_EMAIL_HOST_USER is not set"; missing=1; }
+          [ -n "${BREVO_EMAIL_HOST_PASSWORD:-}" ] || { echo "::error::secret BREVO_EMAIL_HOST_PASSWORD is not set"; missing=1; }
+          [ -n "${BREVO_DEFAULT_FROM_EMAIL:-}" ] || { echo "::error::variable BREVO_DEFAULT_FROM_EMAIL is not set"; missing=1; }
+          # Fail here rather than three minutes later with a container crash-looping on
+          # ImproperlyConfigured, which looks like an application bug and is not one.
+          [ "$missing" -eq 0 ] || { echo "::error::see docs/production-readiness.md section 5 (Recovery)"; exit 1; }
+
           az extension add --name containerapp --upgrade --yes
-          RESOURCE_GROUP=$(az containerapp list --query "[?name=='${CONTAINER_APP_NAME}'].resourceGroup | [0]" -o tsv)
-          test -n "$RESOURCE_GROUP"
-          az containerapp registry set \
-            --name "$CONTAINER_APP_NAME" \
-            --resource-group "$RESOURCE_GROUP" \
-            --server ghcr.io \
-            --username "$GHCR_USERNAME" \
-            --password "$GHCR_PASSWORD" \
-            --output none
-          # --set-env-vars is additive: it adds or updates only the names listed and leaves every
-          # other variable on the app alone. Declaring it on each deploy means the alert address
-          # survives a revision being recreated, instead of living as a one-off console edit nobody
-          # remembers making.
-          az containerapp update \
-            --name "$CONTAINER_APP_NAME" \
-            --resource-group "$RESOURCE_GROUP" \
-            --image "$IMAGE_NAME:$GITHUB_SHA" \
-            --set-env-vars "ERROR_ALERT_EMAILS=${ERROR_ALERT_EMAILS}" \
-            --min-replicas 1 \
-            --output none
-          FQDN=$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)
+
+          # Doubles as a pre-flight check: no environment, no point attempting anything below.
+          ENVIRONMENT_ID=$(az containerapp env show --name "$CONTAINER_APP_ENVIRONMENT" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
+          export ENVIRONMENT_ID
+          export IMAGE="$IMAGE_NAME:$GITHUB_SHA"
+
+          # Render the spec into RUNNER_TEMP -- outside the workspace, so no artifact or later
+          # step can sweep the resolved secrets up. string.Template rather than envsubst because
+          # it RAISES on a placeholder nothing resolves, where envsubst would quietly substitute
+          # an empty string and deploy a container with no database. Every value lands in a
+          # single-quoted YAML scalar, where doubling ' is the only escape that exists.
+          SPEC="$RUNNER_TEMP/containerapp.yaml"
+          python3 - deploy/containerapp.yaml "$SPEC" <<'PY'
+          import os, string, sys
+          template = string.Template(open(sys.argv[1], encoding='utf-8').read())
+          values = {k: v.replace("'", "''") for k, v in os.environ.items()}
+          open(sys.argv[2], 'w', encoding='utf-8').write(template.substitute(values))
+          PY
+
+          FQDN=$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || true)
+          if [ -n "$FQDN" ]; then
+            # Healthy app: PATCH in place. Same resource, same FQDN, one new revision for the new
+            # image -- `update --yaml` never recreates the app.
+            az containerapp update --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --yaml "$SPEC" --output none
+          else
+            # No ingress FQDN means no usable app: either it is gone, or it is the empty Failed
+            # shell the outage left (template, ingress, registries and secrets all null). A
+            # healthy app can never reach this branch, so nothing below can delete one.
+            #
+            # NOT VERIFIED, and unverifiable from here: whether `create --yaml` (an ARM PUT, with
+            # no existence check in the CLI) replaces that Failed shell, or is rejected because
+            # the resource is already there. The subscription refused every write while this was
+            # written -- ReadOnlyDisabledSubscription -- so the delete-and-retry is the fallback
+            # for the second case rather than a guess about which case is real.
+            az containerapp create --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --yaml "$SPEC" --output none || {
+              echo "::warning::create over the existing app failed; deleting the broken shell and retrying"
+              az containerapp delete --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --yes --output none || true
+              az containerapp create --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --yaml "$SPEC" --output none
+            }
+            FQDN=$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)
+          fi
           test -n "$FQDN"
-          echo "RESOURCE_GROUP=$RESOURCE_GROUP" >> "$GITHUB_ENV"
           echo "APP_URL=https://$FQDN" >> "$GITHUB_ENV"
 
       - name: Verify public app
         shell: bash
         run: |
+          # TASK-239: the health endpoint, not the root. The root serves the built SPA out of
+          # whitenoise without touching the database, so it answers 200 from a container whose
+          # DATABASE_URL never worked -- and a rebuilt-from-scratch app is exactly when that is
+          # worth proving. jobradar.views.health runs SELECT 1 and answers 503 when it cannot.
+          # Captured into a variable rather than piped into grep: `grep -q` closes the pipe on its
+          # first match, which SIGPIPEs curl, and this shell runs with pipefail -- so the pipeline
+          # could fail on a healthy response. Spaces are squeezed out so the match does not depend
+          # on how DRF spaces its JSON separators.
           for attempt in {1..24}; do
-            if curl --fail --silent --show-error --max-time 15 "$APP_URL/" > /dev/null; then
-              echo "$APP_URL is accessible"
+            if body=$(curl --fail --silent --show-error --max-time 15 "$APP_URL/api/health/") \
+               && [[ "${body// /}" == *'"database":"ok"'* ]]; then
+              echo "$APP_URL/api/health/ reports the database is reachable"
               exit 0
             fi
             sleep 10
           done
+          echo "last /api/health/ response: ${body:-<no response>}"
           az containerapp revision list --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --output table || true
           az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --query "{provisioningState:properties.provisioningState,runningStatus:properties.runningStatus,latestRevision:properties.latestRevisionName}" --output yaml || true
           az containerapp logs show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --type system --tail 100 || true
