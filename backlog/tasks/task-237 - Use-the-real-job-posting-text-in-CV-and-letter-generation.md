@@ -1,11 +1,11 @@
 ---
 id: TASK-237
 title: Use the real job-posting text in CV and letter generation
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-14 14:40'
-updated_date: '2026-09-17 14:01'
+updated_date: '2026-09-21 06:43'
 labels:
   - frontend
   - backend
@@ -36,7 +36,7 @@ The source-text preview used during CV and motivation-letter generation can show
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 Execute through the session-orchestrator workflow after TASK-226 is complete
-- [ ] #2 Pre-register task-specific Asian Dad criteria before implementation and receive PERFECT after the required quality gates
+- [x] #2 Pre-register task-specific Asian Dad criteria before implementation and receive PERFECT after the required quality gates
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -156,4 +156,35 @@ is local-only in effect anyway: CODEX_CV_ENABLED is DEBUG-only by deployment, so
 -- and therefore this panel and this endpoint -- do not exist in the deployed container.
 
 Status stays In Progress until the subscription is re-enabled and a deploy reaches production.
+
+## Production verified 2026-09-20, and the task is Done
+
+The blocker recorded above is cleared. The owner settled the Azure invoice, the subscription returned
+to `Enabled`, and a deploy dispatch on main (run 35539437948, triggered 21:40:38Z, success
+21:52:40Z) woke the suspended environment compute and shipped current main.
+
+Measured against the live site, not the workflow's own check:
+
+    GET https://dachapply.livelysea-3461ad21.westeurope.azurecontainerapps.io/api/health/
+      -> {"status":"ok","database":"ok"}
+    running image     ghcr.io/ermischo/dachapply:2aaafd86b322071d8ae431707a2255ae508d5a3b == origin/main
+    running revision  dachapply--0000193, runningStatus Running
+    served bundle     assets/index-Bq6sDx6K.js, 633,382 bytes
+
+TW-00A step 6 asks for the *specific* change to be observable in what production serves, so the
+bundle production actually returns was fetched and searched rather than assumed:
+
+| string | occurrences in the served bundle |
+|---|---|
+| Check the original posting | 1 |
+| Original posting | 1 |
+| Collected original posting text | 1 |
+| source-text/live | 1 |
+
+The generation flow itself stays invisible in production by design -- CODEX_CV_ENABLED is DEBUG-only
+by deployment, so the panel and its endpoint exist in the shipped bundle and refuse to render for a
+deployed account. That is the intended behaviour, not a partial deploy.
+
+DoD #1 stays unchecked for the reason already recorded: TASK-226 is still In Progress, so the
+'after TASK-226 is complete' half of it never became true. The workflow half did.
 <!-- SECTION:NOTES:END -->

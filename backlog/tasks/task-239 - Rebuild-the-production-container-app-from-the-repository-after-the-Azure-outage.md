@@ -3,10 +3,11 @@ id: TASK-239
 title: >-
   Rebuild the production container app from the repository after the Azure
   outage
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-18 10:23'
-updated_date: '2026-09-18 10:24'
+updated_date: '2026-09-21 06:47'
 labels:
   - infrastructure
   - backend
@@ -53,3 +54,62 @@ This task is blocked until the subscription is writable again; that step belongs
 6. Verify against the live site: /api/health/ answering {status: ok, database: ok} on the original hostname, and the board rendering rather than a 200 alone. Then, and only then, close TASK-237 and TASK-238, whose production verification is blocked by this same outage.
 7. Write the runbook entry, including step 0, next to the recovery command -- the next person hitting this needs the billing step in the same place as the az commands.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## The premise was refuted by measurement, 2026-09-20
+
+This task was filed believing Azure had destroyed the app's configuration. It had not. When the
+subscription returned to Enabled, Azure restored the same resource -- systemData.createdAt is still
+2026-06-07 -- with its template, ingress, registries and **every secret, including the Brevo SMTP
+credentials**. The empty Failed shell read during the outage was the suspended view, not deletion.
+
+The implementing agent measured this mid-task and refused the stale brief rather than building to
+it. That mattered: had it followed the brief, its spec would have omitted the mail block, and
+because update --yaml PATCHes the env and secrets arrays wholesale, the first apply would have
+deleted working mail configuration.
+
+What actually restored service was neither this spec nor a hand rebuild: settling the invoice, then
+one deploy dispatch to wake the environment, whose compute stays suspended (ManagedClusterSuspended)
+even after the subscription reads Enabled. That sequence is now docs/production-readiness.md
+section 5 (PR #161, merged).
+
+## What is on the branch, and why it is NOT merged
+
+PR #163 (draft) carries deploy/containerapp.yaml -- the whole app definition -- and a
+create-or-update deploy step. Three measured reasons it stays a draft:
+
+1. **It hard-fails until three values exist in GitHub**: secrets BREVO_EMAIL_HOST_USER and
+   BREVO_EMAIL_HOST_PASSWORD, variable BREVO_DEFAULT_FROM_EMAIL. They live only on the Azure
+   resource today. The fail-fast is deliberate -- the alternative is a container crash-looping on
+   ImproperlyConfigured three minutes later -- but merging without them breaks the next push to main.
+2. **The first update --yaml reconciles production against the spec.** Seven intended differences
+   from the live resource, each argued in the agent's report; the one with teeth is that the GitHub
+   SECRET_KEY secret is consumed by nothing today, so whether it equals the key the live app runs on
+   is unknown. If it differs, the first apply logs every user out.
+3. **The create --yaml path has never run** and cannot be exercised without deliberately breaking
+   production, so AC1 stays unchecked rather than being argued from the YAML.
+
+## Security, needs the owner
+
+The Brevo SMTP key is a plaintext env var on the container app, readable by anyone with Reader
+through az containerapp show -- and it was printed in full into an agent transcript during this
+work. Rotate it in Brevo, then set the new value as the GitHub secret; the rotation costs nothing
+extra because the secret has to be set anyway.
+
+## What closes this task
+
+- Owner: rotate the Brevo key, then gh secret set BREVO_EMAIL_HOST_USER / BREVO_EMAIL_HOST_PASSWORD
+  and gh variable set BREVO_DEFAULT_FROM_EMAIL.
+- Owner or coordinator: confirm the GitHub SECRET_KEY matches the running secret-key, or accept one
+  forced logout.
+- Then merge PR #163, dispatch the deploy twice, and check AC4 (same FQDN and the same
+  systemData.createdAt across both runs).
+
+## Filed separately
+
+docs/production-readiness.md section 1 still lists the generic EMAIL_BACKEND/EMAIL_HOST block as the
+required mail configuration while production runs the BREVO_* block. Not fixed here: it is outside
+this task's acceptance criteria and deserves its own.
+<!-- SECTION:NOTES:END -->
