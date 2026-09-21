@@ -1,0 +1,151 @@
+# TASK-239: the production container app, declared here instead of only on the Azure resource.
+#
+# The 2026-09-16 outage (subscription past due -> every write refused) left the app object as an
+# empty Failed shell: template.containers, template.scale, configuration.ingress, .registries and
+# .secrets were all null and there was no revision. Every production environment variable lived
+# only on that resource, so there was nothing left to redeploy against -- hence this file.
+#
+# .github/workflows/deploy-container-apps.yml substitutes the placeholders below from GitHub
+# secrets/variables into RUNNER_TEMP at deploy time, then runs `az containerapp create --yaml`
+# (app gone or template null) or `az containerapp update --yaml` (healthy app, updated in place).
+# NOTHING here is a real credential: every secret is a placeholder, and a deploy fails loudly
+# rather than silently rendering an empty one.
+#
+# Rendered with python string.Template, so EVERY dollar sign in this file -- comments included --
+# must be a placeholder it can resolve, or the render raises instead of deploying.
+#
+# Every non-secret value below was read off the live resource on 2026-09-20 after it was restored
+# by hand, so applying this spec reproduces production rather than guessing at it. Three env vars
+# the hand-restored app carries are deliberately NOT here, all three dead or redundant:
+# EMAIL_BACKEND=...console.EmailBackend and DEFAULT_FROM_EMAIL=noreply@localhost (both overridden
+# by the EMAIL_PROVIDER=brevo branch in settings.py, and a console backend that ever did take
+# effect would print password-reset links into the container log), and PORT=8000 (the Dockerfile
+# already sets it, and ingress targets 8000 either way).
+name: dachapply
+type: Microsoft.App/containerApps
+# location is deliberately absent: az fills it from the managed environment (West Europe).
+properties:
+  environmentId: ${ENVIRONMENT_ID}
+  workloadProfileName: Consumption
+  configuration:
+    # Single, not Multiple: a healthy new revision takes all the traffic by itself, which is what
+    # every `--image <sha>` deploy has always relied on. No traffic block for the same reason.
+    activeRevisionsMode: Single
+    ingress:
+      external: true
+      # Dockerfile `EXPOSE 8000`; scripts/start-container.sh binds 0.0.0.0 on PORT, default 8000.
+      targetPort: 8000
+      transport: auto
+      allowInsecure: false
+    # ghcr.io only. The live app also carried a cab585727768acr.azurecr.io registry left over from
+    # the original `az containerapp up`; nothing has been pulled from it since the move to GHCR
+    # (TASK-65), so applying this spec drops it and its unused credential with it.
+    registries:
+      - server: ghcr.io
+        username: '${GHCR_USERNAME}'
+        passwordSecretRef: ghcr-password
+    # Values come from GitHub secrets at apply time. Container Apps secret names are lower-case
+    # alphanumeric/dash, which is why they do not match the env var names below. The Brevo SMTP
+    # pair was plain `value:` env vars on the resource, readable by anyone with reader access and
+    # by `az containerapp show`; here they are secrets like every other credential.
+    secrets:
+      - name: ghcr-password
+        value: '${GHCR_PASSWORD}'
+      - name: secret-key
+        value: '${SECRET_KEY}'
+      - name: database-url
+        value: '${DATABASE_URL}'
+      - name: brevo-smtp-login
+        value: '${BREVO_EMAIL_HOST_USER}'
+      - name: brevo-smtp-key
+        value: '${BREVO_EMAIL_HOST_PASSWORD}'
+  template:
+    containers:
+      - name: dachapply
+        image: '${IMAGE}'
+        # Measured off the running app on 2026-09-20, not chosen: this is the size production has
+        # actually been served at.
+        resources:
+          cpu: 0.25
+          memory: 0.5Gi
+        # Two groups below: variables the container cannot start without under DEBUG=False (each
+        # one cites the config/settings.py line that raises ImproperlyConfigured), and documented
+        # production settings that only restate a default -- those are literals, so they cannot
+        # become a new failure mode, and they keep docs/production-readiness.md section 1
+        # checkable against the repo instead of against a console.
+        env:
+          # --- required to boot ---------------------------------------------------------------
+          # settings.py:125 `DEBUG = env_bool('DEBUG', True)` -- the default is True, so an
+          # unset DEBUG would run production in debug mode.
+          - name: DEBUG
+            value: 'False'
+          # settings.py:292 raises unless SECRET_KEY is set and is not the dev placeholder.
+          - name: SECRET_KEY
+            secretRef: secret-key
+          # settings.py:301
+          - name: ALLOWED_HOSTS
+            value: dachapply.livelysea-3461ad21.westeurope.azurecontainerapps.io
+          # settings.py:304
+          - name: CSRF_TRUSTED_ORIGINS
+            value: https://dachapply.livelysea-3461ad21.westeurope.azurecontainerapps.io
+          # settings.py:401 -- Neon, outside Azure, untouched by the outage.
+          - name: DATABASE_URL
+            secretRef: database-url
+          # settings.py:441
+          - name: FRONTEND_URL
+            value: https://dachapply.livelysea-3461ad21.westeurope.azurecontainerapps.io
+          # Mail, measured rather than argued (leave-one-out `manage.py check`, 2026-09-20):
+          # settings.py:470 makes EMAIL_PROVIDER=brevo select the SMTP backend, and
+          # settings.py:498-501 then refuses to start when DEFAULT_FROM_EMAIL is empty -- so
+          # BREVO_DEFAULT_FROM_EMAIL is boot-critical. The login and key are NOT: drop them and
+          # the container starts perfectly well, and every password-reset and verification mail
+          # fails at SMTP AUTH instead. That is the quieter failure and the worse one, which is
+          # why the deploy step refuses to run without all three rather than only the first.
+          - name: EMAIL_PROVIDER
+            value: brevo
+          - name: BREVO_EMAIL_HOST
+            value: smtp-relay.brevo.com
+          - name: BREVO_EMAIL_PORT
+            value: '587'
+          - name: BREVO_EMAIL_USE_TLS
+            value: 'True'
+          - name: BREVO_EMAIL_HOST_USER
+            secretRef: brevo-smtp-login
+          - name: BREVO_EMAIL_HOST_PASSWORD
+            secretRef: brevo-smtp-key
+          - name: BREVO_DEFAULT_FROM_EMAIL
+            value: '${BREVO_DEFAULT_FROM_EMAIL}'
+          - name: EMAIL_TIMEOUT
+            value: '10'
+          # --- documented production settings (each equals the DEBUG=False default) ------------
+          - name: CORS_ALLOWED_ORIGINS
+            value: https://dachapply.livelysea-3461ad21.westeurope.azurecontainerapps.io
+          - name: DB_SSL_REQUIRE
+            value: 'True'
+          - name: SECURE_SSL_REDIRECT
+            value: 'True'
+          - name: USE_X_FORWARDED_PROTO
+            value: 'True'
+          - name: SESSION_COOKIE_SECURE
+            value: 'True'
+          - name: CSRF_COOKIE_SECURE
+            value: 'True'
+          # docs/production-readiness.md: keep HSTS off until HTTPS is re-confirmed after the
+          # rebuild, then raise it deliberately.
+          - name: SECURE_HSTS_SECONDS
+            value: '0'
+          # docs/production-readiness.md section 3: the CV subsystem is local-only.
+          - name: CODEX_CV_ENABLED
+            value: 'False'
+          # Repository variable, not a secret (a notification address, not a credential). Empty
+          # is the inert default settings.py documents -- alerting stays off rather than
+          # half-configured.
+          - name: ERROR_ALERT_EMAILS
+            value: '${ERROR_ALERT_EMAILS}'
+    scale:
+      # min 1: TASK-88's error-alert cooldown and the first request after an idle period both
+      # suffer from a cold start. max 1: the cooldown in settings.ErrorAlertCooldown is per
+      # process, so extra replicas multiply the alert mail this app already over-sent once
+      # (TASK-185). Raise it if real traffic ever needs it.
+      minReplicas: 1
+      maxReplicas: 1
