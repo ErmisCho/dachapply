@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-10 12:06'
-updated_date: '2026-09-11 07:28'
+updated_date: '2026-09-21 07:41'
 labels:
   - backend
   - llm
@@ -152,4 +152,35 @@ not filed yet.
 **AC2 and AC4 remain unchecked and are the owners**: which of the claims are true, and therefore what
 moves into candidate evidence, is a judgement no rule here can make. AC4 (re-run the before/after
 comparison once the move is done) cannot start until AC2 has.
+
+## AC5 measured again 2026-09-21: none of the contradictions can reach a CV
+
+The owner asked for the contradictory pairs to be reviewed. Before handing over a list, the pairs
+were filtered against the entries that actually reach the CV prompt -- which TASK-236 changed after
+this task was written, and which nothing here had re-measured since.
+
+    manage.py review_learned_preferences --chars 0            -> 47 entries, 103,387 chars stored
+                                                                 19 candidate pairs (6 dropped as
+                                                                 >=90% duplicates)
+    manage.py review_learned_preferences --prompt reaching    -> 17 entries reach the prompt:
+                                                                 #1 #4 #13 #14 #15 #16 #17 #20 #22
+                                                                 #25 #27 #28 #32 #34 #39 #40 #42 #43
+
+Cross-checking every one of the 19 pairs against that set: **not one pair has both of its entries
+reaching the prompt.** Each flagged pair involves at least one entry TASK-236 filters out as a
+one-off readjustment brief rather than a durable preference. Seven of the nineteen involve entry #12
+alone, which is a single 'PATCH THE CURRENT FREQUENTIS CV ONLY' brief.
+
+So the contradictions are real and they are inert: they cannot change a generated CV while that
+filter stands. Reviewing them by hand now would be insurance against the filter changing, not a fix
+for anything live -- and the owner chose, on that evidence, to record it and move on.
+
+**What this does NOT close.** AC5 asked for contradictions to be surfaced rather than silently
+resolved by recency, and the command does that; this note adds which of them matter. AC2 and AC4 are
+untouched and remain the substantive work: which factual claims are true, and therefore what moves
+into candidate_evidence. That is still owner judgement, and it is still open.
+
+**A caveat worth keeping.** The filter is the thing making these inert. If TASK-236's notion of a
+durable preference is ever widened, the 19 pairs become live in the same moment, and nothing would
+announce that. Re-run the two commands above rather than trusting this note.
 <!-- SECTION:NOTES:END -->

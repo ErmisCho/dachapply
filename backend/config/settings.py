@@ -1,5 +1,6 @@
 import ipaddress
 import os
+import re
 import socket
 import sys
 import time
@@ -238,9 +239,10 @@ def lan_addresses(override=()):
     case where the enumeration is wrong (a VPN, a second NIC, an address Windows has not registered).
     Either way anything public, loopback, link-local (169.254.x, what Windows keeps when DHCP failed)
     or not an IPv4 literal is dropped, so a failed lookup yields an empty list and widens nothing --
-    there is no path here that can return '*'. A DACHAPPLY_LAN_HOSTS that survives none of that is a
-    typo, and a typo that silently widened nothing is exactly the "looks configured, still refuses
-    the phone" failure this function exists to avoid, so it raises instead.
+    there is no path here that can return '*'. TASK-241: an override that survives nothing at all is
+    a typo worth refusing to start over, but that check now lives in lan_hosts() below, because the
+    same variable also carries names and 'DACHAPPLY_LAN_HOSTS=caren.local' holds no address on
+    purpose.
     """
     if override:
         candidates = list(override)
@@ -258,12 +260,86 @@ def lan_addresses(override=()):
         if (address.is_private and not address.is_loopback and not address.is_link_local
                 and not address.is_unspecified):
             addresses.add(str(address))
-    if override and not addresses:
-        raise ImproperlyConfigured(
-            'DACHAPPLY_LAN_HOSTS holds no usable address. It takes private IPv4 literals, comma '
-            f'separated (e.g. 192.168.8.130); got {list(override)!r}.'
-        )
     return sorted(addresses)
+
+
+# TASK-241: one dot-separated run of [a-z0-9-] labels and nothing else. This is the names' version
+# of the ipaddress.IPv4Address parse above -- derive, validate, drop what fails -- and the shapes it
+# exists to drop are the dangerous ones: '*' (Django's literal match-anything), '.local' and
+# '*.local' (a LEADING DOT means "this domain and every subdomain" in django.utils.http.
+# is_same_domain, so '.local' would trust every mDNS name on the network, and CSRF_TRUSTED_ORIGINS
+# reads a '*' as the same kind of wildcard), an empty label, whitespace and anything non-ASCII. It
+# is deliberately narrower than Django's own host_validation_re (which also accepts a leading dot),
+# so nothing that survives this can be a pattern rather than a name.
+LAN_NAME_RE = re.compile(r'[a-z0-9-]+(\.[a-z0-9-]+)*')
+
+
+def lan_names(override=()):
+    """Names this host answers to on the LAN, lowercased, in the order they were derived.
+
+    TASK-241: an IP has to be looked up and moves with DHCP; the name does not. Three forms are
+    derived because which one a given device can resolve is decided on the device, not here -- the
+    bare hostname (Windows answers it over NetBIOS/LLMNR; 'Caren' on the owner's machine), the FQDN
+    (socket.getfqdn() -> 'Caren.lan', what a router-supplied DNS suffix produces) and
+    <hostname>.local, the mDNS form iOS resolves and the one a phone actually uses. getfqdn() is
+    allowed to be useless: it hands back the bare hostname again when reverse DNS says nothing, and
+    a loopback name on a host whose hosts file maps it that way. Both are handled by the dedupe
+    here plus lan_widened's -- 'localhost' is already in the DEBUG defaults, so re-deriving it adds
+    nothing -- rather than by a special case. Same override contract as lan_addresses():
+    DACHAPPLY_LAN_HOSTS replaces detection outright, and the two filters split one variable between
+    them, so it may hold names, addresses or both.
+
+    Lowercased because Django compares the two lists differently, read out of the installed 5.2.17
+    rather than assumed -- getting this wrong is exactly the "looks right, still refuses the phone"
+    shape. ALLOWED_HOSTS is case-INSENSITIVE and tolerant of a trailing dot: request.get_host()
+    runs split_domain_port(), which lowercases the Host header, strips the port and removes one
+    trailing dot ('Caren.local.:8000' -> 'caren.local'), and is_same_domain() lowercases the
+    pattern too. CSRF_TRUSTED_ORIGINS is neither: CsrfViewMiddleware checks `request_origin in
+    self.allowed_origins_exact`, a plain set membership test on the raw Origin header, and browsers
+    lowercase the host when they build that header. So the lowercase form is the only one that
+    matches both, and storing 'Caren' would pass host validation and then fail the login POST --
+    the half-working state this task exists to avoid.
+    """
+    if override:
+        candidates = list(override)
+    else:
+        try:
+            hostname = socket.gethostname()
+        except OSError:
+            return []
+        # getfqdn() costs a reverse lookup at startup; it is only reached with the flag on.
+        candidates = [hostname, socket.getfqdn(), f"{hostname.split('.')[0]}.local"]
+    names = []
+    for candidate in candidates:
+        name = str(candidate).strip().rstrip('.').lower()
+        if name in names or not LAN_NAME_RE.fullmatch(name):
+            continue
+        try:
+            ipaddress.IPv4Address(name)
+        except ValueError:
+            names.append(name)  # not an address literal, so it is a name: keep it
+        # An address IS lan_addresses()' job, and only there does it meet the private/loopback/
+        # link-local checks -- so a getfqdn() that returns one cannot slip past them through here.
+    return names
+
+
+def lan_hosts(override=()):
+    """Everything this host is reachable as on the LAN: its private IPv4 addresses, then its names.
+
+    TASK-241: the two filters share one override variable, so the "configured and still refuses the
+    phone" guard belongs here and not in either of them -- 'DACHAPPLY_LAN_HOSTS=192.168.8.130'
+    holds no usable name and 'DACHAPPLY_LAN_HOSTS=caren.local' holds no usable address, and both
+    are correct settings. Only an override that survives NEITHER filter is the typo worth refusing
+    to start over, because a typo that silently widened nothing is the failure this whole mechanism
+    exists to remove.
+    """
+    hosts = lan_addresses(override) + lan_names(override)
+    if override and not hosts:
+        raise ImproperlyConfigured(
+            'DACHAPPLY_LAN_HOSTS holds nothing usable. It takes private IPv4 literals and/or host '
+            f'names, comma separated (e.g. 192.168.8.130,caren,caren.local); got {list(override)!r}.'
+        )
+    return hosts
 
 
 def lan_widened(allowed_hosts, csrf_trusted_origins, addresses):
@@ -273,6 +349,10 @@ def lan_widened(allowed_hosts, csrf_trusted_origins, addresses):
     serves the built SPA from, which is the whole point: the LAN device talks to a single origin, so
     the login POST is same-origin and needs neither a CORS entry nor a relaxed CSRF check. With an
     empty `addresses` the return value equals the input, which is what the un-opted-in path gets.
+
+    TASK-241: `addresses` now also carries this host's names (see lan_hosts), which need exactly the
+    same two entries -- the name in ALLOWED_HOSTS and http://<name>:8000 in CSRF_TRUSTED_ORIGINS --
+    so nothing here changed but the range of what arrives.
     """
     hosts = list(allowed_hosts)
     origins = list(csrf_trusted_origins)
@@ -309,12 +389,13 @@ else:
 # the third produces a setup that looks correct and still serves nothing:
 #   1. the bind -- scripts/dachapply-local-runtime.cmd reads the same flag and binds 0.0.0.0:8000
 #      instead of 127.0.0.1:8000;
-#   2. host and CSRF validation -- the addresses below;
+#   2. host and CSRF validation -- the addresses, and since TASK-241 the names, below;
 #   3. the root URL -- the launcher builds frontend/dist so Django serves the SPA itself at /, since
 #      config/urls.py otherwise redirects / to FRONTEND_URL (http://localhost:5173) and a phone
 #      resolves that `localhost` to ITSELF. See the LAN branch in config/urls.py.
-# Unset -- the default -- every line here is inert: no address is looked up, the two lists above are
-# what they have always been, and the launcher still binds loopback only. Gated on DEBUG as well
+# Unset -- the default -- every line here is inert: no address and no name is looked up, the
+# two lists above are what they have always been, and the launcher still binds loopback only.
+# Gated on DEBUG as well
 # because this is a local-runtime convenience; a stray env var must never widen the deployed
 # container's host list. What this exposes when it IS on is real: the local runtime runs DEBUG=True
 # against the PRODUCTION database, so the board, the mailbox data and the CV workspace become
@@ -323,7 +404,7 @@ else:
 LAN_ACCESS = DEBUG and env_bool('DACHAPPLY_LAN_ACCESS', False)
 if LAN_ACCESS:
     ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS = lan_widened(
-        ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS, lan_addresses(env_list('DACHAPPLY_LAN_HOSTS')))
+        ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS, lan_hosts(env_list('DACHAPPLY_LAN_HOSTS')))
 
 INSTALLED_APPS = [
  'django.contrib.admin','django.contrib.auth','django.contrib.contenttypes','django.contrib.sessions','django.contrib.messages','django.contrib.staticfiles',
