@@ -15,13 +15,6 @@ CSRF_TRUSTED_ORIGINS=https://<production hostname>
 CORS_ALLOWED_ORIGINS=https://<production hostname>
 DATABASE_URL=postgresql://...
 DB_SSL_REQUIRE=True
-DEFAULT_FROM_EMAIL=DACHApply <noreply@your-domain.example>
-EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
-EMAIL_HOST=<smtp host>
-EMAIL_PORT=587
-EMAIL_USE_TLS=True
-EMAIL_HOST_USER=<smtp user>
-EMAIL_HOST_PASSWORD=<smtp password>
 EMAIL_TIMEOUT=10
 SECURE_SSL_REDIRECT=True
 USE_X_FORWARDED_PROTO=True
@@ -30,6 +23,36 @@ CSRF_COOKIE_SECURE=True
 ```
 
 Keep `SECURE_HSTS_SECONDS=0` until HTTPS and redirects are confirmed. Then enable HSTS deliberately.
+
+### Mail: pick the branch first, then set that branch's variables
+
+`settings.py:527` reads `EMAIL_PROVIDER`, default `auto`, and everything about mail follows from
+which branch it selects. **Setting a variable belonging to a different branch does nothing**, and
+that is not theoretical: this deployment carries `DEFAULT_FROM_EMAIL=noreply@localhost` and
+`EMAIL_BACKEND=…console.EmailBackend`, both inert, because it runs on the Brevo branch.
+
+| `EMAIL_PROVIDER` | Branch | Reads |
+| --- | --- | --- |
+| `brevo`, or `auto` when the Brevo trio is complete (`:532`, `:551`) | Brevo SMTP | `BREVO_EMAIL_HOST_USER`, `BREVO_EMAIL_HOST_PASSWORD`, `BREVO_DEFAULT_FROM_EMAIL`, and optionally `BREVO_EMAIL_HOST` (default `smtp-relay.brevo.com`), `BREVO_EMAIL_PORT` (587), `BREVO_EMAIL_USE_TLS` (True), `BREVO_EMAIL_USE_SSL` (False) |
+| `local`/`local-smtp`, or `auto` when the local four are complete (`:560`) | your own SMTP | `LOCAL_EMAIL_HOST`, `LOCAL_EMAIL_HOST_USER`, `LOCAL_EMAIL_HOST_PASSWORD`, `LOCAL_DEFAULT_FROM_EMAIL` (+ `LOCAL_EMAIL_PORT`, `LOCAL_EMAIL_USE_TLS`, `LOCAL_EMAIL_USE_SSL`) |
+| anything else (`:569`) | the generic block | `EMAIL_BACKEND`, `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USE_TLS`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL` |
+| `console` | prints mail to the log | refused outright when `DEBUG=False` (`:541`) |
+
+**This production runs the Brevo branch**, so those are the names to set — the same ones section 5
+lists for a rebuild. `auto` only selects it when the login, the key *and* the from-address are all
+present (`:532`); with two of three set it falls through to the generic block and mail changes
+shape without any error.
+
+Whichever branch is chosen, with `DEBUG=False` and an SMTP backend the app refuses to start unless
+the resulting from-address and host are non-empty (`:579-582`), so a half-configured mailer fails
+loudly at boot rather than silently at send time.
+
+**On the stray `EMAIL_BACKEND=…console.EmailBackend` currently set on the container app.** It is
+dead while `EMAIL_PROVIDER=brevo`, and `EMAIL_PROVIDER=console` cannot revive it — that is refused
+under `DEBUG=False`. It becomes live only through the generic branch, which needs the Brevo trio to
+be incomplete at the same time. If that ever happened, password-reset and verification links would
+be printed into the container log instead of being sent, and every request would look successful.
+Remove it the next time the resource is edited; it is worth one line of care, not a migration.
 
 ## 2. Build and startup
 
