@@ -179,7 +179,7 @@ It is not merged yet — see that task for what still gates it.
 | `SECRET_KEY` | secret | container refuses to start |
 | `DATABASE_URL` | secret | container refuses to start |
 | `BREVO_EMAIL_HOST_USER` | secret | starts, and all outbound mail fails at SMTP AUTH |
-| `BREVO_EMAIL_HOST_PASSWORD` | secret | starts, and all outbound mail fails at SMTP AUTH |
+| `BREVO_EMAIL_HOST_PASSWORD` | Container Apps secret `brevo-smtp-key`, referenced by the env var | starts, and all outbound mail fails at SMTP AUTH |
 | `BREVO_DEFAULT_FROM_EMAIL` | variable | container refuses to start |
 | `ERROR_ALERT_EMAILS` | variable | error alerting stays off (inert by design) |
 
@@ -196,6 +196,20 @@ gh secret set BREVO_EMAIL_HOST_USER
 gh secret set BREVO_EMAIL_HOST_PASSWORD
 gh variable set BREVO_DEFAULT_FROM_EMAIL --body "DACHApply <verified-sender@example.com>"
 ```
+
+**The SMTP key is a Container Apps secret, not an environment value** (TASK-240, 2026-09-22).
+`BREVO_EMAIL_HOST_PASSWORD` carries no value of its own — it is `secretRef: brevo-smtp-key` — so
+`az containerapp show` prints the reference and never the key. Two consequences for a rebuild:
+
+- recreating the app means recreating the **secret** as well as the variable, and a variable pointing
+  at a secret that does not exist yields an empty credential, which fails at send time rather than at
+  boot;
+- add or rotate the value in the **Portal** (Container App → Settings → Secrets), not on a command
+  line. A key typed into a shell lands in that shell's history, and pasted into a chat it lands in a
+  transcript — both happened during this task, and both keys had to be discarded unused.
+
+Proving a rotation worked means **sending** one: request a password reset on the live site and wait
+for the mail. Wrong SMTP credentials leave the container healthy and every page answering 200.
 
 ## 6. Security checks
 
