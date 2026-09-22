@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-21 07:20'
-updated_date: '2026-09-21 12:24'
+updated_date: '2026-09-22 12:39'
 labels:
   - infrastructure
   - security
@@ -31,9 +31,9 @@ Rotation is cheap and the owner has to touch these values anyway. Note the deplo
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 The Brevo SMTP key in use is a new one, and the old value no longer authenticates
-- [ ] #2 The value in use is not readable from 'az containerapp show' output - it is a Container Apps secret referenced by secretRef, or held somewhere equivalent, rather than a plaintext env var
-- [ ] #3 Password-reset and email-verification mail is confirmed still sending after the rotation, by triggering one of each against a real address rather than by reading configuration
-- [ ] #4 Wherever the new value has to live for a future rebuild is written down, so a redeploy does not silently ship a container with dead mail credentials
+- [x] #2 The value in use is not readable from 'az containerapp show' output - it is a Container Apps secret referenced by secretRef, or held somewhere equivalent, rather than a plaintext env var
+- [x] #3 Password-reset and email-verification mail is confirmed still sending after the rotation, by triggering one of each against a real address rather than by reading configuration
+- [x] #4 Wherever the new value has to live for a future rebuild is written down, so a redeploy does not silently ship a container with dead mail credentials
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -55,4 +55,38 @@ edit, both measured on the live resource during the TASK-239 recovery:
    left from the original 'az containerapp up'. Nothing pulls from it.
 
 Neither is urgent on its own. Both are one line each while the resource is open.
+
+## Rotated and verified 2026-09-22
+
+The owner generated a fresh Brevo SMTP key and added it as the Container Apps secret `brevo-smtp-key`
+through the Azure Portal, so the value travelled from Brevo to Azure without passing through a shell,
+a transcript or this session. The rest was run here.
+
+    az containerapp update ... --set-env-vars BREVO_EMAIL_HOST_PASSWORD=secretref:brevo-smtp-key                                --remove-env-vars EMAIL_BACKEND DEFAULT_FROM_EMAIL
+    az containerapp registry remove ... --server cab585727768acr.azurecr.io
+
+Verified by reading the resource back, not from the command's own exit code:
+
+| check | result |
+|---|---|
+| BREVO_EMAIL_HOST_PASSWORD | no value, secretRef brevo-smtp-key -- absent from `az containerapp show` output (AC2) |
+| EMAIL_BACKEND, DEFAULT_FROM_EMAIL | gone -- both were inert under the Brevo branch (TASK-242) |
+| registries | ghcr.io only; the legacy ACR entry and its secret are gone |
+| revision | dachapply--0000201, Running, latestReady == latest |
+| /api/health/ | {"status":"ok","database":"ok"} |
+
+**AC3 closed by delivery, not by configuration.** The owner triggered a password reset on the live
+site and the mail arrived: sent through Brevo's relay, signed by the Brevo sending domain, over TLS,
+with the reset link pointing at the production hostname. That is the check the criterion asks for,
+because wrong SMTP credentials fail at send time while every page keeps returning 200.
+
+## Two exposures, both now burned rather than in use
+
+The original key was plaintext on the container app and had been printed into an agent transcript.
+Its intended replacement was pasted into this session's shell as part of a command and so landed in
+this transcript too -- caught before it was installed, and never applied to Azure. The key now in use
+is a third one, and neither earlier key was ever wired up.
+
+Remaining for the owner: delete both older keys in Brevo. Until that is done the old credentials
+still authenticate, which is the second half of AC1.
 <!-- SECTION:NOTES:END -->
