@@ -1813,6 +1813,15 @@ def test_import_valid_evaluation(client, job):
     assert r.status_code==201 and JobEvaluation.objects.count()==1
 
 
+def test_import_strips_chatgpt_citation_artifacts(client, job):
+    payload=valid_payload(job)
+    payload['evaluations'][0]['risk_notes']='First. :contentReference[oaicite:0]{index=0} Second. :contentReference[oaicite:1]{index=1}'
+    assert client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json').status_code==201
+    evaluation=JobEvaluation.objects.get()
+    assert evaluation.risk_notes=='First. Second.'
+    assert evaluation.structured_json_raw['risk_notes']=='First. Second.'
+
+
 def test_import_extracts_json_before_chatgpt_citations(client, job):
     payload=valid_payload(job); payload['evaluations'][0]['summary']='Excerpt: "Application Manager Wertpapier".'
     broken=json.dumps(payload).replace('\\"Application Manager Wertpapier\\"','"Application Manager Wertpapier"')
@@ -1886,6 +1895,21 @@ def test_import_bulk_jobs_with_evaluations(client):
     assert r.data['jobs_found']==1
     assert r.data['imported_jobs'][0]['company']=='Karriere Co'
     assert r.data['imported_jobs'][0]['title']=='Python Engineer'
+
+
+def test_import_accepts_generated_prose_longer_than_the_old_varchars(client):
+    payload={'jobs':[{'company':'Prose Co','title':'AI Engineer','salary_info':'S'*500,'language_requirements':'L'*500}]}
+    assert client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json').status_code==201
+    job=JobLead.objects.get(company='Prose Co')
+    assert len(job.salary_info)==500 and len(job.language_requirements)==500
+
+
+def test_import_rejects_a_bounded_field_before_the_database_write(client):
+    payload={'jobs':[{'company':'x'*201,'title':'AI Engineer'}]}
+    response=client.post('/api/evaluations/import/', {'json':json.dumps(payload)}, format='json')
+    assert response.status_code==400
+    assert response.data['errors']==['jobs[0].company is 201 characters; the limit is 200']
+    assert not JobLead.objects.exists()
 
 
 def test_import_keeps_distinct_job_query_ids(client):

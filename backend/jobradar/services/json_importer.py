@@ -15,6 +15,24 @@ EVAL_REQ_NO_JOB=REQ-{'job_id','company','title'}
 LIST_FIELDS=['main_match_reasons','main_gaps','required_skills','nice_to_have_skills','matched_skills','missing_skills']
 JOB_UPDATE_FIELDS={'company','title','location','url','source','raw_description','salary_info','language_requirements','work_mode'}
 
+# Validate in Python because sqlite ignores varchar lengths that PostgreSQL enforces.
+LENGTH_LIMITED_JOB_FIELDS={field: JobLead._meta.get_field(field).max_length for field in JOB_UPDATE_FIELDS
+                           if JobLead._meta.get_field(field).max_length}
+CITATION_ARTIFACT=re.compile(r'\s*:contentReference\[oaicite:\d+\]\{index=\d+\}')
+
+
+def strip_citation_artifacts(value):
+    if isinstance(value, str): return CITATION_ARTIFACT.sub('', value)
+    if isinstance(value, list): return [strip_citation_artifacts(v) for v in value]
+    if isinstance(value, dict): return {k: strip_citation_artifacts(v) for k, v in value.items()}
+    return value
+
+
+def length_errors(rec, i):
+    return [f'jobs[{i}].{field} is {len(rec[field])} characters; the limit is {limit}'
+            for field, limit in LENGTH_LIMITED_JOB_FIELDS.items()
+            if isinstance(rec.get(field), str) and len(rec[field]) > limit]
+
 
 def value_is_valid_url(value):
     raw=str(value or '').strip()
@@ -103,10 +121,10 @@ def duplicate_title(title, queryset=None):
     base=title or 'Untitled role'
     qs=queryset if queryset is not None else JobLead.objects.all()
     n=1
-    candidate=f'{base} ({n})'
-    while qs.filter(title=candidate).exists():
-        n+=1; candidate=f'{base} ({n})'
-    return candidate
+    while True:
+        suffix=f' ({n})'; candidate=f'{base[:LENGTH_LIMITED_JOB_FIELDS["title"] - len(suffix)]}{suffix}'
+        if not qs.filter(title=candidate).exists(): return candidate
+        n+=1
 
 
 def duplicate_url_variants(url):
@@ -162,6 +180,7 @@ def action_for_duplicate(data, index):
 
 
 def import_jobs_data(data, user=None):
+    data=strip_citation_artifacts(data)
     owned_qs=accessible_jobs(user) if user is not None else JobLead.objects.all()
     errors=[]; records=data.get('job_updates') or data.get('jobs') or data.get('job_details') or data.get('new_jobs')
     if not isinstance(records, list): return {'ok':False,'errors':['Root must contain jobs, new_jobs, or job_updates list']}
@@ -189,6 +208,7 @@ def import_jobs_data(data, user=None):
         if rec.get('work_mode') and rec.get('work_mode') not in ['onsite','hybrid','remote','unknown']: errors.append(f'jobs[{i}].work_mode invalid')
         if user is not None and not is_demo_user(user) and is_demo_job_payload(rec.get('url'), rec.get('source')): errors.append(f'jobs[{i}] demo jobs are only available in the demo account')
         if not rec.get('job_id') and not (rec.get('url') or rec.get('raw_description') or rec.get('company') or rec.get('title')): errors.append(f'jobs[{i}] needs at least url, description, company, or title')
+        errors += length_errors(rec, i)
         if isinstance(rec.get('evaluation'), dict): errors += validate_eval(rec['evaluation'], i, require_job_id=False)
     if conflicts: return {'ok':False,'type':'duplicate_conflicts','message':'Some jobs already exist. Choose override, duplicate, skip, or abort.','conflicts':conflicts}
     if eval_conflicts: return {'ok':False,'type':'evaluation_conflicts','message':'These jobs already have evaluations. Choose override, duplicate, skip, or abort.','conflicts':eval_conflicts}
@@ -288,6 +308,7 @@ def import_evaluations(pasted, user=None):
         try: data=parse_json_object(pasted)
         except json.JSONDecodeError as e: return {'ok':False,'errors':[format_json_decode_error(e)]}
     else: data=pasted
+    data=strip_citation_artifacts(data)
     errors=[]
     if not isinstance(data, dict) or not isinstance(data.get('evaluations'), list): errors.append('Root must contain evaluations list')
     if errors: return {'ok':False,'errors':errors}

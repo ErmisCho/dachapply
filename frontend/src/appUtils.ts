@@ -36,7 +36,14 @@ export function useMatchMedia(query:string):boolean{
   return matches
 }
 
-export async function copyToClipboard(text:string){try{if(!navigator.clipboard)return false;await navigator.clipboard.writeText(text);return true}catch{return false}}
+export async function copyToClipboard(text:string){
+  try{if(navigator.clipboard){await navigator.clipboard.writeText(text);return true}}catch{}
+  if(typeof document==='undefined'||!document.body||typeof document.execCommand!=='function')return false
+  const textarea=document.createElement('textarea')
+  textarea.value=text;textarea.setAttribute('readonly','');textarea.style.position='fixed';textarea.style.opacity='0'
+  document.body.appendChild(textarea);textarea.select()
+  try{return document.execCommand('copy')}catch{return false}finally{textarea.remove()}
+}
 
 // <input type="datetime-local"> speaks local "YYYY-MM-DDTHH:mm"; the API speaks ISO-8601 UTC.
 export function toDateTimeLocal(iso?:string|null){if(!iso)return '';const d=new Date(iso);if(isNaN(d.getTime()))return '';const p=(n:number)=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`}
