@@ -1,10 +1,11 @@
 ---
 id: TASK-246
 title: Paste the ChatGPT response where the prompt was copied
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi'
 created_date: '2026-09-22 21:19'
-updated_date: '2026-09-23 06:53'
+updated_date: '2026-09-23 08:40'
 labels:
   - frontend
   - ux

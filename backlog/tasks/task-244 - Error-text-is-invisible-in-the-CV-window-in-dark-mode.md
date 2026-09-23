@@ -1,11 +1,11 @@
 ---
 id: TASK-244
 title: Error text is invisible in the CV window in dark mode
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-21 17:00'
-updated_date: '2026-09-22 13:11'
+updated_date: '2026-09-23 08:40'
 labels:
   - frontend
   - ux
