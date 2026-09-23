@@ -55,4 +55,4 @@ Store `salary_info` and `language_requirements` as text, widen the still-label-l
 
 ## Resolution
 
-Commit `07d9da7` changes `models.py`, migration `0052`, `json_importer.py`, and importer tests. Verification: focused endpoint regressions passed; migration drift check passed; full backend suite passed (1,225 tests).
+PR #177 squash-merged as `8dda72d`, changing `models.py`, migration `0052`, `json_importer.py`, and importer tests. Verification: focused endpoint regressions and migration drift check passed; full backend suite passed (1,225 tests); deploy run 35849727904 and public/local health checks passed.

@@ -51,4 +51,4 @@ Keep `navigator.clipboard.writeText` as the first choice, then use a temporary t
 
 ## Resolution
 
-Commit `07d9da7` changes the shared copy helper and focused tests. Verification: Chrome on insecure `http://caren` returned `true` and captured the complete text; all 296 frontend tests and the production build passed.
+PR #177 squash-merged as `8dda72d`, changing the shared copy helper and focused tests. Verification: Chrome on insecure `http://caren` returned `true` and captured the complete text; all 296 frontend tests, the production build, deploy run 35849727904, local runtime sync, and health checks passed.
