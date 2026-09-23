@@ -1,11 +1,11 @@
 ---
 id: TASK-247
 title: Two text colours sit just under AA on the surfaces they actually land on
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 09:03'
-updated_date: '2026-09-23 18:41'
+updated_date: '2026-09-23 18:47'
 labels:
   - frontend
   - accessibility
@@ -54,4 +54,12 @@ Implemented two scoped changes: stale rows use `text-slate-600`; only `main > .f
 Fresh WCAG measurements: stale row 6.9170:1 light / 11.9870:1 dark; bare ErrorBox 4.7783:1 on the measured `#f3f6fe` pixel and 4.6199:1 on the darkest gradient stop; unchanged nested ErrorBox 4.7848:1 on white and 4.5732:1 on slate-50.
 
 Guard proof: reverting the stale-row class failed `darkSurfaces.test.tsx` (1 targeted failure); removing the page ErrorBox rule failed it twice (selector-count and exact-rule guards). Restored suite: 6/6 targeted, 297/297 frontend tests. Full gates: frontend build passed; backend 1225 passed.
+
+Implementation squash-merged to `main` as `563a8f8` via PR #179 after GitHub `test` and GitGuardian checks passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed both marginal AA pairs without widening either colour globally: stale rows now measure 6.9170:1 in light mode, and bare page-level ErrorBoxes measure 4.7783:1 on the reported composited page pixel. Nested ErrorBoxes and sibling surfaces retain their prior colours and remain above AA. The extended darkSurfaces guard fails when either fix is reverted; 297 frontend tests, the production frontend build, and 1225 backend tests passed. Implementation merged in PR #179 (`563a8f8`).
+<!-- SECTION:FINAL_SUMMARY:END -->
