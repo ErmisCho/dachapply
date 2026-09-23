@@ -2,11 +2,20 @@ import {afterEach,describe,expect,it} from 'vitest'
 import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,defaultPostponeDate,describeOrdering,popupBelowAnchor,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,jobNotePreview,movePanelInOrder,NOTE_PREVIEW_WIDTH,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,previewPanelDrag,ratePercent,receivedDateLabels,reorderPanels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
-// Every copy button in the app now goes through copyToClipboard, so a denied or
-// missing clipboard must resolve to false instead of rejecting into the console.
-const originalClipboard=Object.getOwnPropertyDescriptor(globalThis,'navigator')
+// Shared copy controls use the modern API when available and a legacy fallback on local HTTP.
+const originalNavigator=Object.getOwnPropertyDescriptor(globalThis,'navigator')
+const originalDocument=Object.getOwnPropertyDescriptor(globalThis,'document')
 function setClipboard(clipboard:any){Object.defineProperty(globalThis,'navigator',{value:{clipboard},configurable:true,writable:true})}
-afterEach(()=>{originalClipboard?Object.defineProperty(globalThis,'navigator',originalClipboard):delete (globalThis as any).navigator})
+function setLegacyCopy(result:boolean){
+  const state={selected:'',removed:false}
+  const textarea:any={value:'',style:{},setAttribute(){},select(){state.selected=this.value},remove(){state.removed=true}}
+  Object.defineProperty(globalThis,'document',{value:{body:{appendChild(){}},createElement:()=>textarea,execCommand:()=>result},configurable:true,writable:true})
+  return state
+}
+afterEach(()=>{
+  originalNavigator?Object.defineProperty(globalThis,'navigator',originalNavigator):delete (globalThis as any).navigator
+  originalDocument?Object.defineProperty(globalThis,'document',originalDocument):delete (globalThis as any).document
+})
 
 describe('copyToClipboard',()=>{
   it('reports success when the browser accepts the write',async()=>{
@@ -16,13 +25,22 @@ describe('copyToClipboard',()=>{
     expect(written).toEqual(['prompt text'])
   })
 
-  it('resolves false instead of rejecting when the clipboard is denied',async()=>{
-    setClipboard({writeText:async()=>{throw new DOMException('Write permission denied.','NotAllowedError')}})
-    await expect(copyToClipboard('prompt text')).resolves.toBe(false)
+  it('falls back when the secure-context clipboard is unavailable',async()=>{
+    setClipboard(undefined)
+    const legacy=setLegacyCopy(true)
+    expect(await copyToClipboard('prompt text')).toBe(true)
+    expect(legacy).toEqual({selected:'prompt text',removed:true})
   })
 
-  it('resolves false when the browser exposes no clipboard at all',async()=>{
+  it('falls back when the browser denies the modern clipboard write',async()=>{
+    setClipboard({writeText:async()=>{throw new DOMException('Write permission denied.','NotAllowedError')}})
+    setLegacyCopy(true)
+    await expect(copyToClipboard('prompt text')).resolves.toBe(true)
+  })
+
+  it('resolves false when both browser copy methods fail',async()=>{
     setClipboard(undefined)
+    setLegacyCopy(false)
     await expect(copyToClipboard('prompt text')).resolves.toBe(false)
   })
 })
