@@ -96,18 +96,43 @@ describe('light surfaces in dark mode (TASK-244)',()=>{
     expect(shell[0].covered).toBe(true)
   })
 
+  it('darkens the two light islands TASK-244 found and left open (TASK-245)',()=>{
+    // The other two ends of the same mechanism, closed by TASK-245. Both were measured in headless
+    // Chrome on the REAL ancestor chains (the export card / the `.job-table` inside `.premium-card`),
+    // reading the painted pixel, never an assumed colour:
+    //
+    //   ExportChoice popup   its text-slate-900 (#fafafa) on the popup   1.07 -> 19.34  dark
+    //                                                                   17.85 -> 17.85  light
+    //   archived board row   its inherited row text on the row          1.48 -> 10.82  dark
+    //                                                                   2.38 ->  7.05  light
+    const app=readFileSync(new URL('App.tsx',src),'utf8')
+    expect(app).toContain('bg-white/95 p-2 text-slate-900 shadow-2xl ring-1 ring-slate-900/5 backdrop-blur dark:bg-slate-950/95')
+    expect(app).toContain('"bg-slate-100/80 text-slate-600 dark:bg-slate-800/80 "')
+
+    // The row's `opacity-75` is gone deliberately, and the reason is a measurement, not taste. In the
+    // live board it was INERT: `.job-table tbody tr` carries `animation:board-row-in .18s ease-out
+    // both`, whose keyframes end at `opacity:1`, and an animation-origin value outranks a normal
+    // declaration -- so every row is pinned at full opacity once the 180ms is up. It came back only
+    // under `prefers-reduced-motion`, where that rule is `animation:none`, and there it made the row
+    // WORSE (1.42:1 dark / 1.86:1 light, against 1.48 / 2.38 with motion). Re-adding it would put
+    // reduced-motion users back under AA while looking like it does nothing to everyone else.
+    expect(app).not.toContain('opacity-75')
+  })
+
   it('has no light surface left that nothing darkens, outside this named list',()=>{
-    // Everything this scan cannot account for, with the reason. The first two are real open cases
-    // reported for their own tasks rather than fixed here (TASK-244 is the CV window); the third is
-    // covered by a rule keyed on an element, which a class-keyed scan cannot see. A class arriving
-    // that is NOT on this list is a new white island: darken the surface, or add it here with a
-    // reason someone can check.
+    // Everything this scan cannot account for, with the reason. What is left is covered by a rule
+    // keyed on an ELEMENT, which a class-keyed scan cannot see. A class arriving that is NOT on this
+    // list is a new white island: darken the surface, or add it here with a reason someone can check.
+    // (TASK-244 listed two more here as open-and-reported; TASK-245 fixed both, so they are gone.)
     const known={
-      'bg-white/95':'ExportChoice popup -- OPEN, measured 1.07:1 in dark mode (#fafafa on #f2f2f2)',
-      'bg-slate-100/80':'archived board row -- OPEN, measured 1.20:1 dark and 2.28:1 light',
       'bg-slate-50/80':'the desktop job-table <thead>, already repainted by `.dark .job-table thead th`',
     }
-    const open=[...new Set(surfaces.filter(s=>!s.covered).map(s=>s.cls))].sort()
-    expect(open).toEqual(Object.keys(known).sort())
+    const uncovered=surfaces.filter(s=>!s.covered)
+    const open=[...new Set(uncovered.map(s=>s.cls))].sort()
+    // The message matters as much as the assertion: an array diff of class names tells you WHAT
+    // slipped past the blanket rules but not WHERE, and this scanner exists precisely because you
+    // cannot find these by reading the element.
+    const where=uncovered.map(s=>`  ${s.file}:${s.line}  ${s.cls}  in  ${s.snippet}`).join('\n')
+    expect(open,`light surfaces nothing darkens:\n${where}`).toEqual(Object.keys(known).sort())
   })
 })

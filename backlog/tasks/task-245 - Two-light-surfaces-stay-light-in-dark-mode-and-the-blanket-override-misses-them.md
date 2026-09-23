@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-09-22 13:10'
+updated_date: '2026-09-23 09:02'
 labels:
   - frontend
   - ux
@@ -32,8 +33,58 @@ Related and deliberately separate: a bare ErrorBox on the light page gradient me
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each named surface measures at least 4.5:1 for its own text in dark mode, against the painted composite rather than an assumed colour
-- [ ] #2 The export-format popup is fixed first and separately verified - at 1.07:1 its text is closer to invisible than the defect TASK-244 was filed for
-- [ ] #3 The archived board row is measured inside the live table rather than in a standalone reproduction, since its 2.28:1 light-mode reading came from a detached row and may not hold
-- [ ] #4 The guard test added by TASK-244 is extended to cover whichever of these is fixed, so the class cannot silently reappear
+- [x] #1 Each named surface measures at least 4.5:1 for its own text in dark mode, against the painted composite rather than an assumed colour
+- [x] #2 The export-format popup is fixed first and separately verified - at 1.07:1 its text is closer to invisible than the defect TASK-244 was filed for
+- [x] #3 The archived board row is measured inside the live table rather than in a standalone reproduction, since its 2.28:1 light-mode reading came from a detached row and may not hold
+- [x] #4 The guard test added by TASK-244 is extended to cover whichever of these is fixed, so the class cannot silently reappear
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Both surfaces fixed on the element; the task's own numbers were half wrong
+
+    - text-slate-400 opacity-75   ->  + text-slate-600 dark:bg-slate-800/80   (archived row, App.tsx:558)
+    - backdrop-blur"             ->  + backdrop-blur dark:bg-slate-950/95"  (ExportChoice popup, :1538)
+
+index.css untouched. That is the entire product diff.
+
+### Export popup -- reproduced the reported figures exactly
+
+Measured with only this fix applied, so the number is not borrowed from the other change:
+
+    dark   1.07 (#fafafa on #f2f2f2)  ->  19.34 (#fafafa on #020616)
+    light  17.85                      ->  17.85, byte-identical
+
+One honest correction to the task's framing: the popup contains no glyph painted in that inherited
+colour -- its three children are .btn controls with their own !important colour. So 1.07 was real for
+the surface, and any text added there would have been invisible, but what you could actually SEE was
+a blinding white pill in a dark UI. The fix is the same either way.
+
+### Archived row -- the reported figures did NOT survive in-table measurement
+
+    reported (detached <tr>)   1.20 dark / 2.28 light
+    measured in the table      1.48 dark / 2.38 light   ->  10.82 / 7.05 after
+
+Root cause of the discrepancy, and it is worth keeping: **opacity-75 on that row was inert in the live
+board.** index.css:309 animates .job-table tbody tr with fill-mode both, and the keyframes end at
+opacity:1; an animation-origin value outranks a normal declaration, so every row sits at opacity 1
+after 180ms. A detached <tr> has no .job-table ancestor, so there the utility does apply -- which is
+why the standalone repro read lower. Confirmed with --force-prefers-reduced-motion, where
+index.css:310 sets animation:none and the opacity reappears.
+
+So the task description was wrong on the magnitudes only; the direction held, and it fails in both
+modes. opacity-75 was deleted rather than kept: it did nothing for most users and, under reduced
+motion, was the single biggest contrast cost. text-slate-400 also had to go -- text-slate-500
+computes to 4.47:1, under AA by a hair -- so text-slate-600 it is, still visibly muted beside a
+normal row.
+
+### Coordinator verification (TW-003)
+
+Guard test proven to guard, not just to pass: reverting the popup class turns it red (2 failed of 5),
+restoring it returns 5 passed. Product diff read and confirmed to be two class strings. Gates:
+npx tsc --noEmit clean, npm test 295 passed in 19 files.
+
+Baseline correction from the agent, accepted: main is 294 in 19 files, not the 290/18 in my brief --
+that figure predated TASK-246.
+<!-- SECTION:NOTES:END -->
