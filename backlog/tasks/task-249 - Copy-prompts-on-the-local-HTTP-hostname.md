@@ -1,11 +1,11 @@
 ---
 id: TASK-249
 title: Copy prompts on the local HTTP hostname
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 10:10'
-updated_date: '2026-09-23 10:31'
+updated_date: '2026-09-23 11:08'
 labels:
   - frontend
   - ux
@@ -43,10 +43,12 @@ The dashboard is intentionally used at http://caren:8000. That is not a secure b
 
 <!-- SECTION:NOTES:BEGIN -->
 Validation 2026-09-23: Chrome on http://caren:5175 measured isSecureContext=false and navigator.clipboard absent; clicking the test control returned true and the copy event captured the complete text. All 296 frontend tests and the production build passed. Asian Dad: PERFECT.
+
+Post-merge verification: PR #177 squash-merged as `8dda72d`; deploy run 35849727904 passed. The dedicated local CAREN runtime was synchronized to `8dda72d`, rebuilt the frontend, serves the new bundle on port 8000, and returns HTTP 200 health. The insecure-origin Chrome check had already proved the fallback copied the complete text.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Added the browser-native copy fallback to the shared helper. Verified in Chrome on an insecure CAREN origin, with focused fallback/secure-path/failure tests, all 296 frontend tests, and the production build; merge remains pending.
+Fixed prompt copying on plain-HTTP CAREN with the shared browser-native fallback while preserving the secure Clipboard API path. PR #177 merged as 8dda72d; 296 frontend tests, production build, insecure-origin Chrome check, deployment, local runtime sync, and health checks passed.
 <!-- SECTION:FINAL_SUMMARY:END -->

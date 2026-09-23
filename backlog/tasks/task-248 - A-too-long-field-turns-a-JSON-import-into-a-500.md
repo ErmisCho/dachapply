@@ -1,11 +1,11 @@
 ---
 id: TASK-248
 title: A too-long field turns a JSON import into a 500
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-23 09:41'
-updated_date: '2026-09-23 10:31'
+updated_date: '2026-09-23 11:08'
 labels:
   - backend
   - ux
@@ -84,10 +84,12 @@ that same database. Merge it at a moment the board is not in use, and verify the
 afterwards.
 
 Validation 2026-09-23: the focused endpoint regressions passed; the remaining bounded importer fields were derived from the live JobLead model and measured as company/title/location/url/source/work_mode; `makemigrations --check --dry-run` reported no drift; the full backend suite passed (1,225 tests). Asian Dad: PERFECT.
+
+Post-merge verification: PR #177 squash-merged as `8dda72d`; GitHub Actions run 35849727904 passed tests, built the image, deployed it, ran migration 0052 during startup, and passed the public-app check. The public and local `/api/health/` endpoints returned HTTP 200 with database ok. The dedicated local runtime was synchronized to the same `8dda72d` revision.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Widened generated-prose fields, validates every remaining bounded imported field before writes, and removes ChatGPT citation artifacts. Verified with endpoint regressions, migration drift check, and 1,225 backend tests; merge and live migration verification remain pending.
+Fixed the supplied JSON import by storing generated prose as text, validating every remaining bounded field before writes, and removing ChatGPT citation artifacts. PR #177 merged as 8dda72d; 1,225 backend tests, deployment run 35849727904, public health, local health, migration startup, and local/runtime SHA parity all passed.
 <!-- SECTION:FINAL_SUMMARY:END -->
