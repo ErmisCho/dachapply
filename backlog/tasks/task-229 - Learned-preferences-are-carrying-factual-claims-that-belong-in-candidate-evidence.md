@@ -3,10 +3,11 @@ id: TASK-229
 title: >-
   Learned preferences are carrying factual claims that belong in candidate
   evidence
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-10 12:06'
-updated_date: '2026-09-21 07:41'
+updated_date: '2026-09-23 19:13'
 labels:
   - backend
   - llm
@@ -48,6 +49,16 @@ No term, phrase or employer is named in this task on purpose: the repository is 
 - [ ] #4 After the move, the same job generated at the TASK-225 bound and generated unbounded no longer disagree about any factual claim - verified by re-running the AC4 comparison, not by argument
 - [x] #5 Contradictory entries are surfaced to the owner rather than silently resolved by recency
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Generate the existing read-only owner review against the current production field and active local evidence source, keeping personal content outside the public repository.
+2. Have the owner confirm which prompt-reaching factual claims are true and add only those claims to the authoritative candidate evidence file.
+3. Re-run the same job with bounded and unbounded learned preferences, plus an identical-prompt control, and compare every factual line.
+4. Run required gates and the sealed Asian Dad evaluation.
+5. Commit/push/squash-merge the evidence-only task record, then mark Done in a post-merge administrative change.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -183,4 +194,6 @@ into candidate_evidence. That is still owner judgement, and it is still open.
 **A caveat worth keeping.** The filter is the thing making these inert. If TASK-236's notion of a
 durable preference is ever widened, the 19 pairs become live in the same moment, and nothing would
 announce that. Re-run the two commands above rather than trusting this note.
+
+2026-09-23 refresh: the production field now has 19 prompt-reaching entries (#4, #13-17, #20, #22, #25, #27-28, #32, #34, #39-40, #42-43, #53, #56): 1 likely-FACT, 13 unclear, 5 likely-STYLE. The full private review was written outside the repository to `%LOCALAPPDATA%\dachapply\TASK-229-owner-review.txt`; no personal content was copied into Backlog or command output.
 <!-- SECTION:NOTES:END -->
