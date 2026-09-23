@@ -1,9 +1,11 @@
 ---
 id: TASK-247
 title: Two text colours sit just under AA on the surfaces they actually land on
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-23 09:03'
+updated_date: '2026-09-23 18:41'
 labels:
   - frontend
   - accessibility
@@ -27,7 +29,29 @@ Neither is invisible, and neither is urgent in the way the 1.07:1 export popup w
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each case measures at least 4.5:1 against the composited surface it actually renders on, in the mode where it currently fails
-- [ ] #2 The fix is to the failing pair, not a blanket colour change - the other surfaces each colour lands on are re-measured to show none regressed
-- [ ] #3 The darkSurfaces guard is extended to whichever case is fixed, and reverting the fix turns the suite red
+- [x] #1 Each case measures at least 4.5:1 against the composited surface it actually renders on, in the mode where it currently fails
+- [x] #2 The fix is to the failing pair, not a blanket colour change - the other surfaces each colour lands on are re-measured to show none regressed
+- [x] #3 The darkSurfaces guard is extended to whichever case is fixed, and reverting the fix turns the suite red
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Preserve the measured root cause in the debug artifact and keep both fixes scoped to their failing pairs.
+2. Darken only the stale-row branch and only page-level bare ErrorBox text.
+3. Extend darkSurfaces.test.tsx with exact source guards and WCAG contrast assertions for both fixes and unchanged sibling surfaces.
+4. Prove each guard by reverting each fix independently, then run frontend tests/build and the backend suite.
+5. Obtain Asian Dad PERFECT, commit/push/squash-merge the implementation, then mark TASK-247 Done in a separate post-merge administrative change and squash-merge it.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Root cause recorded before production edits in `.orchestrator/debug/01a0cf79-e5a3-7027-a486-09c20ff606d4-1.md`. Baseline measurements reproduce 4.3439:1 for the stale row and 4.4258:1 for a bare ErrorBox; the existing darkSurfaces guard passes 5/5 and therefore misses both.
+
+Implemented two scoped changes: stale rows use `text-slate-600`; only `main > .field-error-message` uses `#dc0021`, while nested ErrorBoxes retain `#e60023`. Browser DOM inspection against the built Vite stylesheet confirmed light computed values `#475569` on `#f1f5f9`, bare `#dc0021`, nested `#e60023`; dark mode remains `#d4d4d8` on `#18181b` and `#fecdd3` for both ErrorBoxes.
+
+Fresh WCAG measurements: stale row 6.9170:1 light / 11.9870:1 dark; bare ErrorBox 4.7783:1 on the measured `#f3f6fe` pixel and 4.6199:1 on the darkest gradient stop; unchanged nested ErrorBox 4.7848:1 on white and 4.5732:1 on slate-50.
+
+Guard proof: reverting the stale-row class failed `darkSurfaces.test.tsx` (1 targeted failure); removing the page ErrorBox rule failed it twice (selector-count and exact-rule guards). Restored suite: 6/6 targeted, 297/297 frontend tests. Full gates: frontend build passed; backend 1225 passed.
+<!-- SECTION:NOTES:END -->
