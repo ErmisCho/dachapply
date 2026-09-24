@@ -10,6 +10,7 @@ input[aria-invalid="true"],select[aria-invalid="true"],textarea[aria-invalid="tr
 .dark input,.dark select,.dark textarea{@apply border-slate-700 bg-slate-900/80 text-slate-100 focus:border-blue-400 focus:ring-blue-950}
 .dark input[aria-invalid="true"],.dark select[aria-invalid="true"],.dark textarea[aria-invalid="true"]{border-color:#fb7185!important;box-shadow:0 0 0 3px rgba(248,113,113,.18),inset 0 0 0 1px rgba(248,113,113,.18)!important;color:#fecdd3!important}
 .field-error-message{display:flex;align-items:center;gap:.5rem;color:#e60023;font-size:.95rem;font-weight:500;line-height:1.4}
+main > .field-error-message{color:#dc0021}
 .field-error-icon{display:inline-grid;height:1.35rem;width:1.35rem;flex:0 0 auto;place-items:center;border:1.8px solid currentColor;border-radius:999px;font-size:.9rem;font-weight:800;line-height:1}
 .dark .field-error-message{color:#fecdd3}
 .password-field{position:relative;display:block;width:100%}

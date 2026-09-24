@@ -1,11 +1,11 @@
 ---
 id: TASK-226
 title: Reach the local server from other devices on the home network
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-10 11:48'
-updated_date: '2026-09-21 07:40'
+updated_date: '2026-09-24 07:15'
 labels:
   - backend
   - infrastructure
@@ -29,7 +29,7 @@ This has a real exposure to state rather than gloss over: the local runtime runs
 - [x] #1 A second physical device on the same network loads the board at http://<host-lan-ip>:8000/ and completes a login - verified from that device, not from a second browser on the host, and not inferred from a successful bind
 - [x] #2 The bind address is configurable rather than hard-coded, and loopback-only stays the default for anyone who does not opt in
 - [x] #3 ALLOWED_HOSTS and CSRF_TRUSTED_ORIGINS accept the host LAN address, evidenced by a login POST succeeding from the second device rather than by reading the settings
-- [ ] #4 Any host firewall rule the change needs is written down as the exact command that creates it, and the whole setup still works after a reboot of the host
+- [x] #4 Any host firewall rule the change needs is written down as the exact command that creates it, and the whole setup still works after a reboot of the host
 - [x] #5 The task records what became reachable on the network and what protects it, given the local runtime runs DEBUG=True against the production database
 <!-- AC:END -->
 
@@ -168,4 +168,25 @@ exactly why the criterion asks for the reboot.
 Reaching the server by the computer's name rather than 192.168.8.130 is a separate request, filed as
 TASK-241 rather than folded in here. Today a request with Host: Caren:8000 gets 400 DisallowedHost,
 because lan_addresses() trusts private IPv4 literals only.
+
+## AC4 closed 2026-09-24, after a real reboot
+
+The owner rebooted the host, started the local runtime, and loaded the board from their laptop at
+both http://192.168.8.130:8000/ and http://caren:8000/, completing a login from each.
+
+Host side, measured here after the same reboot:
+
+    firewall rule 'DACHApply LAN 8000'   Enabled, In, Private, LocalSubnet, TCP 8000   -- survived
+    listener                             0.0.0.0:8000                                  -- after the launcher ran
+    http://192.168.8.130:8000/           200
+    http://caren:8000/                   200
+
+What survives a reboot and what does not, stated plainly because the criterion is about exactly this:
+the firewall rule is persistent and came back on its own, and DACHAPPLY_LAN_ACCESS lives in the
+repo-root .env so it survives too. The **server does not start itself** -- immediately after the
+reboot nothing was listening on 8000 and both URLs failed. That is expected of a launcher rather than
+a service, and it is the one manual step in the loop: run scripts/dachapply-local-runtime.cmd, and
+everything else is already in place.
+
+All five criteria are now checked and the task is Done.
 <!-- SECTION:NOTES:END -->

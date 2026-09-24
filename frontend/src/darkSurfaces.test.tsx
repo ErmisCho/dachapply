@@ -21,6 +21,16 @@ import {readFileSync,readdirSync,statSync} from 'node:fs'
 const src=new URL('.',import.meta.url)
 const css=readFileSync(new URL('index.css',src),'utf8')
 
+const luminance=(hex:string)=>{
+  const channels=hex.match(/[\da-f]{2}/gi)!.map(value=>parseInt(value,16)/255)
+    .map(value=>value<=.04045?value/12.92:((value+.055)/1.055)**2.4)
+  return .2126*channels[0]+.7152*channels[1]+.0722*channels[2]
+}
+const contrast=(foreground:string,background:string)=>{
+  const [lighter,darker]=[luminance(foreground),luminance(background)].sort((a,b)=>b-a)
+  return (lighter+.05)/(darker+.05)
+}
+
 const files:string[]=[]
 ;(function walk(dir:URL){
   for(const name of readdirSync(dir)){
@@ -79,9 +89,9 @@ describe('light surfaces in dark mode (TASK-244)',()=>{
     expect(app).toContain('border border-blue-200 bg-white/70 px-2 py-1.5 dark:bg-slate-950/70')
     // ...and the fix is on the surface, not on the message: the error stays a plain text-red-700 <p>
     // with no popup-scoped colour override invented for it, and the shared .field-error-message
-    // colour is still the app's single one rather than one colour per window.
+    // colour remains shared rather than one override per window; TASK-247 adds one page-level rule.
     expect(app).toContain('<p className="mt-2 text-xs text-red-700">{imageError}</p>')
-    expect(css.match(/\.field-error-message\{/g)?.length).toBe(2)        // the rule, and its .dark one
+    expect(css.match(/\.field-error-message\{/g)?.length).toBe(3)        // base, page-level, dark
     expect(css.match(/\.dark \.field-error-message\{/g)?.length).toBe(1)
   })
 
@@ -117,6 +127,23 @@ describe('light surfaces in dark mode (TASK-244)',()=>{
     // WORSE (1.42:1 dark / 1.86:1 light, against 1.48 / 2.38 with motion). Re-adding it would put
     // reduced-motion users back under AA while looking like it does nothing to everyone else.
     expect(app).not.toContain('opacity-75')
+  })
+
+  it('keeps the two TASK-247 text pairs above AA without changing their passing siblings',()=>{
+    const app=readFileSync(new URL('App.tsx',src),'utf8')
+
+    // Only the stale branch changes shade. Its dark-mode values come from the existing blanket rules.
+    expect(app).toContain('(isStaleStatus(j)||isStaleUnapplied(j))?"bg-slate-100 text-slate-600 ":""')
+    expect(contrast('#475569','#f1f5f9')).toBeGreaterThanOrEqual(4.5)
+    expect(contrast('#d4d4d8','#18181b')).toBeGreaterThanOrEqual(4.5)
+
+    // Nested ErrorBoxes keep the shared brand red; only a bare page-level box gets the darker shade.
+    expect(css).toContain('.field-error-message{display:flex;align-items:center;gap:.5rem;color:#e60023;')
+    expect(css).toContain('main > .field-error-message{color:#dc0021}')
+    expect(contrast('#dc0021','#f3f6fe')).toBeGreaterThanOrEqual(4.5)
+    expect(contrast('#dc0021','#eef2ff')).toBeGreaterThanOrEqual(4.5)
+    expect(contrast('#e60023','#ffffff')).toBeGreaterThanOrEqual(4.5)
+    expect(contrast('#e60023','#f8fafc')).toBeGreaterThanOrEqual(4.5)
   })
 
   it('has no light surface left that nothing darkens, outside this named list',()=>{
