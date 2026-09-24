@@ -3,10 +3,11 @@ id: TASK-245
 title: >-
   Two light surfaces stay light in dark mode and the blanket override misses
   them
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi'
 created_date: '2026-09-22 13:10'
-updated_date: '2026-09-23 09:02'
+updated_date: '2026-09-23 19:04'
 labels:
   - frontend
   - ux
@@ -38,6 +39,15 @@ Related and deliberately separate: a bare ErrorBox on the light page gradient me
 - [x] #3 The archived board row is measured inside the live table rather than in a standalone reproduction, since its 2.28:1 light-mode reading came from a detached row and may not hold
 - [x] #4 The guard test added by TASK-244 is extended to cover whichever of these is fixed, so the class cannot silently reappear
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Verify the merged TASK-245 product diff and its regression guard on current main.
+2. Re-run relevant frontend tests/build and inspect the original implementation PR checks.
+3. Run the sealed Asian Dad evaluation.
+4. Record completion, commit/push the closeout, and squash-merge it into main.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -87,4 +97,12 @@ npx tsc --noEmit clean, npm test 295 passed in 19 files.
 
 Baseline correction from the agent, accepted: main is 294 in 19 files, not the 290/18 in my brief --
 that figure predated TASK-246.
+
+Closeout reverified on current main: implementation PR #176 is merged as `c4d62e6` with successful GitHub test and GitGuardian checks. Fresh frontend verification: 297/297 tests passed and `npm run build` completed (`tsc` + Vite). Sealed Asian Dad rubric: PERFECT (7/7).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed the two uncovered light surfaces with the already-merged element-scoped fixes: the export popup measures 19.34:1 in dark mode without changing its 17.85:1 light result; the archived row measures 10.82:1 dark and 7.05:1 light inside the live table. The guard detects reverting the classes. PR #176 (`c4d62e6`) and fresh 297-test/build verification pass; Asian Dad returned PERFECT.
+<!-- SECTION:FINAL_SUMMARY:END -->
