@@ -237,6 +237,17 @@ def _clipboard_contents(artifacts):
     return '\n\n'.join(f'% ===== {name} =====\n{text}' for name,text in contents)
 
 
+def _clipboard_payload(artifacts, job_url):
+    # TASK-250: the copied TeX gets pasted into ChatGPT, which then has the documents but not the
+    # posting they were written for. A '%' line keeps the same clipboard compilable when it is pasted
+    # into a .tex file instead, and needs no escaping: TeX discards a comment to end of line, so a
+    # URL's %, #, &, _ or ~ are inert here -- which they would not be if the link were printed as text.
+    # Kept out of _clipboard_contents so that helper stays artifacts-only for its existing callers.
+    url=' '.join((job_url or '').split())  # a stray newline would close the comment and break the file
+    text=_clipboard_contents(artifacts)
+    return f'% Job listing: {url}\n\n{text}' if text and url else text
+
+
 def _learn_application_preference(user_id, instructions, create_cv, create_letter):
     instructions=' '.join((instructions or '').split())
     if not instructions:
@@ -309,7 +320,7 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         # preference again. '' means it will; anything else is the reason it will not, and the CV
         # popups render that instead of claiming the adjustment was learned for future applications.
         learned_exclusion=preference_exclusion(learned_preference)
-        clipboard_tex=_clipboard_contents(artifacts)
+        clipboard_tex=_clipboard_payload(artifacts,job.url)
         clipboard_copied=bool(clipboard_tex and _copy_to_clipboard(clipboard_tex))
         if 'base_templates' in artifacts:
             _record_base_templates(job,artifacts['base_templates'])
@@ -333,7 +344,7 @@ def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, sou
         archive,filename,artifacts=recompile_generated_package(job,cv_key,source_cv,source_letter,lambda progress,stage:_update(task_id,status='running',progress=progress,stage=stage),**compile_kwargs)
         if cancel_event.is_set():
             raise GenerationCancelled
-        clipboard_tex=_clipboard_contents(artifacts)
+        clipboard_tex=_clipboard_payload(artifacts,job.url)
         _update(task_id,status='ready',progress=100,stage='Ready',archive=archive,filename=filename,artifacts=artifacts,report=task_report,clipboard_tex=clipboard_tex,clipboard_copied=bool(clipboard_tex and _copy_to_clipboard(clipboard_tex)))
     except GenerationCancelled:
         _update(task_id,status='cancelled',stage='Cancelled',error='')
@@ -358,8 +369,10 @@ def start_cv_noop_task(job_id, user_id, artifacts):
             bundle.write(path,Path(path).name)
     task_id=uuid.uuid4().hex
     now=time.monotonic()
+    # TASK-250: this path has no job object -- only the id -- and the copy button is offered here too.
+    clipboard_tex=_clipboard_payload(artifacts,JobLead.objects.filter(id=job_id).values_list('url',flat=True).first())
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'ready','progress':100,'stage':'No changes requested','error':'','archive':archive.getvalue(),'filename':f'application-{job_id}-current.zip','artifacts':artifacts,'report':{'changed_files':[],'main_changes':['Current files retained unchanged.'],'unsupported_requirements_not_claimed':[]},'clipboard_tex':_clipboard_contents(artifacts),'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_created_at':now,'_started_at':now,'_finished_at':now,'_stage_key':'ready','_stage_started_at':now,'_stage_plan':[],'_stage_defaults':{},'_estimate_key':('no-change',),'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'ready','progress':100,'stage':'No changes requested','error':'','archive':archive.getvalue(),'filename':f'application-{job_id}-current.zip','artifacts':artifacts,'report':{'changed_files':[],'main_changes':['Current files retained unchanged.'],'unsupported_requirements_not_claimed':[]},'clipboard_tex':clipboard_tex,'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_created_at':now,'_started_at':now,'_finished_at':now,'_stage_key':'ready','_stage_started_at':now,'_stage_plan':[],'_stage_defaults':{},'_estimate_key':('no-change',),'_stage_times':{},'updated_at':time.time()}
     return task_id
 
 

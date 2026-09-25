@@ -3,10 +3,11 @@ id: TASK-229
 title: >-
   Learned preferences are carrying factual claims that belong in candidate
   evidence
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-09-10 12:06'
-updated_date: '2026-09-21 07:41'
+updated_date: '2026-09-25 14:47'
 labels:
   - backend
   - llm
@@ -43,7 +44,7 @@ No term, phrase or employer is named in this task on purpose: the repository is 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 It is established which factual claims currently live only in learned_application_preferences and not in candidate_evidence - by measurement over the real field, reported as counts and categories rather than as quoted personal content
-- [ ] #2 The claims that are true are moved into candidate_evidence, where the pipeline already treats them as authoritative, with the owner confirming each one rather than a model deciding
+- [x] #2 The claims that are true are moved into candidate_evidence, where the pipeline already treats them as authoritative, with the owner confirming each one rather than a model deciding
 - [x] #3 A readjustment instruction that asserts a FACT is distinguishable from one that asserts a STYLE preference, or the task records why that distinction cannot be drawn automatically and what the owner does instead
 - [ ] #4 After the move, the same job generated at the TASK-225 bound and generated unbounded no longer disagree about any factual claim - verified by re-running the AC4 comparison, not by argument
 - [x] #5 Contradictory entries are surfaced to the owner rather than silently resolved by recency
@@ -183,4 +184,56 @@ into candidate_evidence. That is still owner judgement, and it is still open.
 **A caveat worth keeping.** The filter is the thing making these inert. If TASK-236's notion of a
 durable preference is ever widened, the 19 pairs become live in the same moment, and nothing would
 announce that. Re-run the two commands above rather than trusting this note.
+
+## AC2 closed 2026-09-25 -- and the answer was the opposite of the premise
+
+The sitting was done over the 19 entries that actually reach the CV prompt (57 stored, 19 reaching
+after TASK-236's filter). **None of them carries a positive factual claim to move into
+candidate_evidence.** What they carry is:
+
+- one-off application instructions -- fix a GitHub link, reorder Selected Projects for one employer,
+  recompile one cover letter, replace one headline; and
+- **negative truth guardrails**, which are the valuable part and were sitting in the trimmable half of
+  the prompt where the bound can drop them.
+
+Extracted from 5 entries and confirmed with the owner name by name:
+
+    #25  Databricks, Spark, Dask
+    #27  Flask, SQLAlchemy, Dapr, Traefik
+    #32  Salesforce/Agentforce, Apex, Snowflake, GraphQL, professional-services experience that did
+         not happen, stronger customer-delivery claims, production-scale agent claims
+    #39  MCP, Next.js; unsupported AI/cloud experience
+    #42  unsupported cloud, AWS, AI, infrastructure, production experience
+
+These are now a 'Do not claim without evidence' section in the candidate-evidence FILE
+(CODEX_CANDIDATE_EVIDENCE_PATH -- untracked, personal, never committed), where load_candidate_evidence
+reads them as authoritative and no length bound can drop them.
+
+**One nuance the owner supplied, kept rather than flattened:** Databricks was touched in the Klartext
+project, but they do not consider it defensible in an interview, so it stays on the list. That is the
+L0-L4 claim-strength judgement, and it is recorded in the file so a future pass does not 'discover'
+the Klartext mention and promote it.
+
+So AC2's answer is 'nothing to move in, and here is what to move out of the trimmable half instead'.
+AC4 -- re-running the bounded vs unbounded comparison -- is moot on this evidence: the disagreement it
+was meant to detect came from claims living only in preferences, and there are none. It is left
+unchecked rather than quietly ticked, and the reason is this note.
+
+## The first attempt at AC2 silently did nothing -- caught by checking the loaded prompt
+
+The guardrail section was appended to the END of the candidate-evidence file, which looked right and
+was discarded. _compact_candidate_evidence (cv_generator.py:239) keeps only the text BETWEEN the first
+and second '# Candidate Evidence' markers: canonical = marker + content.split(marker, 2)[1]. This file
+carries exactly two markers, at chars 22,889 and 64,392, so everything after the second one -- where an
+append lands -- never reaches the model.
+
+Measured before and after, through load_candidate_evidence itself rather than by reading the file:
+
+    appended at the end     evidence 59,232 chars   'Do not claim without evidence' present: False
+                                                    'Klartext' present: False
+    moved inside the region evidence 60,537 chars   'Do not claim without evidence' present: True
+                                                    'Klartext', 'Traefik', 'Agentforce' present: True
+
+Worth carrying forward for anyone editing that file by hand: append to the end and it is silently
+dropped. The only check that catches it is loading the evidence the way the prompt does.
 <!-- SECTION:NOTES:END -->
