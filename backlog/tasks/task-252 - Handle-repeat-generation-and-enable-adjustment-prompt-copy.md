@@ -1,11 +1,11 @@
 ---
 id: TASK-252
 title: Handle repeat generation and enable adjustment prompt copy
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-28 14:12'
-updated_date: '2026-09-28 14:29'
+updated_date: '2026-09-28 14:33'
 labels: []
 dependencies: []
 modified_files:
@@ -59,6 +59,8 @@ Verification passed:
 - Asian Dad eval — PERFECT
 
 Implementation commit: 0ee4177.
+
+Implementation squash-merged to main as ae3595a in PR #184 after required checks passed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
