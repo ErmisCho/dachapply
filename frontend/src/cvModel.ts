@@ -33,6 +33,10 @@ export function stepText(task:any){
   return `${label||'Working'} · step ${completed}/${total}`
 }
 
+export function hasSelectedGeneratedFiles(artifacts:any, createCv:boolean, createLetter:boolean){return !!(createCv&&artifacts?.cv_tex||createLetter&&artifacts?.letter_tex)}
+
+export function cvClipboardTex(task:any, preview:any){return task?.clipboard_tex||preview?.clipboard_tex||''}
+
 export type CvPick={provider:string;model:string;effort:string;speed:string}
 export const emptyCvPick:CvPick={provider:'openai',model:'',effort:'',speed:'normal'}
 

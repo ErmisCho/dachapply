@@ -55,6 +55,21 @@ describe('compact CV generator popup (TASK-216)',()=>{
   })
 })
 
+describe('repeat generation and reopened files (TASK-252)',()=>{
+  it('returns before the request when the user declines to recreate selected files',()=>{
+    const generate=appSource.split('async function generate(){')[1].split('async function cancelTask(){')[0]
+
+    expect(generate).toContain("if(hasSelectedGeneratedFiles(task?.artifacts||preview?.artifacts,createCv,createLetter)&&!window.confirm('Generated files already exist for this job. Recreate them with the selected settings?'))return;")
+    expect(generate.indexOf('window.confirm')).toBeLessThan(generate.indexOf('/cv-generation/run/'))
+  })
+
+  it('enables the adjustment copy action from persisted preview content',()=>{
+    expect(appSource).toContain('const clipboardTex=cvClipboardTex(task,preview)')
+    expect(appSource).toContain('disabled={loading||revisionLoading||compileLoading||!clipboardTex}')
+    expect(appSource).toContain('if(tex&&await copyToClipboard(tex))')
+  })
+})
+
 describe('marking a job Applied from the generator (TASK-227)',()=>{
   it('sends exactly the body the board sends for the same transition',()=>{
     // AC2. The window must not become a second way to write a status: the board builds this same

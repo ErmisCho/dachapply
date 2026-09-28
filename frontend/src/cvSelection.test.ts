@@ -4,7 +4,7 @@
 // functions and are tested here. What is NOT covered by any test: that the two pickers are wired to
 // separate state in App.tsx, and every pixel claim -- both need a browser.
 import {afterEach,describe,expect,it,vi} from 'vitest'
-import {comboValid,cvPick,emptyCvPick,readCvPicks,writeCvPicks} from './cvModel'
+import {comboValid,cvClipboardTex,cvPick,emptyCvPick,hasSelectedGeneratedFiles,readCvPicks,writeCvPicks} from './cvModel'
 
 const models=[
   {provider:'openai',key:'gpt-5-codex',label:'GPT-5 Codex',efforts:['low','medium','high','xhigh'],default_effort:'medium',fast_tier:true},
@@ -67,6 +67,23 @@ describe('restoring a remembered selection (TASK-231)',()=>{
 
   it('stays usable when the server offers no models at all',()=>{
     expect(cvPick([],{provider:'openai',model:'gpt-5-codex',effort:'low',speed:'fast'})).toEqual(emptyCvPick)
+  })
+})
+
+describe('existing generated files (TASK-252)',()=>{
+  it('only confirms when a selected output already exists',()=>{
+    const artifacts={cv_tex:'CVs/current.tex',letter_tex:'output/current.tex'}
+
+    expect(hasSelectedGeneratedFiles(artifacts,true,false)).toBe(true)
+    expect(hasSelectedGeneratedFiles(artifacts,false,true)).toBe(true)
+    expect(hasSelectedGeneratedFiles({cv_tex:'CVs/current.tex'},false,true)).toBe(false)
+    expect(hasSelectedGeneratedFiles({},true,true)).toBe(false)
+  })
+
+  it('keeps Copy TeX usable after reopening, while preferring a newly completed task',()=>{
+    expect(cvClipboardTex(null,{clipboard_tex:'persisted files'})).toBe('persisted files')
+    expect(cvClipboardTex({clipboard_tex:'new files'},{clipboard_tex:'persisted files'})).toBe('new files')
+    expect(cvClipboardTex(null,null)).toBe('')
   })
 })
 

@@ -44,7 +44,7 @@ from .services.followup_digest import owned_jobs, record_job_followup_sent
 from .services.draft_chat import ChatTurn, run_chat_turn
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
-from .services.cv_tasks import cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, start_cv_compile_task, start_cv_noop_task, start_cv_revision, start_cv_task
+from .services.cv_tasks import _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, start_cv_compile_task, start_cv_noop_task, start_cv_revision, start_cv_task
 from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
 from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
@@ -1937,7 +1937,9 @@ def cv_generation_preview(request, job_id):
     job=accessible_jobs(request.user).filter(id=job_id).first()
     if not job:
         return Response({'detail':'Job not found.'}, status=404)
-    return Response(generation_preview(job, request.user))
+    preview=generation_preview(job, request.user)
+    preview['clipboard_tex']=_clipboard_payload(preview['artifacts'],job.url)
+    return Response(preview)
 
 
 @api_view(['GET'])
