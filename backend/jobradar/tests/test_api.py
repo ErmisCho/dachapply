@@ -1314,6 +1314,44 @@ def test_cv_task_step_progress_reflects_route_completion_and_cache_reduction():
     cv_tasks._tasks.clear()
 
 
+def test_cv_worker_retries_missing_posting_text_before_generation(db,job,owner,monkeypatch):
+    from threading import Event
+    from jobradar.services import cv_tasks
+
+    fallback='Fallback summary with Python and Django responsibilities.'
+    fetched='Fetched original posting with complete Python, Django, testing, and deployment requirements.'
+    corrected='User-corrected posting text saved while the automatic retry was in flight.'
+    JobLead.objects.filter(pk=job.pk).update(url='https://jobs.example.test/role',raw_description=fallback,original_source_text='')
+    calls=[]; generated=[]
+    monkeypatch.setattr(cv_tasks,'fetch_posting_text',lambda url:(calls.append(url) or {'ok':True,'text':fetched}))
+    monkeypatch.setattr(cv_tasks,'generate_cv_package',lambda current,*args,**kwargs:(generated.append(current.source_text) or (b'zip','a.zip',{})))
+
+    def run():
+        cv_tasks._run('source-retry',job.id,owner.id,'profile','en','',False,'openai','gpt-5.5','medium','normal',cancel_event=Event())
+
+    run()
+    job.refresh_from_db()
+    assert calls==['https://jobs.example.test/role'] and job.original_source_text==fetched and generated[-1]==fetched
+
+    JobLead.objects.filter(pk=job.pk).update(original_source_text=corrected)
+    calls.clear(); run()
+    assert calls==[] and generated[-1]==corrected
+
+    JobLead.objects.filter(pk=job.pk).update(original_source_text='')
+    monkeypatch.setattr(cv_tasks,'fetch_posting_text',lambda url:(calls.append(url) or {'ok':False,'text':'','error':'expired'}))
+    calls.clear(); run()
+    job.refresh_from_db()
+    assert calls==['https://jobs.example.test/role'] and job.original_source_text=='' and generated[-1]==fallback
+
+    def raced_fetch(url):
+        JobLead.objects.filter(pk=job.pk).update(original_source_text=corrected)
+        return {'ok':True,'text':fetched}
+    monkeypatch.setattr(cv_tasks,'fetch_posting_text',raced_fetch)
+    run()
+    job.refresh_from_db()
+    assert job.original_source_text==corrected and generated[-1]==corrected
+
+
 def test_long_generation_recycles_the_db_connection_before_learning_a_preference(db, job, owner, monkeypatch):
     from threading import Event
     from jobradar.services import cv_tasks
