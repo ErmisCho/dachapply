@@ -5,13 +5,15 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-28 16:24'
-updated_date: '2026-09-28 16:40'
+updated_date: '2026-09-28 16:41'
 labels:
   - backend
   - frontend
   - data
   - ai
 dependencies: []
+references:
+  - 'https://github.com/ErmisCho/dachapply/pull/188'
 modified_files:
   - .orchestrator/debug/01a0e859-192d-77f4-aed0-df74ffce7244-3.md
   - backend/jobradar/tests/test_api.py
@@ -59,6 +61,8 @@ Focused backend verification passed: test_api.py plus test_posting_fetch.py, 288
 Full gates passed: 1,235 backend tests; 306 frontend tests; TypeScript/Vite production build. npm ci reported two pre-existing moderate vulnerabilities; build retained the existing chunk-size warning.
 
 Asian Dad evaluation: PERFECT (self-graded). The worker regression measured one fetch before generation, exact fetched-text persistence/use, no fetch for meaningful originals, no write on failure, fallback continuation, and concurrent-edit preservation.
+
+Implementation PR: #188.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
