@@ -5,11 +5,12 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-28 15:19'
-updated_date: '2026-09-28 16:13'
+updated_date: '2026-09-28 16:14'
 labels: []
 dependencies: []
 references:
   - 'https://github.com/ErmisCho/dachapply/pull/186'
+  - 'https://github.com/ErmisCho/dachapply/pull/187'
 modified_files:
   - .orchestrator/debug/01a0e859-192d-77f4-aed0-df74ffce7244-2.md
   - backend/jobradar/tests/test_api.py
@@ -84,6 +85,8 @@ Final verification: 1,234 backend tests passed; 306 frontend tests passed; produ
 Implementation PR: #186.
 
 Implementation squash-merged to main as 3de9740 via PR #186.
+
+Completion status PR: #187.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
