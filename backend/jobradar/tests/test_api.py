@@ -505,6 +505,19 @@ def test_cv_generation_preview_is_owner_only(client, owner, job, cv_assets):
     assert any(model['key']=='gpt-5.6-sol' and {'max','ultra'} <= set(model['efforts']) for model in r.data['models'])
 
 
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_cv_generation_preview_restores_clipboard_text(client, owner, job, tmp_path, monkeypatch):
+    owner.email='owner@example.test'; owner.save(update_fields=['email'])
+    job.url='https://jobs.example.test/role'; job.save(update_fields=['url'])
+    cv=tmp_path/'current.tex'; cv.write_text('CURRENT CV',encoding='utf-8')
+    monkeypatch.setattr('jobradar.views.generation_preview',lambda job,user:{'artifacts':{'cv_tex':str(cv)}})
+
+    response=client.get(f'/api/jobs/{job.id}/cv-generation/')
+
+    assert response.status_code==200
+    assert response.data['clipboard_tex']=='% Job listing: https://jobs.example.test/role\n\nCURRENT CV'
+
+
 @override_settings(CODEX_CV_ENABLED=False, CODEX_CV_OWNER_EMAIL='owner@example.test')
 def test_cv_generation_can_be_disabled(client, owner, job):
     owner.email='owner@example.test'; owner.save(update_fields=['email'])
