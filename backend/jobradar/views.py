@@ -875,8 +875,13 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         text=(request.data.get('original_source_text') or '').strip()
         if not JobLead.is_meaningful_source(text):
             return Response({'detail':'Original job text must contain the job description, not only a link.'}, status=400)
-        JobLead.objects.filter(pk=job.pk).update(original_source_text=text)
-        return Response({'original_source_text':text})
+        company=request.data.get('company',job.company)
+        if not isinstance(company,str) or len(company.strip()) > JobLead._meta.get_field('company').max_length:
+            return Response({'detail':'Company must be 200 characters or fewer.'},status=400)
+        company=company.strip() or 'Unknown company'
+        # One update keeps the popup's generation identity and source text from being half-saved.
+        JobLead.objects.filter(pk=job.pk).update(company=company,original_source_text=text)
+        return Response({'company':company,'original_source_text':text})
     def destroy(self, request, pk=None):
         qs=accessible_jobs(request.user)
         try:
@@ -1994,6 +1999,11 @@ def generate_cv_documents(request, job_id):
     create_letter=request.data.get('create_letter', True) is not False
     if not create_cv and not create_letter:
         return Response({'detail':'Select at least a CV or a letter.'}, status=400)
+    letter_key=request.data.get('letter_template') or ''
+    source_cv,source_letter=latest_generated_sources(job,request.user,letter_key)
+    replace_existing=request.data.get('replace_existing') is True
+    if not replace_existing and (create_cv and source_cv or create_letter and source_letter):
+        return Response({'detail':'Generated files already exist for this job. Confirm replacement before generating.','existing_files':True},status=409)
     try:
         # needs_tools: both endpoints generate or readjust LaTeX, whose prompt tells the model to read
         # the copied source files (TASK-221 AC3).
@@ -2006,7 +2016,10 @@ def generate_cv_documents(request, job_id):
     except RuntimeError as exc:
         return Response({'detail':str(exc)}, status=503)
     try:
-        task_id=start_cv_task(job.id, request.user.id, candidate_context, request.data.get('cv_template') or '', request.data.get('letter_template') or '', create_letter, request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', create_cv=create_cv)
+        task_kwargs={'create_cv':create_cv}
+        if replace_existing:
+            task_kwargs['replace_existing']=True
+        task_id=start_cv_task(job.id,request.user.id,candidate_context,request.data.get('cv_template') or '',letter_key,create_letter,request.data.get('provider') or '',request.data.get('model') or '',request.data.get('effort') or '',request.data.get('speed') or 'normal',**task_kwargs)
     except RuntimeError:
         return Response({'detail':'CV generation is restarting. Try again shortly.'}, status=503)
     return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
@@ -2021,7 +2034,7 @@ def recompile_latest_cv_documents(request, job_id):
     if not job:
         return Response({'detail':'Job not found.'},status=404)
     cv_key=request.data.get('cv_template') or ''
-    source_cv,source_letter=latest_generated_sources(job,request.user)
+    source_cv,source_letter=latest_generated_sources(job,request.user,request.data.get('letter_template') or '')
     source_cv=source_cv if request.data.get('create_cv',True) is not False else None
     source_letter=source_letter if request.data.get('create_letter',True) is not False else None
     if not source_cv and not source_letter:
@@ -2048,13 +2061,14 @@ def revise_latest_cv_documents(request, job_id):
     if not (instructions or correction_image) or not (create_cv or create_letter):
         return Response({'detail':'Provide revision instructions or a correction image and select at least one document.'}, status=400)
     cv_key=request.data.get('cv_template') or ''
-    source_cv,source_letter=latest_generated_sources(job, request.user)
+    letter_key=request.data.get('letter_template') or ''
+    source_cv,source_letter=latest_generated_sources(job,request.user,letter_key)
     create_cv=create_cv and bool(source_cv)
     create_letter=create_letter and bool(source_letter)
     if not create_cv and not create_letter:
         return Response({'detail':'No previous generated files were found for this job.'}, status=400)
     if not correction_image:
-        artifacts=latest_generated_artifacts(job,request.user)
+        artifacts=latest_generated_artifacts(job,request.user,letter_key)
         artifacts={key:path for key,path in artifacts.items() if (create_cv and key.startswith('cv_')) or (create_letter and key.startswith('letter_'))}
         if no_change_requested(instructions):
             task_id=start_cv_noop_task(job.id,request.user.id,artifacts)
