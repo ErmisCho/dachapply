@@ -57,6 +57,8 @@ Verification passed:
 - focused regression checks: 24 frontend tests and 6 backend clipboard/preview tests passed
 - git diff --check — passed
 - Asian Dad eval — PERFECT
+
+Implementation commit: 0ee4177.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
