@@ -1,7 +1,7 @@
 ---
 id: TASK-253
 title: 'Make CV generation job-specific, replaceable, and editable'
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-28 15:19'
@@ -82,6 +82,8 @@ Made the replacement decision executable in unit tests: decline returns the canc
 Final verification: 1,234 backend tests passed; 306 frontend tests passed; production TypeScript/Vite build passed; git diff --check passed; Asian Dad returned PERFECT. Visible Chrome verification on an isolated SQLite database showed the unknown-company warning, editable company/job text, Generate disabled while dirty, successful atomic save, corrected values, warning removal, and Generate re-enabled.
 
 Implementation PR: #186.
+
+Implementation squash-merged to main as 3de9740 via PR #186.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
