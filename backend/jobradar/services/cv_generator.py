@@ -596,35 +596,71 @@ def generation_preview(job, user=None):
             else 'No CV template is stored on this account. An administrator adds one with manage.py import_cv_assets.' if settings.CODEX_CV_ENABLED and workspace and workspace.is_dir()
             else 'CV generation runs on the machine that holds the LaTeX toolchain and is unavailable on this server.'
         ),
-        'artifacts': latest_generated_artifacts(job, user),
+        'artifacts': latest_generated_artifacts(job,user,selected_letter),
+        # Letter names carry the selected template. Keep each template's files separate so changing
+        # the selector cannot confirm or replace a different kind of letter.
+        'letter_artifacts': {letter['key']:{key:value for key,value in latest_generated_artifacts(job,user,letter['key']).items() if key.startswith('letter_')} for letter in letters},
         # Lets the client show a short workspace-relative path while still copying the absolute one.
         'workspace': str(workspace) if workspace else '',
     }
 
 
-# The document language never reached these names -- the two language arguments this function used
-# to take were both dead -- so the requesting user's name takes their place rather than being
-# threaded alongside them.
-def _target_names(job, applicant):
+def _target_slug(job):
     title=re.sub(r'\s*[\[(]?\s*(?:gn\*?|[mwfdx](?:\s*/\s*[mwfdx]){1,3})\s*[\])]?[\s*]*$', '', job.title or '', flags=re.IGNORECASE)
     raw=slugify(f'{job.company}-{title}'.replace('T�V','TUV'))[:90]
-    target='-'.join('TUV' if part.lower() == 'tuv' else part.capitalize() for part in raw.split('-')) or f'Job-{job.id}'
-    return f'{applicant}-CV-{target}.tex', f'{applicant}-Letter-{target}.tex'
+    return '-'.join('TUV' if part.lower() == 'tuv' else part.capitalize() for part in raw.split('-')) or 'Job'
 
 
-def latest_generated_sources(job, user=None):
+def _filename_label(value, fallback='Letter'):
+    raw=slugify(re.sub(r'[._]+','-',value or fallback))[:60]
+    return '-'.join(part.capitalize() for part in raw.split('-') if part) or fallback
+
+
+def _target_names(job, applicant, letter_label='Letter'):
+    # The immutable id is the identity boundary. Company/title remain readable decoration, but two
+    # equal-looking leads can no longer discover or replace one another's files.
+    target=f'{_target_slug(job)}-Job-{job.id}'
+    return f'{applicant}-CV-{target}.tex', f'{applicant}-{_filename_label(letter_label)}-{target}.tex'
+
+
+def _letter_label(user, letter_key):
+    for template in user_templates(user).values():
+        asset=template['letters'].get(letter_key)
+        if asset:
+            return asset.label or asset.key
+    return letter_key or 'Letter'
+
+
+def latest_generated_sources(job, user=None, letter_key=''):
     applicant=applicant_name(user)
-    cv_name,letter_name=_target_names(job, applicant)
+    letter_label=_letter_label(user,letter_key)
+    # Before TASK-253 names had no job id and letters always said "Letter". Keep those exact
+    # candidates as a fallback for readjust/recompile/copy, but never let their prefix match an
+    # unrelated role such as Engineer-Manager or another numbered job.
+    legacy_target=_target_slug(job)
     raw_target=slugify(f'{job.company}-{job.title}')[:90] or f'job-{job.id}'
-    old_cv=f'{applicant}-CV-{raw_target}.tex'
-    old_letter=f'{applicant}-Letter-{raw_target}.tex'
-    def latest(directories, names):
-        files=[path for directory in directories for name in set(names) for path in directory.glob(f'{Path(name).stem}*.tex')]
-        return str(max(files, key=lambda path:path.stat().st_mtime)) if files else None
+    legacy_cv=[f'{applicant}-CV-{legacy_target}.tex',f'{applicant}-CV-{raw_target}.tex']
+    legacy_letter=[f'{applicant}-Letter-{legacy_target}.tex',f'{applicant}-Letter-{raw_target}.tex']
+    def latest(directories, names=(), pattern=None):
+        stems={Path(name).stem for name in names}
+        files=[]
+        for directory in directories:
+            if not directory.is_dir():
+                continue
+            files.extend(path for path in directory.glob('*.tex') if (pattern and re.fullmatch(pattern,path.stem)) or any(path.stem==stem or re.fullmatch(re.escape(stem)+r'-\d+',path.stem) for stem in stems))
+        return str(max(files,key=lambda path:path.stat().st_mtime)) if files else None
     if not settings.CODEX_CV_WORKSPACE:
         return None,None
     workspace=Path(settings.CODEX_CV_WORKSPACE)
-    return latest([workspace/'CVs',workspace/'CVs'/'sent'], [cv_name,old_cv]),latest([workspace/'output'], [letter_name,old_letter])
+    cv_dirs=[workspace/'CVs',workspace/'CVs'/'sent']
+    letter_dirs=[workspace/'output']
+    # Match the immutable id while allowing company/title edits to change the readable middle.
+    # Once a job-scoped output exists it wins regardless of an older legacy file's mtime.
+    numbered=r'(?:-\d+)?'
+    cv_pattern=rf'{re.escape(applicant)}-CV-.+-Job-{job.id}{numbered}'
+    letter_pattern=rf'{re.escape(applicant)}-{re.escape(_filename_label(letter_label))}-.+-Job-{job.id}{numbered}'
+    return (latest(cv_dirs,pattern=cv_pattern) or latest(cv_dirs,legacy_cv),
+            latest(letter_dirs,pattern=letter_pattern) or latest(letter_dirs,legacy_letter))
 
 
 ARTIFACT_KEYS=('cv_tex','cv_pdf','letter_tex','letter_pdf')
@@ -643,11 +679,11 @@ def reveal_artifact_folder(path):
     return True
 
 
-def latest_generated_artifacts(job, user=None):
+def latest_generated_artifacts(job, user=None, letter_key=''):
     # Task records live in memory only (cv_tasks._tasks), so artifact paths vanish on a Django
     # restart. Reading them back off the workspace keeps them visible for as long as the files
     # themselves survive, without persisting task state.
-    cv_source,letter_source=latest_generated_sources(job, user)
+    cv_source,letter_source=latest_generated_sources(job,user,letter_key)
     artifacts={}
     for prefix,source in (('cv',cv_source),('letter',letter_source)):
         if not source:
@@ -837,15 +873,15 @@ def _compile_pdf(output, filename, is_cv, cancelled=None):
 
 def _package_cache(workspace, job, profile, sources, options, user_id=None):
     # The cache directory is shared by every account on the machine, so the account is part of the
-    # key (version 4; v3 was TASK-99a). Two accounts with byte-identical templates and the same job hashed
+    # key (version 5; v4 omitted the job id). Two accounts with byte-identical templates and the same job hashed
     # to the same entry before, and the cached zip carries the FIRST account's name in its
     # filenames -- so the second one downloaded an application titled with a stranger's surname.
     # The template and photo bytes are hashed in directly now that they are rows rather than files,
     # which also means editing a template invalidates the entry the way touching the file used to.
     digest=hashlib.sha256(json.dumps({
-        'version':4,
+        'version':5,
         'user':user_id,
-        'job':[job.company,job.title,job.location,job.language_requirements,job.source_text],
+        'job':[job.id,job.company,job.title,job.location,job.language_requirements,job.source_text],
         'evaluation':list(job.evaluations.values('fit_score','summary','main_match_reasons','main_gaps','cv_adjustment_notes')[:1]),
         'profile':profile,
         'options':options,
@@ -1210,7 +1246,7 @@ def _read_generated(path, label):
         raise RuntimeError(f'The current generated {label} is no longer on disk; generate it again rather than readjusting it.') from None
 
 
-def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed='normal', progress=None, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, cancelled=None, user_id=None, base_templates=None):
+def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed='normal', progress=None, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, cancelled=None, user_id=None, base_templates=None, replace_existing=False):
     _ensure_active(cancelled)
 
     reported_progress=0
@@ -1268,7 +1304,8 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
     # money) on a failure no rewrite of the LaTeX can fix.
     if create_cv and not photo and r'\includegraphics' in cv_text:
         raise RuntimeError('This CV template includes a photograph but no photo is stored on this account. Add one with manage.py import_cv_assets, or use a template without \\includegraphics.')
-    cv_name, letter_name=_target_names(job, applicant_name(requesting_user))
+    cv_name,letter_name=_target_names(job,applicant_name(requesting_user),letter_asset.label or letter_asset.key if letter_asset else 'Letter')
+    replace_cv,replace_letter=latest_generated_sources(job,requesting_user,letter_key) if replace_existing and not is_revision else (None,None)
     filename=f'application-{job.id}-{cv_key}.zip'
     cache_paths=None
     cache_options=[cv_key,letter_key,create_cv,create_letter,provider,model,effort,speed,' '.join((revision_instructions or '').split()),correction_image[1] if correction_image else '']
@@ -1382,7 +1419,8 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
         generation_report={key:generated[key] for key in ('changed_files','main_changes','unsupported_requirements_not_claimed','confirmations')}
         report(97, 'Saving files')
         _ensure_active(cancelled)
-        saved=persist_generated_files(output, workspace, cv_name if create_cv else None, letter_name if create_letter else None, source_cv if is_revision else None, source_letter if is_revision else None)
+        saved=persist_generated_files(output,workspace,cv_name if create_cv else None,letter_name if create_letter else None,source_cv if is_revision else replace_cv,source_letter if is_revision else replace_letter)
+        saved['letter_template']=letter_key if create_letter else ''
         saved['report']=generation_report
         saved['base_templates']=base_templates
         archive=io.BytesIO()

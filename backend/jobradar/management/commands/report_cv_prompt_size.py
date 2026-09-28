@@ -335,7 +335,7 @@ class Command(BaseCommand):
         finally:
             settings.CODEX_CV_WORKSPACE = workspace
 
-        cv_name, letter_name = _target_names(job, applicant_name(user))
+        cv_name, letter_name = _target_names(job, applicant_name(user), letter_asset.label or letter_asset.key if letter_asset else 'Letter')
         prompt = _prompt(job, context, cv_name, letter_name, cv_key, letter_key, create_letter=create_letter)
 
         # Each part measured at its own source, never by splitting the assembled prompt back up on
