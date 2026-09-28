@@ -1,11 +1,11 @@
 ---
 id: TASK-254
 title: Retry missing job-posting text before CV generation
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-28 16:24'
-updated_date: '2026-09-28 16:41'
+updated_date: '2026-09-28 16:42'
 labels:
   - backend
   - frontend
@@ -63,6 +63,8 @@ Full gates passed: 1,235 backend tests; 306 frontend tests; TypeScript/Vite prod
 Asian Dad evaluation: PERFECT (self-graded). The worker regression measured one fetch before generation, exact fetched-text persistence/use, no fetch for meaningful originals, no write on failure, fallback continuation, and concurrent-edit preservation.
 
 Implementation PR: #188.
+
+Implementation squash-merged to main as 765f75f via PR #188.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
