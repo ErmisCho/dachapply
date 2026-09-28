@@ -13,6 +13,7 @@ from django.db import close_old_connections
 
 from jobradar.models import ApplicationNote, JobLead, UserProfile
 from jobradar.services.cv_generator import GenerationCancelled, generate_cv_package, preference_exclusion, recompile_generated_package
+from jobradar.services.posting_fetch import fetch_posting_text
 
 
 _tasks={}
@@ -296,12 +297,27 @@ def _cleanup():
             del _tasks[task_id]
 
 
+def _retry_missing_source(job):
+    if job.is_meaningful_source(job.original_source_text) or not job.url:
+        return
+    original=job.original_source_text
+    result=fetch_posting_text(job.url)
+    text=result.get('text','') if result.get('ok') else ''
+    if job.is_meaningful_source(text):
+        JobLead.objects.filter(pk=job.pk,original_source_text=original).update(original_source_text=text)
+    # A popup save can win while the network request is in flight; generation uses that newer text.
+    job.refresh_from_db()
+
+
 def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, cancel_event=None):
     close_old_connections()
     try:
         if cancel_event.is_set():
             raise GenerationCancelled
         job=JobLead.objects.get(id=job_id)
+        _retry_missing_source(job)
+        if cancel_event.is_set():
+            raise GenerationCancelled
         if base_templates is None and (source_cv or source_letter):
             base_templates=_latest_base_templates(job)
         generation_kwargs={'cancelled':cancel_event.is_set,'user_id':user_id}
