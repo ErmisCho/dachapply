@@ -7,13 +7,15 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-09-10 12:06'
-updated_date: '2026-09-29 16:14'
+updated_date: '2026-09-29 20:42'
 labels:
   - backend
   - llm
   - data
 dependencies:
   - TASK-225
+references:
+  - 'https://github.com/ErmisCho/dachapply/pull/190'
 modified_files:
   - .orchestrator/debug/01a0edd2-7a80-737c-9bb4-8581c24c7af5-1.md
   - .orchestrator/debug/01a0edd2-7a80-737c-9bb4-8581c24c7af5-2.md
