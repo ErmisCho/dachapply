@@ -3,11 +3,11 @@ id: TASK-229
 title: >-
   Learned preferences are carrying factual claims that belong in candidate
   evidence
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-10 12:06'
-updated_date: '2026-09-29 20:43'
+updated_date: '2026-09-29 20:55'
 labels:
   - backend
   - llm
@@ -273,10 +273,18 @@ This is the requested before/after re-run, not an argument from prompt construct
 - Owner-checkout frontend build: **passed**, 27 modules transformed. Localhost/served-bundle parity is deferred to the required post-merge runtime sync so it verifies the revision that actually lands rather than this pre-merge branch.
 - Privacy check: generated CVs, evidence, judge inputs, and judge outputs remain outside Git under `%LOCALAPPDATA%`; the repository diff contains only counts/categories and operational debug records.
 - Sealed Asian Dad rubric: **PERFECT** -- every criterion passed against measured evidence (read-only real-field hash, surfaced conflict pairs with duplicates excluded, 1,235-test gate, unchanged generation code, and privacy-scoped diff).
+
+## Post-merge completion 2026-09-29
+
+- Implementation PR [#190](https://github.com/ErmisCho/dachapply/pull/190) squash-merged as `0766c03c7bc2670bf30463a8ceb360d4744e1b92`.
+- Main deployment run [36628893582](https://github.com/ErmisCho/dachapply/actions/runs/36628893582) passed the 1,235-test/backend gate, frontend typecheck/tests, image build, Azure deployment, and public-app check. Public `/` and `/api/health/` both returned 200; health reported `status=ok`, `database=ok`.
+- Pre-merge rollback image was recorded as `ghcr.io/ermischo/dachapply:6e24c399759d786dce0809e1053265ccadecedfe` from successful deployment run 36453037961.
+- Dedicated local runtime was synchronized to the exact merged SHA `0766c03`, dependencies refreshed, and the production frontend rebuilt. `localhost:8000` health returned 200/database ok. The served asset `index-CvmyftQZ.js` matched `frontend/dist/index.html`; a visible browser load reached `/login` with ready state complete, one rendered React root child, styles loaded, and 1,705 body-text characters.
+- Asian Dad verdict remained **PERFECT**. TASK-229 is complete.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Completed the owner-confirmed evidence cleanup and re-ran the missing bounded-vs-unbounded comparison on job 1488. Two real uncached generations compiled successfully; independent full-diff reviews found zero factual disagreements, and neither output used any of the 14 moved guardrail terms. Verified with 1,235 backend tests, frontend production builds, and a PERFECT sealed evaluation. Private career content remained outside Git.
+Moved the owner-confirmed negative truth guardrails into authoritative local candidate evidence, retained the read-only fact/style and contradiction review tooling, and completed the missing bounded-vs-unbounded real-generation comparison with zero factual disagreements. PR #190 merged as 0766c03; 1,235 backend tests, frontend gates, Azure deployment/public health, and synchronized rendered localhost all passed.
 <!-- SECTION:FINAL_SUMMARY:END -->
