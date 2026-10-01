@@ -5,13 +5,14 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-10-01 08:44'
-updated_date: '2026-10-01 12:46'
+updated_date: '2026-10-01 12:59'
 labels:
   - infrastructure
   - cost
 dependencies: []
 modified_files:
   - .github/workflows/deploy-container-apps.yml
+  - .orchestrator/debug/01a0edd2-7a80-737c-9bb4-8581c24c7af5-13.md
 priority: high
 type: chore
 ordinal: 255000
@@ -48,4 +49,6 @@ Owner request, 2026-10-01: reduce the recurring Azure Container Apps charge by a
 Changed the canonical deployment command from an always-on minimum of one replica to min 0 / max 1. Local verification: deployment-block assertion passed, backend suite 1,243 passed, frontend production build passed, and git diff check passed.
 
 Implementation PR #195 merged as cca5c4e0 and deployment run 36863276503 succeeded, including public-app verification. Local Azure CLI cannot independently read the live bounds because tenant security defaults require interactive reauthentication; adding the live assertion to the authenticated deployment itself.
+
+Deployment run 36864599690 applied the scale update but failed its new verifier because Azure CLI renders a queried primitive array on separate lines while Bash read consumes one line. Root cause is documented in .orchestrator/debug/01a0edd2-7a80-737c-9bb4-8581c24c7af5-13.md; the verifier now queries each scalar separately.
 <!-- SECTION:NOTES:END -->
