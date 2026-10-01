@@ -1,11 +1,11 @@
 ---
 id: TASK-255
 title: Stage and review refreshed job-posting text
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-30 21:58'
-updated_date: '2026-10-01 08:05'
+updated_date: '2026-10-01 08:11'
 labels:
   - frontend
   - backend
@@ -77,6 +77,8 @@ Job records can contain missing, stale, or irrelevant source text even when thei
 Implemented one accepted source plus one staged candidate, shared guarded fetch/staging APIs, bounded app-open checks, profile cadence, add-time review cards, selected-job review, and generation gates/editors.
 
 Verification (2026-10-01): 1,243 backend tests and 307 frontend tests passed; TypeScript and production build passed; migrations and git diff checks passed. Authenticated browser verification created both successful and failed URL-backed jobs, showed per-listing failure/manual recovery, measured editable 14,881/14,839-character generation panes with generation disabled until resolution, verified URL-less manual editing with no fetch control, and persisted explicit Keep/Use decisions. The supplied Glueck im Job URL yielded 14,839 characters containing Data Scientist, AI Engineer, Python, and Österreichische Lotterien with zero U+FFFD characters. Asian Dad verdict: PERFECT.
+
+Merged implementation PR #192 as a2660016 after GitHub CI passed (test: 2m52s; GitGuardian passed).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
