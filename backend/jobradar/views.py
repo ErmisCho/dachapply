@@ -44,7 +44,7 @@ from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_s
 from .services.followup_digest import owned_jobs, record_job_followup_sent
 from .services.draft_chat import ChatTurn, run_chat_turn
 from .services.analytics import record_demo_click
-from .services.cv_generator import ARTIFACT_KEYS, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
+from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
 from .services.cv_tasks import _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, start_cv_compile_task, start_cv_noop_task, start_cv_revision, start_cv_task
 from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
 from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
@@ -2056,7 +2056,13 @@ def generate_cv_documents(request, job_id):
     source_cv,source_letter=latest_generated_sources(job,request.user,letter_key)
     replace_existing=request.data.get('replace_existing') is True
     if not replace_existing and (create_cv and source_cv or create_letter and source_letter):
-        return Response({'detail':'Generated files already exist for this job. Confirm replacement before generating.','existing_files':True},status=409)
+        # TASK-259: an Applied job's files are its sent documents, which are read-only (TASK-256), so
+        # confirming writes new copies beside them. Only say so when every selected file is a sent one;
+        # an ordinary file in the selection really would be replaced.
+        sent=_sent_paths(settings.CODEX_CV_WORKSPACE)
+        if all(_is_sent(path,sent) for wanted,path in ((create_cv,source_cv),(create_letter,source_letter)) if wanted and path):
+            return Response({'detail':'These are the documents this job was sent with. Generating creates new copies and keeps the sent documents unchanged.','existing_files':True,'sent_documents':True},status=409)
+        return Response({'detail':'Generated files already exist for this job. Confirm replacement before generating.','existing_files':True,'sent_documents':False},status=409)
     try:
         # needs_tools: both endpoints generate or readjust LaTeX, whose prompt tells the model to read
         # the copied source files (TASK-221 AC3).

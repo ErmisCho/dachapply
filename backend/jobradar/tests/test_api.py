@@ -746,6 +746,50 @@ def test_cv_generation_requires_confirmation_before_replacing_selected_files(cli
     assert confirmed.status_code==202 and started[0][1]['replace_existing'] is True
 
 
+def _post_generation_twice(client, job, monkeypatch):
+    # The unconfirmed request, then the confirmed one, with the costly steps stubbed out.
+    monkeypatch.setattr('jobradar.views.validate_model_capability',lambda *args,**kwargs:None)
+    monkeypatch.setattr('jobradar.views.load_candidate_evidence',lambda *args:'profile')
+    started=[]
+    monkeypatch.setattr('jobradar.views.start_cv_task',lambda *args,**kwargs:started.append(kwargs) or 'task123')
+    payload={'cv_template':'de','letter_template':'anschreiben','create_cv':True,'create_letter':True,'provider':'openai','model':'gpt-5.5','effort':'medium'}
+    refused=client.post(f'/api/jobs/{job.id}/cv-generation/run/',payload,format='json')
+    assert started==[]
+    confirmed=client.post(f'/api/jobs/{job.id}/cv-generation/run/',{**payload,'replace_existing':True},format='json')
+    assert confirmed.status_code==202 and started==[{'create_cv':True,'replace_existing':True}]
+    return refused
+
+
+@throttled_rest_framework(cv_generation_user='100/hour')
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_replacement_prompt_for_ordinary_generated_files_is_unchanged(client,owner,job,tmp_path,settings,cv_assets,monkeypatch):
+    # TASK-259 AC2: a job that is not Applied keeps the replacement wording, flagged as not sent.
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    owner.email='owner@example.test'; owner.save(update_fields=['email']); cv_assets(owner)
+    _generate_files(tmp_path,job,owner)
+
+    refused=_post_generation_twice(client,job,monkeypatch)
+
+    assert refused.status_code==409
+    assert refused.data=={'detail':'Generated files already exist for this job. Confirm replacement before generating.','existing_files':True,'sent_documents':False}
+
+
+@throttled_rest_framework(cv_generation_user='100/hour')
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_generating_for_an_applied_job_says_new_copies_keep_the_sent_documents(client,owner,job,tmp_path,settings,cv_assets,monkeypatch,django_capture_on_commit_callbacks):
+    # TASK-259 AC1/AC3: confirming never replaces sent documents (TASK-256), so the 409 must not ask to.
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    owner.email='owner@example.test'; owner.save(update_fields=['email']); cv_assets(owner)
+    _generate_files(tmp_path,job,owner)
+    with django_capture_on_commit_callbacks(execute=True):
+        client.patch(f'/api/jobs/{job.id}/',{'status':'applied'},format='json')
+
+    refused=_post_generation_twice(client,job,monkeypatch)
+
+    assert refused.status_code==409
+    assert refused.data=={'detail':'These are the documents this job was sent with. Generating creates new copies and keeps the sent documents unchanged.','existing_files':True,'sent_documents':True}
+
+
 @throttled_rest_framework(cv_generation_user='100/hour')
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
 def test_generation_after_popup_save_reads_corrected_company_and_source(client,owner,job,monkeypatch):
