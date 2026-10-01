@@ -2,6 +2,7 @@ import json
 import re
 from datetime import datetime, timezone as dt_timezone
 from importlib import import_module
+from pathlib import Path
 
 import pytest
 from django.apps import apps as django_apps
@@ -316,6 +317,148 @@ def test_applied_status_sets_status_date(client, job):
     assert r.status_code==200 and r.data['status_date'] is not None and r.data['last_update_date'] is not None
 
 
+def _generate_files(workspace, job, user):
+    # Exactly what generate_cv_package does after compiling: persist with collision-safe names, then
+    # record the hidden sidecar that ties these files to this job.
+    from jobradar.services.cv_generator import _record_artifact_metadata, _target_names, applicant_name, persist_generated_files
+    output=workspace/f'build-{job.id}'; output.mkdir()
+    cv_name,letter_name=_target_names(job,applicant_name(user),'Anschreiben')
+    for name in (cv_name,letter_name):
+        (output/name).write_text(f'{job.id} {name}',encoding='utf-8'); (output/name).with_suffix('.pdf').write_bytes(b'%PDF')
+    saved=persist_generated_files(output,workspace,cv_name,letter_name)
+    return saved,_record_artifact_metadata(job,user.id,saved,'anschreiben')
+
+
+def test_applied_status_deletes_only_its_local_metadata(client,job,tmp_path,settings,django_capture_on_commit_callbacks):
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    other=make_job(client,company='Other',title='Role')
+    saved,own_sidecar=_generate_files(tmp_path,job,client.user)
+    other_saved,other_sidecar=_generate_files(tmp_path,other,client.user)
+    cache=tmp_path/'.dachapply-cache'; cache.mkdir()
+    entries={}
+    for name,data in {'own':{'job_id':job.id,'user_id':client.user.id,'filename':'clean.zip'},'legacy':{'filename':f'application-{job.id}-en.zip'},'other':{'job_id':other.id,'user_id':client.user.id,'filename':'other.zip'}}.items():
+        entries[name]=(cache/f'{name}.json',cache/f'{name}.zip')
+        entries[name][0].write_text(json.dumps(data),encoding='utf-8'); entries[name][1].write_bytes(b'zip')
+
+    with django_capture_on_commit_callbacks(execute=True):
+        response=client.patch(f'/api/jobs/{job.id}/',{'status':'applied'},format='json')
+
+    assert response.status_code==200 and response.data['status']=='applied'
+    assert not own_sidecar.exists() and not any(path.exists() for path in entries['own']+entries['legacy'])
+    # Isolation: another job's sidecar and cache survive, and no generated document is ever touched.
+    assert other_sidecar.exists() and all(path.exists() for path in entries['other'])
+    assert all(Path(path).exists() for path in [*saved.values(),*other_saved.values()])
+
+
+def test_applied_cleanup_runs_only_after_commit(client,job,tmp_path,settings,django_capture_on_commit_callbacks):
+    from django.db import transaction
+    from jobradar.serializers import JobLeadSerializer
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    _,sidecar=_generate_files(tmp_path,job,client.user)
+    # The mailbox-suggestion path: serializer.update() inside an atomic block that then rolls back.
+    with django_capture_on_commit_callbacks(execute=True), pytest.raises(RuntimeError):
+        with transaction.atomic():
+            JobLeadSerializer().update(job,{'status':'applied'})
+            raise RuntimeError('rolled back')
+    job.refresh_from_db()
+    assert job.status!='applied' and sidecar.exists()
+    with django_capture_on_commit_callbacks(execute=True):
+        with transaction.atomic():
+            JobLeadSerializer().update(job,{'status':'applied'})
+    assert not sidecar.exists()
+
+
+def test_applied_status_persists_when_metadata_is_missing_or_unavailable(client,tmp_path,settings,django_capture_on_commit_callbacks,monkeypatch):
+    from jobradar.services import cv_generator
+    for workspace in (str(tmp_path),str(tmp_path/'unavailable'),''):
+        settings.CODEX_CV_WORKSPACE=workspace
+        missing=make_job(client,company='No metadata',title='Role')
+        with django_capture_on_commit_callbacks(execute=True):
+            assert client.patch(f'/api/jobs/{missing.id}/',{'status':'applied'},format='json').status_code==200
+        missing.refresh_from_db(); assert missing.status=='applied'
+    # A workspace that exists but cannot be written: the sidecar cannot be unlinked.
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    locked=make_job(client,company='Locked',title='Role')
+    _,sidecar=_generate_files(tmp_path,locked,client.user)
+    monkeypatch.setattr(cv_generator.Path,'unlink',lambda self,missing_ok=False:(_ for _ in ()).throw(PermissionError('read-only')))
+    with django_capture_on_commit_callbacks(execute=True):
+        assert client.patch(f'/api/jobs/{locked.id}/',{'status':'applied'},format='json').status_code==200
+    locked.refresh_from_db(); assert locked.status=='applied' and sidecar.exists()
+
+
+def test_equal_looking_jobs_get_collision_suffixed_names_and_stay_separate(client,job,tmp_path,settings,django_capture_on_commit_callbacks):
+    from jobradar.services.cv_generator import latest_generated_sources
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    twin=make_job(client,company=job.company,title=job.title)
+    first,_=_generate_files(tmp_path,job,client.user)
+    second,_=_generate_files(tmp_path,twin,client.user)
+    assert Path(first['cv_tex']).name=='Owner-CV-Acme-Python-Engineer.tex'
+    assert Path(second['cv_tex']).name=='Owner-CV-Acme-Python-Engineer-2.tex' and Path(second['letter_tex']).name=='Owner-Anschreiben-Acme-Python-Engineer-2.tex'
+    assert Path(first['letter_tex']).name=='Owner-Anschreiben-Acme-Python-Engineer.tex' and Path(second['cv_pdf']).name=='Owner-CV-Acme-Python-Engineer-2.pdf'
+    assert Path(first['cv_tex']).read_text(encoding='utf-8').startswith(f'{job.id} ')
+    # Lookup comes from the sidecar, not the filename, for both twins.
+    assert latest_generated_sources(job,client.user,'anschreiben')==(first['cv_tex'],first['letter_tex'])
+    assert latest_generated_sources(twin,client.user,'anschreiben')==(second['cv_tex'],second['letter_tex'])
+
+    with django_capture_on_commit_callbacks(execute=True):
+        client.patch(f'/api/jobs/{job.id}/',{'status':'applied'},format='json')
+    assert latest_generated_sources(twin,client.user,'anschreiben')==(second['cv_tex'],second['letter_tex'])
+    # A third equal-looking lead must not adopt (and later overwrite) the documents that were sent.
+    third=make_job(client,company=job.company,title=job.title)
+    assert latest_generated_sources(third,client.user,'anschreiben')==(None,None)
+
+
+def _digest(path):
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_applied_job_keeps_read_only_link_to_its_sent_documents(client,owner,job,tmp_path,settings,cv_assets,django_capture_on_commit_callbacks):
+    from jobradar.services.cv_generator import latest_generated_sources
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    owner.email='owner@example.test'; owner.save(update_fields=['email']); cv_assets(owner)
+    JobLead.objects.filter(pk=job.pk).update(original_source_text='Python Django SQL role with enough original posting text to generate from.')
+    sent,_=_generate_files(tmp_path,job,owner)
+    with django_capture_on_commit_callbacks(execute=True):
+        client.patch(f'/api/jobs/{job.id}/',{'status':'applied'},format='json')
+    job.refresh_from_db()
+    assert latest_generated_sources(job,owner,'anschreiben')==(sent['cv_tex'],sent['letter_tex'])
+    # The board reads GET /cv-generation/ (App.tsx), which resolves through that same lookup.
+    preview=client.get(f'/api/jobs/{job.id}/cv-generation/').data
+    assert preview['artifacts']['cv_tex']==sent['cv_tex'] and preview['artifacts']['cv_pdf']==sent['cv_pdf']
+    assert preview['letter_artifacts']['anschreiben']=={'letter_tex':sent['letter_tex'],'letter_pdf':sent['letter_pdf']}
+
+
+def test_revising_or_recompiling_an_applied_job_never_modifies_its_sent_documents(client,job,tmp_path,settings,monkeypatch,django_capture_on_commit_callbacks):
+    from jobradar.services import cv_generator
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    sent,_=_generate_files(tmp_path,job,client.user)
+    with django_capture_on_commit_callbacks(execute=True):
+        client.patch(f'/api/jobs/{job.id}/',{'status':'applied'},format='json')
+    before={key:_digest(path) for key,path in sent.items()}
+    monkeypatch.setattr(cv_generator,'user_photo',lambda user:None)
+    monkeypatch.setattr(cv_generator,'_compile_pdf',lambda output,filename,*a,**k:(output/Path(filename).with_suffix('.pdf')).write_bytes(b'recompiled-pdf'))
+    source_cv,source_letter=cv_generator.latest_generated_sources(job,client.user,'anschreiben')
+    assert (source_cv,source_letter)==(sent['cv_tex'],sent['letter_tex'])
+
+    # recompile-latest, then an exact OLD/NEW revision (both recompile_generated_package).
+    _,_,recompiled=cv_generator.recompile_generated_package(job,'en',source_cv,source_letter,user_id=client.user.id)
+    _,_,exact=cv_generator.recompile_generated_package(job,'en',source_cv,source_letter,user_id=client.user.id,source_updates={source_cv:'edited cv'})
+    # AI revision and confirm-replacement both persist onto the looked-up source as their target.
+    output=tmp_path/'revision'; output.mkdir()
+    for name in (Path(source_cv).name,Path(source_letter).name):
+        (output/name).write_text('revised',encoding='utf-8'); (output/name).with_suffix('.pdf').write_bytes(b'revised-pdf')
+    revised=cv_generator.persist_generated_files(output,tmp_path,Path(source_cv).name,Path(source_letter).name,source_cv,source_letter)
+
+    assert {key:_digest(path) for key,path in sent.items()}==before
+    written=[recompiled['cv_tex'],recompiled['letter_tex'],exact['cv_tex'],revised['cv_tex'],revised['letter_tex']]
+    assert len(set(written))==5 and not set(written)&set(sent.values())
+    assert Path(exact['cv_tex']).read_text(encoding='utf-8')=='edited cv' and Path(revised['cv_tex']).name=='Owner-CV-Acme-Python-Engineer-4.tex'
+    # The fresh revision is what the job now resolves to; the sent originals stay linked as fallback.
+    assert cv_generator.latest_generated_sources(job,client.user,'anschreiben')[0]==exact['cv_tex']
+
+
 def test_rejected_status_clears_last_update_date(client, job):
     job.status='interview'; job.status_date=timezone.localdate(); job.last_update_date=timezone.localdate(); job.save()
     r=client.patch(f'/api/jobs/{job.id}/', {'status':'rejected','status_date':'2026-01-02'}, format='json')
@@ -432,28 +575,31 @@ def test_correction_image_validation(monkeypatch):
 @override_settings(CODEX_CV_OWNER_EMAIL='owner@example.test')
 def test_generated_application_names_derive_from_the_requesting_user(db, job):
     from types import SimpleNamespace
-    from jobradar.services.cv_generator import _target_names, applicant_name
+    from jobradar.services.cv_generator import _package_filename, _target_names, applicant_name
 
     owner=User.objects.create_user('owner@example.test', email='owner@example.test')
-    suffix=f'Acme-Python-Engineer-Job-{job.id}.tex'
+    suffix='Acme-Python-Engineer.tex'
     assert _target_names(job, applicant_name(owner))==(f'Chorinopoulos-Ermis-CV-{suffix}',f'Chorinopoulos-Ermis-Letter-{suffix}')
 
     # An enabled second user ships documents titled with their own name, never the owner's.
     friend=User.objects.create_user('jane@example.test', email='jane@example.test', first_name='jane', last_name='doe')
     assert _target_names(job, applicant_name(friend), 'Anschreiben')==(f'Doe-Jane-CV-{suffix}',f'Doe-Jane-Anschreiben-{suffix}')
-    # The immutable job id, not only display text, keeps equal-looking positions separate.
+    # Equal-looking jobs have equal recipient-facing base names; hidden metadata and collision
+    # suffixes keep their actual files separate without exposing the database id.
     other=SimpleNamespace(id=job.id+1, company=job.company, title=job.title)
-    assert _target_names(other, applicant_name(friend), 'Anschreiben') != _target_names(job, applicant_name(friend), 'Anschreiben')
+    assert _target_names(other,applicant_name(friend),'Anschreiben') == _target_names(job,applicant_name(friend),'Anschreiben')
+    assert f'Job-{job.id}' not in _target_names(job,applicant_name(friend))[0]
+    assert _package_filename(job,applicant_name(friend))=='Doe-Jane-Application-Acme-Python-Engineer.zip'
     # No first/last name set: fall back to the account name, still never to somebody else's.
     assert applicant_name(User.objects.create_user('sam.smith@example.test', email='sam.smith@example.test'))=='Sam-Smith'
     assert applicant_name(None)=='Candidate'
 
-    # The job half of the name is unchanged: gendered suffixes stripped, TÜV kept readable, and no
-    # language ever reached it -- _target_names takes no language argument at all now.
+    # Gendered suffixes are stripped and TÜV remains readable; no language or database key reaches
+    # the human-facing filename.
     job.title='Machine Learning Engineer (gn*)'
-    assert _target_names(job, 'Doe-Jane')==(f'Doe-Jane-CV-Acme-Machine-Learning-Engineer-Job-{job.id}.tex',f'Doe-Jane-Letter-Acme-Machine-Learning-Engineer-Job-{job.id}.tex')
+    assert _target_names(job, 'Doe-Jane')==('Doe-Jane-CV-Acme-Machine-Learning-Engineer.tex','Doe-Jane-Letter-Acme-Machine-Learning-Engineer.tex')
     job.company='TÜV AUSTRIA'
-    assert _target_names(job, 'Doe-Jane')[0]==f'Doe-Jane-CV-TUV-Austria-Machine-Learning-Engineer-Job-{job.id}.tex'
+    assert _target_names(job, 'Doe-Jane')[0]=='Doe-Jane-CV-TUV-Austria-Machine-Learning-Engineer.tex'
 
 
 def test_cv_generation_requires_original_job_text(db):
@@ -495,25 +641,32 @@ def test_latest_generated_sources_survive_task_state_loss(job, tmp_path, setting
 
 def test_generated_source_lookup_is_job_specific_and_letter_specific(job, tmp_path, settings, db):
     from types import SimpleNamespace
-    from jobradar.services.cv_generator import _target_names, latest_generated_sources
+    from jobradar.services.cv_generator import _record_artifact_metadata, _target_names, latest_generated_sources
 
     settings.CODEX_CV_WORKSPACE=str(tmp_path)
     user=User.objects.create_user('jane@example.test', first_name='Jane', last_name='Doe')
     cv_dir=tmp_path/'CVs'; letter_dir=tmp_path/'output'; cv_dir.mkdir(); letter_dir.mkdir()
     other=SimpleNamespace(id=job.id+1, company=job.company, title=job.title)
-    other_cv,other_letter=_target_names(other,'Doe-Jane','Anschreiben')
-    (cv_dir/other_cv).write_text('other job',encoding='utf-8')
-    (letter_dir/other_letter).write_text('other job',encoding='utf-8')
+    cv_name,letter_name=_target_names(job,'Doe-Jane','Anschreiben')
+    other_cv=cv_dir/cv_name; other_cv.write_text('other job',encoding='utf-8')
+    other_letter=letter_dir/letter_name; other_letter.write_text('other job',encoding='utf-8')
+    _record_artifact_metadata(other,user.id,{'cv_tex':str(other_cv),'letter_tex':str(other_letter)},'anschreiben')
     assert latest_generated_sources(job,user,'anschreiben')==(None,None)
 
-    cv_name,letter_name=_target_names(job,'Doe-Jane','Anschreiben')
-    (cv_dir/cv_name).write_text('this job',encoding='utf-8')
-    (letter_dir/letter_name).write_text('this job',encoding='utf-8')
-    assert latest_generated_sources(job,user,'anschreiben')==(str(cv_dir/cv_name),str(letter_dir/letter_name))
+    this_cv=cv_dir/f'{Path(cv_name).stem}-2.tex'; this_cv.write_text('this job',encoding='utf-8')
+    this_letter=letter_dir/f'{Path(letter_name).stem}-2.tex'; this_letter.write_text('this job',encoding='utf-8')
+    _record_artifact_metadata(job,user.id,{'cv_tex':str(this_cv),'letter_tex':str(this_letter)},'anschreiben')
+    assert latest_generated_sources(job,user,'anschreiben')==(str(this_cv),str(this_letter))
+    assert latest_generated_sources(other,user,'anschreiben')==(str(other_cv),str(other_letter))
     job.company='Corrected Company'
-    assert latest_generated_sources(job,user,'anschreiben')==(str(cv_dir/cv_name),str(letter_dir/letter_name))
+    assert latest_generated_sources(job,user,'anschreiben')==(str(this_cv),str(this_letter))
     # A different selected letter does not claim this one as its replacement target.
-    assert latest_generated_sources(job,user,'bewerbungsschreiben')==(str(cv_dir/cv_name),None)
+    assert latest_generated_sources(job,user,'bewerbungsschreiben')==(str(this_cv),None)
+    # TASK-253 files carry the job id in their name and have no sidecar; they keep resolving.
+    legacy=SimpleNamespace(id=job.id+7, company='Legacy', title='Role')
+    legacy_cv=cv_dir/f'Doe-Jane-CV-Legacy-Role-Job-{legacy.id}.tex'; legacy_cv.write_text('legacy',encoding='utf-8')
+    legacy_letter=letter_dir/f'Doe-Jane-Anschreiben-Legacy-Role-Job-{legacy.id}.tex'; legacy_letter.write_text('legacy',encoding='utf-8')
+    assert latest_generated_sources(legacy,user,'anschreiben')==(str(legacy_cv),str(legacy_letter))
 
 
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
@@ -890,7 +1043,7 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     from io import BytesIO
     from types import SimpleNamespace
     from jobradar.services import cv_generator
-    from jobradar.services.cv_generator import generate_cv_package, recompile_generated_package
+    from jobradar.services.cv_generator import applicant_name, generate_cv_package, recompile_generated_package
 
     # The workspace is still where generated documents land; the templates and photo it used to
     # hold are CvAsset rows on the generating account now (TASK-99a), seeded below.
@@ -978,7 +1131,7 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'anthropic', 'sonnet', 'xhigh', user_id=user.id)
     assert any(command[0]=='claude' and '--effort' in command and command[command.index('--effort')+1]=='xhigh' for command in commands)
     progress=[]
-    archive,_,saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'fast', lambda percent,stage: progress.append((percent,stage)), user_id=user.id)
+    archive,package_name,saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'fast', lambda percent,stage: progress.append((percent,stage)), user_id=user.id)
     names=zipfile.ZipFile(BytesIO(archive)).namelist()
     assert len([name for name in names if name.endswith('.pdf')])==2
     assert [stage for _,stage in progress]==['Preparing templates','Generating CV and motivation letter','CV and letter generated','Compiling CV','CV compiled','Compiling motivation letter','Motivation letter compiled','Saving files']
@@ -1007,8 +1160,10 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     assert 'Motivationsschreiben' in __import__('pathlib').Path(saved['letter_tex']).name and '-Letter-' not in __import__('pathlib').Path(saved['letter_tex']).name
     assert __import__('pathlib').Path(saved['letter_pdf']).parent==tmp_path/'output'
     model_calls=sum(command[0] in ('codex','claude') for command in commands)
-    recompiled,_,recompiled_saved=recompile_generated_package(job,'de',saved['cv_tex'],saved['letter_tex'], user_id=user.id)
+    recompiled,recompiled_name,recompiled_saved=recompile_generated_package(job,'de',saved['cv_tex'],saved['letter_tex'], user_id=user.id)
     assert len([name for name in zipfile.ZipFile(BytesIO(recompiled)).namelist() if name.endswith('.pdf')])==2
+    # TASK-256: download names carry no job id or template key.
+    assert package_name==recompiled_name==f'{applicant_name(user)}-Application-Firma-Entwickler.zip'
     assert recompiled_saved['cv_tex']==saved['cv_tex'] and sum(command[0] in ('codex','claude') for command in commands)==model_calls
     settings.CODEX_CV_CACHE=True
     generated.update(cv_tex='\\documentclass{article}\\begin{document}revised cv\\end{document}',letter_tex='\\documentclass{article}\\begin{document}revised letter\\end{document}')
