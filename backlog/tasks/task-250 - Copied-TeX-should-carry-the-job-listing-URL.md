@@ -1,10 +1,11 @@
 ---
 id: TASK-250
 title: Copied TeX should carry the job listing URL
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@pi'
 created_date: '2026-09-25 14:40'
-updated_date: '2026-09-25 14:54'
+updated_date: '2026-09-25 15:05'
 labels:
   - backend
   - ux
