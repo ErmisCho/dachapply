@@ -135,6 +135,10 @@ jobs:
             --min-replicas 0 \
             --max-replicas 1 \
             --output none
+          read -r MIN_REPLICAS MAX_REPLICAS <<< "$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --query '[properties.template.scale.minReplicas, properties.template.scale.maxReplicas]' -o tsv)"
+          test "$MIN_REPLICAS" = 0
+          test "$MAX_REPLICAS" = 1
+          echo "Replica range: $MIN_REPLICAS..$MAX_REPLICAS"
           FQDN=$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)
           test -n "$FQDN"
           echo "RESOURCE_GROUP=$RESOURCE_GROUP" >> "$GITHUB_ENV"

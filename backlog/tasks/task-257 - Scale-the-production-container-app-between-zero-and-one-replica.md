@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-10-01 08:44'
-updated_date: '2026-10-01 08:53'
+updated_date: '2026-10-01 12:46'
 labels:
   - infrastructure
   - cost
@@ -38,10 +38,14 @@ Owner request, 2026-10-01: reduce the recurring Azure Container Apps charge by a
 2. Add a lightweight repository check that pins both flags so the cost setting cannot regress silently.
 3. Run the focused workflow check and repository quality gates, then merge and let the main deployment apply the live Azure setting.
 4. Verify the deployed app wakes successfully and inspect Azure for the live zero-to-one replica bounds.
+
+5. Assert the live Azure min/max values inside the authenticated deployment job because local Azure CLI access is blocked by tenant security defaults.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Changed the canonical deployment command from an always-on minimum of one replica to min 0 / max 1. Local verification: deployment-block assertion passed, backend suite 1,243 passed, frontend production build passed, and git diff check passed.
+
+Implementation PR #195 merged as cca5c4e0 and deployment run 36863276503 succeeded, including public-app verification. Local Azure CLI cannot independently read the live bounds because tenant security defaults require interactive reauthentication; adding the live assertion to the authenticated deployment itself.
 <!-- SECTION:NOTES:END -->
