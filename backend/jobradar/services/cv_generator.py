@@ -582,7 +582,10 @@ def generation_preview(job, user=None):
         # the dialog can say so instead of presenting a summary as the posting.
         'job': {'id': job.id, 'company': job.company, 'title': job.title, 'url': job.url,
                 'source_text': job.source_text, 'source_chars': len(job.source_text or ''),
-                'source_is_fallback': not job.original_source_text and bool(job.raw_description)},
+                'source_is_fallback': not job.original_source_text and bool(job.raw_description),
+                'pending_source_text': getattr(job, 'pending_source_text', ''),
+                'pending_source_fetched_at': fetched.isoformat() if (fetched:=getattr(job, 'pending_source_fetched_at', None)) else None,
+                'source_fetch_error': getattr(job, 'source_fetch_error', '')},
         'selected_cv': selected_cv,
         'selected_letter': selected_letter,
         'cvs': cvs,

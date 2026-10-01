@@ -76,13 +76,16 @@ describe('editable generation job context (TASK-253)',()=>{
   it('flags an unknown company and exposes one save action for company and job text',()=>{
     expect(appSource).toContain('Unknown company — correct it before generating.')
     expect(appSource).toContain('aria-label="Company for generated documents"')
-    expect(appSource).toContain('aria-label="Job text for generated documents"')
-    expect(appSource).toContain('async function saveGenerationJob()')
-    expect(appSource).toContain("body:{company,original_source_text:sourceText}")
+    expect(appSource).toContain('aria-label="Current accepted job text"')
+    expect(appSource).toContain('async function saveGenerationJob(text=sourceText)')
+    expect(appSource).toContain('saveLabel="Save company and job text"')
+    expect(appSource.split('Save company and job text').length-1).toBe(1)
+    expect(appSource).toContain("body:{company,original_source_text:text}")
   })
 
   it('does not allow generation from unsaved edited values',()=>{
-    expect(appSource).toContain('||jobDirty||jobSaving||genInvalid')
+    expect(appSource).toContain('||jobDirty||jobSaving||!!pendingText||genInvalid')
+    expect(appSource).toContain('||isUnknownCompany(company)||!sourceText.trim()')
   })
 })
 
