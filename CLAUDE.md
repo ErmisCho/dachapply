@@ -57,9 +57,3 @@ Before calling anything done: `cd frontend && npm run build` **in the owner's ch
 served bundle hash matches `frontend/dist/index.html`, and load the page to assert it rendered — a
 200 is not enough. A worktree build never reaches them, and a `git pull` advances the backend while
 the compiled bundle stays put, which has white-screened their board more than once.
-
-<!-- groma:start -->
-## Groma
-
-This project uses Groma. Before you scan, inspect, or curate architecture, or change files for a Backlog task, run `groma agent-instructions` and read the guide it names for that job. When it reports a first scan, ask the user whether they want you to curate the architecture. Do not edit Groma-owned architecture files directly.
-<!-- groma:end -->
