@@ -14,6 +14,7 @@ from django.utils.dateparse import parse_date, parse_datetime
 from jobradar.models import ApplicationNote, FollowUp, JobEvaluation, JobLead, PracticeSession, UserProfile
 from jobradar.services.access import owned_by
 from jobradar.services.cleaning import clean_job_location
+from jobradar.services.cv_generator import delete_generated_metadata
 
 SCHEMA_VERSION = 1
 APP_NAME = 'dachapply'
@@ -364,12 +365,20 @@ def import_user_export(user, payload):
             if obj and action == 'duplicate':
                 obj = None
             if obj:
+                previous_status = obj.status
                 changed = _assign_fields(obj, JOB_FIELDS, item)
                 obj.created_by = user
                 obj.submitted_for = None
                 if changed:
                     obj.save()
                     summary['updated']['jobs'] += 1
+                    if obj.status == 'applied' and previous_status != 'applied':
+                        # TASK-258: same Applied cleanup as JobLeadSerializer.update (TASK-256). Runs
+                        # only once this atomic block commits; robust=True keeps a cleanup error from
+                        # failing the import. A lambda, not functools.partial: Django's robust handler
+                        # logs the callback's __qualname__, which a partial lacks. The default argument
+                        # binds this job, since `obj` is reassigned on the next loop iteration.
+                        transaction.on_commit(lambda job=obj: delete_generated_metadata(job), robust=True)
                 else:
                     obj.save(update_fields=['created_by','submitted_for'])
                     summary['skipped']['jobs'] += 1
