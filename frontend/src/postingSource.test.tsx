@@ -12,9 +12,9 @@ import type {LiveSourceText,PostingJob} from './types'
 
 const stored='We are hiring a Senior Python Developer in Vienna.'
 const job=(extra:Partial<PostingJob>={}):PostingJob=>({id:7,company:'Acme GmbH',title:'Senior Python Developer',
-  url:'https://jobs.example.com/listing/9182',source_text:stored,source_chars:stored.length,source_is_fallback:false,...extra})
+  url:'https://jobs.example.com/listing/9182',source_text:stored,source_chars:stored.length,source_is_fallback:false,pending_source_text:'',pending_source_fetched_at:null,source_fetch_error:'',...extra})
 const render=(props:any={})=>renderToStaticMarkup(<PostingSource job={job()} {...props}/>)
-const panes=(html:string)=>(html.match(/<pre/g)||[]).length
+const panes=(html:string)=>(html.match(/<textarea/g)||[]).length
 
 describe('the link to the original listing (TASK-238)',()=>{
   it('is a real anchor to the job url itself, opening a new tab',()=>{
@@ -38,14 +38,16 @@ describe('the link to the original listing (TASK-238)',()=>{
     expect(html).not.toContain('href="/jobs/7"')   // the internal detail link is a different control
   })
 
-  it('renders nothing at all for a job with no listing url',()=>{
-    // AC4. Not a disabled stub and not href="" - an empty href reloads the current page.
-    const html=render({job:job({url:''})})
+  it('renders no fetch control but keeps manual editing for a job with no listing url',()=>{
+    // Not a disabled stub and not href="" - an empty href reloads the current page.
+    const html=render({job:job({url:''}),onActiveText:()=>{},onResolve:()=>{}})
 
     expect(html).not.toContain('<a ')
     expect(html).not.toContain('href')
-    expect(html).not.toContain('Check the original posting')   // nothing to check either
-    expect(html).toContain(stored)                             // ...and the stored text still shows
+    expect(html).not.toContain('Fetch posting text')
+    expect(html).toContain(stored)
+    expect(html).toContain('Save job text')
+    expect(html).not.toContain('readonly')
   })
 })
 
@@ -53,7 +55,7 @@ describe('what the panel claims the stored text is (TASK-237)',()=>{
   it('calls a collected posting a collected posting, and says generation will use it',()=>{
     const html=render()
 
-    expect(html).toContain(`Collected original posting text (${stored.length} characters). This is the text generation will use.`)
+    expect(html).toContain(`Accepted job text (${stored.length} characters). This is the text generation will use.`)
     expect(html).toContain(stored)
   })
 
@@ -63,13 +65,13 @@ describe('what the panel claims the stored text is (TASK-237)',()=>{
     const html=render({job:job({source_is_fallback:true})})
 
     expect(html).toContain(`Cleaned description - no original posting text was collected (${stored.length} characters).`)
-    expect(html).not.toContain('Collected original posting text')
+    expect(html).not.toContain('Accepted job text')
   })
 
   it('says so plainly when there is no source text at all',()=>{
     const html=render({job:job({source_text:'',source_chars:0})})
 
-    expect(html).toContain('No source text is stored for this job, so generation has no posting text to work from.')
+    expect(html).toContain('No source text is stored for this job. Enter it manually or fetch the listing.')
     expect(html).not.toContain('This is the text generation will use.')
   })
 })
@@ -82,22 +84,22 @@ describe('reading the posting at its url (TASK-237)',()=>{
   it('shows the fetched body in its own pane, and says it differs from what is stored',()=>{
     // AC1. The full body, in a scrollable pane of its own - beside the stored text rather than
     // silently replacing it, because nothing has been written yet at this point.
-    const html=render({live:fetched})
+    const html=render({live:fetched,pendingText:fetched.text,onResolve:()=>{}})
 
     expect(html).toContain(fetched.text)
     expect(html).toContain(stored)
     expect(panes(html)).toBe(2)
-    expect(html).toContain('Read from jobs.example.com')
-    expect(html).toContain('74 characters')
-    expect(html).toContain('differs from the stored text above')
-    expect(html).toContain('Use this as the job text')   // AC4: adopting is an explicit action
+    expect(html).toContain('Freshly fetched text')
+    expect(html).toContain('Keep current')
+    expect(html).toContain('Use fetched')   // adopting is an explicit action
+    expect(html).not.toContain('readonly')  // both versions can be corrected before the decision
   })
 
   it('does not claim a difference when the page matches what is stored',()=>{
     const html=render({live:{...fetched,matches_stored:true}})
 
-    expect(html).toContain('identical to the stored text above')
-    expect(html).not.toContain('differs from the stored text above')
+    expect(html).toContain('The website text matches the accepted text.')
+    expect(panes(html)).toBe(1)
   })
 
   it('reports a failure with the server reason and no body whatsoever',()=>{
@@ -108,8 +110,18 @@ describe('reading the posting at its url (TASK-237)',()=>{
     expect(html).toContain('The site answered 403 Forbidden.')
     expect(html).toContain('role="alert"')
     expect(panes(html)).toBe(1)                          // only the stored pane
-    expect(html).not.toContain('Use this as the job text')
+    expect(html).not.toContain('Use fetched')
     expect(html).not.toContain('Read from jobs.example.com')
+  })
+})
+
+describe('refresh workflow wiring',()=>{
+  it('connects add-time checks, the selected-job action, app-open checks, and all cadence choices',()=>{
+    expect(appSource).toContain("api(`/jobs/${job.id}/source-text/live/`,{method:'POST'})")
+    expect(appSource).toContain("selectedJobs[0]?.has_pending_source?'Review posting text':selectedJobs[0]?.url?'Fetch posting text':'Edit job text'")
+    expect(appSource).toContain("api('/jobs/source-text/refresh-due/',{method:'POST'})")
+    expect(appSource).toContain("pending_source_text:'',pending_source_fetched_at:null,has_pending_source:false")
+    expect(appSource).toContain('<option value="off">Off</option><option value="daily">Daily</option><option value="weekly">Weekly</option>')
   })
 })
 

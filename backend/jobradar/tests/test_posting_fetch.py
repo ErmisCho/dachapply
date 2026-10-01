@@ -15,6 +15,7 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 from django.contrib.auth.models import User
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from jobradar.models import JobLead, UserProfile
@@ -186,15 +187,19 @@ def test_other_users_job_is_not_found(db, job, net):
     assert net.handler.dialled == []
 
 
-def test_an_account_without_cv_capability_cannot_make_the_server_fetch_anything(db, job, net):
-    """The panel is only rendered inside the CV generation flow; the endpoint matches that set,
-    so no other account can use this server as an outbound fetcher."""
-    plain = APIClient()
-    plain.force_authenticate(User.objects.create_user('no-cv', password='pw'))
-    response = plain.get(f'/api/jobs/{job.id}/source-text/live/')
-    assert response.status_code == 404
-    assert response.data['detail'] == 'Not found.'
-    assert net.handler.dialled == []
+def test_an_authenticated_account_without_cv_capability_can_fetch_its_own_job(db, net):
+    user = User.objects.create_user('no-cv', password='pw')
+    own = JobLead.objects.create(company='ACME', title='Engineer', url=JOB_URL, created_by=user)
+    net.host('jobs.acme.test', PUBLIC_IP)
+    net.page(JOB_URL, POSTING_HTML)
+    plain = APIClient(); plain.force_authenticate(user)
+
+    response = plain.post(f'/api/jobs/{own.id}/source-text/live/')
+
+    assert response.status_code == 200 and response.data['staged'] is True
+    own.refresh_from_db()
+    assert 'Own the Postgres schema' in own.pending_source_text
+    assert own.original_source_text == ''
 
 
 def test_blocked_posting_reports_the_http_status(client, job, net):
@@ -280,3 +285,131 @@ def test_script_and_style_content_never_reaches_the_text():
     assert 'dataLayer' not in text
     assert text.startswith('Senior Backend Engineer (m/w/d)')
     assert 'At least five years of professional Python.' in text
+
+
+def test_post_stages_a_candidate_without_overwriting_active_text(client, job, live_posting):
+    data = client.post(f'/api/jobs/{job.id}/source-text/live/').data
+
+    job.refresh_from_db()
+    assert data['staged'] is True
+    assert job.original_source_text == SUMMARY
+    assert job.pending_source_text == data['text']
+    assert job.pending_source_fetched_at == job.source_checked_at
+    assert job.source_fetch_error == ''
+
+
+def test_failed_post_preserves_active_and_pending_text(client, job, net):
+    job.pending_source_text = 'Earlier readable candidate'
+    job.save(update_fields=['pending_source_text'])
+    net.host('jobs.acme.test', PUBLIC_IP)
+    net.fail(JOB_URL, HTTPError(JOB_URL, 403, 'Forbidden', email.message.Message(), None))
+
+    data = client.post(f'/api/jobs/{job.id}/source-text/live/').data
+
+    job.refresh_from_db()
+    assert data['ok'] is False
+    assert job.original_source_text == SUMMARY
+    assert job.pending_source_text == 'Earlier readable candidate'
+    assert job.source_fetch_error == 'The site answered 403 Forbidden.'
+
+
+def test_saving_either_reviewed_version_clears_the_candidate(client, job):
+    job.pending_source_text = 'Fresh candidate'
+    job.save(update_fields=['pending_source_text'])
+
+    response = client.patch(f'/api/jobs/{job.id}/source-text/', {
+        'original_source_text': 'Edited accepted posting text.'}, format='json')
+
+    assert response.status_code == 200
+    job.refresh_from_db()
+    assert job.original_source_text == 'Edited accepted posting text.'
+    assert job.pending_source_text == ''
+    assert job.pending_source_fetched_at is None
+    assert job.source_fetch_error == ''
+
+
+def test_generation_refuses_an_unreviewed_candidate(client, job):
+    job.pending_source_text = 'Fresh candidate requiring a decision.'
+    job.save(update_fields=['pending_source_text'])
+
+    response = client.post(f'/api/jobs/{job.id}/cv-generation/run/', {}, format='json')
+
+    assert response.status_code == 409
+    assert response.data['detail'] == 'Review the freshly fetched posting text before generating.'
+
+
+def test_profile_exposes_the_three_refresh_cadences(client):
+    assert client.get('/api/profile/').data['posting_refresh_cadence'] == 'daily'
+    assert client.patch('/api/profile/', {'posting_refresh_cadence':'weekly'}, format='json').data['posting_refresh_cadence'] == 'weekly'
+    assert client.patch('/api/profile/', {'posting_refresh_cadence':'off'}, format='json').data['posting_refresh_cadence'] == 'off'
+    assert client.patch('/api/profile/', {'posting_refresh_cadence':'hourly'}, format='json').status_code == 400
+
+
+def test_generation_preview_carries_the_persisted_candidate(client, job):
+    job.pending_source_text = 'Fresh candidate for comparison.'
+    job.source_fetch_error = 'Most recent retry failed.'
+    job.save(update_fields=['pending_source_text','source_fetch_error'])
+
+    data = client.get(f'/api/jobs/{job.id}/cv-generation/').data['job']
+
+    assert data['source_text'] == SUMMARY
+    assert data['pending_source_text'] == 'Fresh candidate for comparison.'
+    assert data['source_fetch_error'] == 'Most recent retry failed.'
+
+
+def test_due_refresh_respects_off_daily_and_weekly_cadence(client, job, live_posting):
+    profile = UserProfile.objects.get(user=client.user)
+    profile.posting_refresh_cadence = 'off'
+    profile.save(update_fields=['posting_refresh_cadence'])
+
+    off = client.post('/api/jobs/source-text/refresh-due/').data
+    assert off == {'disabled':True,'checked':0,'staged':0,'failed':0,'remaining':0}
+    assert live_posting.handler.dialled == []
+
+    profile.posting_refresh_cadence = 'weekly'
+    profile.save(update_fields=['posting_refresh_cadence'])
+    job.source_checked_at = timezone.now() - timezone.timedelta(days=2)
+    job.save(update_fields=['source_checked_at'])
+    assert client.post('/api/jobs/source-text/refresh-due/').data['checked'] == 0
+
+    job.source_checked_at = timezone.now() - timezone.timedelta(days=8)
+    job.save(update_fields=['source_checked_at'])
+    weekly = client.post('/api/jobs/source-text/refresh-due/').data
+    assert weekly == {'disabled':False,'checked':1,'staged':1,'failed':0,'remaining':0}
+
+    profile.posting_refresh_cadence = 'daily'
+    profile.save(update_fields=['posting_refresh_cadence'])
+    job.source_checked_at = None
+    job.save(update_fields=['source_checked_at'])
+    daily = client.post('/api/jobs/source-text/refresh-due/').data
+    second = client.post('/api/jobs/source-text/refresh-due/').data
+
+    job.refresh_from_db()
+    assert daily == {'disabled':False,'checked':1,'staged':1,'failed':0,'remaining':0}
+    assert second == {'disabled':False,'checked':0,'staged':0,'failed':0,'remaining':0}
+    assert live_posting.handler.dialled == [JOB_URL, JOB_URL]
+    assert 'Own the Postgres schema' in job.pending_source_text
+    assert job.original_source_text == SUMMARY
+
+
+def test_due_refresh_clears_an_identical_candidate_but_preserves_one_on_failure(client, job, live_posting):
+    accepted = posting_fetch.extract_text(POSTING_HTML)
+    JobLead.objects.filter(pk=job.pk).update(
+        original_source_text=accepted, pending_source_text='Outdated candidate')
+
+    identical = client.post('/api/jobs/source-text/refresh-due/').data
+    job.refresh_from_db()
+    assert identical == {'disabled':False,'checked':1,'staged':0,'failed':0,'remaining':0}
+    assert job.original_source_text == accepted
+    assert job.pending_source_text == ''
+
+    JobLead.objects.filter(pk=job.pk).update(
+        original_source_text=SUMMARY, pending_source_text='Last readable candidate', source_checked_at=None)
+    live_posting.fail(JOB_URL, HTTPError(JOB_URL, 403, 'Forbidden', email.message.Message(), None))
+
+    failed = client.post('/api/jobs/source-text/refresh-due/').data
+    job.refresh_from_db()
+    assert failed == {'disabled':False,'checked':1,'staged':0,'failed':1,'remaining':0}
+    assert job.original_source_text == SUMMARY
+    assert job.pending_source_text == 'Last readable candidate'
+    assert job.source_fetch_error == 'The site answered 403 Forbidden.'

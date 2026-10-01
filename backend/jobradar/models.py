@@ -52,6 +52,7 @@ class UserProfile(models.Model):
     selling_points=models.TextField(blank=True, default='')
     learned_application_preferences=models.TextField(blank=True, default='')
     follow_up_digest_enabled=models.BooleanField(default=True)
+    posting_refresh_cadence=models.CharField(max_length=10, choices=[('off','Off'),('daily','Daily'),('weekly','Weekly')], default='daily')
     # TASK-109 AC8: check_mailbox reads these on every tick, so a change made here on the website
     # takes effect on the machine's next tick without touching its .env. Minimum 5 (see
     # serializers.CandidateProfileSerializer.validate_mailbox_check_cadence_minutes) because 0 would
@@ -241,6 +242,10 @@ class JobLead(models.Model):
     source=models.CharField(max_length=250, blank=True)
     raw_description=models.TextField(blank=True)
     original_source_text=models.TextField(blank=True)
+    pending_source_text=models.TextField(blank=True, default='')
+    pending_source_fetched_at=models.DateTimeField(null=True, blank=True)
+    source_checked_at=models.DateTimeField(null=True, blank=True)
+    source_fetch_error=models.TextField(blank=True, default='')
     submitted_by=models.CharField(max_length=120, blank=True)
     submitter_reason=models.TextField(blank=True)
     # LLM-generated prose: do not put sentence-length limits back on these fields.
