@@ -7,6 +7,7 @@ import {renderToStaticMarkup} from 'react-dom/server'
 import {CvGenerator,LearnedPreferenceNote,feedbackStatusPatch} from './App'
 import appSource from './App.tsx?raw'   // vite serves the file's text; no DOM and no new dependency
 import type {Job} from './types'
+import {replacementPrompt} from './cvModel'
 
 const storage={getItem:vi.fn(()=>JSON.stringify({can_generate_cv:true})),removeItem:vi.fn()}
 vi.stubGlobal('localStorage',storage)
@@ -56,13 +57,33 @@ describe('compact CV generator popup (TASK-216)',()=>{
 })
 
 describe('repeat generation and reopened files (TASK-252, TASK-253)',()=>{
-  it('returns before the request when the user declines to replace selected job files',()=>{
+  it('asks the server first and confirms only on its existing-files 409 (TASK-259)',()=>{
     const generate=appSource.split('async function generate(){')[1].split('async function cancelTask(){')[0]
 
-    expect(generate).toContain("const replaceExisting=replacementDecision(selectedArtifacts,createCv,createLetter,()=>window.confirm('Generated files already exist for this job. Recreate them with the selected settings?'))")
-    expect(generate).toContain('if(replaceExisting===null)return;')
-    expect(generate).toContain('replace_existing:replaceExisting')
-    expect(generate.indexOf('window.confirm')).toBeLessThan(generate.indexOf('/cv-generation/run/'))
+    // Unconfirmed first; the 409's field, not its text, picks the prompt; declining sends nothing more.
+    expect(generate).toContain('started=await run(false)')
+    expect(generate).toContain('if(!e?.existing_files)throw e;if(!window.confirm(replacementPrompt(e))){setTask(previous);return}started=await run(true)')
+    expect(generate).not.toContain('e.detail')
+  })
+
+  it('bulk generation also asks the server first and confirms each job from its own 409 (TASK-259)',()=>{
+    const generate=appSource.split('async function generate(){')[2].split('async function readjust(')[0]
+
+    // No client-side pre-check, so no shared "Recreate them" prompt that cannot tell sent documents apart.
+    expect(generate).not.toContain('Recreate them')
+    expect(generate).toContain('started=await run(false)')
+    expect(generate).toContain('if(!e?.existing_files)throw e;if(!window.confirm(`${row.job.company} — ${displayJobTitle(row.job.title)}: ${replacementPrompt(e)}`)){update(row.job.id,row);return}started=await run(true)')
+    expect(generate).not.toContain('e.detail')
+  })
+
+  it('words the prompt from sent_documents: new copies for sent documents, recreate otherwise (TASK-259)',()=>{
+    const message='Generated files already exist for this job. Confirm replacement before generating.'
+    expect(replacementPrompt({existing_files:true,sent_documents:false,detail:message})).toBe('Generated files already exist for this job. Recreate them with the selected settings?')
+    expect(replacementPrompt({existing_files:true,detail:message})).toBe('Generated files already exist for this job. Recreate them with the selected settings?')
+    const sent=replacementPrompt({existing_files:true,sent_documents:true,detail:message})
+    expect(sent).toContain('new copies')
+    expect(sent).toContain('sent documents stay unchanged')
+    expect(sent).not.toMatch(/replac|recreate/i)
   })
 
   it('enables the adjustment copy action from persisted preview content',()=>{

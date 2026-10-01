@@ -4,7 +4,7 @@
 // functions and are tested here. What is NOT covered by any test: that the two pickers are wired to
 // separate state in App.tsx, and every pixel claim -- both need a browser.
 import {afterEach,describe,expect,it,vi} from 'vitest'
-import {comboValid,cvClipboardTex,cvPick,emptyCvPick,hasSelectedGeneratedFiles,isUnknownCompany,readCvPicks,replacementDecision,selectedGeneratedArtifacts,writeCvPicks} from './cvModel'
+import {comboValid,cvClipboardTex,cvPick,emptyCvPick,isUnknownCompany,readCvPicks,selectedGeneratedArtifacts,writeCvPicks} from './cvModel'
 
 const models=[
   {provider:'openai',key:'gpt-5-codex',label:'GPT-5 Codex',efforts:['low','medium','high','xhigh'],default_effort:'medium',fast_tier:true},
@@ -71,25 +71,11 @@ describe('restoring a remembered selection (TASK-231)',()=>{
 })
 
 describe('existing generated files (TASK-252, TASK-253)',()=>{
-  it('only confirms when an output for the selected job and letter type exists',()=>{
+  it("keeps each letter type's files separate from the selected job's CV",()=>{
     const preview={artifacts:{cv_tex:'CVs/job-7.tex'},letter_artifacts:{anschreiben:{letter_tex:'output/job-7-anschreiben.tex'},bewerbungsschreiben:{}}}
-    const anschreiben=selectedGeneratedArtifacts(null,preview,'anschreiben')
-    const bewerbung=selectedGeneratedArtifacts(null,preview,'bewerbungsschreiben')
 
-    expect(hasSelectedGeneratedFiles(anschreiben,true,false)).toBe(true)
-    expect(hasSelectedGeneratedFiles(anschreiben,false,true)).toBe(true)
-    expect(hasSelectedGeneratedFiles(bewerbung,false,true)).toBe(false)
-    expect(hasSelectedGeneratedFiles({},true,true)).toBe(false)
-  })
-
-  it('cancels replacement without proceeding and only confirms when selected files exist',()=>{
-    const confirm=vi.fn(()=>false)
-    expect(replacementDecision({cv_tex:'current.tex'},true,false,confirm)).toBeNull()
-    expect(confirm).toHaveBeenCalledOnce()
-    expect(replacementDecision({},true,true,confirm)).toBe(false)
-    expect(confirm).toHaveBeenCalledOnce()
-    confirm.mockReturnValue(true)
-    expect(replacementDecision({letter_tex:'current.tex'},false,true,confirm)).toBe(true)
+    expect(selectedGeneratedArtifacts(null,preview,'anschreiben')).toMatchObject({cv_tex:'CVs/job-7.tex',letter_tex:'output/job-7-anschreiben.tex'})
+    expect(selectedGeneratedArtifacts(null,preview,'bewerbungsschreiben')).toMatchObject({cv_tex:'CVs/job-7.tex',letter_tex:undefined})
   })
 
   it('does not reuse a completed task letter after the user selects another template',()=>{
