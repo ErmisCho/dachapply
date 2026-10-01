@@ -38,11 +38,10 @@ export function selectedGeneratedArtifacts(taskArtifacts:any,preview:any,letterK
   return {cv_tex:taskArtifacts?.cv_tex||preview?.artifacts?.cv_tex,cv_pdf:taskArtifacts?.cv_pdf||preview?.artifacts?.cv_pdf,letter_tex:letter.letter_tex,letter_pdf:letter.letter_pdf}
 }
 
-export function hasSelectedGeneratedFiles(artifacts:any,createCv:boolean,createLetter:boolean){return !!(createCv&&artifacts?.cv_tex||createLetter&&artifacts?.letter_tex)}
-
-export function replacementDecision(artifacts:any,createCv:boolean,createLetter:boolean,confirm:()=>boolean):boolean|null{
-  const replace=hasSelectedGeneratedFiles(artifacts,createCv,createLetter)
-  return replace?(confirm()?true:null):false
+// TASK-259: the server's 409 says which case applies (sent_documents), never the message text. An
+// Applied job's files are the documents it was sent with; confirming writes new copies beside them.
+export function replacementPrompt(conflict:any){
+  return conflict?.sent_documents?'These are the documents this job was sent with. Generate new copies with the selected settings? The sent documents stay unchanged.':'Generated files already exist for this job. Recreate them with the selected settings?'
 }
 
 export function isUnknownCompany(company?:string){return !company?.trim()||company.trim().toLowerCase()==='unknown company'}
