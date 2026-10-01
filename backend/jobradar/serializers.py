@@ -2,6 +2,7 @@ import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
+from django.db import transaction
 from django.db.models.functions import Substr
 from django.utils import timezone
 from rest_framework import serializers
@@ -276,7 +277,14 @@ class JobLeadSerializer(serializers.ModelSerializer):
         if new_status and new_status != 'interview':
             attrs['interview_stage']=None
             attrs['interview_total']=None
-        return super().update(instance, attrs)
+        updated=super().update(instance, attrs)
+        if new_status == 'applied':
+            # TASK-256: board PATCH and confirmed mailbox suggestions both persist Applied here. Clean
+            # the job's generated metadata only once the status is committed, and never let a
+            # workspace problem surface as a failed (or rolled-back) status change.
+            from .services.cv_generator import delete_generated_metadata
+            transaction.on_commit(lambda: delete_generated_metadata(updated), robust=True)
+        return updated
     def get_latest_evaluation(self, obj):
         ev=obj.evaluations.first()
         return JobEvaluationSerializer(ev).data if ev else None
