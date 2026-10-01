@@ -1,5 +1,6 @@
 import logging
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from html import escape
 from pathlib import Path
 from statistics import median
@@ -44,7 +45,7 @@ from .services.followup_digest import owned_jobs, record_job_followup_sent
 from .services.draft_chat import ChatTurn, run_chat_turn
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
-from .services.cv_tasks import cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, start_cv_compile_task, start_cv_noop_task, start_cv_revision, start_cv_task
+from .services.cv_tasks import _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, start_cv_compile_task, start_cv_noop_task, start_cv_revision, start_cv_task
 from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
 from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
@@ -875,8 +876,16 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         text=(request.data.get('original_source_text') or '').strip()
         if not JobLead.is_meaningful_source(text):
             return Response({'detail':'Original job text must contain the job description, not only a link.'}, status=400)
-        JobLead.objects.filter(pk=job.pk).update(original_source_text=text)
-        return Response({'original_source_text':text})
+        company=request.data.get('company',job.company)
+        if not isinstance(company,str) or len(company.strip()) > JobLead._meta.get_field('company').max_length:
+            return Response({'detail':'Company must be 200 characters or fewer.'},status=400)
+        company=company.strip() or 'Unknown company'
+        # One update keeps the popup's generation identity and source text from being half-saved.
+        # Saving either reviewed version resolves the pending comparison atomically.
+        JobLead.objects.filter(pk=job.pk).update(
+            company=company, original_source_text=text, pending_source_text='',
+            pending_source_fetched_at=None, source_fetch_error='')
+        return Response({'company':company,'original_source_text':text})
     def destroy(self, request, pk=None):
         qs=accessible_jobs(request.user)
         try:
@@ -1937,42 +1946,91 @@ def cv_generation_preview(request, job_id):
     job=accessible_jobs(request.user).filter(id=job_id).first()
     if not job:
         return Response({'detail':'Job not found.'}, status=404)
-    return Response(generation_preview(job, request.user))
+    preview=generation_preview(job, request.user)
+    preview['clipboard_tex']=_clipboard_payload(preview['artifacts'],job.url)
+    return Response(preview)
 
 
-@api_view(['GET'])
+def _stage_source_fetch(job, result, checked_at=None):
+    """Persist only review state. Accepted source text is deliberately never touched here."""
+    checked_at=checked_at or timezone.now()
+    values={'source_checked_at':checked_at}
+    state='failed'
+    if result['ok']:
+        values['source_fetch_error']=''
+        if normalized(result['text']) == normalized(job.source_text):
+            values.update(pending_source_text='',pending_source_fetched_at=None)
+            state='identical'
+        else:
+            values.update(pending_source_text=result['text'],pending_source_fetched_at=checked_at)
+            state='staged'
+    else:
+        values['source_fetch_error']=result['error']
+    JobLead.objects.filter(pk=job.pk).update(**values)
+    for key,value in values.items(): setattr(job,key,value)
+    return state
+
+
+def _refresh_job_sources(jobs):
+    jobs=[job for job in jobs if (job.url or '').strip()]
+    if not jobs: return []
+    # Network work is independent; database writes stay in this request thread.
+    with ThreadPoolExecutor(max_workers=min(4,len(jobs))) as pool:
+        results=list(pool.map(fetch_posting_text,[job.url for job in jobs]))
+    return [(job,result,_stage_source_fetch(job,result)) for job,result in zip(jobs,results)]
+
+
+def _live_source_response(job, result, staged=False):
+    fetched_at=(job.source_checked_at or timezone.now()).isoformat()
+    if not result['ok']:
+        return {'ok':False,'url':job.url,'error':result['error'],'fetched_at':fetched_at,
+                'pending_source_text':job.pending_source_text}
+    stored=job.source_text or ''
+    return {
+        'ok':True,'url':job.url,'final_url':result['final_url'],'text':result['text'],
+        'chars':len(result['text']),'stored_chars':len(stored),
+        'matches_stored':normalized(result['text'])==normalized(stored),
+        'fetched_at':fetched_at,'staged':staged,
+        'pending_source_text':job.pending_source_text,
+    }
+
+
+@api_view(['GET','POST'])
 @throttle_classes([ImportUserThrottle])
 def job_source_text_live(request, job_id):
-    """TASK-237: what the job's URL actually says, right now.
-
-    Read-only on purpose -- the stored text is never overwritten from here (AC4). Adopting the
-    fetched body stays the user's explicit act through the existing PATCH jobs/<id>/source-text/
-    action, so a hand-corrected original can only be replaced by someone who chose to. Throttled
-    on the existing import_user bucket because it dials an arbitrary third-party host per call.
-    """
-    # Same gate as cv_generation_preview above: this panel is only ever rendered inside the CV
-    # generation flow, so the accounts that can make this server dial a third-party host are exactly
-    # the accounts that can see the control. CODEX_CV_ENABLED is DEBUG-only by deployment, so the
-    # deployed container exposes no outbound fetcher at all.
-    if not is_cv_owner(request.user):
-        return Response({'detail':'Not found.'}, status=404)
+    """Read a posting; POST also retains a differing body as an explicit-review candidate."""
     job=accessible_jobs(request.user).filter(id=job_id).first()
     if not job:
         return Response({'detail':'Job not found.'}, status=404)
-    url=(job.url or '').strip()
-    if not url:
+    if not (job.url or '').strip():
         return Response({'detail':'This job has no original listing URL.'}, status=400)
-    result=fetch_posting_text(url)
-    fetched_at=timezone.now().isoformat()
-    if not result['ok']:
-        return Response({'ok':False,'url':url,'error':result['error'],'fetched_at':fetched_at})
-    stored=job.source_text or ''
+    result=fetch_posting_text(job.url)
+    staged=False
+    if request.method == 'POST':
+        staged=_stage_source_fetch(job,result)=='staged'
+    return Response(_live_source_response(job,result,staged))
+
+
+@api_view(['POST'])
+@throttle_classes([ImportUserThrottle])
+def refresh_due_job_sources(request):
+    profile=user_profile_settings(request.user)
+    cadence=profile.posting_refresh_cadence
+    if cadence == 'off':
+        return Response({'disabled':True,'checked':0,'staged':0,'failed':0,'remaining':0})
+    now=timezone.now()
+    cutoff=now-timezone.timedelta(days=7 if cadence=='weekly' else 1)
+    due=accessible_jobs(request.user).exclude(url='').filter(
+        Q(source_checked_at__isnull=True)|Q(source_checked_at__lt=cutoff)).order_by('source_checked_at','id')
+    jobs=list(due[:4])
+    outcomes=_refresh_job_sources(jobs)
+    remaining=accessible_jobs(request.user).exclude(url='').filter(
+        Q(source_checked_at__isnull=True)|Q(source_checked_at__lt=cutoff)).count()
     return Response({
-        'ok':True,'url':url,'final_url':result['final_url'],'text':result['text'],
-        'chars':len(result['text']),'stored_chars':len(stored),
-        # Normalised, not byte-equal: the stored copy and the live page differ in wrapping first.
-        'matches_stored':normalized(result['text'])==normalized(stored),
-        'fetched_at':fetched_at,
+        'disabled':False,'checked':len(outcomes),
+        'staged':sum(state=='staged' for _,_,state in outcomes),
+        'failed':sum(state=='failed' for _,_,state in outcomes),
+        'remaining':remaining,
     })
 
 
@@ -1988,10 +2046,17 @@ def generate_cv_documents(request, job_id):
     job=accessible_jobs(request.user).filter(id=job_id).first()
     if not job:
         return Response({'detail':'Job not found.'}, status=404)
+    if job.pending_source_text:
+        return Response({'detail':'Review the freshly fetched posting text before generating.'}, status=409)
     create_cv=request.data.get('create_cv', True) is not False
     create_letter=request.data.get('create_letter', True) is not False
     if not create_cv and not create_letter:
         return Response({'detail':'Select at least a CV or a letter.'}, status=400)
+    letter_key=request.data.get('letter_template') or ''
+    source_cv,source_letter=latest_generated_sources(job,request.user,letter_key)
+    replace_existing=request.data.get('replace_existing') is True
+    if not replace_existing and (create_cv and source_cv or create_letter and source_letter):
+        return Response({'detail':'Generated files already exist for this job. Confirm replacement before generating.','existing_files':True},status=409)
     try:
         # needs_tools: both endpoints generate or readjust LaTeX, whose prompt tells the model to read
         # the copied source files (TASK-221 AC3).
@@ -2004,7 +2069,10 @@ def generate_cv_documents(request, job_id):
     except RuntimeError as exc:
         return Response({'detail':str(exc)}, status=503)
     try:
-        task_id=start_cv_task(job.id, request.user.id, candidate_context, request.data.get('cv_template') or '', request.data.get('letter_template') or '', create_letter, request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', create_cv=create_cv)
+        task_kwargs={'create_cv':create_cv}
+        if replace_existing:
+            task_kwargs['replace_existing']=True
+        task_id=start_cv_task(job.id,request.user.id,candidate_context,request.data.get('cv_template') or '',letter_key,create_letter,request.data.get('provider') or '',request.data.get('model') or '',request.data.get('effort') or '',request.data.get('speed') or 'normal',**task_kwargs)
     except RuntimeError:
         return Response({'detail':'CV generation is restarting. Try again shortly.'}, status=503)
     return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
@@ -2019,7 +2087,7 @@ def recompile_latest_cv_documents(request, job_id):
     if not job:
         return Response({'detail':'Job not found.'},status=404)
     cv_key=request.data.get('cv_template') or ''
-    source_cv,source_letter=latest_generated_sources(job,request.user)
+    source_cv,source_letter=latest_generated_sources(job,request.user,request.data.get('letter_template') or '')
     source_cv=source_cv if request.data.get('create_cv',True) is not False else None
     source_letter=source_letter if request.data.get('create_letter',True) is not False else None
     if not source_cv and not source_letter:
@@ -2046,13 +2114,14 @@ def revise_latest_cv_documents(request, job_id):
     if not (instructions or correction_image) or not (create_cv or create_letter):
         return Response({'detail':'Provide revision instructions or a correction image and select at least one document.'}, status=400)
     cv_key=request.data.get('cv_template') or ''
-    source_cv,source_letter=latest_generated_sources(job, request.user)
+    letter_key=request.data.get('letter_template') or ''
+    source_cv,source_letter=latest_generated_sources(job,request.user,letter_key)
     create_cv=create_cv and bool(source_cv)
     create_letter=create_letter and bool(source_letter)
     if not create_cv and not create_letter:
         return Response({'detail':'No previous generated files were found for this job.'}, status=400)
     if not correction_image:
-        artifacts=latest_generated_artifacts(job,request.user)
+        artifacts=latest_generated_artifacts(job,request.user,letter_key)
         artifacts={key:path for key,path in artifacts.items() if (create_cv and key.startswith('cv_')) or (create_letter and key.startswith('letter_'))}
         if no_change_requested(instructions):
             task_id=start_cv_noop_task(job.id,request.user.id,artifacts)

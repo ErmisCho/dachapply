@@ -55,6 +55,40 @@ describe('compact CV generator popup (TASK-216)',()=>{
   })
 })
 
+describe('repeat generation and reopened files (TASK-252, TASK-253)',()=>{
+  it('returns before the request when the user declines to replace selected job files',()=>{
+    const generate=appSource.split('async function generate(){')[1].split('async function cancelTask(){')[0]
+
+    expect(generate).toContain("const replaceExisting=replacementDecision(selectedArtifacts,createCv,createLetter,()=>window.confirm('Generated files already exist for this job. Recreate them with the selected settings?'))")
+    expect(generate).toContain('if(replaceExisting===null)return;')
+    expect(generate).toContain('replace_existing:replaceExisting')
+    expect(generate.indexOf('window.confirm')).toBeLessThan(generate.indexOf('/cv-generation/run/'))
+  })
+
+  it('enables the adjustment copy action from persisted preview content',()=>{
+    expect(appSource).toContain('const clipboardTex=cvClipboardTex(task,preview)')
+    expect(appSource).toContain('disabled={loading||revisionLoading||compileLoading||!clipboardTex}')
+    expect(appSource).toContain('if(tex&&await copyToClipboard(tex))')
+  })
+})
+
+describe('editable generation job context (TASK-253)',()=>{
+  it('flags an unknown company and exposes one save action for company and job text',()=>{
+    expect(appSource).toContain('Unknown company — correct it before generating.')
+    expect(appSource).toContain('aria-label="Company for generated documents"')
+    expect(appSource).toContain('aria-label="Current accepted job text"')
+    expect(appSource).toContain('async function saveGenerationJob(text=sourceText)')
+    expect(appSource).toContain('saveLabel="Save company and job text"')
+    expect(appSource.split('Save company and job text').length-1).toBe(1)
+    expect(appSource).toContain("body:{company,original_source_text:text}")
+  })
+
+  it('does not allow generation from unsaved edited values',()=>{
+    expect(appSource).toContain('||jobDirty||jobSaving||!!pendingText||genInvalid')
+    expect(appSource).toContain('||isUnknownCompany(company)||!sourceText.trim()')
+  })
+})
+
 describe('marking a job Applied from the generator (TASK-227)',()=>{
   it('sends exactly the body the board sends for the same transition',()=>{
     // AC2. The window must not become a second way to write a status: the board builds this same

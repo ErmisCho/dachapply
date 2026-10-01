@@ -431,17 +431,19 @@ def test_correction_image_validation(monkeypatch):
 
 @override_settings(CODEX_CV_OWNER_EMAIL='owner@example.test')
 def test_generated_application_names_derive_from_the_requesting_user(db, job):
+    from types import SimpleNamespace
     from jobradar.services.cv_generator import _target_names, applicant_name
 
-    # TASK-83 AC2: the owner's own output is unchanged. These are the exact filenames the hardcoded
-    # prefix produced before the name became per-user, so their existing files on the workspace --
-    # and the latest_generated_sources lookups that read them back -- keep matching.
     owner=User.objects.create_user('owner@example.test', email='owner@example.test')
-    assert _target_names(job, applicant_name(owner))==('Chorinopoulos-Ermis-CV-Acme-Python-Engineer.tex','Chorinopoulos-Ermis-Letter-Acme-Python-Engineer.tex')
+    suffix=f'Acme-Python-Engineer-Job-{job.id}.tex'
+    assert _target_names(job, applicant_name(owner))==(f'Chorinopoulos-Ermis-CV-{suffix}',f'Chorinopoulos-Ermis-Letter-{suffix}')
 
     # An enabled second user ships documents titled with their own name, never the owner's.
     friend=User.objects.create_user('jane@example.test', email='jane@example.test', first_name='jane', last_name='doe')
-    assert _target_names(job, applicant_name(friend))==('Doe-Jane-CV-Acme-Python-Engineer.tex','Doe-Jane-Letter-Acme-Python-Engineer.tex')
+    assert _target_names(job, applicant_name(friend), 'Anschreiben')==(f'Doe-Jane-CV-{suffix}',f'Doe-Jane-Anschreiben-{suffix}')
+    # The immutable job id, not only display text, keeps equal-looking positions separate.
+    other=SimpleNamespace(id=job.id+1, company=job.company, title=job.title)
+    assert _target_names(other, applicant_name(friend), 'Anschreiben') != _target_names(job, applicant_name(friend), 'Anschreiben')
     # No first/last name set: fall back to the account name, still never to somebody else's.
     assert applicant_name(User.objects.create_user('sam.smith@example.test', email='sam.smith@example.test'))=='Sam-Smith'
     assert applicant_name(None)=='Candidate'
@@ -449,9 +451,9 @@ def test_generated_application_names_derive_from_the_requesting_user(db, job):
     # The job half of the name is unchanged: gendered suffixes stripped, TÜV kept readable, and no
     # language ever reached it -- _target_names takes no language argument at all now.
     job.title='Machine Learning Engineer (gn*)'
-    assert _target_names(job, 'Doe-Jane')==('Doe-Jane-CV-Acme-Machine-Learning-Engineer.tex','Doe-Jane-Letter-Acme-Machine-Learning-Engineer.tex')
+    assert _target_names(job, 'Doe-Jane')==(f'Doe-Jane-CV-Acme-Machine-Learning-Engineer-Job-{job.id}.tex',f'Doe-Jane-Letter-Acme-Machine-Learning-Engineer-Job-{job.id}.tex')
     job.company='TÜV AUSTRIA'
-    assert _target_names(job, 'Doe-Jane')[0]=='Doe-Jane-CV-TUV-Austria-Machine-Learning-Engineer.tex'
+    assert _target_names(job, 'Doe-Jane')[0]==f'Doe-Jane-CV-TUV-Austria-Machine-Learning-Engineer-Job-{job.id}.tex'
 
 
 def test_cv_generation_requires_original_job_text(db):
@@ -491,6 +493,29 @@ def test_latest_generated_sources_survive_task_state_loss(job, tmp_path, setting
     assert latest_generated_sources(job, other)==(None,None)
 
 
+def test_generated_source_lookup_is_job_specific_and_letter_specific(job, tmp_path, settings, db):
+    from types import SimpleNamespace
+    from jobradar.services.cv_generator import _target_names, latest_generated_sources
+
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
+    user=User.objects.create_user('jane@example.test', first_name='Jane', last_name='Doe')
+    cv_dir=tmp_path/'CVs'; letter_dir=tmp_path/'output'; cv_dir.mkdir(); letter_dir.mkdir()
+    other=SimpleNamespace(id=job.id+1, company=job.company, title=job.title)
+    other_cv,other_letter=_target_names(other,'Doe-Jane','Anschreiben')
+    (cv_dir/other_cv).write_text('other job',encoding='utf-8')
+    (letter_dir/other_letter).write_text('other job',encoding='utf-8')
+    assert latest_generated_sources(job,user,'anschreiben')==(None,None)
+
+    cv_name,letter_name=_target_names(job,'Doe-Jane','Anschreiben')
+    (cv_dir/cv_name).write_text('this job',encoding='utf-8')
+    (letter_dir/letter_name).write_text('this job',encoding='utf-8')
+    assert latest_generated_sources(job,user,'anschreiben')==(str(cv_dir/cv_name),str(letter_dir/letter_name))
+    job.company='Corrected Company'
+    assert latest_generated_sources(job,user,'anschreiben')==(str(cv_dir/cv_name),str(letter_dir/letter_name))
+    # A different selected letter does not claim this one as its replacement target.
+    assert latest_generated_sources(job,user,'bewerbungsschreiben')==(str(cv_dir/cv_name),None)
+
+
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test', CODEX_CV_WORKSPACE='C:/missing')
 def test_cv_generation_preview_is_owner_only(client, owner, job, cv_assets):
     assert client.get(f'/api/jobs/{job.id}/cv-generation/').status_code==404
@@ -503,6 +528,19 @@ def test_cv_generation_preview_is_owner_only(client, owner, job, cv_assets):
     assert {cv['key'] for cv in r.data['cvs']}=={'en','de'}
     assert {letter['key'] for letter in r.data['letters']}=={'motivation_letter','motivationsschreiben','bewerbungsschreiben','anschreiben'}
     assert any(model['key']=='gpt-5.6-sol' and {'max','ultra'} <= set(model['efforts']) for model in r.data['models'])
+
+
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_cv_generation_preview_restores_clipboard_text(client, owner, job, tmp_path, monkeypatch):
+    owner.email='owner@example.test'; owner.save(update_fields=['email'])
+    job.url='https://jobs.example.test/role'; job.save(update_fields=['url'])
+    cv=tmp_path/'current.tex'; cv.write_text('CURRENT CV',encoding='utf-8')
+    monkeypatch.setattr('jobradar.views.generation_preview',lambda job,user:{'artifacts':{'cv_tex':str(cv)}})
+
+    response=client.get(f'/api/jobs/{job.id}/cv-generation/')
+
+    assert response.status_code==200
+    assert response.data['clipboard_tex']=='% Job listing: https://jobs.example.test/role\n\nCURRENT CV'
 
 
 @override_settings(CODEX_CV_ENABLED=False, CODEX_CV_OWNER_EMAIL='owner@example.test')
@@ -519,8 +557,8 @@ def test_cv_generation_starts_asynchronously(client, owner, job, monkeypatch):
     other=User.objects.create_user('other-preferences')
     UserProfile.objects.create(user=other, learned_application_preferences='OTHER_ACCOUNT_PREFERENCE')
     selected={}
-    def start(job_id, user_id, profile, cv, letter, create_letter, provider, model, effort, speed, create_cv=True):
-        selected.update(job_id=job_id,user_id=user_id,profile=profile,cv=cv,letter=letter,create_cv=create_cv,create_letter=create_letter,provider=provider,model=model,effort=effort,speed=speed)
+    def start(job_id, user_id, profile, cv, letter, create_letter, provider, model, effort, speed, create_cv=True, replace_existing=False):
+        selected.update(job_id=job_id,user_id=user_id,profile=profile,cv=cv,letter=letter,create_cv=create_cv,create_letter=create_letter,provider=provider,model=model,effort=effort,speed=speed,replace_existing=replace_existing)
         return 'task123'
     monkeypatch.setattr('jobradar.views.start_cv_task', start)
     payload={'cv_template':'de','letter_template':'anschreiben','provider':'openai','model':'gpt-5.5','effort':'high','speed':'fast'}
@@ -528,7 +566,7 @@ def test_cv_generation_starts_asynchronously(client, owner, job, monkeypatch):
     assert r.status_code==202 and r.data['task_id']=='task123' and r.data['status']=='queued' and r.data['estimated_seconds_remaining']>0
     context=selected.pop('profile')
     assert '- [CV] Keep the profile concise' in context and 'OTHER_ACCOUNT_PREFERENCE' not in context
-    assert selected=={'job_id':job.id,'user_id':owner.id,'cv':'de','letter':'anschreiben','create_cv':True,'create_letter':True,'provider':'openai','model':'gpt-5.5','effort':'high','speed':'fast'}
+    assert selected=={'job_id':job.id,'user_id':owner.id,'cv':'de','letter':'anschreiben','create_cv':True,'create_letter':True,'provider':'openai','model':'gpt-5.5','effort':'high','speed':'fast','replace_existing':False}
     assert client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'create_cv':False,'create_letter':False}, format='json').status_code==400
     monkeypatch.setattr('jobradar.views.start_cv_task', lambda *args,**kwargs: (_ for _ in ()).throw(RuntimeError('cannot schedule new futures after interpreter shutdown')))
     unavailable=client.post(f'/api/jobs/{job.id}/cv-generation/run/', payload, format='json')
@@ -536,6 +574,45 @@ def test_cv_generation_starts_asynchronously(client, owner, job, monkeypatch):
     monkeypatch.setattr('jobradar.views.start_cv_task', start)
     cache.clear()
     assert [client.post(f'/api/jobs/{job.id}/cv-generation/run/', payload, format='json').status_code for _ in range(4)]==[202]*4
+
+
+@throttled_rest_framework(cv_generation_user='100/hour')
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_cv_generation_requires_confirmation_before_replacing_selected_files(client, owner, job, monkeypatch):
+    owner.email='owner@example.test'; owner.save(update_fields=['email'])
+    monkeypatch.setattr('jobradar.views.latest_generated_sources',lambda job,user,letter_key='':('current-cv.tex','current-anschreiben.tex'))
+    monkeypatch.setattr('jobradar.views.validate_model_capability',lambda *args,**kwargs:None)
+    monkeypatch.setattr('jobradar.views.load_candidate_evidence',lambda *args:'profile')
+    started=[]
+    monkeypatch.setattr('jobradar.views.start_cv_task',lambda *args,**kwargs:started.append((args,kwargs)) or 'task123')
+    payload={'cv_template':'de','letter_template':'anschreiben','create_cv':True,'create_letter':True,'provider':'openai','model':'gpt-5.5','effort':'medium'}
+
+    refused=client.post(f'/api/jobs/{job.id}/cv-generation/run/',payload,format='json')
+    assert refused.status_code==409 and started==[]
+    confirmed=client.post(f'/api/jobs/{job.id}/cv-generation/run/',{**payload,'replace_existing':True},format='json')
+    assert confirmed.status_code==202 and started[0][1]['replace_existing'] is True
+
+
+@throttled_rest_framework(cv_generation_user='100/hour')
+@override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
+def test_generation_after_popup_save_reads_corrected_company_and_source(client,owner,job,monkeypatch):
+    owner.email='owner@example.test'; owner.save(update_fields=['email'])
+    text='Corrected complete job text with Python responsibilities and requirements.'
+    saved=client.patch(f'/api/jobs/{job.id}/source-text/',{'company':'Corrected GmbH','original_source_text':text},format='json')
+    assert saved.status_code==200
+    monkeypatch.setattr('jobradar.views.latest_generated_sources',lambda *args:(None,None))
+    monkeypatch.setattr('jobradar.views.validate_model_capability',lambda *args,**kwargs:None)
+    monkeypatch.setattr('jobradar.views.load_candidate_evidence',lambda *args:'profile')
+    seen={}
+    def start(job_id,*args,**kwargs):
+        current=JobLead.objects.get(pk=job_id)
+        seen.update(company=current.company,source_text=current.source_text)
+        return 'task123'
+    monkeypatch.setattr('jobradar.views.start_cv_task',start)
+
+    response=client.post(f'/api/jobs/{job.id}/cv-generation/run/',{'cv_template':'de','create_letter':False,'provider':'openai','model':'gpt-5.5','effort':'medium'},format='json')
+
+    assert response.status_code==202 and seen=={'company':'Corrected GmbH','source_text':text}
 
 
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
@@ -548,7 +625,7 @@ def test_cv_task_status_and_download_are_owner_only(client, owner, job, monkeypa
     compile_config={}
     monkeypatch.setattr('jobradar.views.start_cv_compile_task',lambda *args: compile_config.update(args=args) or 'compile123')
     recovered_config={}
-    monkeypatch.setattr('jobradar.views.latest_generated_sources', lambda job,cv: ('latest-cv.tex',None))
+    monkeypatch.setattr('jobradar.views.latest_generated_sources',lambda job,user,letter_key='':('latest-cv.tex',None))
     monkeypatch.setattr('jobradar.views.load_candidate_evidence', lambda profile, learned='', evidence='': profile + learned)
     def start_recovered(*args,**kwargs): recovered_config.update(args=args,kwargs=kwargs); return 'restart123'
     monkeypatch.setattr('jobradar.views.start_cv_task', start_recovered)
@@ -585,8 +662,8 @@ def test_no_change_latest_revision_returns_current_artifacts_immediately(client,
     cv=tmp_path/'current.tex'; cv.write_text('current cv',encoding='utf-8')
     pdf=tmp_path/'current.pdf'; pdf.write_bytes(b'%PDF-current')
     before=hashlib.sha256(cv.read_bytes()).hexdigest()
-    monkeypatch.setattr('jobradar.views.latest_generated_sources',lambda job,user:(str(cv),None))
-    monkeypatch.setattr('jobradar.views.latest_generated_artifacts',lambda job,user:{'cv_tex':str(cv),'cv_pdf':str(pdf)})
+    monkeypatch.setattr('jobradar.views.latest_generated_sources',lambda job,user,letter_key='':(str(cv),None))
+    monkeypatch.setattr('jobradar.views.latest_generated_artifacts',lambda job,user,letter_key='':{'cv_tex':str(cv),'cv_pdf':str(pdf)})
     monkeypatch.setattr('jobradar.views.start_cv_task',lambda *args,**kwargs: (_ for _ in ()).throw(AssertionError('model task started')))
     monkeypatch.setattr(cv_tasks,'generate_cv_package',lambda *args,**kwargs: (_ for _ in ()).throw(AssertionError('model called')))
     monkeypatch.setattr(cv_tasks,'recompile_generated_package',lambda *args,**kwargs: (_ for _ in ()).throw(AssertionError('compiler called')))
@@ -665,6 +742,9 @@ def test_revision_cache_identity_covers_private_and_generation_inputs(job, tmp_p
     baseline=key()
     assert baseline==key(instructions='  change  ')
     assert len({baseline,key(user=2),key(source=b'other'),key(instructions='other'),key(image=b'png'),key(profile='other'),key(model='other')})==7
+    original_id=job.id; job.id+=1
+    assert key()!=baseline
+    job.id=original_id
     original=job.title; job.title='Different role'
     assert key()!=baseline
     job.title=original
@@ -676,8 +756,8 @@ def test_exact_revision_route_bypasses_ai_but_semantic_and_image_requests_do_not
     owner.email='owner@example.test'; owner.save(update_fields=['email'])
     cv=tmp_path/'current.tex'; cv.write_text('prefix OLD text suffix',encoding='utf-8')
     pdf=tmp_path/'current.pdf'; pdf.write_bytes(b'%PDF')
-    monkeypatch.setattr('jobradar.views.latest_generated_sources',lambda job,user:(str(cv),None))
-    monkeypatch.setattr('jobradar.views.latest_generated_artifacts',lambda job,user:{'cv_tex':str(cv),'cv_pdf':str(pdf)})
+    monkeypatch.setattr('jobradar.views.latest_generated_sources',lambda job,user,letter_key='':(str(cv),None))
+    monkeypatch.setattr('jobradar.views.latest_generated_artifacts',lambda job,user,letter_key='':{'cv_tex':str(cv),'cv_pdf':str(pdf)})
     compiled=[]; ai=[]
     monkeypatch.setattr('jobradar.views.start_cv_compile_task',lambda *args,**kwargs: compiled.append((args,kwargs)) or 'exact-task')
     monkeypatch.setattr('jobradar.views.start_cv_task',lambda *args,**kwargs: ai.append((args,kwargs)) or 'ai-task')
@@ -837,7 +917,7 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     def fake_run(command, **kwargs):
         commands.append(command)
         if command[0]=='pdfinfo':
-            pages=page_counts['Letter'] if 'Letter' in str(command[-1]) else page_counts['CV']
+            pages=page_counts['CV'] if '-CV-' in str(command[-1]) else page_counts['Letter']
             return SimpleNamespace(returncode=0, stdout=f'Pages: {pages}\nPage size: 612 x 792 pts', stderr='')
         if command[0]=='pdftoppm':
             __import__('pathlib').Path(str(command[-1])+'-1.png').write_bytes(b'png')
@@ -924,6 +1004,7 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     assert __import__('pathlib').Path(saved['cv_tex']).parent==tmp_path/'CVs'
     assert __import__('pathlib').Path(saved['cv_pdf']).parent==tmp_path/'CVs'
     assert __import__('pathlib').Path(saved['letter_tex']).parent==tmp_path/'output'
+    assert 'Motivationsschreiben' in __import__('pathlib').Path(saved['letter_tex']).name and '-Letter-' not in __import__('pathlib').Path(saved['letter_tex']).name
     assert __import__('pathlib').Path(saved['letter_pdf']).parent==tmp_path/'output'
     model_calls=sum(command[0] in ('codex','claude') for command in commands)
     recompiled,_,recompiled_saved=recompile_generated_package(job,'de',saved['cv_tex'],saved['letter_tex'], user_id=user.id)
@@ -951,7 +1032,7 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     assert not any('letter' in stage.lower() for _,stage in cv_only_progress)
     letter_only,_,letter_only_saved=generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'normal', create_cv=False, user_id=user.id)
     assert len([name for name in zipfile.ZipFile(BytesIO(letter_only)).namelist() if name.endswith('.pdf')])==1
-    assert set(letter_only_saved)=={'letter_tex','letter_pdf','report','base_templates'} and opened[-1]==tmp_path/'output'
+    assert set(letter_only_saved)=={'letter_tex','letter_pdf','letter_template','report','base_templates'} and opened[-1]==tmp_path/'output'
     assert letter_only_saved['base_templates']=={'cv':[],'letter':['motivationsschreiben.tex']}
     assert letter_only_saved['report']['unsupported_requirements_not_claimed']==['Unsupported tool']
     with pytest.raises(ValueError, match='at least'):
@@ -1231,6 +1312,44 @@ def test_cv_task_step_progress_reflects_route_completion_and_cache_reduction():
     cached=cv_tasks.get_cv_task('cache-task', 1)
     assert cached['step_total']==2 and cached['step_completed']==1 and cached['step_label']=='Using saved package'
     cv_tasks._tasks.clear()
+
+
+def test_cv_worker_retries_missing_posting_text_before_generation(db,job,owner,monkeypatch):
+    from threading import Event
+    from jobradar.services import cv_tasks
+
+    fallback='Fallback summary with Python and Django responsibilities.'
+    fetched='Fetched original posting with complete Python, Django, testing, and deployment requirements.'
+    corrected='User-corrected posting text saved while the automatic retry was in flight.'
+    JobLead.objects.filter(pk=job.pk).update(url='https://jobs.example.test/role',raw_description=fallback,original_source_text='')
+    calls=[]; generated=[]
+    monkeypatch.setattr(cv_tasks,'fetch_posting_text',lambda url:(calls.append(url) or {'ok':True,'text':fetched}))
+    monkeypatch.setattr(cv_tasks,'generate_cv_package',lambda current,*args,**kwargs:(generated.append(current.source_text) or (b'zip','a.zip',{})))
+
+    def run():
+        cv_tasks._run('source-retry',job.id,owner.id,'profile','en','',False,'openai','gpt-5.5','medium','normal',cancel_event=Event())
+
+    run()
+    job.refresh_from_db()
+    assert calls==['https://jobs.example.test/role'] and job.original_source_text==fetched and generated[-1]==fetched
+
+    JobLead.objects.filter(pk=job.pk).update(original_source_text=corrected)
+    calls.clear(); run()
+    assert calls==[] and generated[-1]==corrected
+
+    JobLead.objects.filter(pk=job.pk).update(original_source_text='')
+    monkeypatch.setattr(cv_tasks,'fetch_posting_text',lambda url:(calls.append(url) or {'ok':False,'text':'','error':'expired'}))
+    calls.clear(); run()
+    job.refresh_from_db()
+    assert calls==['https://jobs.example.test/role'] and job.original_source_text=='' and generated[-1]==fallback
+
+    def raced_fetch(url):
+        JobLead.objects.filter(pk=job.pk).update(original_source_text=corrected)
+        return {'ok':True,'text':fetched}
+    monkeypatch.setattr(cv_tasks,'fetch_posting_text',raced_fetch)
+    run()
+    job.refresh_from_db()
+    assert job.original_source_text==corrected and generated[-1]==corrected
 
 
 def test_long_generation_recycles_the_db_connection_before_learning_a_preference(db, job, owner, monkeypatch):
@@ -2134,8 +2253,10 @@ def test_owner_can_explicitly_replace_original_job_text(client, job):
     assert other_client.patch(url, {'original_source_text':'Other user text'}, format='json').status_code==404
     assert client.patch(url, {'original_source_text':'https://example.test/job'}, format='json').status_code==400
     text='Manually corrected vollständige deutsche Stellenbeschreibung mit Aufgaben und Anforderungen.'
-    assert client.patch(url, {'original_source_text':text}, format='json').status_code==200
-    job.refresh_from_db(); assert job.original_source_text==text
+    response=client.patch(url, {'company':'Correct Company','original_source_text':text}, format='json')
+    assert response.status_code==200 and response.data=={'company':'Correct Company','original_source_text':text}
+    job.refresh_from_db(); assert job.original_source_text==text and job.company=='Correct Company'
+    assert client.patch(url, {'company':'x'*201,'original_source_text':text}, format='json').status_code==400
     job.raw_description='Later summary'; job.save(); job.refresh_from_db()
     assert job.original_source_text==text
 
@@ -4335,6 +4456,11 @@ def test_a_finished_run_does_not_open_a_folder_by_itself_while_reveal_still_does
     saved=cv_generator.persist_generated_files(output, workspace, cv_name='cv.tex')
 
     assert saved['cv_tex'] and opened == []  # files written, nothing opened by itself
+    # A confirmed replacement uses the same paths instead of creating cv-2.tex/cv-2.pdf.
+    (output/'cv.tex').write_text('replacement',encoding='utf-8'); (output/'cv.pdf').write_bytes(b'%PDF-new')
+    replaced=cv_generator.persist_generated_files(output,workspace,cv_name='cv.tex',cv_target=saved['cv_tex'])
+    assert replaced==saved and pathlib.Path(saved['cv_tex']).read_text(encoding='utf-8')=='replacement'
+    assert not list((workspace/'CVs').glob('cv-2.*'))
 
     pdf=pathlib.Path(saved['cv_pdf'])
     task_id=_reveal_task(owner, {'cv_pdf':str(pdf)})

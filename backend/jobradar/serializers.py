@@ -115,7 +115,7 @@ class CandidateProfileSerializer(serializers.ModelSerializer):
         # TASK-169: mailbox_identify_window_months sits right next to mailbox_lookback_months -- same
         # family, deliberately a different field (see the model comment on both for why fetch and
         # identify must not share one setting).
-        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_check_enabled','mailbox_check_window_start','mailbox_check_window_end','mailbox_lookback_months','mailbox_identify_window_months','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ids','board_sort_keys','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
+        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','posting_refresh_cadence','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_check_enabled','mailbox_check_window_start','mailbox_check_window_end','mailbox_lookback_months','mailbox_identify_window_months','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ids','board_sort_keys','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
     # The profile codec is a text codec: it JSON-wraps values for drifted SQLite schemas and
     # coerces falsy values to ''. Running a boolean through it would store '' in a
     # BooleanField and serialise False as ''. Booleans (and mailbox_check_cadence_minutes, an int
@@ -210,6 +210,7 @@ class FollowUpSerializer(serializers.ModelSerializer):
 
 class JobLeadSerializer(serializers.ModelSerializer):
     latest_evaluation=serializers.SerializerMethodField()
+    has_pending_source=serializers.SerializerMethodField()
     created_by_username=serializers.SerializerMethodField()
     created_by_email=serializers.SerializerMethodField()
     submitted_for_username=serializers.SerializerMethodField()
@@ -279,6 +280,7 @@ class JobLeadSerializer(serializers.ModelSerializer):
     def get_latest_evaluation(self, obj):
         ev=obj.evaluations.first()
         return JobEvaluationSerializer(ev).data if ev else None
+    def get_has_pending_source(self, obj): return bool(obj.pending_source_text)
     def get_created_by_username(self, obj): return obj.created_by.username if obj.created_by else ''
     def get_created_by_email(self, obj): return (obj.created_by.email or obj.created_by.username) if obj.created_by else ''
     def get_submitted_for_username(self, obj): return obj.submitted_for.username if obj.submitted_for else ''
@@ -377,7 +379,7 @@ class JobLeadListSerializer(JobLeadSerializer):
     note_preview=serializers.SerializerMethodField()
     class Meta(JobLeadSerializer.Meta):
         fields=None  # DRF forbids fields and exclude together; the parent sets fields='__all__'
-        exclude=('raw_description','original_source_text')
+        exclude=('raw_description','original_source_text','pending_source_text','pending_source_fetched_at','source_checked_at','source_fetch_error')
     def get_note_preview(self, obj):
         """Server-side twin of appUtils.messagePreviewLine (TASK-177): same 140-char cap and the
         same whitespace squeeze, so a note preview and a mail preview never disagree about length.

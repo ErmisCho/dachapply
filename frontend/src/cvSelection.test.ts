@@ -4,7 +4,7 @@
 // functions and are tested here. What is NOT covered by any test: that the two pickers are wired to
 // separate state in App.tsx, and every pixel claim -- both need a browser.
 import {afterEach,describe,expect,it,vi} from 'vitest'
-import {comboValid,cvPick,emptyCvPick,readCvPicks,writeCvPicks} from './cvModel'
+import {comboValid,cvClipboardTex,cvPick,emptyCvPick,hasSelectedGeneratedFiles,isUnknownCompany,readCvPicks,replacementDecision,selectedGeneratedArtifacts,writeCvPicks} from './cvModel'
 
 const models=[
   {provider:'openai',key:'gpt-5-codex',label:'GPT-5 Codex',efforts:['low','medium','high','xhigh'],default_effort:'medium',fast_tier:true},
@@ -67,6 +67,50 @@ describe('restoring a remembered selection (TASK-231)',()=>{
 
   it('stays usable when the server offers no models at all',()=>{
     expect(cvPick([],{provider:'openai',model:'gpt-5-codex',effort:'low',speed:'fast'})).toEqual(emptyCvPick)
+  })
+})
+
+describe('existing generated files (TASK-252, TASK-253)',()=>{
+  it('only confirms when an output for the selected job and letter type exists',()=>{
+    const preview={artifacts:{cv_tex:'CVs/job-7.tex'},letter_artifacts:{anschreiben:{letter_tex:'output/job-7-anschreiben.tex'},bewerbungsschreiben:{}}}
+    const anschreiben=selectedGeneratedArtifacts(null,preview,'anschreiben')
+    const bewerbung=selectedGeneratedArtifacts(null,preview,'bewerbungsschreiben')
+
+    expect(hasSelectedGeneratedFiles(anschreiben,true,false)).toBe(true)
+    expect(hasSelectedGeneratedFiles(anschreiben,false,true)).toBe(true)
+    expect(hasSelectedGeneratedFiles(bewerbung,false,true)).toBe(false)
+    expect(hasSelectedGeneratedFiles({},true,true)).toBe(false)
+  })
+
+  it('cancels replacement without proceeding and only confirms when selected files exist',()=>{
+    const confirm=vi.fn(()=>false)
+    expect(replacementDecision({cv_tex:'current.tex'},true,false,confirm)).toBeNull()
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(replacementDecision({},true,true,confirm)).toBe(false)
+    expect(confirm).toHaveBeenCalledOnce()
+    confirm.mockReturnValue(true)
+    expect(replacementDecision({letter_tex:'current.tex'},false,true,confirm)).toBe(true)
+  })
+
+  it('does not reuse a completed task letter after the user selects another template',()=>{
+    const task={cv_tex:'CVs/job-7.tex',letter_tex:'output/job-7-anschreiben.tex',letter_template:'anschreiben'}
+    const preview={artifacts:{cv_tex:'CVs/job-7.tex'},letter_artifacts:{bewerbungsschreiben:{letter_tex:'output/job-7-bewerbung.tex'}}}
+
+    expect(selectedGeneratedArtifacts(task,preview,'bewerbungsschreiben').letter_tex).toBe('output/job-7-bewerbung.tex')
+  })
+
+  it('keeps Copy TeX usable after reopening, while preferring a newly completed task',()=>{
+    expect(cvClipboardTex(null,{clipboard_tex:'persisted files'})).toBe('persisted files')
+    expect(cvClipboardTex({clipboard_tex:'new files'},{clipboard_tex:'persisted files'})).toBe('new files')
+    expect(cvClipboardTex(null,null)).toBe('')
+  })
+})
+
+describe('unknown companies (TASK-253)',()=>{
+  it('recognises blank and placeholder values without hiding real names',()=>{
+    expect(isUnknownCompany('')).toBe(true)
+    expect(isUnknownCompany(' unknown company ')).toBe(true)
+    expect(isUnknownCompany('ACME')).toBe(false)
   })
 })
 

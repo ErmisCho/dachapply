@@ -33,6 +33,22 @@ export function stepText(task:any){
   return `${label||'Working'} · step ${completed}/${total}`
 }
 
+export function selectedGeneratedArtifacts(taskArtifacts:any,preview:any,letterKey:string){
+  const letter=taskArtifacts?.letter_tex&&(!taskArtifacts.letter_template||taskArtifacts.letter_template===letterKey)?taskArtifacts:preview?.letter_artifacts?.[letterKey]||{}
+  return {cv_tex:taskArtifacts?.cv_tex||preview?.artifacts?.cv_tex,cv_pdf:taskArtifacts?.cv_pdf||preview?.artifacts?.cv_pdf,letter_tex:letter.letter_tex,letter_pdf:letter.letter_pdf}
+}
+
+export function hasSelectedGeneratedFiles(artifacts:any,createCv:boolean,createLetter:boolean){return !!(createCv&&artifacts?.cv_tex||createLetter&&artifacts?.letter_tex)}
+
+export function replacementDecision(artifacts:any,createCv:boolean,createLetter:boolean,confirm:()=>boolean):boolean|null{
+  const replace=hasSelectedGeneratedFiles(artifacts,createCv,createLetter)
+  return replace?(confirm()?true:null):false
+}
+
+export function isUnknownCompany(company?:string){return !company?.trim()||company.trim().toLowerCase()==='unknown company'}
+
+export function cvClipboardTex(task:any, preview:any){return task?.clipboard_tex||preview?.clipboard_tex||''}
+
 export type CvPick={provider:string;model:string;effort:string;speed:string}
 export const emptyCvPick:CvPick={provider:'openai',model:'',effort:'',speed:'normal'}
 

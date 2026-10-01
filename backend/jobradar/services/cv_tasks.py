@@ -13,6 +13,7 @@ from django.db import close_old_connections
 
 from jobradar.models import ApplicationNote, JobLead, UserProfile
 from jobradar.services.cv_generator import GenerationCancelled, generate_cv_package, preference_exclusion, recompile_generated_package
+from jobradar.services.posting_fetch import fetch_posting_text
 
 
 _tasks={}
@@ -296,17 +297,34 @@ def _cleanup():
             del _tasks[task_id]
 
 
-def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, cancel_event=None):
+def _retry_missing_source(job):
+    if job.is_meaningful_source(job.original_source_text) or not job.url:
+        return
+    original=job.original_source_text
+    result=fetch_posting_text(job.url)
+    text=result.get('text','') if result.get('ok') else ''
+    if job.is_meaningful_source(text):
+        JobLead.objects.filter(pk=job.pk,original_source_text=original).update(original_source_text=text)
+    # A popup save can win while the network request is in flight; generation uses that newer text.
+    job.refresh_from_db()
+
+
+def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, cancel_event=None):
     close_old_connections()
     try:
         if cancel_event.is_set():
             raise GenerationCancelled
         job=JobLead.objects.get(id=job_id)
+        _retry_missing_source(job)
+        if cancel_event.is_set():
+            raise GenerationCancelled
         if base_templates is None and (source_cv or source_letter):
             base_templates=_latest_base_templates(job)
         generation_kwargs={'cancelled':cancel_event.is_set,'user_id':user_id}
         if base_templates:
             generation_kwargs['base_templates']=base_templates
+        if replace_existing:
+            generation_kwargs['replace_existing']=True
         archive, filename, artifacts=generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, lambda progress, stage: _update(task_id, status='running', progress=progress, stage=stage), source_cv, source_letter, revision_instructions, create_cv, correction_image, **generation_kwargs)
         if cancel_event.is_set():
             raise GenerationCancelled
@@ -391,7 +409,7 @@ def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter
     return task_id
 
 
-def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None):
+def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False):
     _cleanup()
     task_id=uuid.uuid4().hex
     now=time.monotonic()
@@ -401,7 +419,7 @@ def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, p
         _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_config':{'profile':profile,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'create_cv':create_cv,'provider':provider,'model':model,'effort':effort,'speed':speed},'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'_stage_times':{},'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in plan)
     # ponytail: one local CLI agent per task; add a concurrency cap if large batches exhaust the workstation.
-    Thread(target=_run, args=(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv, source_letter, revision_instructions, create_cv, correction_image, base_templates, cancel_event), name=f'cv-agent-{task_id[:8]}', daemon=True).start()
+    Thread(target=_run, args=(task_id,job_id,user_id,profile,cv_key,letter_key,create_letter,provider,model,effort,speed,source_cv,source_letter,revision_instructions,create_cv,correction_image,base_templates,replace_existing,cancel_event), name=f'cv-agent-{task_id[:8]}', daemon=True).start()
     return task_id
 
 

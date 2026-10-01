@@ -3,17 +3,27 @@ id: TASK-229
 title: >-
   Learned preferences are carrying factual claims that belong in candidate
   evidence
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-09-10 12:06'
-updated_date: '2026-09-25 14:47'
+updated_date: '2026-09-29 20:56'
 labels:
   - backend
   - llm
   - data
 dependencies:
   - TASK-225
+references:
+  - 'https://github.com/ErmisCho/dachapply/pull/190'
+  - 'https://github.com/ErmisCho/dachapply/pull/191'
+modified_files:
+  - .orchestrator/debug/01a0edd2-7a80-737c-9bb4-8581c24c7af5-1.md
+  - .orchestrator/debug/01a0edd2-7a80-737c-9bb4-8581c24c7af5-2.md
+  - .orchestrator/debug/01a0edd2-7a80-737c-9bb4-8581c24c7af5-3.md
+  - .orchestrator/debug/01a0edd2-7a80-737c-9bb4-8581c24c7af5-4.md
+  - .orchestrator/debug/01a0edd2-7a80-737c-9bb4-8581c24c7af5-5.md
+  - .orchestrator/debug/01a0edd2-7a80-737c-9bb4-8581c24c7af5-6.md
 priority: high
 ordinal: 228000
 ---
@@ -46,9 +56,19 @@ No term, phrase or employer is named in this task on purpose: the repository is 
 - [x] #1 It is established which factual claims currently live only in learned_application_preferences and not in candidate_evidence - by measurement over the real field, reported as counts and categories rather than as quoted personal content
 - [x] #2 The claims that are true are moved into candidate_evidence, where the pipeline already treats them as authoritative, with the owner confirming each one rather than a model deciding
 - [x] #3 A readjustment instruction that asserts a FACT is distinguishable from one that asserts a STYLE preference, or the task records why that distinction cannot be drawn automatically and what the owner does instead
-- [ ] #4 After the move, the same job generated at the TASK-225 bound and generated unbounded no longer disagree about any factual claim - verified by re-running the AC4 comparison, not by argument
+- [x] #4 After the move, the same job generated at the TASK-225 bound and generated unbounded no longer disagree about any factual claim - verified by re-running the AC4 comparison, not by argument
 - [x] #5 Contradictory entries are surfaced to the owner rather than silently resolved by recency
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Verify the authoritative evidence loaded by the CV prompt contains the owner-confirmed guardrails and measure the current bounded/unbounded prompt inputs without printing private content.
+2. Generate job 1488 twice with the same available tool-capable cloud model and effort, once at the TASK-225 16,000-character bound and once unbounded, disabling cache so both are real runs. Anthropic Sonnet was attempted first but its authenticated subscription is quota-blocked until the provider reset; use OpenAI for both measured runs.
+3. Compare the generated TeX for factual differences; use an identical-prompt control only if model variation makes attribution ambiguous, and record public evidence as counts/categories rather than personal text.
+4. Run the relevant regression suite, full backend tests, frontend build, and the sealed Asian Dad evaluation.
+5. Commit, push, and squash-merge the verification record; then mark TASK-229 Done in a post-merge administrative change and squash-merge that too.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -236,4 +256,36 @@ Measured before and after, through load_candidate_evidence itself rather than by
 
 Worth carrying forward for anyone editing that file by hand: append to the end and it is silently
 dropped. The only check that catches it is loading the evidence the way the prompt does.
+
+## AC4 re-run 2026-09-29 -- PASS, with two real uncached generations
+
+The live production field now stores 60 entries / 131,220 chars, but TASK-236 leaves 19 durable-preference entries / 7,852 chars eligible for the CV prompt. That is below TASK-225's 16,000-char budget. Building the prompt through `load_candidate_evidence` at 16,000 and at 0 (unbounded) therefore produced byte-identical 60,537-char contexts; the authoritative-evidence hashes matched, the owner-confirmed guardrail section was present in both, and the preference field hash was unchanged.
+
+Job 1488 was then generated twice with cache disabled and identical OpenAI `gpt-5.6-sol` / low settings, once with the 16,000-char bound and once unbounded. Anthropic Sonnet was attempted first as in TASK-225, but a content-free probe confirmed its authenticated subscription is quota-blocked (429) until the provider reset; the provider substitution is recorded in the debug artifact. Both measured OpenAI runs were real model calls, completed on their first attempt, compiled successfully, and took 89.36s / 89.80s. Private outputs remain under `%LOCALAPPDATA%/dachapply/TASK-229-AC4`; no CV or evidence content entered the repository.
+
+The two stochastic outputs were 79.6% text-similar with 96 added/removed diff lines, so raw equality would be dishonest. Two independent structured reviews (`gpt-5.6-sol` high and `gpt-5.6-terra` medium) each read every changed hunk and independently returned **0 factual disagreements and no disagreement category**. They counted only non-conflicting selection of supported facts plus wording/style variation. As a direct check on AC2, all 14 public guardrail probe terms recorded above were absent from both generated TeX files. An auxiliary whole-CV unsupported-claim count was not used to close this criterion: its counts varied by reviewer and it asks a broader question than cross-run disagreement.
+
+This is the requested before/after re-run, not an argument from prompt construction: same job, bounded and unbounded real generations, compiled outputs compared, zero factual disagreements. No third generation is needed because the two supposedly different inputs were themselves byte-identical, making this pair the identical-prompt control.
+
+## Final verification 2026-09-29
+
+- Backend full gate: `cd backend && uv run pytest -q` -> **1,235 passed** (509 warnings) in 457.31s.
+- Frontend branch gate: `cd frontend && npm run build` -> **passed**, 27 modules transformed; the clean worktree reused the owner checkout's installed dependencies through an ignored junction after the initial missing-`node_modules` environment failure was root-caused.
+- Owner-checkout frontend build: **passed**, 27 modules transformed. Localhost/served-bundle parity is deferred to the required post-merge runtime sync so it verifies the revision that actually lands rather than this pre-merge branch.
+- Privacy check: generated CVs, evidence, judge inputs, and judge outputs remain outside Git under `%LOCALAPPDATA%`; the repository diff contains only counts/categories and operational debug records.
+- Sealed Asian Dad rubric: **PERFECT** -- every criterion passed against measured evidence (read-only real-field hash, surfaced conflict pairs with duplicates excluded, 1,235-test gate, unchanged generation code, and privacy-scoped diff).
+
+## Post-merge completion 2026-09-29
+
+- Implementation PR [#190](https://github.com/ErmisCho/dachapply/pull/190) squash-merged as `0766c03c7bc2670bf30463a8ceb360d4744e1b92`.
+- Main deployment run [36628893582](https://github.com/ErmisCho/dachapply/actions/runs/36628893582) passed the 1,235-test/backend gate, frontend typecheck/tests, image build, Azure deployment, and public-app check. Public `/` and `/api/health/` both returned 200; health reported `status=ok`, `database=ok`.
+- Pre-merge rollback image was recorded as `ghcr.io/ermischo/dachapply:6e24c399759d786dce0809e1053265ccadecedfe` from successful deployment run 36453037961.
+- Dedicated local runtime was synchronized to the exact merged SHA `0766c03`, dependencies refreshed, and the production frontend rebuilt. `localhost:8000` health returned 200/database ok. The served asset `index-CvmyftQZ.js` matched `frontend/dist/index.html`; a visible browser load reached `/login` with ready state complete, one rendered React root child, styles loaded, and 1,705 body-text characters.
+- Asian Dad verdict remained **PERFECT**. TASK-229 is complete.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Moved the owner-confirmed negative truth guardrails into authoritative local candidate evidence, retained the read-only fact/style and contradiction review tooling, and completed the missing bounded-vs-unbounded real-generation comparison with zero factual disagreements. PR #190 merged as 0766c03; 1,235 backend tests, frontend gates, Azure deployment/public health, and synchronized rendered localhost all passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
