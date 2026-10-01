@@ -390,7 +390,7 @@ def start_cv_noop_task(job_id, user_id, artifacts):
     # TASK-250: this path has no job object -- only the id -- and the copy button is offered here too.
     clipboard_tex=_clipboard_payload(artifacts,JobLead.objects.filter(id=job_id).values_list('url',flat=True).first())
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'ready','progress':100,'stage':'No changes requested','error':'','archive':archive.getvalue(),'filename':f'application-{job_id}-current.zip','artifacts':artifacts,'report':{'changed_files':[],'main_changes':['Current files retained unchanged.'],'unsupported_requirements_not_claimed':[]},'clipboard_tex':clipboard_tex,'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_created_at':now,'_started_at':now,'_finished_at':now,'_stage_key':'ready','_stage_started_at':now,'_stage_plan':[],'_stage_defaults':{},'_estimate_key':('no-change',),'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'ready','progress':100,'stage':'No changes requested','error':'','archive':archive.getvalue(),'filename':'application.zip','artifacts':artifacts,'report':{'changed_files':[],'main_changes':['Current files retained unchanged.'],'unsupported_requirements_not_claimed':[]},'clipboard_tex':clipboard_tex,'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_created_at':now,'_started_at':now,'_finished_at':now,'_stage_key':'ready','_stage_started_at':now,'_stage_plan':[],'_stage_defaults':{},'_estimate_key':('no-change',),'_stage_times':{},'updated_at':time.time()}
     return task_id
 
 

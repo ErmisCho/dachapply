@@ -620,10 +620,178 @@ def _filename_label(value, fallback='Letter'):
 
 
 def _target_names(job, applicant, letter_label='Letter'):
-    # The immutable id is the identity boundary. Company/title remain readable decoration, but two
-    # equal-looking leads can no longer discover or replace one another's files.
-    target=f'{_target_slug(job)}-Job-{job.id}'
+    target=_target_slug(job)
     return f'{applicant}-CV-{target}.tex', f'{applicant}-{_filename_label(letter_label)}-{target}.tex'
+
+
+def _package_filename(job, applicant):
+    return f'{applicant}-Application-{_target_slug(job)}.zip'
+
+
+def _artifact_metadata_path(workspace, job_id, user_id):
+    if not workspace or not job_id or not user_id:
+        return None
+    digest=hashlib.sha256(f'{user_id}:{job_id}'.encode()).hexdigest()
+    return Path(workspace)/'.dachapply-artifacts'/f'{digest}.json'
+
+
+def _read_artifact_metadata(job, user):
+    path=_artifact_metadata_path(settings.CODEX_CV_WORKSPACE,job.id,getattr(user,'pk',None))
+    if not path:
+        return {}
+    try:
+        data=json.loads(path.read_text(encoding='utf-8'))
+        return data if data.get('job_id') == job.id and data.get('user_id') == user.pk else {}
+    except (AttributeError,KeyError,OSError,TypeError,ValueError,json.JSONDecodeError):
+        return {}
+
+
+def _sidecar_paths(data):
+    values=list(data.get('artifacts',{}).values())+list(data.get('paths',[]))
+    values += [value for letter in data.get('letters',{}).values() for value in letter.values()]
+    return [value for value in values if isinstance(value,str)]
+
+
+def _entries(data):
+    # A live sidecar is one entry; a user's retired-*.json holds one entry per Applied job hash.
+    return [data,*data.get('jobs',{}).values()]
+
+
+def _claimed_artifact_paths(workspace, user_id):
+    # Every path another job's sidecar names -- and every path an Applied job left behind -- is off
+    # limits to the name-based fallbacks, because new names no longer carry the job id.
+    claimed=set()
+    root=Path(workspace)/'.dachapply-artifacts'
+    if not user_id or not root.is_dir():
+        return claimed
+    for path in root.glob('*.json'):
+        try:
+            data=json.loads(path.read_text(encoding='utf-8'))
+            if data.get('user_id') == user_id:
+                claimed.update(os.path.normcase(str(Path(value))) for entry in _entries(data) for value in _sidecar_paths(entry))
+        except (OSError,TypeError,ValueError,AttributeError):
+            continue
+    return claimed
+
+
+def _sent_paths(workspace):
+    """Every document any account sent (an Applied job's retired paths). These are read-only."""
+    sent=set()
+    root=Path(workspace)/'.dachapply-artifacts' if workspace else None
+    if not root or not root.is_dir():
+        return sent
+    for path in root.glob('retired-*.json'):
+        try:
+            data=json.loads(path.read_text(encoding='utf-8'))
+            sent.update(os.path.normcase(str(Path(value))) for entry in data.get('jobs',{}).values() for value in _sidecar_paths(entry))
+        except (OSError,TypeError,ValueError,AttributeError):
+            continue
+    return sent
+
+
+def _is_sent(path, sent):
+    return bool(path) and os.path.normcase(str(Path(path))) in sent
+
+
+def _retired_file(workspace, user_id):
+    return Path(workspace)/'.dachapply-artifacts'/f'retired-{hashlib.sha256(f"retired:{user_id}".encode()).hexdigest()}.json'
+
+
+def _retired_entry(job, user):
+    # The read-only pointer an Applied job keeps to the documents it was sent with.
+    sidecar=_artifact_metadata_path(settings.CODEX_CV_WORKSPACE,job.id,getattr(user,'pk',None))
+    if not sidecar:
+        return {}
+    try:
+        data=json.loads(_retired_file(settings.CODEX_CV_WORKSPACE,user.pk).read_text(encoding='utf-8'))
+        return data.get('jobs',{}).get(sidecar.stem,{}) if data.get('user_id') == user.pk else {}
+    except (AttributeError,OSError,TypeError,ValueError):
+        return {}
+
+
+def _record_artifact_metadata(job, user_id, artifacts, letter_key=''):
+    path=_artifact_metadata_path(settings.CODEX_CV_WORKSPACE,job.id,user_id)
+    if not path:
+        return None
+    try:
+        data=json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
+    except (OSError,TypeError,ValueError,json.JSONDecodeError):
+        data={}
+    if data.get('job_id') != job.id or data.get('user_id') != user_id:
+        data={'job_id':job.id,'user_id':user_id,'artifacts':{},'letters':{}}
+    current=data.setdefault('artifacts',{})
+    for key in ('cv_tex','cv_pdf'):
+        if artifacts.get(key): current[key]=artifacts[key]
+    if artifacts.get('letter_tex'):
+        key=letter_key or artifacts.get('letter_template') or 'letter'
+        data.setdefault('letters',{})[key]={name:artifacts[name] for name in ('letter_tex','letter_pdf') if artifacts.get(name)}
+        data['latest_letter']=key
+    temporary=path.with_suffix('.tmp')
+    try:
+        path.parent.mkdir(parents=True,exist_ok=True)
+        temporary.write_text(json.dumps(data,ensure_ascii=False),encoding='utf-8')
+        temporary.replace(path)
+        return path
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        return None
+
+
+def delete_generated_metadata(job):
+    """Best-effort removal of one job's local metadata once it is Applied.
+
+    Deletes that job's artifact sidecar(s) and package-cache entries, never a TeX/PDF. The sidecar's
+    document paths move into the user's id-free `retired-*.json`, keyed by the same job hash: the
+    Applied job keeps a read-only link to what it sent, no write path may modify those files, and an
+    equal-looking job's name-based lookup can never adopt them.
+    Returns the number of files removed; never raises.
+    """
+    try:
+        workspace=Path(settings.CODEX_CV_WORKSPACE) if settings.CODEX_CV_WORKSPACE else None
+        if not workspace or not workspace.is_dir():
+            return 0
+        removed=0
+        for directory,is_sidecar in ((workspace/'.dachapply-artifacts',True),(workspace/'.dachapply-cache',False)):
+            if not directory.is_dir():
+                continue
+            for path in directory.glob('*.json'):
+                try:
+                    data=json.loads(path.read_text(encoding='utf-8'))
+                    # Cache entries written before TASK-256 carry the id only in their old filename.
+                    if data.get('job_id') != job.id and not (not is_sidecar and str(data.get('filename','')).startswith(f'application-{job.id}-')):
+                        continue
+                    if is_sidecar and data.get('user_id'):
+                        _retire(directory,path.stem,data)
+                    path.unlink()
+                    removed+=1
+                    if not is_sidecar:
+                        path.with_suffix('.zip').unlink(missing_ok=True)
+                except (OSError,TypeError,ValueError,AttributeError):
+                    continue
+        return removed
+    except Exception:  # noqa: BLE001 -- cleanup must never fail or roll back the Applied status
+        return 0
+
+
+def _retire(directory, job_hash, data):
+    # Raises OSError when it cannot write, so the caller keeps the sidecar rather than lose the
+    # read-only protection of the documents it names.
+    path=_retired_file(directory.parent,data['user_id'])
+    try:
+        retired=json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
+    except ValueError:
+        retired={}
+    if retired.get('user_id') != data['user_id']:
+        retired={'user_id':data['user_id'],'jobs':{}}
+    entry=retired.setdefault('jobs',{}).setdefault(job_hash,{})
+    entry.setdefault('artifacts',{}).update(data.get('artifacts',{}))
+    entry.setdefault('letters',{}).update(data.get('letters',{}))
+    if data.get('latest_letter'): entry['latest_letter']=data['latest_letter']
+    # Every path this job ever sent stays protected, even once a later send replaces the link.
+    entry['paths']=sorted(set(entry.get('paths',[]))|set(_sidecar_paths(data)))
+    temporary=path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(retired,ensure_ascii=False),encoding='utf-8')
+    temporary.replace(path)
 
 
 def _letter_label(user, letter_key):
@@ -637,9 +805,15 @@ def _letter_label(user, letter_key):
 def latest_generated_sources(job, user=None, letter_key=''):
     applicant=applicant_name(user)
     letter_label=_letter_label(user,letter_key)
-    # Before TASK-253 names had no job id and letters always said "Letter". Keep those exact
-    # candidates as a fallback for readjust/recompile/copy, but never let their prefix match an
-    # unrelated role such as Engineer-Manager or another numbered job.
+    # The live sidecar (pending work, or a revision made after Applied) wins; the Applied job's
+    # read-only pointer to what it sent is next. Neither depends on the human-facing filename.
+    metadata_cv=metadata_letter=None
+    for metadata in (_read_artifact_metadata(job,user),_retired_entry(job,user)):
+        cv=metadata.get('artifacts',{}).get('cv_tex')
+        letter=metadata.get('letters',{}).get(letter_key or metadata.get('latest_letter',''),{}).get('letter_tex')
+        metadata_cv=metadata_cv or (cv if cv and Path(cv).is_file() else None)
+        metadata_letter=metadata_letter or (letter if letter and Path(letter).is_file() else None)
+    # Exact legacy names remain readable after the human-facing id is removed.
     legacy_target=_target_slug(job)
     raw_target=slugify(f'{job.company}-{job.title}')[:90] or f'job-{job.id}'
     legacy_cv=[f'{applicant}-CV-{legacy_target}.tex',f'{applicant}-CV-{raw_target}.tex']
@@ -650,20 +824,21 @@ def latest_generated_sources(job, user=None, letter_key=''):
         for directory in directories:
             if not directory.is_dir():
                 continue
-            files.extend(path for path in directory.glob('*.tex') if (pattern and re.fullmatch(pattern,path.stem)) or any(path.stem==stem or re.fullmatch(re.escape(stem)+r'-\d+',path.stem) for stem in stems))
+            files.extend(path for path in directory.glob('*.tex') if os.path.normcase(str(path)) not in claimed and ((pattern and re.fullmatch(pattern,path.stem)) or any(path.stem==stem or re.fullmatch(re.escape(stem)+r'-\d+',path.stem) for stem in stems)))
         return str(max(files,key=lambda path:path.stat().st_mtime)) if files else None
     if not settings.CODEX_CV_WORKSPACE:
         return None,None
     workspace=Path(settings.CODEX_CV_WORKSPACE)
+    claimed=_claimed_artifact_paths(workspace,getattr(user,'pk',None))
     cv_dirs=[workspace/'CVs',workspace/'CVs'/'sent']
     letter_dirs=[workspace/'output']
-    # Match the immutable id while allowing company/title edits to change the readable middle.
-    # Once a job-scoped output exists it wins regardless of an older legacy file's mtime.
+    # TASK-253's id-bearing names remain a fallback for files already on disk; new equal-looking
+    # jobs are separated by their hidden metadata sidecars instead of exposing database ids.
     numbered=r'(?:-\d+)?'
     cv_pattern=rf'{re.escape(applicant)}-CV-.+-Job-{job.id}{numbered}'
     letter_pattern=rf'{re.escape(applicant)}-{re.escape(_filename_label(letter_label))}-.+-Job-{job.id}{numbered}'
-    return (latest(cv_dirs,pattern=cv_pattern) or latest(cv_dirs,legacy_cv),
-            latest(letter_dirs,pattern=letter_pattern) or latest(letter_dirs,legacy_letter))
+    return (metadata_cv or latest(cv_dirs,pattern=cv_pattern) or latest(cv_dirs,legacy_cv),
+            metadata_letter or latest(letter_dirs,pattern=letter_pattern) or latest(letter_dirs,legacy_letter))
 
 
 ARTIFACT_KEYS=('cv_tex','cv_pdf','letter_tex','letter_pdf')
@@ -785,9 +960,23 @@ def _unique_destination(directory, filename):
     return path
 
 
+def _fresh_pair(source):
+    # Next free `<stem>-N` beside a read-only source, never reusing an existing TeX or PDF name.
+    base=re.sub(r'-\d+$','',source.stem)
+    index=2
+    while (source.parent/f'{base}-{index}.tex').exists() or (source.parent/f'{base}-{index}.pdf').exists():
+        index+=1
+    return source.parent/f'{base}-{index}.tex'
+
+
 def persist_generated_files(output, workspace, cv_name=None, letter_name=None, cv_target=None, letter_target=None):
     cv_dir=workspace/'CVs'
     letter_dir=workspace/'output'
+    # TASK-256: a document an Applied job was sent with is never a write target. Revision and
+    # confirm-replacement of it write fresh suffixed files instead.
+    sent=_sent_paths(workspace)
+    cv_target=None if _is_sent(cv_target,sent) else cv_target
+    letter_target=None if _is_sent(letter_target,sent) else letter_target
     saved={}
     if cv_name:
         cv_tex=Path(cv_target) if cv_target else _unique_destination(cv_dir, cv_name)
@@ -876,13 +1065,13 @@ def _compile_pdf(output, filename, is_cv, cancelled=None):
 
 def _package_cache(workspace, job, profile, sources, options, user_id=None):
     # The cache directory is shared by every account on the machine, so the account is part of the
-    # key (version 5; v4 omitted the job id). Two accounts with byte-identical templates and the same job hashed
+    # key (version 6; v5 exposed the job id in generated filenames). Two accounts with byte-identical templates and the same job hashed
     # to the same entry before, and the cached zip carries the FIRST account's name in its
     # filenames -- so the second one downloaded an application titled with a stranger's surname.
     # The template and photo bytes are hashed in directly now that they are rows rather than files,
     # which also means editing a template invalidates the entry the way touching the file used to.
     digest=hashlib.sha256(json.dumps({
-        'version':5,
+        'version':6,
         'user':user_id,
         'job':[job.id,job.company,job.title,job.location,job.language_requirements,job.source_text],
         'evaluation':list(job.evaluations.values('fit_score','summary','main_match_reasons','main_gaps','cv_adjustment_notes')[:1]),
@@ -1309,7 +1498,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
         raise RuntimeError('This CV template includes a photograph but no photo is stored on this account. Add one with manage.py import_cv_assets, or use a template without \\includegraphics.')
     cv_name,letter_name=_target_names(job,applicant_name(requesting_user),letter_asset.label or letter_asset.key if letter_asset else 'Letter')
     replace_cv,replace_letter=latest_generated_sources(job,requesting_user,letter_key) if replace_existing and not is_revision else (None,None)
-    filename=f'application-{job.id}-{cv_key}.zip'
+    filename=_package_filename(job,applicant_name(requesting_user))
     cache_paths=None
     cache_options=[cv_key,letter_key,create_cv,create_letter,provider,model,effort,speed,' '.join((revision_instructions or '').split()),correction_image[1] if correction_image else '']
     cache_sources=[cv_text.encode('utf-8'),bytes(photo.image) if photo else b''] if create_cv else []
@@ -1319,6 +1508,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
         cache_paths=_package_cache(workspace,job,profile,cache_sources,cache_options,user_id)
         cached=_cached_package(*cache_paths,create_cv,create_letter)
         if cached:
+            _record_artifact_metadata(job,user_id,cached[2],letter_key)
             report(97,'Using saved package')
             return cached
 
@@ -1426,6 +1616,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
         saved['letter_template']=letter_key if create_letter else ''
         saved['report']=generation_report
         saved['base_templates']=base_templates
+        _record_artifact_metadata(job,user_id,saved,letter_key)
         archive=io.BytesIO()
         with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
             for generated_file in generated_files:
@@ -1440,7 +1631,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
                 output_sources += [Path(saved['letter_tex']).read_bytes()] if create_letter else []
                 output_sources += [correction_image[0]] if correction_image else []
                 cache_targets.append(_package_cache(workspace,job,profile,output_sources,cache_options,user_id))
-            metadata=json.dumps({'filename':filename,'artifacts':saved,'tex_hashes':{key:hashlib.sha256(Path(value).read_bytes()).hexdigest() for key,value in saved.items() if key.endswith('_tex')}})
+            metadata=json.dumps({'job_id':job.id,'user_id':user_id,'filename':filename,'artifacts':saved,'tex_hashes':{key:hashlib.sha256(Path(value).read_bytes()).hexdigest() for key,value in saved.items() if key.endswith('_tex')}})
             for zip_path,metadata_path in cache_targets:
                 try:
                     zip_path.parent.mkdir(exist_ok=True)
@@ -1460,8 +1651,12 @@ def recompile_generated_package(job, cv_key, source_cv=None, source_letter=None,
     # The photograph comes from the account this recompile was started for, never from the
     # workspace -- the previously generated .tex still says \includegraphics{./Picture.jpg}, and
     # before TASK-99a that one file was whoever's photo happened to be on the machine.
-    photo=user_photo(get_user_model().objects.filter(pk=user_id).first() if user_id else None)
+    user=get_user_model().objects.filter(pk=user_id).first() if user_id else None
+    photo=user_photo(user)
     source_updates=source_updates or {}
+    # TASK-256: a sent document is read-only. Compiling it (with or without edits) writes a fresh
+    # suffixed TeX/PDF pair, which then becomes the job's live revision.
+    sent=_sent_paths(settings.CODEX_CV_WORKSPACE)
     with tempfile.TemporaryDirectory(prefix='dachapply-compile-',ignore_cleanup_errors=True) as temp:
         output=Path(temp)
         if photo:
@@ -1484,14 +1679,25 @@ def recompile_generated_package(job, cv_key, source_cv=None, source_letter=None,
             compiled.append((kind,source))
             if progress:
                 progress(82 if kind == 'cv' else 95,'CV compiled' if kind == 'cv' else 'Motivation letter compiled')
+        written=[]
+        redirected={}
         for kind,source in sources:
+            target=source
             if (kind,source) in compiled:
-                if str(source) in source_updates:
-                    shutil.copy2(output/source.name,source)
-                shutil.copy2(output/source.with_suffix('.pdf').name,source.with_suffix('.pdf'))
-            saved.update({f'{kind}_tex':str(source),f'{kind}_pdf':str(source.with_suffix('.pdf'))})
+                if _is_sent(source,sent):
+                    target=_fresh_pair(source)
+                    redirected.update({f'{kind}_tex':str(target),f'{kind}_pdf':str(target.with_suffix('.pdf'))})
+                if str(source) in source_updates or target != source:
+                    shutil.copy2(output/source.name,target)
+                shutil.copy2(output/source.with_suffix('.pdf').name,target.with_suffix('.pdf'))
+            written.append(target)
+            saved.update({f'{kind}_tex':str(target),f'{kind}_pdf':str(target.with_suffix('.pdf'))})
+        if redirected:
+            sent_letters=_retired_entry(job,user).get('letters',{})
+            letter_key=next((key for key,value in sent_letters.items() if value.get('letter_tex') == str(source_letter)),'') if source_letter else ''
+            _record_artifact_metadata(job,user_id,redirected,letter_key)
         with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as bundle:
-            for kind,source in sources:
-                bundle.write(source,source.name)
-                bundle.write(source.with_suffix('.pdf'),source.with_suffix('.pdf').name)
-        return archive.getvalue(),f'application-{job.id}-{cv_key}-recompiled.zip',saved
+            for target in written:
+                bundle.write(target,target.name)
+                bundle.write(target.with_suffix('.pdf'),target.with_suffix('.pdf').name)
+        return archive.getvalue(),_package_filename(job,applicant_name(user)),saved
