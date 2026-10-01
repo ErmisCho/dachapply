@@ -1,11 +1,11 @@
 ---
 id: TASK-257
 title: Scale the production container app between zero and one replica
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-10-01 08:44'
-updated_date: '2026-10-01 12:59'
+updated_date: '2026-10-01 13:18'
 labels:
   - infrastructure
   - cost
@@ -26,10 +26,10 @@ Owner request, 2026-10-01: reduce the recurring Azure Container Apps charge by a
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The production DACHApply container app is configured with a minimum of zero replicas and a maximum of one replica
-- [ ] #2 Every repository-driven deployment reapplies the zero-to-one replica range so later releases cannot restore an always-on replica
-- [ ] #3 After deployment the public application wakes successfully from zero and returns a healthy database response
-- [ ] #4 The merged deployment workflow completes successfully and the live Azure configuration reports the requested replica bounds
+- [x] #1 The production DACHApply container app is configured with a minimum of zero replicas and a maximum of one replica
+- [x] #2 Every repository-driven deployment reapplies the zero-to-one replica range so later releases cannot restore an always-on replica
+- [x] #3 After deployment the public application wakes successfully from zero and returns a healthy database response
+- [x] #4 The merged deployment workflow completes successfully and the live Azure configuration reports the requested replica bounds
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -51,4 +51,12 @@ Changed the canonical deployment command from an always-on minimum of one replic
 Implementation PR #195 merged as cca5c4e0 and deployment run 36863276503 succeeded, including public-app verification. Local Azure CLI cannot independently read the live bounds because tenant security defaults require interactive reauthentication; adding the live assertion to the authenticated deployment itself.
 
 Deployment run 36864599690 applied the scale update but failed its new verifier because Azure CLI renders a queried primitive array on separate lines while Bash read consumes one line. Root cause is documented in .orchestrator/debug/01a0edd2-7a80-737c-9bb4-8581c24c7af5-13.md; the verifier now queries each scalar separately.
+
+Final deployment verification: PR #197 merged as 03fab0f6; main run 36866116726 passed and its authenticated Azure read-back printed 'Replica range: 0..1'. After 360 seconds idle, the first /api/health/ request returned 200 with database=ok in 26.051s, followed by a warm 200 response in 0.178s, objectively demonstrating scale-to-zero cold wake. Asian Dad evaluation: PERFECT (self-graded).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Production now scales from zero to one replica, and every deployment both reapplies and verifies those live bounds. Verified by 1,243 backend tests, frontend production build, successful main deployment 36866116726, authenticated Azure read-back 0..1, and a measured 26-second cold wake returning database health OK.
+<!-- SECTION:FINAL_SUMMARY:END -->
