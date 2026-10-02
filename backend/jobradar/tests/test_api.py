@@ -3030,6 +3030,57 @@ def test_prompt_template_from_profile_page_is_used(client, job):
     assert '"jobs"' in prompt
 
 
+# TASK-260: the shipped templates asked ChatGPT to "copy the complete job posting verbatim"; it
+# refused, and the refusal plus a summary was stored as the job text. These are those sentences,
+# as a pre-TASK-260 saved custom template still carries them.
+OLD_VERBATIM_COMBINED = 'Preserve job_id exactly. Open the job URL when available and copy the complete job posting verbatim, in its original language, into original_source_text. Never translate, summarize, rewrite, or truncate original_source_text. Put links only in url.'
+OLD_VERBATIM_BULK = 'Open each job URL when available. Copy the complete job posting verbatim, in its original language, into original_source_text. Never translate, summarize, rewrite, or truncate original_source_text. Use only information from the page.'
+SOURCE_TEXT_PROMPTS = [('/api/prompts/combined/', 'job'), ('/api/prompts/enrich/', 'job'), ('/api/prompts/bulk-links/', 'links')]
+
+
+def _source_text_prompt(client, job, path, kind):
+    payload = {'job_ids': [job.id]} if kind == 'job' else {'links': 'https://example.test/job'}
+    r = client.post(path, payload, format='json')
+    assert r.status_code == 200, path
+    return r.data['generated_prompt']
+
+
+def _assert_structured_extract_instruction(prompt):
+    from jobradar.services.prompt_builder import ORIGINAL_SOURCE_TEXT_RULES
+    assert ORIGINAL_SOURCE_TEXT_RULES in prompt
+    headings = ['Overview: at most 2 sentences', 'Required experience', 'Preferred qualifications', 'Tasks / responsibilities', 'Pay / compensation', 'Location / work mode', 'Other details (benefits, application process)']
+    positions = [prompt.index(h) for h in headings]
+    assert positions == sorted(positions)
+    for phrase in ["in the posting's own words", 'original language', 'Do not translate or paraphrase', 'never invent', 'navigation, hiring counters, and unrelated links', 'no commentary about what is or is not included']:
+        assert phrase in prompt, phrase
+    # The phrasing that triggers the copyright refusal must be gone, from the schema too.
+    lowered = prompt.lower()
+    for banned in ['verbatim', 'complete job posting', 'complete original job text', 'without truncation']:
+        assert banned not in lowered, banned
+
+
+def test_every_source_text_prompt_asks_for_a_structured_extract_not_a_verbatim_copy(client, job):
+    UserProfile.objects.update_or_create(user=client.user, defaults={'candidate_profile': 'Backend engineer'})
+    for path, kind in SOURCE_TEXT_PROMPTS:
+        _assert_structured_extract_instruction(_source_text_prompt(client, job, path, kind))
+
+
+def test_saved_custom_template_with_the_old_verbatim_sentence_gets_the_new_instruction(client, job):
+    fields = {'combined_prompt_template': OLD_VERBATIM_COMBINED, 'enrichment_prompt_template': OLD_VERBATIM_COMBINED, 'bulk_links_prompt_template': OLD_VERBATIM_BULK}
+    suffix = '\nPROFILE={candidate_profile}\nSCHEMA={schema}\nDATA={jobs}'
+    templates = {k: v + suffix.replace('{jobs}', '{links}' if k.startswith('bulk') else '{jobs}') for k, v in fields.items()}
+    assert client.patch('/api/profile/', {'candidate_profile': 'Backend engineer', **templates}, format='json').status_code == 200
+    for path, kind in SOURCE_TEXT_PROMPTS:
+        prompt = _source_text_prompt(client, job, path, kind)
+        assert 'PROFILE=Candidate profile' in prompt, path  # still the custom template, not the default
+        assert 'when available.\noriginal_source_text rules:' in prompt, path
+        assert 'Put links only in url.' in prompt or 'Use only information from the page.' in prompt, path
+        _assert_structured_extract_instruction(prompt)
+    # Built at prompt time only: the stored templates are untouched (no data rewrite).
+    profile = UserProfile.objects.get(user=client.user)
+    assert {k: getattr(profile, k) for k in templates} == templates
+
+
 def test_prompt_generation_refuses_for_an_account_with_no_candidate_profile(db):
     # The whole point of TASK-73: an account that skipped onboarding used to have every job
     # evaluated against the app author's real bio, and got fit scores describing a stranger.
