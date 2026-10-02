@@ -1,4 +1,5 @@
 import json
+import re
 
 from django.db import connection
 from rest_framework.exceptions import APIException
@@ -23,6 +24,22 @@ class CandidateProfileRequired(APIException):
             'detail': 'Add your candidate profile in Settings before generating a prompt. Prompts are scored against your profile, and an empty one would score every job against nobody.',
         })
 
+# TASK-260: one instruction for original_source_text, shared by every template that fills it, so
+# the templates cannot drift apart. The old wording asked for "the complete job posting verbatim";
+# ChatGPT declines a full copy, and its refusal plus a short summary got stored as the job text.
+# Asking for the posting's requirements and details, quoted under headings, gets the real wording.
+# No braces here: it is concatenated into templates that later go through str.format.
+ORIGINAL_SOURCE_TEXT_RULES = '''original_source_text rules: fill it with the posting's requirements and details, quoted in the posting's own words, under these headings in this order:
+Overview: at most 2 sentences, straight to the point.
+Required experience
+Preferred qualifications
+Tasks / responsibilities
+Pay / compensation
+Location / work mode
+Other details (benefits, application process)
+Use the posting's own sentences and bullet points, in its original language. Do not translate or paraphrase them; only the Overview may be condensed. Omit a heading the posting has no content for, and never invent content for one. Leave out page clutter such as navigation, hiring counters, and unrelated links. Write no commentary about what is or is not included.'''
+SOURCE_TEXT_SCHEMA_FIELD = '"original_source_text":"posting requirements and details in its own words, under the headings in the original_source_text rules"'
+
 RECOMMENDATION_RULES = '''Recommendation rules:
 apply = realistic fit with acceptable gaps.
 maybe = meaningful overlap but significant hiring risk or unclear role emphasis.
@@ -37,9 +54,9 @@ missing_skills must include hard requirements that are missing, weak, basic, lea
 Do not leave required_skills, matched_skills, or missing_skills empty unless the job description truly provides no skill signals.'''
 
 EVALUATION_SCHEMA = '{"evaluations":[{"job_id":1,"company":"...","title":"...","fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}],"overall_ranking":[{"job_id":1,"rank":1,"reason":"..."}],"strategic_advice":"..."}'
-COMBINED_SCHEMA = '{"jobs":[{"job_id":1,"url":"https://...","company":"...","title":"...","location":"...","source":"...","raw_description":"...","original_source_text":"complete original job text without truncation","salary_info":"...","language_requirements":"...","work_mode":"onsite|hybrid|remote|unknown","evaluation":{"fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}}],"strategic_advice":"..."}'
-ENRICHMENT_SCHEMA = '{"job_updates":[{"job_id":1,"company":"...","title":"...","location":"...","url":"...","source":"...","raw_description":"...","original_source_text":"complete original job text without truncation","salary_info":"...","language_requirements":"...","work_mode":"onsite|hybrid|remote|unknown","notes":"any uncertainty or assumptions"}]}'
-BULK_LINKS_SCHEMA = '{"jobs":[{"temp_id":"link_1","url":"https://...","company":"...","title":"...","location":"...","source":"...","raw_description":"...","original_source_text":"complete original job text without truncation","salary_info":"...","language_requirements":"...","work_mode":"onsite|hybrid|remote|unknown","evaluation":{"fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}}],"strategic_advice":"..."}'
+COMBINED_SCHEMA = '{"jobs":[{"job_id":1,"url":"https://...","company":"...","title":"...","location":"...","source":"...","raw_description":"...",' + SOURCE_TEXT_SCHEMA_FIELD + ',"salary_info":"...","language_requirements":"...","work_mode":"onsite|hybrid|remote|unknown","evaluation":{"fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}}],"strategic_advice":"..."}'
+ENRICHMENT_SCHEMA = '{"job_updates":[{"job_id":1,"company":"...","title":"...","location":"...","url":"...","source":"...","raw_description":"...",' + SOURCE_TEXT_SCHEMA_FIELD + ',"salary_info":"...","language_requirements":"...","work_mode":"onsite|hybrid|remote|unknown","notes":"any uncertainty or assumptions"}]}'
+BULK_LINKS_SCHEMA = '{"jobs":[{"temp_id":"link_1","url":"https://...","company":"...","title":"...","location":"...","source":"...","raw_description":"...",' + SOURCE_TEXT_SCHEMA_FIELD + ',"salary_info":"...","language_requirements":"...","work_mode":"onsite|hybrid|remote|unknown","evaluation":{"fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}}],"strategic_advice":"..."}'
 
 DEFAULT_EVALUATION_PROMPT_TEMPLATE = '''Evaluate these DACH software engineering jobs against the candidate profile.
 Be honest, direct, and do not invent experience. Consider DACH market fit, language requirements, target roles, preferred stack, selling points, red flags, and gaps described in the candidate profile.
@@ -59,7 +76,8 @@ JOBS:
 {jobs}'''
 
 DEFAULT_COMBINED_PROMPT_TEMPLATE = '''For each existing job below, first fill missing/incorrect job details, then evaluate the job against the candidate profile.
-Preserve job_id exactly. Open the job URL when available and copy the complete job posting verbatim, in its original language, into original_source_text. Never translate, summarize, rewrite, or truncate original_source_text. Put links only in url. Never put URLs in company or title. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna). Do not invent experience or facts; use unknown/empty values when needed.
+Preserve job_id exactly. Open the job URL when available. Put links only in url. Never put URLs in company or title. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna). Do not invent experience or facts; use unknown/empty values when needed.
+''' + ORIGINAL_SOURCE_TEXT_RULES + '''
 Return one valid JSON object only. No markdown, code fences, citations, reference footnotes, or prose outside JSON. Escape double quotes and control characters inside every string value. Before replying, verify the complete response parses as JSON.
 
 CANDIDATE PROFILE:
@@ -75,7 +93,8 @@ EXPECTED JSON SCHEMA:
 JOBS:
 {jobs}'''
 
-DEFAULT_ENRICHMENT_PROMPT_TEMPLATE = '''Extract missing structured job details from the provided job URLs/descriptions. Open the job URL when available and copy the complete job posting verbatim, in its original language, into original_source_text. Never translate, summarize, rewrite, or truncate original_source_text. Use only information visible in the text or URL context. If a detail is unknown, use an empty string or unknown. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna). Do not invent facts.
+DEFAULT_ENRICHMENT_PROMPT_TEMPLATE = '''Extract missing structured job details from the provided job URLs/descriptions. Open the job URL when available. Use only information visible in the text or URL context. If a detail is unknown, use an empty string or unknown. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna). Do not invent facts.
+''' + ORIGINAL_SOURCE_TEXT_RULES + '''
 Use the candidate profile only as context for which job details are most relevant; do not evaluate unless the schema asks for it.
 Return one valid JSON object only. No markdown, code fences, citations, reference footnotes, or prose outside JSON. Escape double quotes and control characters inside every string value. Before replying, verify the complete response parses as JSON.
 For each job, preserve job_id exactly so the app can update the right record.
@@ -91,7 +110,8 @@ JOBS NEEDING DETAILS:
 
 DEFAULT_BULK_LINKS_PROMPT_TEMPLATE = '''You will receive a list of job links. For each link, extract job details and evaluate the job against the candidate profile below.
 Important: put the link only in the url field. Never put a URL in company or title. Company must be the employer name, or Unknown company if unknown. Title must be the position name, or Untitled role if unknown. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna).
-Open each job URL when available. Copy the complete job posting verbatim, in its original language, into original_source_text. Never translate, summarize, rewrite, or truncate original_source_text. Use only information from the page, provided link text, and job description text supplied by the user. If you cannot access a page or a detail is unknown, use an empty string or unknown. Do not invent experience or facts.
+Open each job URL when available. Use only information from the page, provided link text, and job description text supplied by the user. If you cannot access a page or a detail is unknown, use an empty string or unknown. Do not invent experience or facts.
+''' + ORIGINAL_SOURCE_TEXT_RULES + '''
 Return one valid JSON object only. No markdown, code fences, citations, reference footnotes, or prose outside JSON. Escape double quotes and control characters inside every string value. Before replying, verify the complete response parses as JSON.
 
 CANDIDATE PROFILE:
@@ -203,8 +223,27 @@ def _custom_instructions_section(custom_instructions):
     return f'\nCUSTOM INSTRUCTIONS:\n{custom_instructions}\n\n' if custom_instructions else '\n'
 
 
+# TASK-260 AC4: custom templates saved before TASK-260 may still carry the old verbatim-copy
+# sentences. Swap them for ORIGINAL_SOURCE_TEXT_RULES at build time rather than rewriting stored
+# data. ponytail: matches the shipped wording only; a hand-reworded variant is left alone, though
+# the {schema} it receives already carries the new original_source_text description.
+_OLD_VERBATIM_INSTRUCTION = re.compile(
+    r'(?:(Open (?:the|each) job URL when available)(?: and |\.\s*))?'
+    r'copy the complete job posting verbatim, in its original language, into original_source_text\.'
+    r'(?:\s*Never translate, summarize, rewrite, or truncate original_source_text\.)?\s*',
+    re.IGNORECASE,
+)
+
+
+def _upgrade_old_source_text_instruction(template):
+    return _OLD_VERBATIM_INSTRUCTION.sub(
+        lambda m: (f'{m.group(1)}.' if m.group(1) else '') + '\n' + ORIGINAL_SOURCE_TEXT_RULES + '\n',
+        template,
+    )
+
+
 def _render_template(template, default_template, context):
-    source=(template or '').strip() or default_template
+    source=_upgrade_old_source_text_instruction((template or '').strip()) or default_template
     try:
         return source.format(**context).strip()
     except (KeyError, ValueError):
