@@ -1,9 +1,10 @@
 ---
 id: TASK-259
 title: Replacement prompt should not say replace for an Applied job's sent documents
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-01 20:44'
+updated_date: '2026-10-01 21:26'
 labels:
   - backend
   - ux
@@ -23,7 +24,7 @@ Follow-up to TASK-256. Generating for a job whose existing files are the read-on
 - [x] #1 When a job's existing files are its sent (Applied, read-only) documents, the 409 and the confirmation the user sees say new copies will be created and the sent documents kept, not that they will be replaced
 - [x] #2 For a non-Applied job with ordinary generated files the existing replacement wording and behaviour are unchanged
 - [x] #3 The API response tells the client which case applies with a field, not by parsing the message text
-- [ ] #4 Backend test covers both cases; frontend test or typecheck covers the client handling, and the built bundle renders on localhost
+- [x] #4 Backend test covers both cases; frontend test or typecheck covers the client handling, and the built bundle renders on localhost
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -42,4 +43,6 @@ Not verified: AC4's localhost render. The agent had no browser, so the coordinat
 Bulk generator (the second `generate` in App.tsx, line 657): same pattern. Each job is sent unconfirmed. A job whose 409 has `existing_files` gets its own confirm, `<company> — <title>: ` + `replacementPrompt(e)`, so sent and ordinary jobs are worded separately. Declining restores that row. The old shared client-side pre-check ("Recreate them" for one or more selected jobs) is removed; it could not tell sent documents apart. A cvPopup test covers this path and FAILs with only the bulk `generate` reverted.
 
 Removed dead code: `replacementDecision` and `hasSelectedGeneratedFiles` (cvModel.ts) had no callers left. Their cvSelection tests were deleted; the letter-type separation those tests exercised is now asserted on `selectedGeneratedArtifacts` directly. Frontend gates after this: `tsc --noEmit` clean, `308 passed`.
+
+Coordinator 2026-10-01: merged as #202 (c9b65b2), deploy green, production /api/health/ 200, production bundle index-BjuIhHEU.js contains the new sent-documents wording. Localhost runtime moved to c9b65b2, served bundle hash equals frontend/dist/index.html, board rendered (root mounted, title 'Board — DACHApply').
 <!-- SECTION:NOTES:END -->

@@ -1,9 +1,10 @@
 ---
 id: TASK-258
 title: Data import that sets a job to Applied should clean its generated metadata
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-01 20:43'
+updated_date: '2026-10-01 21:26'
 labels:
   - backend
   - workflow
@@ -47,4 +48,6 @@ The negative tests (AC3) pass when the hook is simply removed — absence of cle
 Full backend suite: `1256 passed, 522 warnings in 592.80s`.
 
 Not done here: commit, PR, merge, production verification (coordinator).
+
+Coordinator 2026-10-01: merged as #201 (d4c5731), deploy green, production /api/health/ 200. Coordinator re-ran the 7 tests (pass) and removed the hook (3 fail).
 <!-- SECTION:NOTES:END -->
