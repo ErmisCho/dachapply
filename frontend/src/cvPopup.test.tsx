@@ -58,7 +58,7 @@ describe('compact CV generator popup (TASK-216)',()=>{
     expect(appSource).toContain('<div className="flex flex-nowrap items-center gap-2" data-cv-action-row><ProgressButton active={loading} task={task} label="Generate"')
     // The dialog is a flex column bounded by its max-h; the job-text section takes whatever height is
     // left and the textarea scrolls inside it, so no rem budget for the rest of the popup is guessed.
-    expect(popup()).toMatch(/class="fixed inset-x-0 top-3 z-40 mx-auto flex flex-col /)
+    expect(popup()).toMatch(/class="fixed inset-x-0 top-3 z-\[var\(--z-popup\)\] mx-auto flex flex-col /)
     expect(appSource).toContain("'mt-2 grid min-h-0 flex-auto items-start gap-2 lg:grid-cols-2'")
     expect(appSource).toContain("'lg:col-span-2 flex min-h-0 flex-col self-stretch [&>div]:flex [&>div]:min-h-0 [&>div]:flex-auto [&>div]:flex-col")
     expect(appSource).toContain('[&_textarea]:min-h-[6rem] [&_textarea]:flex-auto [&_textarea]:[field-sizing:content]')

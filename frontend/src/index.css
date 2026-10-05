@@ -1,5 +1,10 @@
 @tailwind base;@tailwind components;@tailwind utilities;
-:root{color-scheme:light} .dark{color-scheme:dark}
+:root{color-scheme:light}
+/* TASK-268: the one layering scale. Every z-index in App.tsx/index.css uses one of these (bar the -1
+   body:before page backdrop), so a popup
+   can never lose to a page surface by accident (the filter card at z-50 used to paint over the z-40
+   CV popup). page < raised < sticky < dropdown < popup < popup-menu < toast < tour. */
+:root{--z-base:0;--z-raised:10;--z-sticky:20;--z-dropdown:30;--z-popup:40;--z-popup-menu:50;--z-toast:60;--z-tour:70} .dark{color-scheme:dark}
 body{@apply bg-slate-50 text-slate-900 antialiased} 
 body:before{content:"";position:fixed;inset:0;z-index:-1;background:radial-gradient(circle at 10% 10%,rgba(59,130,246,.14),transparent 28rem),radial-gradient(circle at 90% 0%,rgba(168,85,247,.12),transparent 24rem),linear-gradient(180deg,#f8fafc,#eef2ff 55%,#f8fafc)}
 .dark body{@apply bg-slate-950 text-slate-100}.dark body:before{background:radial-gradient(circle at 12% 8%,rgba(37,99,235,.22),transparent 30rem),radial-gradient(circle at 88% 4%,rgba(147,51,234,.20),transparent 28rem),linear-gradient(180deg,#020617,#0f172a 55%,#020617)}
@@ -262,7 +267,7 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
 .dark button:focus-visible,.dark .btn:focus-visible,.dark .btn-primary:focus-visible,.dark .btn-danger:focus-visible,.dark .btn-muted:focus-visible,.dark .nav-link:focus-visible{box-shadow:0 0 0 3px rgba(103,232,249,.18),0 10px 28px rgba(0,0,0,.42)!important}
 
 /* Guided onboarding tour */
-.tour-highlight{position:relative!important;z-index:9999!important;box-shadow:0 0 0 4px rgba(59,130,246,.35),0 0 0 10px rgba(59,130,246,.14),0 18px 45px rgba(37,99,235,.28)!important;animation:tourPulse .8s ease-in-out 2;border-radius:.75rem!important}
+.tour-highlight{position:relative!important;z-index:calc(var(--z-tour) + 1)!important;box-shadow:0 0 0 4px rgba(59,130,246,.35),0 0 0 10px rgba(59,130,246,.14),0 18px 45px rgba(37,99,235,.28)!important;animation:tourPulse .8s ease-in-out 2;border-radius:.75rem!important}
 .dark .tour-highlight{box-shadow:0 0 0 4px rgba(103,232,249,.32),0 0 0 10px rgba(103,232,249,.12),0 18px 45px rgba(8,145,178,.25)!important}
 @keyframes tourPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.035)}}
 
@@ -293,7 +298,7 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
    row markup: everything else -- MatchGapPopup, the mailbox panel -- was already createPortal +
    `fixed`). So the clip has nothing left to clip, and the bound is safe. */
 .job-table{min-width:980px;table-layout:fixed}
-.job-table thead th{position:sticky;top:0;z-index:12;background:rgba(248,250,252,.96);backdrop-filter:blur(12px);box-shadow:0 1px 0 rgba(203,213,225,.9)}
+.job-table thead th{position:sticky;top:0;z-index:var(--z-sticky);background:rgba(248,250,252,.96);backdrop-filter:blur(12px);box-shadow:0 1px 0 rgba(203,213,225,.9)}
 .dark .job-table thead th{background:rgba(5,7,13,.96)!important;box-shadow:0 1px 0 rgba(255,255,255,.08)}
 .job-table th,.job-table td{max-width:12rem;overflow-wrap:anywhere;word-break:break-word;white-space:normal;vertical-align:top}
 .job-table a,.job-table pre,.job-table div,.job-table span{overflow-wrap:anywhere;word-break:break-word;max-width:100%}
@@ -307,7 +312,7 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
    Opacity only, no transform: a transform on a <tr> would make it a containing block for any
    position:fixed descendant, and this board's popups are exactly that (portalled to <body> as
    `fixed` by TASK-173/TASK-139). Opacity settles back to 1, so the stacking context it creates
-   lasts 180 ms and never outranks the sticky `thead th` (z-index:12, TASK-167) in tree order. */
+   lasts 180 ms and never outranks the sticky `thead th` (z-index:var(--z-sticky), TASK-167) in tree order. */
 @keyframes board-row-in{from{opacity:0}to{opacity:1}}
 .job-table tbody tr,.dashboard-mobile-card{animation:board-row-in .18s ease-out both}
 @media (prefers-reduced-motion:reduce){.job-table tbody tr,.dashboard-mobile-card{animation:none}}
