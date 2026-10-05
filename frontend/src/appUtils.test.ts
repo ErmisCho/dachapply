@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,defaultPostponeDate,describeOrdering,popupBelowAnchor,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,jobNotePreview,movePanelInOrder,NOTE_PREVIEW_WIDTH,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,previewPanelDrag,ratePercent,receivedDateLabels,reorderPanels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,defaultPostponeDate,describeOrdering,popupBelowAnchor,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,jobStatusLabel,upgradeSavedFilters,mailboxActionableJobStatuses,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,jobNotePreview,movePanelInOrder,NOTE_PREVIEW_WIDTH,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,previewPanelDrag,ratePercent,receivedDateLabels,reorderPanels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Shared copy controls use the modern API when available and a legacy fallback on local HTTP.
@@ -657,8 +657,12 @@ describe('German errors on the public submit page',()=>{
 // reading) - see the task's own implementation notes for why.
 describe('isActionableJobStatus (TASK-143)',()=>{
   it('is actionable for every status the owner can still do something about',()=>{
-    for(const s of ['new','reviewed','to_apply','applied','interview','offer','accepted'])
+    for(const s of ['new','reviewed','to_apply','ready_to_submit','applied','interview','offer','accepted'])
       expect(isActionableJobStatus(s)).toBe(true)
+  })
+
+  it('orders ready_to_submit between to_apply and applied (TASK-265)',()=>{
+    expect(mailboxActionableJobStatuses.slice(2,5)).toEqual(['to_apply','ready_to_submit','applied'])
   })
 
   it('is not actionable once the application is over',()=>{
@@ -1066,5 +1070,27 @@ describe('defaultPostponeDate', () => {
   it('returns an empty string rather than a wrong date for junk input', () => {
     expect(defaultPostponeDate('')).toBe('')
     expect(defaultPostponeDate('not a date')).toBe('')
+  })
+})
+
+describe('jobStatusLabel (TASK-265)',()=>{
+  it('replaces every underscore and capitalises the first letter',()=>{
+    expect(jobStatusLabel('ready_to_submit')).toBe('Ready to submit')
+    expect(jobStatusLabel('to_apply')).toBe('To apply')
+    expect(jobStatusLabel('new')).toBe('New')
+    expect(jobStatusLabel(undefined)).toBe('')
+  })
+})
+
+describe('upgradeSavedFilters (TASK-265)',()=>{
+  it('adds ready_to_submit right after to_apply in a pre-change saved list',()=>{
+    expect(upgradeSavedFilters({status:'new,reviewed,to_apply,applied',q:'x'})).toEqual({status:'new,reviewed,to_apply,ready_to_submit,applied',q:'x'})
+  })
+  it('leaves absent, empty, already-upgraded and to_apply-less filters unchanged',()=>{
+    expect(upgradeSavedFilters(null)).toBeNull()
+    expect(upgradeSavedFilters({q:'x'})).toEqual({q:'x'})
+    expect(upgradeSavedFilters({status:''})).toEqual({status:''})
+    expect(upgradeSavedFilters({status:'to_apply,ready_to_submit'})).toEqual({status:'to_apply,ready_to_submit'})
+    expect(upgradeSavedFilters({status:'applied,interview'})).toEqual({status:'applied,interview'})
   })
 })

@@ -65,7 +65,7 @@ def test_default_ordering_groups_new_then_interview_then_pipeline_order_then_clo
     assert r.status_code == 200
     assert [j['company'] for j in r.data] == [
         'new', 'interview',                                       # groups 1 and 2 (the owner's ask)
-        'reviewed', 'to_apply', 'applied', 'offer', 'accepted',    # everything else, pipeline order
+        'reviewed', 'to_apply', 'ready_to_submit', 'applied', 'offer', 'accepted',  # everything else, pipeline order
         'rejected', 'withdrawn', 'skipped', 'archived',            # closed, last
     ]
     assert len(r.data) == len(ALL_STATUSES)

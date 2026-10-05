@@ -27,32 +27,36 @@ describe('compact CV generator popup (TASK-216)',()=>{
     expect(html).not.toContain('Adjust latest')
   })
 
-  it('still commits to a FIXED height, so slow provider discovery cannot resize it',()=>{
-    // TASK-216 AC1/AC2 are the reason a height is pinned at all: the popup must reach its final size
-    // on the first render. TASK-228 made that size smaller, it did not make it content-dependent --
-    // a `max-h` alone would let the box grow when `preview` arrives, which is exactly the jump
-    // TASK-216 removed. This is the test that stops the two tasks undoing each other.
+  it('sizes to its content up to the viewport, with only a stable minimum (TASK-266)',()=>{
+    // TASK-216 pinned a fixed height so `preview` arriving could not resize the box. TASK-266's owner
+    // instruction overrides that ("there is no reason for this popup to need a scrollbar, it can
+    // expand"): a 56rem cap scrolled at 1063px of content in a 1642px-tall window. Only a minimum
+    // stays, so the loading state does not collapse; the popup scrolls only past the viewport.
     const html=popup()
 
-    expect(html).toMatch(/class="[^"]*\bh-\[\d+rem\]/)   // a fixed height, not only a ceiling
-    expect(html).toMatch(/max-h-\[\d+vh\]/)                 // ...capped, so a short viewport still fits.
-    // The exact vh is a calibration number, not the contract: TASK-233 moved it from 85 to 92 to fit
-    // the fully-open state on a laptop. What must not regress is that a cap EXISTS beside the fixed
-    // height, so pin the shape and let the number be tuned by measurement.
-    expect(html).not.toContain('h-[80vh]')               // the old viewport-proportional height
+    expect(html).toContain('min-h-[min(36rem,calc(100dvh-1.5rem))]')
+    expect(html).toContain('max-h-[calc(100dvh-1.5rem)]')
+    expect(html).not.toMatch(/ h-\[/)          // no fixed height of any kind
+    expect(html).not.toContain('56rem')
   })
 
-  it('trades width for height, and still fits a 360px screen',()=>{
-    // TASK-228 made it 608x800 to stop it filling the screen. TASK-233 has to fit the FULLY OPEN
-    // state into 85vh of a 744px laptop viewport (~632px) while TASK-230 adds a second model picker,
-    // and a single column cannot do that: the body is two independent columns at lg and up -- the
-    // same 1024px line where index.css stops forcing 44px touch targets -- so the box goes wider and
-    // much shorter. max-w keeps the 360px case, where lg never matches and the columns stack again.
+  it('is width-derived from the viewport, pinned on screen, and never scrolls sideways (TASK-266)',()=>{
     const html=popup()
 
-    expect(html).toContain('w-[48rem]')
-    expect(html).toContain('max-w-[calc(100vw-2rem)]')
-    expect(html).toContain('overflow-y-auto')   // AC2: scrolling stays as the safety net
+    expect(html).toContain('w-[min(64rem,calc(100vw-1.5rem))]')
+    expect(html).not.toContain('w-[48rem]')
+    // fixed + inset-x-0 + mx-auto centres it in the viewport, so it cannot run off the right edge
+    // the way `absolute left-0` under the toolbar button could on a 1024px window.
+    expect(html).toMatch(/class="fixed inset-x-0 top-3 [^"]*mx-auto/)
+    expect(html).toContain('overflow-y-auto')    // the single scroll area, only when content is taller
+    expect(html).toContain('overflow-x-hidden')
+    expect(html).toContain('[overflow-wrap:anywhere]')   // long generated-file paths wrap instead
+  })
+
+  it('keeps Applied on the Generate row and lets the job text grow with the window (TASK-266)',()=>{
+    // The loaded controls never render here (no effects), so these read the source.
+    expect(appSource).toContain('<div className="flex flex-nowrap items-center gap-2" data-cv-action-row><ProgressButton active={loading} task={task} label="Generate"')
+    expect(appSource).toContain("[&_textarea]:h-auto [&_textarea]:min-h-[8rem] [&_textarea]:max-h-[clamp(8rem,calc(100dvh-30rem),40rem)] [&_textarea]:[field-sizing:content]")
   })
 })
 

@@ -209,6 +209,7 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
 .app-badge-red{background:#fff1f2;color:#9f1239;border-color:#fecdd3}
 .app-badge-yellow{background:#fffbeb;color:#92400e;border-color:#fde68a}
 .app-badge-blue{background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe}
+.app-badge-teal{background:#f0fdfa;color:#0f766e;border-color:#99f6e4}
 .app-badge-purple{background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe}
 .app-badge-slate{background:#f8fafc;color:#475569;border-color:#e2e8f0}
 .dark .app-badge{box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 1px 2px rgba(0,0,0,.18)}
@@ -216,6 +217,7 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
 .dark .app-badge-red{background:rgba(136,19,55,.28);color:#fecdd3;border-color:rgba(251,113,133,.30)}
 .dark .app-badge-yellow{background:rgba(146,64,14,.28);color:#fde68a;border-color:rgba(251,191,36,.30)}
 .dark .app-badge-blue{background:rgba(30,64,175,.30);color:#bfdbfe;border-color:rgba(96,165,250,.30)}
+.dark .app-badge-teal{background:rgba(17,94,89,.30);color:#99f6e4;border-color:rgba(45,212,191,.30)}
 .dark .app-badge-purple{background:rgba(91,33,182,.30);color:#ddd6fe;border-color:rgba(167,139,250,.30)}
 .dark .app-badge-slate{background:rgba(51,65,85,.42);color:#e2e8f0;border-color:rgba(148,163,184,.24)}
 

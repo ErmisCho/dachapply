@@ -515,12 +515,19 @@ export function pathTitle(pathname:string){return routeTitles[pathname]||(pathna
 // board_thresholds for the pattern of shipping such a value from the server instead, not done here
 // because this list is small and rarely-changing enough that TASK-143 chose not to wire a new field
 // for it - see that task for the reasoning).
-export const mailboxActionableJobStatuses=['new','reviewed','to_apply','applied','interview','offer','accepted']
+export const mailboxActionableJobStatuses=['new','reviewed','to_apply','ready_to_submit','applied','interview','offer','accepted']
 // TASK-143 AC1: the list has one home, JobLead.ACTIONABLE_STATUSES, and reaches the client through
 // /api/auth/me/'s board_thresholds like unapplied_statuses already does. `known` is that shipped
 // list; the export above stays only as the pre-auth fallback the threshold merge needs, never as a
 // second source of truth to drift from.
 export function isActionableJobStatus(status?:string|null,known:string[]=mailboxActionableJobStatuses):boolean{return known.includes(status||'')}
+// TASK-265: one display label per status key. `replace('_',' ')` only replaced the first underscore,
+// which turned ready_to_submit into "ready to_submit".
+export function jobStatusLabel(status?:string|null):string{const t=String(status||'').replace(/_/g,' ');return t.charAt(0).toUpperCase()+t.slice(1)}
+// TASK-265: a status filter saved before ready_to_submit existed would hide every job generation
+// moves there. A list that showed to_apply gets ready_to_submit right after it; anything else is the
+// owner's explicit choice and stays as saved.
+export function upgradeSavedFilters(saved:any):any{const list=String(saved?.status||'').split(',');if(!saved||!list.includes('to_apply')||list.includes('ready_to_submit'))return saved;list.splice(list.indexOf('to_apply')+1,0,'ready_to_submit');return {...saved,status:list.join(',')}}
 
 // TASK-144. Nine of the twelve busiest conversations have zero owner-sent messages (see that task),
 // so the left/right alignment carries no information for them - everything is on the left. The

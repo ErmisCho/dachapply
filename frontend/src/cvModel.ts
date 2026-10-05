@@ -80,3 +80,18 @@ export function readCvPicks(account:string):{generate?:CvPick;adjust?:CvPick}{
 export function writeCvPicks(account:string, picks:{generate:CvPick;adjust:CvPick}){
   try{localStorage.setItem(cvPicksKey(account),JSON.stringify(picks))}catch{/* storage unavailable */}
 }
+
+// TASK-261: the bulk panel's 'Copy all' payload. Each ready job's clipboard_tex already starts with
+// its '% Job listing: <url>' line (TASK-250), so jobs are only joined -- a LaTeX comment rule between
+// them keeps the boundary obvious and the pasted text still comment-safe.
+export const BULK_COPY_SEPARATOR='\n\n% '+'='.repeat(72)+'\n\n'
+export function combinedClipboardTex(rows:any[]){
+  const blocks=(rows||[]).filter(row=>row?.status==='ready'&&row.clipboard_tex).map(row=>String(row.clipboard_tex))
+  return {text:blocks.join(BULK_COPY_SEPARATOR),count:blocks.length}
+}
+
+// TASK-261 AC6: default ON, remembered across reloads; wrapped like readCvPicks because localStorage
+// throws in private mode.
+const bulkAutoCopyKey='dachapply_bulk_auto_copy'
+export function readBulkAutoCopy(){try{return localStorage.getItem(bulkAutoCopyKey)!=='off'}catch{return true}}
+export function writeBulkAutoCopy(on:boolean){try{localStorage.setItem(bulkAutoCopyKey,on?'on':'off')}catch{/* storage unavailable */}}

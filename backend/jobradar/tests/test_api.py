@@ -1165,8 +1165,8 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     user=User.objects.create_user('cv-owner')
     cv_assets(user)
     job=JobLead.objects.create(company='Firma', title='Entwickler', raw_description='Wir suchen eine Person mit Erfahrung und Kenntnissen für diese Aufgaben.', created_by=user)
-    with pytest.raises(ValueError, match='matching the CV language'):
-        generate_cv_package(job, 'Factual profile', 'en', 'anschreiben', True, 'openai', 'gpt-5.5', 'high', 'fast', user_id=user.id)
+    with pytest.raises(ValueError, match='Select a letter template'):  # TASK-262: cross-language letters are allowed; unknown keys are not
+        generate_cv_package(job, 'Factual profile', 'en', 'no_such_letter', True, 'openai', 'gpt-5.5', 'high', 'fast', user_id=user.id)
     with pytest.raises(ValueError, match='speed supported'):
         generate_cv_package(job, 'Factual profile', 'de', 'motivationsschreiben', True, 'openai', 'gpt-5.5', 'high', 'turbo', user_id=user.id)
     with pytest.raises(RuntimeError, match='Current target TeX files'):
@@ -3660,8 +3660,8 @@ def test_me_publishes_the_board_thresholds_the_ordering_uses(client):
     assert r.status_code==200
     assert r.data['board_thresholds']=={
         'stale_applied_days':21, 'stale_unapplied_days':30, 'deadline_soon_days':7,
-        'unapplied_statuses':['new','reviewed','to_apply'], 'dated_statuses':['applied','interview','offer'],
-        'actionable_statuses':['new','reviewed','to_apply','applied','interview','offer','accepted'],
+        'unapplied_statuses':['new','reviewed','to_apply','ready_to_submit'], 'dated_statuses':['applied','interview','offer'],
+        'actionable_statuses':['new','reviewed','to_apply','ready_to_submit','applied','interview','offer','accepted'],
     }
     assert r.data['board_thresholds']['actionable_statuses']==JobLead.ACTIONABLE_STATUSES
     assert r.data['board_thresholds']['stale_unapplied_days']==JobLead.STALE_UNAPPLIED_DAYS

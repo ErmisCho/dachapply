@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import time
 import uuid
@@ -15,6 +16,8 @@ from jobradar.models import ApplicationNote, JobLead, UserProfile
 from jobradar.services.cv_generator import GenerationCancelled, generate_cv_package, preference_exclusion, recompile_generated_package
 from jobradar.services.posting_fetch import fetch_posting_text
 
+
+logger=logging.getLogger(__name__)
 
 _tasks={}
 _stage_history={}
@@ -230,6 +233,36 @@ def _copy_to_clipboard(text):
             root.destroy()
 
 
+def copy_text_to_clipboard(text):
+    """Put text on the server machine's clipboard; False when it could not (no display, no tkinter)."""
+    return _copy_to_clipboard(text)
+
+
+# Statuses a finished generation may promote to 'ready_to_submit'. Anything else -- applied and
+# every later or closed status -- is the owner's own decision and is never overwritten.
+READY_TO_SUBMIT_FROM=[status for status in JobLead.UNAPPLIED_STATUSES if status != 'ready_to_submit']
+
+
+def mark_ready_to_submit(job_id):
+    """TASK-265: move an unapplied job to 'ready_to_submit' once documents exist for it.
+
+    One conditional UPDATE, so a status the owner changed while generation ran (e.g. to applied)
+    is never clobbered. ready_to_submit is outside DATED_STATUSES, so -- as JobLeadSerializer.update
+    does for any move to a non-dated status -- status_date/feedback_due_date/last_update_date are
+    cleared. Returns the number of rows changed (0 or 1).
+
+    Never raises: it runs after the documents already exist, and a failed status bump must not turn
+    a finished generation into a failed task (the owner can still set the status by hand, and the
+    mark_ready_to_submit command catches anything missed).
+    """
+    try:
+        return JobLead.objects.filter(pk=job_id,status__in=READY_TO_SUBMIT_FROM).update(
+            status='ready_to_submit',status_date=None,feedback_due_date=None,last_update_date=None)
+    except Exception:
+        logger.exception('Could not mark job %s ready_to_submit', job_id)
+        return 0
+
+
 def _clipboard_contents(artifacts):
     files=[Path(artifacts[key]) for key in ('cv_tex','letter_tex') if artifacts.get(key) and Path(artifacts[key]).is_file()]
     contents=[(path.name,path.read_text(encoding='utf-8')) for path in files]
@@ -309,7 +342,7 @@ def _retry_missing_source(job):
     job.refresh_from_db()
 
 
-def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, cancel_event=None):
+def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, cancel_event=None, auto_clipboard=True):
     close_old_connections()
     try:
         if cancel_event.is_set():
@@ -339,9 +372,12 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         # popups render that instead of claiming the adjustment was learned for future applications.
         learned_exclusion=preference_exclusion(learned_preference)
         clipboard_tex=_clipboard_payload(artifacts,job.url)
-        clipboard_copied=bool(clipboard_tex and _copy_to_clipboard(clipboard_tex))
+        # TASK-261: bulk runs pass auto_clipboard=False -- N parallel tasks would each overwrite the
+        # clipboard. clipboard_tex is still computed so the UI can copy it on demand.
+        clipboard_copied=bool(auto_clipboard and clipboard_tex and _copy_to_clipboard(clipboard_tex))
         if 'base_templates' in artifacts:
             _record_base_templates(job,artifacts['base_templates'])
+        mark_ready_to_submit(job.id)
         _update(task_id, status='ready', progress=100, stage='Ready', archive=archive, filename=filename, artifacts=artifacts, report=artifacts.get('report'), clipboard_tex=clipboard_tex, clipboard_copied=clipboard_copied, learned_preference=learned_preference, learned_preference_exclusion=learned_exclusion)
     except GenerationCancelled:
         _update(task_id, status='cancelled', stage='Cancelled', error='')
@@ -363,6 +399,7 @@ def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, sou
         if cancel_event.is_set():
             raise GenerationCancelled
         clipboard_tex=_clipboard_payload(artifacts,job.url)
+        mark_ready_to_submit(job.id)
         _update(task_id,status='ready',progress=100,stage='Ready',archive=archive,filename=filename,artifacts=artifacts,report=task_report,clipboard_tex=clipboard_tex,clipboard_copied=bool(clipboard_tex and _copy_to_clipboard(clipboard_tex)))
     except GenerationCancelled:
         _update(task_id,status='cancelled',stage='Cancelled',error='')
@@ -409,7 +446,7 @@ def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter
     return task_id
 
 
-def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False):
+def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, auto_clipboard=True):
     _cleanup()
     task_id=uuid.uuid4().hex
     now=time.monotonic()
@@ -419,7 +456,7 @@ def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, p
         _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_config':{'profile':profile,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'create_cv':create_cv,'provider':provider,'model':model,'effort':effort,'speed':speed},'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'_stage_times':{},'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in plan)
     # ponytail: one local CLI agent per task; add a concurrency cap if large batches exhaust the workstation.
-    Thread(target=_run, args=(task_id,job_id,user_id,profile,cv_key,letter_key,create_letter,provider,model,effort,speed,source_cv,source_letter,revision_instructions,create_cv,correction_image,base_templates,replace_existing,cancel_event), name=f'cv-agent-{task_id[:8]}', daemon=True).start()
+    Thread(target=_run, args=(task_id,job_id,user_id,profile,cv_key,letter_key,create_letter,provider,model,effort,speed,source_cv,source_letter,revision_instructions,create_cv,correction_image,base_templates,replace_existing,cancel_event,auto_clipboard), name=f'cv-agent-{task_id[:8]}', daemon=True).start()
     return task_id
 
 
