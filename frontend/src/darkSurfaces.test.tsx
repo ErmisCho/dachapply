@@ -101,7 +101,7 @@ describe('light surfaces in dark mode (TASK-244)',()=>{
     // would be inert -- the blanket rule is !important and beats a utility of equal specificity --
     // so adding one would look like a fix while doing nothing.
     expect(css).toMatch(/\.dark \.bg-white\{background-color:[^}]*!important\}/)
-    const shell=surfaces.filter(s=>s.snippet.includes('absolute left-0 top-10 z-40'))
+    const shell=surfaces.filter(s=>s.snippet.includes('fixed inset-x-0 top-3 z-40'))
     expect(shell.length).toBe(1)
     expect(shell[0].covered).toBe(true)
   })

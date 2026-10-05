@@ -214,9 +214,9 @@ class CvAsset(models.Model):
 
 class JobLead(models.Model):
     WORK_MODES=[('onsite','Onsite'),('hybrid','Hybrid'),('remote','Remote'),('unknown','Unknown')]
-    STATUSES=[('new','New'),('reviewed','Reviewed'),('to_apply','To apply'),('applied','Applied'),('interview','Interview'),('offer','Offer'),('accepted','Accepted'),('rejected','Rejected'),('withdrawn','Withdrawn'),('skipped','Skipped'),('archived','Archived')]
+    STATUSES=[('new','New'),('reviewed','Reviewed'),('to_apply','To apply'),('ready_to_submit','Ready to submit'),('applied','Applied'),('interview','Interview'),('offer','Offer'),('accepted','Accepted'),('rejected','Rejected'),('withdrawn','Withdrawn'),('skipped','Skipped'),('archived','Archived')]
     DATED_STATUSES=['applied','interview','offer']  # active statuses that carry a status_date and can go stale
-    UNAPPLIED_STATUSES=['new','reviewed','to_apply']  # lead is still ours to act on; ages out from created_at
+    UNAPPLIED_STATUSES=['new','reviewed','to_apply','ready_to_submit']  # lead is still ours to act on; ages out from created_at
     # TASK-143 AC1: the owner's "when I can still do something about it" split of STATUSES, defined
     # ONCE here so it cannot drift between the mailbox review panel's queryset (views.
     # MailboxSuggestionViewSet.list) and suggestion/draft generation (services.mailbox, gated there
@@ -228,11 +228,11 @@ class JobLead(models.Model):
     # still produces mail worth reading (start date, paperwork onboarding) -- the owner's question is
     # "can I still act on this", not "is the application still open". The complement (rejected, withdrawn,
     # skipped, archived) is never spelled out as its own list; it is just "not in this one".
-    ACTIONABLE_STATUSES=['new','reviewed','to_apply','applied','interview','offer','accepted']
+    ACTIONABLE_STATUSES=['new','reviewed','to_apply','ready_to_submit','applied','interview','offer','accepted']
     # The only home for the board's urgency thresholds. views.stale_rank orders by them and
     # /api/auth/me/ ships them to the frontend badge, so the numbers are never written twice.
     STALE_APPLIED_DAYS=21  # applied/interview/offer with no movement since status_date
-    STALE_UNAPPLIED_DAYS=30  # new/reviewed/to_apply never acted on since created_at (postings expire in weeks)
+    STALE_UNAPPLIED_DAYS=30  # new/reviewed/to_apply/ready_to_submit never acted on since created_at (postings expire in weeks)
     DEADLINE_SOON_DAYS=7  # apply_by this close (or past) counts as urgent
     FUNNEL_RECENT_DAYS=90  # the "recent window" the stats funnel reports alongside all-time
     company=models.CharField(max_length=200, blank=True, default='Unknown company')

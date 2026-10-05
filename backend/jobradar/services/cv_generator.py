@@ -1467,10 +1467,13 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
     if cv_key not in templates:
         raise ValueError('Select a CV template.')
     cv_template=templates[cv_key]
-    if create_letter and letter_key not in cv_template['letters']:
-        raise ValueError('Select a letter template matching the CV language.')
-    letter_language=cv_key
-    letter_asset=cv_template['letters'].get(letter_key)
+    # TASK-262: a letter may be in another language than the CV (English CV, German Anschreiben).
+    # Letter keys are unique per account (CvAsset unique_together), so the lookup is unambiguous;
+    # a key in no template of this account is still refused. The letter is written in its own
+    # template's language, not the CV's.
+    letter_language,letter_asset=next(((language,entry['letters'][letter_key]) for language,entry in templates.items() if letter_key in entry['letters']),(cv_key,None))
+    if create_letter and not letter_asset:
+        raise ValueError('Select a letter template.')
     photo=user_photo(requesting_user, assets)
     if base_templates is None:
         base_templates={

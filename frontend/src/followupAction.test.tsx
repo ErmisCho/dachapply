@@ -12,7 +12,7 @@ describe('actionable follow-up context (TASK-113)',()=>{
   it('shows status, matched-message context, notes, verbatim draft, and exact Gmail link together',()=>{
     const html=renderToStaticMarkup(<JobFollowUpContext job={job} mailbox={mailbox}/>)
     expect(html).toContain('Job status:')
-    expect(html).toContain('interview')
+    expect(html).toContain('Interview')   // TASK-265: shown through jobStatusLabel
     expect(html).toContain('Interview update')
     expect(html).toContain('Recruiter reply')
     expect(html).toContain('Waiting for final feedback')

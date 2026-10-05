@@ -45,6 +45,7 @@ from .services.followup_digest import owned_jobs, record_job_followup_sent
 from .services.draft_chat import ChatTurn, run_chat_turn
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
+from .services import cv_tasks
 from .services.cv_tasks import _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, start_cv_compile_task, start_cv_noop_task, start_cv_revision, start_cv_task
 from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
 from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
@@ -2078,6 +2079,11 @@ def generate_cv_documents(request, job_id):
         task_kwargs={'create_cv':create_cv}
         if replace_existing:
             task_kwargs['replace_existing']=True
+        # TASK-261: the bulk panel copies every job's TeX once at the end of the batch, so it opts its
+        # tasks out of the per-task OS clipboard write that would otherwise overwrite each other. Only
+        # an explicit false opts out; the single-job view sends nothing and keeps copying per task.
+        if request.data.get('auto_clipboard') is False:
+            task_kwargs['auto_clipboard']=False
         task_id=start_cv_task(job.id,request.user.id,candidate_context,request.data.get('cv_template') or '',letter_key,create_letter,request.data.get('provider') or '',request.data.get('model') or '',request.data.get('effort') or '',request.data.get('speed') or 'normal',**task_kwargs)
     except RuntimeError:
         return Response({'detail':'CV generation is restarting. Try again shortly.'}, status=503)
@@ -2195,6 +2201,25 @@ def reveal_cv_artifact(request, task_id):
     if not reveal_artifact_folder(path):
         return Response({'detail':'Opening folders is disabled on this server.'}, status=409)
     return Response({'revealed':path})
+
+
+CLIPBOARD_TEXT_LIMIT=2_000_000
+
+
+@api_view(['POST'])
+@throttle_classes([CVGenerationUserThrottle])
+def copy_cv_clipboard(request):
+    """TASK-261 AC6: copy the bulk panel's combined TeX to the OS clipboard of the machine running
+    the server -- the owner's PC on localhost, where a browser copy without a click is unreliable.
+    Looked up on the module at call time so tests (and a server without tkinter) can replace it."""
+    if not is_cv_owner(request.user):
+        return Response({'detail':'Not found.'}, status=404)
+    text=request.data.get('text')
+    if not isinstance(text,str) or not text.strip():
+        return Response({'detail':'Nothing to copy.'}, status=400)
+    if len(text)>CLIPBOARD_TEXT_LIMIT:
+        return Response({'detail':'Text is too large to copy.'}, status=400)
+    return Response({'copied':bool(cv_tasks.copy_text_to_clipboard(text))})
 
 
 @api_view(['POST'])
