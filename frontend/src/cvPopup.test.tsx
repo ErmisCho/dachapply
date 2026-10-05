@@ -4,7 +4,7 @@
 // the Applied write are measured in the browser instead, and the numbers live in the task notes.
 import {describe,expect,it,vi} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {CvGenerator,LearnedPreferenceNote,feedbackStatusPatch} from './App'
+import {CvGenerator,LearnedPreferenceNote,feedbackStatusPatch,fitOneScroll} from './App'
 import appSource from './App.tsx?raw'   // vite serves the file's text; no DOM and no new dependency
 import type {Job} from './types'
 import {replacementPrompt} from './cvModel'
@@ -63,6 +63,26 @@ describe('compact CV generator popup (TASK-216)',()=>{
     expect(appSource).toContain("'lg:col-span-2 flex min-h-0 flex-col self-stretch [&>div]:flex [&>div]:min-h-0 [&>div]:flex-auto [&>div]:flex-col")
     expect(appSource).toContain('[&_textarea]:min-h-[6rem] [&_textarea]:flex-auto [&_textarea]:[field-sizing:content]')
     expect(appSource).not.toContain('100dvh-30rem')
+  })
+
+  it('puts Generated files in the right column under Adjust, only in the popup (TASK-266)',()=>{
+    // Desktop: the left column spans two rows; Adjust sits top-right and the files below it. Narrow
+    // (one column) keeps DOM order, which is the old order: Generate, files, Adjust.
+    expect(appSource).toContain("{!compact&&<ArtifactPaths ")   // the job page keeps them in the left column
+    expect(appSource).toContain('{compact&&<div className="empty:hidden lg:col-start-2 lg:row-start-2"><ArtifactPaths ')
+    expect(appSource).toContain("compact?'grid content-start gap-2 lg:row-span-2'")
+    expect(appSource).toContain("compact?'grid content-start gap-2 lg:col-start-2 lg:row-start-1'")
+  })
+
+  it('has one scroll area: the textarea grows to its content only when the dialog must scroll anyway (TASK-266)',()=>{
+    // A fake dialog whose content is `base` px with the textarea at its minimum, `grown` px with it at content height.
+    const dialog=(base:number,grown:number,client:number)=>{const attrs=new Set<string>();return {attrs,clientHeight:client,get scrollHeight(){return attrs.has('data-cv-grow')?grown:base},toggleAttribute(n:string,f?:boolean){const on=f??!attrs.has(n);if(on)attrs.add(n);else attrs.delete(n);return on}}}
+    expect(fitOneScroll(dialog(700,900,742))).toBe(false)   // fits: textarea fills the rest and scrolls inside
+    expect(fitOneScroll(dialog(808,1100,742))).toBe(true)   // even the minimum overflows: only the dialog scrolls
+    const d=dialog(808,1100,742);fitOneScroll(d);d.clientHeight=900
+    expect(fitOneScroll(d)).toBe(false)                     // decided at the minimum, so a taller window turns it back off
+    expect(d.attrs.has('data-cv-grow')).toBe(false)
+    expect(appSource).toContain('[&[data-cv-grow]>*]:shrink-0 [&[data-cv-grow]_textarea]:flex-none')
   })
 })
 
