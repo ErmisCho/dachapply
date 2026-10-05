@@ -3,10 +3,10 @@ id: TASK-262
 title: >-
   Allow an English CV with a German letter (and vice versa), flagged as not
   recommended
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-05 11:43'
-updated_date: '2026-10-05 13:18'
+updated_date: '2026-10-05 20:10'
 labels: []
 dependencies: []
 priority: medium
@@ -31,4 +31,6 @@ Letter options are currently tied to the CV language. Owner wants to pick e.g. E
 
 <!-- SECTION:NOTES:BEGIN -->
 Verified 2026-10-05 on a branch server (127.0.0.1:8010, scratch sqlite + scratch CV workspace, real Codex low-effort generation of 2 jobs): single popup and bulk rows list all letters, same-language first, others '(not recommended)', amber warning shown; real generation en CV + Anschreiben produced an English CV ('\section{Experience}') and a German letter ('Sehr geehrte Damen und Herren').
+
+Shipped in #205; verified 2026-10-05 (English CV + German letter generated, not-recommended label and warning shown).
 <!-- SECTION:NOTES:END -->
