@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it} from 'vitest'
-import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,defaultPostponeDate,describeOrdering,popupBelowAnchor,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,jobStatusLabel,upgradeSavedFilters,mailboxActionableJobStatuses,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,jobNotePreview,movePanelInOrder,NOTE_PREVIEW_WIDTH,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,previewPanelDrag,ratePercent,receivedDateLabels,reorderPanels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal} from './appUtils'
+import {applyDefaultHiddenPanels,BOARD_DESKTOP_QUERY,chronologicalMessages,copyToClipboard,deadlineBadge,decodeHtmlEntities,dedupeMailboxSuggestions,defaultPostponeDate,describeOrdering,popupBelowAnchor,formatAddressList,fromDateTimeLocal,germanSubmitError,groupFeedbackDueRows,groupMailboxSuggestions,groupSuggestionsByConversation,initPanelOrder,isActionableJobStatus,isDesktopWidth,jobStatusLabel,upgradeSavedFilters,mailboxActionableJobStatuses,mailboxAttachmentSize,mailboxCalendarWhen,mailboxEstimateWording,mailboxIndicatorState,messagePreviewLine,jobNotePreview,movePanelInOrder,NOTE_PREVIEW_WIDTH,nextSortKeys,parseAddressList,parseSenderHeader,parseSortKeys,pathTitle,previewPanelDrag,ratePercent,receivedDateLabels,reorderPanels,selectGeneralNote,senderInitial,senderTone,sortOrderingString,sourceLabel,submitDe,toDateTimeLocal,effectiveStatusOrder,statusGroupHeaders} from './appUtils'
 import type {SortKey} from './appUtils'
 
 // Shared copy controls use the modern API when available and a legacy fallback on local HTTP.
@@ -1092,5 +1092,21 @@ describe('upgradeSavedFilters (TASK-265)',()=>{
     expect(upgradeSavedFilters({status:''})).toEqual({status:''})
     expect(upgradeSavedFilters({status:'to_apply,ready_to_submit'})).toEqual({status:'to_apply,ready_to_submit'})
     expect(upgradeSavedFilters({status:'applied,interview'})).toEqual({status:'applied,interview'})
+  })
+})
+
+describe('TASK-267 status order and group headers',()=>{
+  const all=['new','reviewed','to_apply','ready_to_submit','applied','interview','archived']
+  it('defaults to new, interview, then the rest',()=>{
+    expect(effectiveStatusOrder('',all)).toEqual(['new','interview','reviewed','to_apply','ready_to_submit','applied','archived'])
+  })
+  it('puts saved keys first, drops unknown/duplicate keys and appends statuses added later',()=>{
+    expect(effectiveStatusOrder('ready_to_submit,bogus,new,ready_to_submit,applied',all)).toEqual(['ready_to_submit','new','applied','interview','reviewed','to_apply','archived'])
+    expect(effectiveStatusOrder(['applied','new'],all).length).toBe(all.length)
+  })
+  it('heads each consecutive status run with that status total',()=>{
+    const rows=[{id:1,status:'ready_to_submit'},{id:2,status:'ready_to_submit'},{id:3,status:'new'},{id:4,status:'applied'},{id:5,status:'applied'},{id:6,status:'applied'}]
+    expect(statusGroupHeaders(rows)).toEqual({1:2,3:1,4:3})
+    expect(statusGroupHeaders([])).toEqual({})
   })
 })
