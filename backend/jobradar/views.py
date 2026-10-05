@@ -106,21 +106,14 @@ def _status_pipeline_rank():
     return Case(*whens, default=Value(len(JobLead.STATUSES)), output_field=IntegerField())
 
 
-def _attention_rank():
-    """TASK-145 AC1/AC2: the board's default GROUP order -- new first, interview second, then
-    every other status in the model's own pipeline order, closed statuses last -- built from
-    JobLead.STATUSES the same way _status_pipeline_rank() is above, so a status added to the
-    model can't silently sort into an arbitrary position. 'new' and 'interview' are pulled out to
-    ranks 0 and 1; everything else keeps its pipeline index offset by 2, which preserves their
-    relative (pipeline) order without restating it as a second list -- STATUSES already lists
-    reviewed/to_apply/applied/offer/accepted before the closed statuses, so offsetting by 2 keeps
-    them in that same order after 'new' and 'interview' are pulled to the front.
+def _attention_rank(order):
+    """TASK-145 AC1/AC2 + TASK-267: the board's default GROUP order -- each status ranked by its
+    index in `order`, the user's JobLead.effective_status_order(). With no saved order that is new,
+    interview, then pipeline order (the TASK-145 default); effective_status_order always lists every
+    status, so a status added to the model can't silently sort into an arbitrary position.
     """
-    whens = [
-        When(status=s, then=Value(0 if s == 'new' else 1 if s == 'interview' else 2 + i))
-        for i, (s, _label) in enumerate(JobLead.STATUSES)
-    ]
-    return Case(*whens, default=Value(2 + len(JobLead.STATUSES)), output_field=IntegerField())
+    whens = [When(status=s, then=Value(i)) for i, s in enumerate(order)]
+    return Case(*whens, default=Value(len(order)), output_field=IntegerField())
 
 
 def _ordering_expr(key, descending):
@@ -726,7 +719,12 @@ def me(request):
     requested=profile.requested_submit_for if profile else None
     # candidate_profile_missing is the nudge signal: true means every prompt endpoint will refuse
     # with 400 {'code':'candidate_profile_required'} until the user fills in Settings -> profile.
-    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'is_demo':is_demo_user(request.user), 'can_use_mailbox':is_mailbox_owner(request.user), 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user), 'cv_generation_notice':'' if settings.CODEX_CV_ENABLED else CV_LOCAL_ONLY_NOTICE, 'candidate_profile_missing':not has_candidate_profile(request.user), 'email_verified':is_email_verified(request.user), 'feedback_url':settings.FEEDBACK_URL, 'board_thresholds':BOARD_THRESHOLDS})
+    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'is_demo':is_demo_user(request.user), 'can_use_mailbox':is_mailbox_owner(request.user), 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user), 'cv_generation_notice':'' if settings.CODEX_CV_ENABLED else CV_LOCAL_ONLY_NOTICE, 'candidate_profile_missing':not has_candidate_profile(request.user), 'email_verified':is_email_verified(request.user), 'feedback_url':settings.FEEDBACK_URL, 'board_thresholds':BOARD_THRESHOLDS,
+        # TASK-267: the effective (full) status order plus whether it is custom, and the saved sort,
+        # so the board knows whether grouping is active without a second request.
+        'board_status_order':JobLead.effective_status_order(profile.board_status_order if profile else ''),
+        'board_status_order_custom':bool(profile and profile.board_status_order.strip()),
+        'board_sort_keys':(profile.board_sort_keys if profile else '') or ''})
 
 @api_view(['GET','POST'])
 def friend_requests(request):
@@ -809,8 +807,8 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         # allowlist, same 3-key cap, same degrade-on-hostile-input -- so there is no second parser to
         # keep in sync with the one that already guards against ?ordering=-created_by__password.
         raw_ordering=p.get('ordering')
+        profile=getattr(self.request.user, 'jobradar_profile', None)
         if raw_ordering is None:
-            profile=getattr(self.request.user, 'jobradar_profile', None)
             raw_ordering=profile.board_sort_keys if profile else ''
         qs=qs.annotate(
             # -1 surfaces, 1 sinks. One expression owns every age/deadline signal on the board.
@@ -820,7 +818,9 @@ class JobLeadViewSet(viewsets.ModelViewSet):
                 When(status__in=JobLead.UNAPPLIED_STATUSES, created_at__lt=timezone.now()-timezone.timedelta(days=JobLead.STALE_UNAPPLIED_DAYS), then=Value(1)),
                 default=Value(0), output_field=IntegerField()),
             # TASK-145 AC1/AC2: the default board GROUP order -- see _attention_rank's own docstring.
-            attention_rank=_attention_rank(),
+            # TASK-267: ranked by the user's saved status order; only read when the ordering resolves
+            # to DEFAULT_BOARD_ORDERING, so explicit/profile sorts are unaffected.
+            attention_rank=_attention_rank(JobLead.effective_status_order(profile.board_status_order if profile else '')),
             priority_rank=Case(When(evaluations__priority='high', then=Value(0)), When(evaluations__priority='medium', then=Value(1)), When(evaluations__priority='low', then=Value(2)), default=Value(3), output_field=IntegerField()),
             # TASK-108: pipeline order for ordering=status, distinct from status_rank's attention
             # order above -- see BOARD_ORDERINGS' comment.

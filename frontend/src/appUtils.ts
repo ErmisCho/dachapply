@@ -656,3 +656,23 @@ export function defaultPostponeDate(todayIso:string,weeks=2):string{
 export function jobNotePreview(job:{note_preview?:string|null}):string{
   return messagePreviewLine(job.note_preview)
 }
+
+// TASK-267. Mirrors backend JobLead.effective_status_order: saved keys first (unknown/duplicate
+// dropped), then every status the saved list does not mention in the TASK-145 default order - new,
+// interview, then the rest as `all` lists them - so a status added later is appended, never lost.
+export function effectiveStatusOrder(saved:string[]|string|null|undefined,all:string[]):string[]{
+  const raw=Array.isArray(saved)?saved:String(saved||'').split(',')
+  const kept=[...new Set(raw.map(s=>s.trim()).filter(s=>all.includes(s)))]
+  const fallback=['new','interview',...all.filter(s=>s!=='new'&&s!=='interview')].filter(s=>all.includes(s))
+  return [...kept,...fallback.filter(s=>!kept.includes(s))]
+}
+
+// TASK-267 AC4. The board's section headers: maps the id of the FIRST row of each consecutive status
+// run to that status's total row count in `rows`. Groups follow the order the server returned them in.
+export function statusGroupHeaders(rows:{id:number;status:string}[]):Record<number,number>{
+  const counts:Record<string,number>={}
+  rows.forEach(r=>{counts[r.status]=(counts[r.status]||0)+1})
+  const out:Record<number,number>={}
+  rows.forEach((r,i)=>{if(i===0||rows[i-1].status!==r.status)out[r.id]=counts[r.status]})
+  return out
+}

@@ -116,7 +116,7 @@ class CandidateProfileSerializer(serializers.ModelSerializer):
         # TASK-169: mailbox_identify_window_months sits right next to mailbox_lookback_months -- same
         # family, deliberately a different field (see the model comment on both for why fetch and
         # identify must not share one setting).
-        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','posting_refresh_cadence','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_check_enabled','mailbox_check_window_start','mailbox_check_window_end','mailbox_lookback_months','mailbox_identify_window_months','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ids','board_sort_keys','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
+        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','posting_refresh_cadence','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_check_enabled','mailbox_check_window_start','mailbox_check_window_end','mailbox_lookback_months','mailbox_identify_window_months','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ids','board_sort_keys','board_status_order','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
     # The profile codec is a text codec: it JSON-wraps values for drifted SQLite schemas and
     # coerces falsy values to ''. Running a boolean through it would store '' in a
     # BooleanField and serialise False as ''. Booleans (and mailbox_check_cadence_minutes, an int
@@ -140,6 +140,16 @@ class CandidateProfileSerializer(serializers.ModelSerializer):
         if v < 5 or v > 1440:
             raise serializers.ValidationError('Mailbox check cadence must be between 5 and 1440 minutes.')
         return v
+    def validate_board_status_order(self, v):
+        # TASK-267: unlike board_sort_keys this IS validated at save time -- an unknown key is a
+        # client bug worth a 400, not a stale bookmark to degrade. Stored normalized (stripped,
+        # deduped, comma-joined); '' resets to the default order.
+        keys=[t.strip() for t in (v or '').split(',') if t.strip()]
+        valid={s for s, _label in JobLead.STATUSES}
+        unknown=[k for k in keys if k not in valid]
+        if unknown:
+            raise serializers.ValidationError(f'Unknown status: {", ".join(unknown)}.')
+        return ','.join(dict.fromkeys(keys))
     def validate_mailbox_lookback_months(self, v):
         # TASK-141 AC3: 0 (or blank, already rejected by PositiveIntegerField's own type coercion
         # before this ever runs) must not mean "unlimited" -- that is exactly the bug this field's

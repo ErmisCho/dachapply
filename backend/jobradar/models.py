@@ -142,6 +142,11 @@ class UserProfile(models.Model):
     # value at save time would be a second enforcement point to keep in sync with the one that
     # already exists.
     board_sort_keys=models.CharField(max_length=120, blank=True, default='')
+    # TASK-267: the owner's dragged board GROUP order -- comma-separated JobLead.STATUSES keys,
+    # normalized (validated, deduped) by CandidateProfileSerializer. Blank is the TASK-145 default.
+    # Read only through JobLead.effective_status_order(), which appends any status missing from the
+    # saved list, so a status added to the model later is never lost from the board.
+    board_status_order=models.CharField(max_length=300, blank=True, default='')
     # TASK-83: the capability that gates the nine CV endpoints. Off by default -- generation shells
     # out to a model CLI and LaTeX on the server, so it is granted per account in the admin, never
     # by signing up. services.cv_generator.is_cv_owner still honours CODEX_CV_OWNER_EMAIL as a
@@ -235,6 +240,15 @@ class JobLead(models.Model):
     STALE_UNAPPLIED_DAYS=30  # new/reviewed/to_apply/ready_to_submit never acted on since created_at (postings expire in weeks)
     DEADLINE_SOON_DAYS=7  # apply_by this close (or past) counts as urgent
     FUNNEL_RECENT_DAYS=90  # the "recent window" the stats funnel reports alongside all-time
+    @classmethod
+    def effective_status_order(cls, raw):
+        """TASK-267: every STATUSES key, saved keys first in saved order (unknown and duplicate keys
+        dropped), then the missing ones in the TASK-145 default order -- new, interview, then the
+        rest in pipeline order. Blank raw gives exactly that default."""
+        keys=[s for s, _label in cls.STATUSES]
+        default=['new', 'interview', *(k for k in keys if k not in ('new', 'interview'))]
+        saved=list(dict.fromkeys(t for t in (t.strip() for t in (raw or '').split(',')) if t in keys))
+        return saved+[k for k in default if k not in saved]
     company=models.CharField(max_length=200, blank=True, default='Unknown company')
     title=models.CharField(max_length=250, blank=True, default='Untitled role')
     location=models.CharField(max_length=200, blank=True)
