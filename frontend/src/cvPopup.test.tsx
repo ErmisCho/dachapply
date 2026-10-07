@@ -138,6 +138,24 @@ describe('editable generation job context (TASK-253)',()=>{
     expect(appSource).toContain('||jobDirty||jobSaving||!!pendingText||genInvalid')
     expect(appSource).toContain('||isUnknownCompany(company)||!sourceText.trim()')
   })
+
+  it('locks Generate on a pending copy and puts the choice right at Generate (TASK-269)',()=>{
+    const generate=appSource.match(/label="Generate" disabled=\{([^}]*)\}/)?.[1]||''
+    expect(generate).toContain('||!!pendingText||')
+    expect(appSource).toContain("title={pendingText?'Choose a job text version first':undefined} describedBy={pendingText?`cv-text-choice-${job.id}`:undefined}")
+    const box=appSource.slice(appSource.indexOf('{!!pendingText&&<div id={`cv-text-choice-${job.id}`}'))
+    expect(box).toContain('Step 1: choose the job text')
+    expect(box).toContain('The website text changed. Pick which version to use, then Generate unlocks.')
+    const choice=box.slice(0,box.indexOf('Compare versions'))
+    expect(choice).toContain('onClick={()=>saveGenerationJob(sourceText)}>Keep current</button>')
+    expect(choice).toContain('onClick={()=>saveGenerationJob(pendingText)}>Use fetched</button>')
+    expect(choice).toContain('revealPendingText(e.currentTarget)')
+    const bulkStart=appSource.indexOf('label={`Generate ${rows.length} application')
+    const bulk=appSource.slice(bulkStart,appSource.indexOf('onClick={generate}',bulkStart))
+    expect(bulk).toContain('||!!row.pendingText||')
+    expect(appSource).toContain('>Choose job text first</button>')
+    expect(appSource).toContain('a job text choice before generating')
+  })
 })
 
 describe('marking a job Applied from the generator (TASK-227)',()=>{

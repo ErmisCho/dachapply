@@ -228,7 +228,7 @@ class JobLeadSerializer(serializers.ModelSerializer):
     submitted_for_email=serializers.SerializerMethodField()
     url=serializers.CharField(max_length=1000, required=False, allow_blank=True)
     class Meta:
-        model=JobLead; fields='__all__'; read_only_fields=('created_by','submitted_for','created_at','updated_at')
+        model=JobLead; fields='__all__'; read_only_fields=('created_by','submitted_for','created_at','updated_at','dismissed_source_hash')
         extra_kwargs={'company': {'required': False, 'allow_blank': True}, 'title': {'required': False, 'allow_blank': True}}
     def validate_url(self, value):
         value=normalize_job_url(value)
@@ -397,7 +397,7 @@ class JobLeadListSerializer(JobLeadSerializer):
     note_preview=serializers.SerializerMethodField()
     class Meta(JobLeadSerializer.Meta):
         fields=None  # DRF forbids fields and exclude together; the parent sets fields='__all__'
-        exclude=('raw_description','original_source_text','pending_source_text','pending_source_fetched_at','source_checked_at','source_fetch_error')
+        exclude=('raw_description','original_source_text','pending_source_text','pending_source_fetched_at','source_checked_at','source_fetch_error','dismissed_source_hash')
     def get_note_preview(self, obj):
         """Server-side twin of appUtils.messagePreviewLine (TASK-177): same 140-char cap and the
         same whitespace squeeze, so a note preview and a mail preview never disagree about length.

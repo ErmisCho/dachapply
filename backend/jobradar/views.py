@@ -1,4 +1,5 @@
 import logging
+import hashlib
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from html import escape
@@ -883,9 +884,11 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         company=company.strip() or 'Unknown company'
         # One update keeps the popup's generation identity and source text from being half-saved.
         # Saving either reviewed version resolves the pending comparison atomically.
+        # TASK-269: remember the copy being resolved so the automatic refresh does not re-stage it.
+        dismissed={'dismissed_source_hash':_source_hash(job.pending_source_text)} if job.pending_source_text else {}
         JobLead.objects.filter(pk=job.pk).update(
             company=company, original_source_text=text, pending_source_text='',
-            pending_source_fetched_at=None, source_fetch_error='')
+            pending_source_fetched_at=None, source_fetch_error='', **dismissed)
         return Response({'company':company,'original_source_text':text})
     def destroy(self, request, pk=None):
         qs=accessible_jobs(request.user)
@@ -1952,8 +1955,15 @@ def cv_generation_preview(request, job_id):
     return Response(preview)
 
 
-def _stage_source_fetch(job, result, checked_at=None):
-    """Persist only review state. Accepted source text is deliberately never touched here."""
+def _source_hash(text):
+    return hashlib.sha256(normalized(text).encode('utf-8')).hexdigest()
+
+
+def _stage_source_fetch(job, result, checked_at=None, skip_dismissed=False):
+    """Persist only review state. Accepted source text is deliberately never touched here.
+
+    skip_dismissed (TASK-269): the automatic refresh does not re-stage a copy the owner already
+    resolved; a manual fetch is an explicit request and always stages a differing copy."""
     checked_at=checked_at or timezone.now()
     values={'source_checked_at':checked_at}
     state='failed'
@@ -1962,6 +1972,8 @@ def _stage_source_fetch(job, result, checked_at=None):
         if normalized(result['text']) == normalized(job.source_text):
             values.update(pending_source_text='',pending_source_fetched_at=None)
             state='identical'
+        elif skip_dismissed and _source_hash(result['text']) == job.dismissed_source_hash:
+            state='dismissed'
         else:
             values.update(pending_source_text=result['text'],pending_source_fetched_at=checked_at)
             state='staged'
@@ -1978,7 +1990,7 @@ def _refresh_job_sources(jobs):
     # Network work is independent; database writes stay in this request thread.
     with ThreadPoolExecutor(max_workers=min(4,len(jobs))) as pool:
         results=list(pool.map(fetch_posting_text,[job.url for job in jobs]))
-    return [(job,result,_stage_source_fetch(job,result)) for job,result in zip(jobs,results)]
+    return [(job,result,_stage_source_fetch(job,result,skip_dismissed=True)) for job,result in zip(jobs,results)]
 
 
 def _live_source_response(job, result, staged=False):
@@ -2048,7 +2060,8 @@ def generate_cv_documents(request, job_id):
     if not job:
         return Response({'detail':'Job not found.'}, status=404)
     if job.pending_source_text:
-        return Response({'detail':'Review the freshly fetched posting text before generating.'}, status=409)
+        # TASK-269: the lock stays, and says which choice unlocks it.
+        return Response({'detail':'Choose which job text to use (Keep current or Use fetched) before generating.'}, status=409)
     create_cv=request.data.get('create_cv', True) is not False
     create_letter=request.data.get('create_letter', True) is not False
     if not create_cv and not create_letter:
