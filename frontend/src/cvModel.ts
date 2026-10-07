@@ -33,6 +33,9 @@ export function stepText(task:any){
   return `${label||'Working'} · step ${completed}/${total}`
 }
 
+// TASK-271: the name the rename control starts from -- the file's own name without folder or extension.
+export function artifactStem(path?:string){return (path||'').split(/[\\/]/).pop()!.replace(/\.(tex|pdf)$/i,'')}
+
 export function selectedGeneratedArtifacts(taskArtifacts:any,preview:any,letterKey:string){
   const letter=taskArtifacts?.letter_tex&&(!taskArtifacts.letter_template||taskArtifacts.letter_template===letterKey)?taskArtifacts:preview?.letter_artifacts?.[letterKey]||{}
   return {cv_tex:taskArtifacts?.cv_tex||preview?.artifacts?.cv_tex,cv_pdf:taskArtifacts?.cv_pdf||preview?.artifacts?.cv_pdf,letter_tex:letter.letter_tex,letter_pdf:letter.letter_pdf}

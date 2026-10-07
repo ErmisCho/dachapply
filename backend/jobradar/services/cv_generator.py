@@ -688,17 +688,19 @@ def _entries(data):
     return [data,*data.get('jobs',{}).values()]
 
 
-def _claimed_artifact_paths(workspace, user_id):
+def _claimed_artifact_paths(workspace, user_id, every_user=False):
     # Every path another job's sidecar names -- and every path an Applied job left behind -- is off
     # limits to the name-based fallbacks, because new names no longer carry the job id.
+    # every_user (TASK-271): the content match that follows an Explorer rename refuses any file any
+    # account tracks, not only this one's.
     claimed=set()
     root=Path(workspace)/'.dachapply-artifacts'
-    if not user_id or not root.is_dir():
+    if not (user_id or every_user) or not root.is_dir():
         return claimed
     for path in root.glob('*.json'):
         try:
             data=json.loads(path.read_text(encoding='utf-8'))
-            if data.get('user_id') == user_id:
+            if every_user or data.get('user_id') == user_id:
                 claimed.update(os.path.normcase(str(Path(value))) for entry in _entries(data) for value in _sidecar_paths(entry))
         except (OSError,TypeError,ValueError,AttributeError):
             continue
@@ -740,23 +742,7 @@ def _retired_entry(job, user):
         return {}
 
 
-def _record_artifact_metadata(job, user_id, artifacts, letter_key=''):
-    path=_artifact_metadata_path(settings.CODEX_CV_WORKSPACE,job.id,user_id)
-    if not path:
-        return None
-    try:
-        data=json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
-    except (OSError,TypeError,ValueError,json.JSONDecodeError):
-        data={}
-    if data.get('job_id') != job.id or data.get('user_id') != user_id:
-        data={'job_id':job.id,'user_id':user_id,'artifacts':{},'letters':{}}
-    current=data.setdefault('artifacts',{})
-    for key in ('cv_tex','cv_pdf'):
-        if artifacts.get(key): current[key]=artifacts[key]
-    if artifacts.get('letter_tex'):
-        key=letter_key or artifacts.get('letter_template') or 'letter'
-        data.setdefault('letters',{})[key]={name:artifacts[name] for name in ('letter_tex','letter_pdf') if artifacts.get(name)}
-        data['latest_letter']=key
+def _write_json(path, data):
     temporary=path.with_suffix('.tmp')
     try:
         path.parent.mkdir(parents=True,exist_ok=True)
@@ -766,6 +752,258 @@ def _record_artifact_metadata(job, user_id, artifacts, letter_key=''):
     except OSError:
         temporary.unlink(missing_ok=True)
         return None
+
+
+def _edit_sidecar(job, user_id, change):
+    path=_artifact_metadata_path(settings.CODEX_CV_WORKSPACE,job.id,user_id)
+    if not path:
+        return None
+    try:
+        data=json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
+    except (OSError,TypeError,ValueError,json.JSONDecodeError):
+        data={}
+    if data.get('job_id') != job.id or data.get('user_id') != user_id:
+        data={'job_id':job.id,'user_id':user_id,'artifacts':{},'letters':{}}
+    change(data)
+    _refresh_digests(data)
+    return _write_json(path,data)
+
+
+def _record_artifact_metadata(job, user_id, artifacts, letter_key=''):
+    def change(data):
+        current=data.setdefault('artifacts',{})
+        for key in ('cv_tex','cv_pdf'):
+            if artifacts.get(key): current[key]=artifacts[key]
+        if artifacts.get('letter_tex'):
+            key=letter_key or artifacts.get('letter_template') or 'letter'
+            data.setdefault('letters',{})[key]={name:artifacts[name] for name in ('letter_tex','letter_pdf') if artifacts.get(name)}
+            data['latest_letter']=key
+    return _edit_sidecar(job,user_id,change)
+
+
+# TASK-271: a generated file renamed in Explorer is found again by its content. Every tracked TeX
+# and PDF keeps a "size:sha256" digest; the size lets a scan skip almost every file unread.
+def _file_digest(path):
+    try:
+        data=Path(path).read_bytes()
+    except (OSError,TypeError):
+        return ''
+    return f'{len(data)}:{hashlib.sha256(data).hexdigest()}'
+
+
+def _tracked_pairs(entry):
+    # (kind, letter key, dict holding the paths, TeX key, PDF key) for every document one entry tracks.
+    pairs=[('cv','',entry.setdefault('artifacts',{}),'cv_tex','cv_pdf')]
+    return pairs+[('letter',key,value,'letter_tex','letter_pdf') for key,value in entry.get('letters',{}).items() if isinstance(value,dict)]
+
+
+def _refresh_digests(entry):
+    # A present file gets its current digest (a recompile or a hand edit changes it); a missing one
+    # keeps its last digest, which is what finds it again after a rename. Returns whether it changed.
+    old=entry.get('hashes',{})
+    hashes={}
+    for _,_,container,*keys in _tracked_pairs(entry):
+        for key in keys:
+            path=container.get(key)
+            if isinstance(path,str) and (digest:=_file_digest(path) or old.get(path)):
+                hashes[path]=digest
+    entry['hashes']=hashes
+    return hashes != old
+
+
+def _move_tracking(entry, moves):
+    # Every reference one entry holds to a moved file follows it -- including an Applied job's
+    # read-only `paths`, so the sent-document pointer stays valid (TASK-271 AC5).
+    moves={os.path.normcase(str(Path(old))):str(new) for old,new in moves.items()}
+    def moved(value): return moves.get(os.path.normcase(str(Path(value))),value) if isinstance(value,str) else value
+    found=False
+    for _,_,container,*keys in _tracked_pairs(entry):
+        for key in keys:
+            if container.get(key) != moved(container.get(key)):
+                container[key]=moved(container[key]); found=True
+    if 'paths' in entry:
+        entry['paths']=[moved(value) for value in entry['paths']]
+    entry['hashes']={moved(key):value for key,value in entry.get('hashes',{}).items()}
+    return found
+
+
+def _set_preferred_name(entry, kind, letter_key, stem):
+    names=entry.setdefault('names',{})
+    if kind == 'cv':
+        names['cv']=stem
+    else:
+        names.setdefault('letters',{})[letter_key or 'letter']=stem
+
+
+def _find_by_digest(workspace, digest, suffix):
+    if not digest or ':' not in digest:
+        return None
+    size=int(digest.split(':',1)[0])
+    claimed=None
+    for directory in (workspace/'CVs',workspace/'CVs'/'sent',workspace/'output'):
+        if not directory.is_dir():
+            continue
+        for path in directory.glob('*'+suffix):
+            try:
+                if path.stat().st_size != size or _file_digest(path) != digest:
+                    continue
+            except OSError:
+                continue
+            # Built only once a file matches: a file any job of any account tracks is never adopted.
+            claimed=_claimed_artifact_paths(workspace,None,every_user=True) if claimed is None else claimed
+            if os.path.normcase(str(path)) not in claimed:
+                return path
+    return None
+
+
+def _follow_renames(entry, workspace):
+    """Re-finds one sidecar entry's files after an Explorer rename. Returns whether it changed.
+
+    A TeX renamed with or without its PDF is matched by content, and an old-named PDF moves beside
+    it. A PDF renamed on its own is matched too, and its TeX follows to the same stem: every reader
+    derives the PDF as `tex.with_suffix('.pdf')`, so the pair keeps one name rather than splitting.
+    Scans the folders only when a tracked file is missing.
+    """
+    hashes=entry.get('hashes',{})
+    changed=False
+    for kind,letter_key,container,tex_key,pdf_key in _tracked_pairs(entry):
+        tex=container.get(tex_key)
+        if not isinstance(tex,str):
+            continue
+        tex_path=Path(tex)
+        pdf=container.get(pdf_key)
+        pdf_path=Path(pdf) if isinstance(pdf,str) else tex_path.with_suffix('.pdf')
+        if not tex_path.is_file():
+            new_tex=_find_by_digest(workspace,hashes.get(tex),'.tex')
+            if not new_tex:
+                continue
+            new_pdf=new_tex.with_suffix('.pdf')
+            if not new_pdf.exists() and pdf_path.is_file():
+                try:
+                    pdf_path.rename(new_pdf)
+                except OSError:
+                    pass
+        elif isinstance(pdf,str) and not pdf_path.is_file():
+            new_pdf=_find_by_digest(workspace,hashes.get(pdf),'.pdf')
+            if not new_pdf or new_pdf.with_suffix('.tex').exists():
+                continue
+            try:
+                tex_path.rename(new_pdf.with_suffix('.tex'))
+            except OSError:
+                continue
+            new_tex=new_pdf.with_suffix('.tex')
+        else:
+            continue
+        _move_tracking(entry,{tex:new_tex,str(pdf_path):new_pdf})
+        container[pdf_key]=str(new_pdf)
+        _set_preferred_name(entry,kind,letter_key,new_tex.stem)
+        changed=True
+    return _refresh_digests(entry) or changed
+
+
+def _follow_job_renames(job, user):
+    workspace=Path(settings.CODEX_CV_WORKSPACE) if settings.CODEX_CV_WORKSPACE else None
+    sidecar=_artifact_metadata_path(workspace,job.id,getattr(user,'pk',None)) if workspace else None
+    if not sidecar or not workspace.is_dir():
+        return
+    live=_read_artifact_metadata(job,user)
+    if live and _follow_renames(live,workspace):
+        _write_json(sidecar,live)
+    retired_path=_retired_file(workspace,user.pk)
+    try:
+        retired=json.loads(retired_path.read_text(encoding='utf-8'))
+    except (OSError,ValueError):
+        return
+    entry=retired.get('jobs',{}).get(sidecar.stem) if retired.get('user_id') == user.pk else None
+    if entry and _follow_renames(entry,workspace):
+        _write_json(retired_path,retired)
+
+
+def preferred_names(job, user, letter_key=''):
+    """The file stems the owner chose for this job's CV and letter (TASK-271); None where unset."""
+    names=[entry.get('names',{}) for entry in (_read_artifact_metadata(job,user),_retired_entry(job,user))]
+    key=letter_key or 'letter'
+    cv=next((value['cv'] for value in names if value.get('cv')),None)
+    letter=next((value['letters'][key] for value in names if value.get('letters',{}).get(key)),None)
+    return cv,letter
+
+
+_FORBIDDEN_NAME=re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_RESERVED_NAMES={'CON','PRN','AUX','NUL',*(f'COM{index}' for index in range(1,10)),*(f'LPT{index}' for index in range(1,10))}
+
+
+def clean_artifact_stem(name):
+    """Validates an owner-typed file name and returns its stem; raises ValueError with the reason."""
+    stem=re.sub(r'\.(?:tex|pdf)$','',str(name or '').strip(),flags=re.IGNORECASE).strip()
+    if not stem:
+        raise ValueError('Enter a file name.')
+    if _FORBIDDEN_NAME.search(stem):
+        raise ValueError('A file name cannot contain \\ / : * ? " < > | or control characters.')
+    if stem.endswith('.'):
+        raise ValueError('A file name cannot end with a dot.')
+    if stem.split('.')[0].strip().upper() in _RESERVED_NAMES:
+        raise ValueError(f'{stem} is a name Windows reserves.')
+    if len(stem) > 150:
+        raise ValueError('A file name can be at most 150 characters.')
+    return stem
+
+
+def rename_generated_artifact(job, user, artifact, letter_key, name):
+    """Renames a job's generated TeX and its PDF together, in their own folder (TASK-271).
+
+    Returns {old path: new path}. Raises ValueError for an invalid request and FileExistsError when a
+    target name is taken. The two files move together or neither moves; tracking follows the move.
+    """
+    if artifact not in ('cv','letter'):
+        raise ValueError('Choose the CV or the letter to rename.')
+    stem=clean_artifact_stem(name)
+    cv,letter=latest_generated_sources(job,user,letter_key)
+    source=cv if artifact == 'cv' else letter
+    if not source:
+        raise ValueError('No generated file was found to rename.')
+    tex=Path(source)
+    moves=[(tex,tex.with_name(stem+'.tex'))]
+    if tex.with_suffix('.pdf').is_file():
+        moves.append((tex.with_suffix('.pdf'),tex.with_name(stem+'.pdf')))
+    for old,new in moves:
+        # samefile: changing only the letter case is the same file on Windows, not a collision.
+        if new.exists() and not new.samefile(old):
+            raise FileExistsError(f'{new.name} already exists in {new.parent.name}. Choose another name.')
+    done=[]
+    try:
+        for old,new in moves:
+            old.rename(new)
+            done.append((old,new))
+    except OSError as exc:
+        for moved_from,moved_to in reversed(done):
+            moved_to.rename(moved_from)
+        raise ValueError(f'Could not rename {old.name}: {exc.strerror or exc}') from None
+    renamed={str(old):str(new) for old,new in done}
+    workspace=Path(settings.CODEX_CV_WORKSPACE)
+    sidecar=_artifact_metadata_path(workspace,job.id,user.pk)
+    retired_path=_retired_file(workspace,user.pk)
+    tracked=False
+    try:
+        retired=json.loads(retired_path.read_text(encoding='utf-8'))
+        entry=retired.get('jobs',{}).get(sidecar.stem) if retired.get('user_id') == user.pk else None
+        if entry and _move_tracking(entry,renamed):
+            _refresh_digests(entry)
+            tracked=bool(_write_json(retired_path,retired))
+    except (OSError,ValueError):
+        pass
+    key=letter_key or _read_artifact_metadata(job,user).get('latest_letter') or _retired_entry(job,user).get('latest_letter') or 'letter'
+    new_tex=moves[0][1]
+    def change(data):
+        # A file found only by its old name has no entry yet; it is recorded, or the rename loses it.
+        if not _move_tracking(data,renamed) and not tracked:
+            if artifact == 'cv':
+                data.setdefault('artifacts',{}).update(cv_tex=str(new_tex),cv_pdf=str(new_tex.with_suffix('.pdf')))
+            else:
+                data.setdefault('letters',{})[key]={'letter_tex':str(new_tex),'letter_pdf':str(new_tex.with_suffix('.pdf'))}
+                data['latest_letter']=key
+        _set_preferred_name(data,artifact,key,stem)
+    _edit_sidecar(job,user.pk,change)
+    return renamed
 
 
 def delete_generated_metadata(job):
@@ -817,6 +1055,8 @@ def _retire(directory, job_hash, data):
     entry=retired.setdefault('jobs',{}).setdefault(job_hash,{})
     entry.setdefault('artifacts',{}).update(data.get('artifacts',{}))
     entry.setdefault('letters',{}).update(data.get('letters',{}))
+    entry.setdefault('hashes',{}).update(data.get('hashes',{}))
+    if data.get('names'): entry['names']=data['names']
     if data.get('latest_letter'): entry['latest_letter']=data['latest_letter']
     # Every path this job ever sent stays protected, even once a later send replaces the link.
     entry['paths']=sorted(set(entry.get('paths',[]))|set(_sidecar_paths(data)))
@@ -836,6 +1076,7 @@ def _letter_label(user, letter_key):
 def latest_generated_sources(job, user=None, letter_key=''):
     applicant=applicant_name(user)
     letter_label=_letter_label(user,letter_key)
+    _follow_job_renames(job,user)
     # The live sidecar (pending work, or a revision made after Applied) wins; the Applied job's
     # read-only pointer to what it sent is next. Neither depends on the human-facing filename.
     metadata_cv=metadata_letter=None
@@ -1530,6 +1771,11 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
     if create_cv and not photo and r'\includegraphics' in cv_text:
         raise RuntimeError('This CV template includes a photograph but no photo is stored on this account. Add one with manage.py import_cv_assets, or use a template without \\includegraphics.')
     cv_name,letter_name=_target_names(job,applicant_name(requesting_user),letter_asset.label or letter_asset.key if letter_asset else 'Letter')
+    # TASK-271: a name the owner gave this job's files is its base from now on. Whether an existing
+    # file is overwritten or kept beside a -2 copy is still the replace confirmation's decision.
+    preferred_cv,preferred_letter=preferred_names(job,requesting_user,letter_key)
+    cv_name=f'{preferred_cv}.tex' if preferred_cv else cv_name
+    letter_name=f'{preferred_letter}.tex' if preferred_letter and f'{preferred_letter}.tex' != cv_name else letter_name
     replace_cv,replace_letter=latest_generated_sources(job,requesting_user,letter_key) if replace_existing and not is_revision else (None,None)
     filename=_package_filename(job,applicant_name(requesting_user))
     cache_paths=None

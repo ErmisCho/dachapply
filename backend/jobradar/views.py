@@ -45,9 +45,9 @@ from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_s
 from .services.followup_digest import owned_jobs, record_job_followup_sent
 from .services.draft_chat import ChatTurn, run_chat_turn
 from .services.analytics import record_demo_click
-from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, reveal_artifact_folder, validate_model_capability
+from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, rename_generated_artifact, reveal_artifact_folder, validate_model_capability
 from .services import cv_tasks
-from .services.cv_tasks import _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, start_cv_compile_task, start_cv_noop_task, start_cv_revision, start_cv_task
+from .services.cv_tasks import _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, rename_task_paths, start_cv_compile_task, start_cv_noop_task, start_cv_revision, start_cv_task
 from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
 from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
@@ -2175,6 +2175,27 @@ def revise_latest_cv_documents(request, job_id):
     except RuntimeError:
         return Response({'detail':'CV generation is restarting. Try again shortly.'}, status=503)
     return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
+
+
+@api_view(['POST'])
+def rename_cv_artifact(request, job_id):
+    """TASK-271: rename a job's generated CV or letter (its TeX and PDF together). The file is
+    resolved server-side from the job's own tracking -- the body only names which one and the new
+    name, never a path."""
+    if not is_cv_owner(request.user):
+        return Response({'detail':'Not found.'}, status=404)
+    job=accessible_jobs(request.user).filter(id=job_id).first()
+    if not job:
+        return Response({'detail':'Job not found.'}, status=404)
+    letter_key=request.data.get('letter_template') or ''
+    try:
+        renamed=rename_generated_artifact(job,request.user,request.data.get('artifact'),letter_key,request.data.get('name'))
+    except FileExistsError as exc:
+        return Response({'detail':str(exc)}, status=409)
+    except ValueError as exc:
+        return Response({'detail':str(exc)}, status=400)
+    rename_task_paths(request.user.id,renamed)
+    return Response({'renamed':renamed,'artifacts':latest_generated_artifacts(job,request.user,letter_key)})
 
 
 @api_view(['GET'])
