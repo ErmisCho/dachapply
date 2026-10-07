@@ -1,3 +1,4 @@
+import os
 """TASK-271: rename generated files in the app or in Explorer, and keep tracking them."""
 import json
 import zipfile
@@ -96,7 +97,8 @@ def test_typed_pdf_extension_is_normalized(client, owner, workspace):
     assert latest_generated_artifacts(job, owner, 'anschreiben')['cv_tex'] == str(Path(saved['cv_tex']).with_name('Fresh-Name.tex'))
 
 
-@pytest.mark.parametrize('taken', ['Taken.tex', 'Taken.pdf', 'taken.PDF'])
+# A differently-cased name is the same file only on a case-insensitive filesystem (Windows, where generation runs).
+@pytest.mark.parametrize('taken', ['Taken.tex', 'Taken.pdf', pytest.param('taken.PDF', marks=pytest.mark.skipif(os.name != 'nt', reason='case-insensitive filesystem only'))])
 def test_renaming_onto_an_existing_file_is_refused_and_overwrites_nothing(client, owner, workspace, taken):
     job = _job(owner); saved = _generate(workspace, job, owner)
     occupied = Path(saved['cv_tex']).parent/taken
