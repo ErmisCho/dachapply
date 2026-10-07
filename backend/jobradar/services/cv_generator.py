@@ -608,9 +608,40 @@ def generation_preview(job, user=None):
     }
 
 
+# TASK-270 AC3: gender markers anywhere in the title, in common English and German forms. A marker
+# in brackets goes whole; "all genders" and letter-slash runs also go bare; "*in"-style endings are
+# dropped from the word they gender. Separators a marker leaves behind vanish in slugify.
+_GENDER_MARKER=re.compile(
+    r'[\[(]\s*(?:all(?:e)?\s+(?:genders?|geschlechter)|gn\*?|[mwfdx](?:\s*/\s*[mwfdx]){1,3})\s*[\])]'
+    r'|\ball(?:e)?\s+(?:genders?|geschlechter)\b'
+    r'|(?<![\w/])[mwfdx](?:\s*/\s*[mwfdx]){1,3}(?![\w/])'
+    r'|(?<=[^\W\d_])(?:[*:_]|/-?)in(?:nen)?\b'
+    r'|\s+gn\*?\s*$',
+    re.IGNORECASE)
+
+
 def _target_slug(job):
+    text=f'{job.company}-{_GENDER_MARKER.sub(" ", job.title or "")}'
+    # TASK-270 AC2: slugify lowercases, so the casing of AI is restored from the title's own words.
+    # "ai" alone is always AI; a mixed-case word the title writes with AI (GenAI, OpenAI) keeps it;
+    # a word that merely contains the letters (Mainz, Training) has no uppercase AI and is untouched.
+    ai_words={word.lower():word for word in re.findall(r'[A-Za-z0-9]+',text) if 'AI' in word and not word.isupper()}
+    def part_case(part):
+        if part in ('ai','tuv'):
+            return part.upper()
+        cased=list(part.capitalize())
+        for match in re.finditer('AI',ai_words.get(part,'')):
+            cased[match.start():match.end()]='AI'
+        return ''.join(cased)
+    # slugify's NFKD fold turns TÜV into "tuv", which part_case restores as TUV.
+    return '-'.join(part_case(part) for part in slugify(text)[:90].split('-')) or 'Job'
+
+
+def _previous_target_slug(job):
+    # The pre-TASK-270 name (Ai, trailing-only gender stripping), kept so files generated under it
+    # are still found by latest_generated_sources' name fallback.
     title=re.sub(r'\s*[\[(]?\s*(?:gn\*?|[mwfdx](?:\s*/\s*[mwfdx]){1,3})\s*[\])]?[\s*]*$', '', job.title or '', flags=re.IGNORECASE)
-    raw=slugify(f'{job.company}-{title}'.replace('T�V','TUV'))[:90]
+    raw=slugify(f'{job.company}-{title}')[:90]
     return '-'.join('TUV' if part.lower() == 'tuv' else part.capitalize() for part in raw.split('-')) or 'Job'
 
 
@@ -814,10 +845,9 @@ def latest_generated_sources(job, user=None, letter_key=''):
         metadata_cv=metadata_cv or (cv if cv and Path(cv).is_file() else None)
         metadata_letter=metadata_letter or (letter if letter and Path(letter).is_file() else None)
     # Exact legacy names remain readable after the human-facing id is removed.
-    legacy_target=_target_slug(job)
-    raw_target=slugify(f'{job.company}-{job.title}')[:90] or f'job-{job.id}'
-    legacy_cv=[f'{applicant}-CV-{legacy_target}.tex',f'{applicant}-CV-{raw_target}.tex']
-    legacy_letter=[f'{applicant}-Letter-{legacy_target}.tex',f'{applicant}-Letter-{raw_target}.tex']
+    legacy_targets=[_target_slug(job),_previous_target_slug(job),slugify(f'{job.company}-{job.title}')[:90] or f'job-{job.id}']
+    legacy_cv=[f'{applicant}-CV-{target}.tex' for target in legacy_targets]
+    legacy_letter=[f'{applicant}-Letter-{target}.tex' for target in legacy_targets]
     def latest(directories, names=(), pattern=None):
         stems={Path(name).stem for name in names}
         files=[]
@@ -1065,13 +1095,13 @@ def _compile_pdf(output, filename, is_cv, cancelled=None):
 
 def _package_cache(workspace, job, profile, sources, options, user_id=None):
     # The cache directory is shared by every account on the machine, so the account is part of the
-    # key (version 6; v5 exposed the job id in generated filenames). Two accounts with byte-identical templates and the same job hashed
+    # key (version 7; v6 named files with Ai and gender markers, TASK-270; v5 exposed the job id in generated filenames). Two accounts with byte-identical templates and the same job hashed
     # to the same entry before, and the cached zip carries the FIRST account's name in its
     # filenames -- so the second one downloaded an application titled with a stranger's surname.
     # The template and photo bytes are hashed in directly now that they are rows rather than files,
     # which also means editing a template invalidates the entry the way touching the file used to.
     digest=hashlib.sha256(json.dumps({
-        'version':6,
+        'version':7,
         'user':user_id,
         'job':[job.id,job.company,job.title,job.location,job.language_requirements,job.source_text],
         'evaluation':list(job.evaluations.values('fit_score','summary','main_match_reasons','main_gaps','cv_adjustment_notes')[:1]),
