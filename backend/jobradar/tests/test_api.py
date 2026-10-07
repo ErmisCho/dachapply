@@ -702,6 +702,19 @@ def test_cv_generation_can_be_disabled(client, owner, job):
     assert client.get(f'/api/jobs/{job.id}/cv-generation/').status_code==404
 
 
+def _installed_openai_pick(effort='medium'):
+    """Baseline model for the run endpoints: the first installed openai option, not a hardcoded name.
+
+    The endpoints validate against available_model_options(), which reads the local Codex cache,
+    so a fixed model name 400s as soon as the installed list moves on (TASK-273).
+    """
+    from jobradar.services import cv_generator
+    option=next(o for o in cv_generator.available_model_options() if o['provider']=='openai')
+    return {'provider':'openai','model':option['key'],
+            'effort':effort if effort in option['efforts'] else option['default_effort'],
+            'speed':'fast' if option['fast_tier'] else 'normal'}
+
+
 @throttled_rest_framework(cv_generation_user='100/hour')
 @override_settings(CODEX_CV_ENABLED=True, CODEX_CV_OWNER_EMAIL='owner@example.test')
 def test_cv_generation_starts_asynchronously(client, owner, job, monkeypatch):
@@ -714,12 +727,13 @@ def test_cv_generation_starts_asynchronously(client, owner, job, monkeypatch):
         selected.update(job_id=job_id,user_id=user_id,profile=profile,cv=cv,letter=letter,create_cv=create_cv,create_letter=create_letter,provider=provider,model=model,effort=effort,speed=speed,replace_existing=replace_existing)
         return 'task123'
     monkeypatch.setattr('jobradar.views.start_cv_task', start)
-    payload={'cv_template':'de','letter_template':'anschreiben','provider':'openai','model':'gpt-5.5','effort':'high','speed':'fast'}
+    pick=_installed_openai_pick('high')
+    payload={'cv_template':'de','letter_template':'anschreiben',**pick}
     r=client.post(f'/api/jobs/{job.id}/cv-generation/run/', payload, format='json')
     assert r.status_code==202 and r.data['task_id']=='task123' and r.data['status']=='queued' and r.data['estimated_seconds_remaining']>0
     context=selected.pop('profile')
     assert '- [CV] Keep the profile concise' in context and 'OTHER_ACCOUNT_PREFERENCE' not in context
-    assert selected=={'job_id':job.id,'user_id':owner.id,'cv':'de','letter':'anschreiben','create_cv':True,'create_letter':True,'provider':'openai','model':'gpt-5.5','effort':'high','speed':'fast','replace_existing':False}
+    assert selected=={'job_id':job.id,'user_id':owner.id,'cv':'de','letter':'anschreiben','create_cv':True,'create_letter':True,**pick,'replace_existing':False}
     assert client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'create_cv':False,'create_letter':False}, format='json').status_code==400
     monkeypatch.setattr('jobradar.views.start_cv_task', lambda *args,**kwargs: (_ for _ in ()).throw(RuntimeError('cannot schedule new futures after interpreter shutdown')))
     unavailable=client.post(f'/api/jobs/{job.id}/cv-generation/run/', payload, format='json')
@@ -837,10 +851,11 @@ def test_cv_task_status_and_download_are_owner_only(client, owner, job, monkeypa
     revision=client.post('/api/cv-generation/tasks/task123/revise/', {'instructions':'Shorten profile'}, format='json')
     assert revision.status_code==202 and revision.data['task_id']=='revision123'
     cache.clear()
-    recovered=client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/', {'instructions':'Use less text','cv_template':'de','letter_template':'anschreiben','provider':'openai','model':'gpt-5.5','effort':'medium'}, format='json')
+    pick=_installed_openai_pick()
+    recovered=client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/', {'instructions':'Use less text','cv_template':'de','letter_template':'anschreiben',**pick}, format='json')
     assert recovered.status_code==202 and recovered.data['task_id']=='restart123'
     assert recovered_config['args'][5] is False and recovered_config['kwargs']['create_cv'] is True
-    image_only=client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/', {'correction_image':PNG_DATA_URL,'cv_template':'de','letter_template':'anschreiben','provider':'openai','model':'gpt-5.5','effort':'medium'}, format='json')
+    image_only=client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/', {'correction_image':PNG_DATA_URL,'cv_template':'de','letter_template':'anschreiben',**pick}, format='json')
     assert image_only.status_code==202 and recovered_config['kwargs']['correction_image'][1]=='.png'
     assert client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/', {'correction_image':'bad'}, format='json').status_code==400
     assert other_client.get('/api/cv-generation/tasks/task123/').status_code==404
@@ -1012,7 +1027,7 @@ def test_cv_capability_flag_opens_generation_to_a_non_owner_and_defaults_closed(
     friend=User.objects.create_user('friend@example.test', email='friend@example.test', password='pw')
     UserProfile.objects.create(user=friend, candidate_profile='FRIEND_PROFILE backend engineer')
     job=JobLead.objects.create(company='ACME', title='Python Engineer', raw_description='Python Django SQL', created_by=friend)
-    payload={'cv_template':'en','letter_template':'motivation_letter','provider':'openai','model':'gpt-5.5','effort':'medium'}
+    payload={'cv_template':'en','letter_template':'motivation_letter',**_installed_openai_pick()}
     c=APIClient(); c.force_authenticate(friend)
 
     # Default account: the flag is off, so the endpoints do not exist for it and the frontend hides
@@ -3166,7 +3181,7 @@ def test_cv_generation_uses_the_requesting_users_stored_evidence(client, owner, 
         captured['profile'] = profile
         return 'task123'
     monkeypatch.setattr('jobradar.views.start_cv_task', start)
-    r = client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'cv_template': 'de', 'provider': 'openai', 'model': 'gpt-5.5', 'effort': 'high', 'speed': 'fast'}, format='json')
+    r = client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'cv_template': 'de', **_installed_openai_pick('high')}, format='json')
     assert r.status_code == 202, r.data
     assert 'PASTED_EVIDENCE_UNIQUE' in captured['profile']
 

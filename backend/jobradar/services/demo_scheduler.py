@@ -94,6 +94,10 @@ def _scheduler_loop():
 def _should_start_scheduler():
     if os.getenv('DACHAPPLY_DEMO_SEED_SCHEDULER', '1').strip().lower() in ('0', 'false', 'no', 'off'):
         return False
+    # TASK-273: `python -m pytest` has argv[0] == '__main__.py', so the argv check below misses it and
+    # the scheduler seeded demo mail into the test database mid-run. A loaded pytest is the real signal.
+    if 'pytest' in sys.modules:
+        return False
     command = os.path.basename(sys.argv[0]).lower()
     args = {arg.lower() for arg in sys.argv[1:]}
     skip = {'migrate', 'makemigrations', 'collectstatic', 'test', 'shell', 'dbshell', 'seed_demo'}
