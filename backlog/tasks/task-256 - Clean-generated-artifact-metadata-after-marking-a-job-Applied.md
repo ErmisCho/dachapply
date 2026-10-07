@@ -1,11 +1,11 @@
 ---
 id: TASK-256
 title: Clean generated artifact metadata after marking a job Applied
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-10-01 08:34'
-updated_date: '2026-10-01 14:54'
+updated_date: '2026-10-07 11:00'
 labels:
   - backend
   - workflow
@@ -66,4 +66,5 @@ Finished by code-implementer on 2026-10-01, building on pi's uncommitted work.
 - **Not covered.** A data import that restores `status=applied` (`user_data_portability`) does not trigger cleanup. Mailbox-created leads that start out as `applied` have no files, so they need no cleanup.
 - **Not verified.** I did not try this against the owner's real CV workspace or in a browser.
 - **Tests (test_api.py).** AC7: `test_applied_job_keeps_read_only_link_to_its_sent_documents` and `test_revising_or_recompiling_an_applied_job_never_modifies_its_sent_documents` (sha256 checks); the equal-looking test also covers non-adoption. Earlier: `test_applied_status_deletes_only_its_local_metadata`, `test_applied_cleanup_runs_only_after_commit`, `test_applied_status_persists_when_metadata_is_missing_or_unavailable` and `test_equal_looking_jobs_get_collision_suffixed_names_and_stay_separate`. I also extended the name, lookup and e2e generation tests, adding package/recompile zip names and TASK-253 legacy resolution. I ran 11 mutation reverts and each one made at least one test fail.
+- Owner verification 2026-10-07: the owner applied to Accenture after marking it Applied and reported "the 256 was working also when I did the application for accenture". The coordinator listed C:atex: the CV .tex and .pdf from 09:54 are still present, and `.dachapply-artifacts` holds one `retired-*.json` sent-document pointer.
 <!-- SECTION:NOTES:END -->
