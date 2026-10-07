@@ -1,5 +1,5 @@
-import os
 """TASK-271: rename generated files in the app or in Explorer, and keep tracking them."""
+import os
 import json
 import zipfile
 from io import BytesIO
