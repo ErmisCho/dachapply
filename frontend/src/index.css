@@ -316,6 +316,10 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
 @keyframes board-row-in{from{opacity:0}to{opacity:1}}
 .job-table tbody tr,.dashboard-mobile-card{animation:board-row-in .18s ease-out both}
 @media (prefers-reduced-motion:reduce){.job-table tbody tr,.dashboard-mobile-card{animation:none}}
+/* TASK-272. The inline "Copied" chip beside Generate: visible, then fades out by the time useFlash(3000) unmounts it. */
+@keyframes copied-fade{0%,75%{opacity:1}to{opacity:0}}
+.copied-fade{animation:copied-fade 3s ease-in forwards}
+@media (prefers-reduced-motion:reduce){.copied-fade{animation:none}}
 @media (min-width: 1024px){
   /* TASK-139. Used to carry `.premium-card.relative.z-0.overflow-x-auto.overflow-y-visible
      {overflow:visible!important}` here - a shorthand override that beat the Tailwind
