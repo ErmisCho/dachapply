@@ -2059,7 +2059,9 @@ def generate_cv_documents(request, job_id):
     job=accessible_jobs(request.user).filter(id=job_id).first()
     if not job:
         return Response({'detail':'Job not found.'}, status=404)
-    # TASK-269: a pending fetched copy never blocks; generation always uses the accepted job.source_text.
+    if job.pending_source_text:
+        # TASK-269: the lock stays, and says which choice unlocks it.
+        return Response({'detail':'Choose which job text to use (Keep current or Use fetched) before generating.'}, status=409)
     create_cv=request.data.get('create_cv', True) is not False
     create_letter=request.data.get('create_letter', True) is not False
     if not create_cv and not create_letter:

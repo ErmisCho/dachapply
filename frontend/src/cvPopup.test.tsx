@@ -135,19 +135,26 @@ describe('editable generation job context (TASK-253)',()=>{
   })
 
   it('does not allow generation from unsaved edited values',()=>{
-    expect(appSource).toContain('||jobDirty||jobSaving||genInvalid')
+    expect(appSource).toContain('||jobDirty||jobSaving||!!pendingText||genInvalid')
     expect(appSource).toContain('||isUnknownCompany(company)||!sourceText.trim()')
   })
 
-  it('never disables a generate action because a fetched copy is pending (TASK-269)',()=>{
+  it('locks Generate on a pending copy and puts the choice right at Generate (TASK-269)',()=>{
     const generate=appSource.match(/label="Generate" disabled=\{([^}]*)\}/)?.[1]||''
-    expect(generate).toContain('jobDirty')
-    expect(generate).not.toContain('pendingText')
-    const bulk=appSource.match(/label=\{`Generate \$\{rows\.length\}[^`]*`\} disabled=\{([^}]*)\}/)?.[1]||''
-    expect(bulk).toContain('row.cv')
-    expect(bulk).not.toContain('pendingText')
-    expect(appSource).not.toContain('disabled={actionLoading||!!j.has_pending_source||!sourceText.trim()} onClick={calibrate}')
-    expect(appSource).toContain('{!!pendingText&&<StatusMessage tone="info" compact>A newer posting text was fetched. Generate uses the saved job text. <button type="button" className="underline" onClick={e=>revealPendingText(e.currentTarget)}>Review it</button></StatusMessage>}')
+    expect(generate).toContain('||!!pendingText||')
+    expect(appSource).toContain("title={pendingText?'Choose a job text version first':undefined} describedBy={pendingText?`cv-text-choice-${job.id}`:undefined}")
+    const box=appSource.slice(appSource.indexOf('{!!pendingText&&<div id={`cv-text-choice-${job.id}`}'))
+    expect(box).toContain('Step 1: choose the job text')
+    expect(box).toContain('The website text changed. Pick which version to use, then Generate unlocks.')
+    const choice=box.slice(0,box.indexOf('Compare versions'))
+    expect(choice).toContain('onClick={()=>saveGenerationJob(sourceText)}>Keep current</button>')
+    expect(choice).toContain('onClick={()=>saveGenerationJob(pendingText)}>Use fetched</button>')
+    expect(choice).toContain('revealPendingText(e.currentTarget)')
+    const bulkStart=appSource.indexOf('label={`Generate ${rows.length} application')
+    const bulk=appSource.slice(bulkStart,appSource.indexOf('onClick={generate}',bulkStart))
+    expect(bulk).toContain('||!!row.pendingText||')
+    expect(appSource).toContain('>Choose job text first</button>')
+    expect(appSource).toContain('a job text choice before generating')
   })
 })
 

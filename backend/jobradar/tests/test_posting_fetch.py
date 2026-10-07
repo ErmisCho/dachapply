@@ -328,22 +328,14 @@ def test_saving_either_reviewed_version_clears_the_candidate(client, job):
     assert job.source_fetch_error == ''
 
 
-def test_a_pending_candidate_never_blocks_generation_and_the_run_uses_the_accepted_text(client, job, monkeypatch):
-    """TASK-269 AC1: the run starts and its prompt is built from the accepted text, not the candidate."""
-    job.pending_source_text = 'Fresh candidate the owner has not reviewed.'
+def test_generation_refuses_an_unreviewed_candidate(client, job):
+    job.pending_source_text = 'Fresh candidate requiring a decision.'
     job.save(update_fields=['pending_source_text'])
-    started = []
-    monkeypatch.setattr('jobradar.views.validate_model_capability', lambda *a, **k: None)
-    monkeypatch.setattr('jobradar.views.load_candidate_evidence', lambda *a: 'profile')
-    monkeypatch.setattr('jobradar.views.start_cv_task', lambda job_id, *a, **k: started.append(job_id) or 'task269')
 
-    response = client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'provider': 'openai', 'model': 'gpt-5.5'}, format='json')
+    response = client.post(f'/api/jobs/{job.id}/cv-generation/run/', {}, format='json')
 
-    assert response.status_code == 202, response.data
-    assert started == [job.id]
-    prompt = _prompt(JobLead.objects.get(pk=job.pk), 'CANDIDATE PROFILE', 'CV.tex', 'Letter.tex', 'en', 'en')
-    assert SUMMARY in prompt
-    assert 'Fresh candidate the owner has not reviewed.' not in prompt
+    assert response.status_code == 409
+    assert response.data['detail'] == 'Choose which job text to use (Keep current or Use fetched) before generating.'
 
 
 def _keep_current(client, job):
