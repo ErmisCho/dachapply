@@ -3,7 +3,7 @@ id: TASK-260
 title: >-
   Job text from the ChatGPT import should be a structured extract in the
   posting's own words
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-02 05:58'
 labels:
@@ -27,7 +27,7 @@ Owner report 2026-10-02 with screenshot (Mercor job): the accepted job text read
 - [x] #3 The prompt requires the posting's own wording, bullet points and original language (no translation or paraphrase beyond the overview), excludes page clutter such as navigation, hiring counters and unrelated links, and forbids commentary about what is or is not reproduced
 - [x] #4 A user whose saved custom prompt template still contains the old verbatim instruction also gets the new instruction, without the stored template being rewritten by a migration
 - [x] #5 Tests pin the new instruction in every affected template and the custom-template case, and fail when the old wording is restored
-- [ ] #6 Owner confirms on one real ChatGPT import that the stored text has the requested sections in the posting's wording and no refusal sentence
+- [x] #6 Owner confirms on one real ChatGPT import that the stored text has the requested sections in the posting's wording and no refusal sentence
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -40,4 +40,6 @@ Owner report 2026-10-02 with screenshot (Mercor job): the accepted job text read
 - Tests (backend/jobradar/tests/test_api.py): `test_every_source_text_prompt_asks_for_a_structured_extract_not_a_verbatim_copy` and `test_saved_custom_template_with_the_old_verbatim_sentence_gets_the_new_instruction`. Revert checks, each run with the change undone on its own: old wording back in the default templates fails the first test; old schema text fails both; dropping the build-time upgrade fails the custom-template test.
 - Full suite: `1260 passed, 526 warnings in 451.66s`.
 - AC6 (a real ChatGPT import) is the owner's to confirm.
+
+AC6 confirmed by the owner on 2026-10-07 ("task 260 works now") after a real ChatGPT import.
 <!-- SECTION:NOTES:END -->

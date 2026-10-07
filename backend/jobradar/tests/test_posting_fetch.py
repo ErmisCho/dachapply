@@ -328,14 +328,82 @@ def test_saving_either_reviewed_version_clears_the_candidate(client, job):
     assert job.source_fetch_error == ''
 
 
-def test_generation_refuses_an_unreviewed_candidate(client, job):
-    job.pending_source_text = 'Fresh candidate requiring a decision.'
+def test_a_pending_candidate_never_blocks_generation_and_the_run_uses_the_accepted_text(client, job, monkeypatch):
+    """TASK-269 AC1: the run starts and its prompt is built from the accepted text, not the candidate."""
+    job.pending_source_text = 'Fresh candidate the owner has not reviewed.'
     job.save(update_fields=['pending_source_text'])
+    started = []
+    monkeypatch.setattr('jobradar.views.validate_model_capability', lambda *a, **k: None)
+    monkeypatch.setattr('jobradar.views.load_candidate_evidence', lambda *a: 'profile')
+    monkeypatch.setattr('jobradar.views.start_cv_task', lambda job_id, *a, **k: started.append(job_id) or 'task269')
 
-    response = client.post(f'/api/jobs/{job.id}/cv-generation/run/', {}, format='json')
+    response = client.post(f'/api/jobs/{job.id}/cv-generation/run/', {'provider': 'openai', 'model': 'gpt-5.5'}, format='json')
 
-    assert response.status_code == 409
-    assert response.data['detail'] == 'Review the freshly fetched posting text before generating.'
+    assert response.status_code == 202, response.data
+    assert started == [job.id]
+    prompt = _prompt(JobLead.objects.get(pk=job.pk), 'CANDIDATE PROFILE', 'CV.tex', 'Letter.tex', 'en', 'en')
+    assert SUMMARY in prompt
+    assert 'Fresh candidate the owner has not reviewed.' not in prompt
+
+
+def _keep_current(client, job):
+    return client.patch(f'/api/jobs/{job.id}/source-text/', {'original_source_text': SUMMARY}, format='json')
+
+
+def _make_due(job):
+    JobLead.objects.filter(pk=job.pk).update(source_checked_at=None)
+
+
+def test_kept_current_copy_is_not_restaged_by_the_automatic_refresh(client, job, live_posting):
+    """TASK-269 AC3: same website text after Keep current -> nothing staged; changed text -> staged."""
+    assert client.post('/api/jobs/source-text/refresh-due/').data['staged'] == 1
+    assert _keep_current(client, job).status_code == 200
+    job.refresh_from_db()
+    assert job.pending_source_text == '' and job.dismissed_source_hash
+
+    _make_due(job)
+    same = client.post('/api/jobs/source-text/refresh-due/').data
+    job.refresh_from_db()
+    assert same == {'disabled':False,'checked':1,'staged':0,'failed':0,'remaining':0}
+    assert job.pending_source_text == ''
+    assert job.source_checked_at is not None
+
+    live_posting.page(JOB_URL, POSTING_HTML.replace('five years', 'seven years'))
+    _make_due(job)
+    changed = client.post('/api/jobs/source-text/refresh-due/').data
+    job.refresh_from_db()
+    assert changed['staged'] == 1
+    assert 'At least seven years of professional Python.' in job.pending_source_text
+    assert job.original_source_text == SUMMARY
+
+
+def test_use_fetched_still_adopts_the_candidate_after_an_earlier_dismissal(client, job, live_posting):
+    """TASK-269 AC4: Use fetched saves the candidate as the accepted text, and a refresh then finds it identical."""
+    client.post('/api/jobs/source-text/refresh-due/')
+    _keep_current(client, job)
+    live_posting.page(JOB_URL, POSTING_HTML.replace('five years', 'seven years'))
+    _make_due(job)
+    client.post('/api/jobs/source-text/refresh-due/')
+    job.refresh_from_db()
+    fetched = job.pending_source_text
+
+    assert client.patch(f'/api/jobs/{job.id}/source-text/', {'original_source_text': fetched}, format='json').status_code == 200
+    job.refresh_from_db()
+    assert job.original_source_text == fetched and job.pending_source_text == ''
+    _make_due(job)
+    assert client.post('/api/jobs/source-text/refresh-due/').data['staged'] == 0
+
+
+def test_manual_fetch_stages_even_a_dismissed_copy(client, job, live_posting):
+    """TASK-269 decision: a manual Fetch/Refetch is an explicit request, so it is not suppressed."""
+    client.post('/api/jobs/source-text/refresh-due/')
+    _keep_current(client, job)
+
+    data = client.post(f'/api/jobs/{job.id}/source-text/live/').data
+
+    job.refresh_from_db()
+    assert data['staged'] is True
+    assert 'Own the Postgres schema' in job.pending_source_text
 
 
 def test_profile_exposes_the_three_refresh_cadences(client):

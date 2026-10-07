@@ -258,6 +258,9 @@ class JobLead(models.Model):
     original_source_text=models.TextField(blank=True)
     pending_source_text=models.TextField(blank=True, default='')
     pending_source_fetched_at=models.DateTimeField(null=True, blank=True)
+    # TASK-269: sha256 of the normalized website copy the owner last dismissed with Keep current, so
+    # the automatic refresh does not stage the same copy again until the website actually changes.
+    dismissed_source_hash=models.CharField(max_length=64, blank=True, default='')
     source_checked_at=models.DateTimeField(null=True, blank=True)
     source_fetch_error=models.TextField(blank=True, default='')
     submitted_by=models.CharField(max_length=120, blank=True)

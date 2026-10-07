@@ -135,8 +135,19 @@ describe('editable generation job context (TASK-253)',()=>{
   })
 
   it('does not allow generation from unsaved edited values',()=>{
-    expect(appSource).toContain('||jobDirty||jobSaving||!!pendingText||genInvalid')
+    expect(appSource).toContain('||jobDirty||jobSaving||genInvalid')
     expect(appSource).toContain('||isUnknownCompany(company)||!sourceText.trim()')
+  })
+
+  it('never disables a generate action because a fetched copy is pending (TASK-269)',()=>{
+    const generate=appSource.match(/label="Generate" disabled=\{([^}]*)\}/)?.[1]||''
+    expect(generate).toContain('jobDirty')
+    expect(generate).not.toContain('pendingText')
+    const bulk=appSource.match(/label=\{`Generate \$\{rows\.length\}[^`]*`\} disabled=\{([^}]*)\}/)?.[1]||''
+    expect(bulk).toContain('row.cv')
+    expect(bulk).not.toContain('pendingText')
+    expect(appSource).not.toContain('disabled={actionLoading||!!j.has_pending_source||!sourceText.trim()} onClick={calibrate}')
+    expect(appSource).toContain('{!!pendingText&&<StatusMessage tone="info" compact>A newer posting text was fetched. Generate uses the saved job text. <button type="button" className="underline" onClick={e=>revealPendingText(e.currentTarget)}>Review it</button></StatusMessage>}')
   })
 })
 
