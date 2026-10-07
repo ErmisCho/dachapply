@@ -45,6 +45,37 @@ export async function copyToClipboard(text:string){
   try{return document.execCommand('copy')}catch{return false}finally{textarea.remove()}
 }
 
+// TASK-272. A flag that turns itself off `ms` after the last flash() - the "Copied" cues. Plain
+// function so it is testable with fake timers (no DOM in this vitest run); useFlash wraps it.
+export function createFlash(ms:number,set:(on:boolean)=>void){
+  let timer:ReturnType<typeof setTimeout>|undefined
+  return {flash(){clearTimeout(timer);set(true);timer=setTimeout(()=>set(false),ms)},cancel(){clearTimeout(timer)}}
+}
+export function useFlash(ms:number){
+  const[on,setOn]=useState(false)
+  const[f]=useState(()=>createFlash(ms,setOn))
+  useEffect(()=>f.cancel,[f])
+  return [on,f.flash] as const
+}
+
+// TASK-272. Soft two-note completion chime from plain sine oscillators: no audio file, no
+// dependency. One AudioContext, created lazily on first use. Never throws: no Web Audio, a blocked
+// context or anything else just means silence.
+let chimeContext:any
+export function playChime(){
+  try{
+    const w=window as any;const Ctx=w.AudioContext||w.webkitAudioContext;if(!Ctx)return
+    chimeContext??=new Ctx();const ctx=chimeContext;if(ctx.state==='suspended')ctx.resume?.()?.catch?.(()=>{})
+    const now=ctx.currentTime
+    for(const[freq,delay] of [[880,0],[1318.51,.12]]){   // A5 then E6: a rising fifth
+      const osc=ctx.createOscillator(),gain=ctx.createGain(),t=now+delay
+      osc.type='sine';osc.frequency.value=freq
+      gain.gain.setValueAtTime(0.0001,t);gain.gain.exponentialRampToValueAtTime(0.1,t+.015);gain.gain.exponentialRampToValueAtTime(0.0001,t+.6)
+      osc.connect(gain);gain.connect(ctx.destination);osc.start(t);osc.stop(t+.65)
+    }
+  }catch{/* audio unavailable or blocked: stay silent */}
+}
+
 // <input type="datetime-local"> speaks local "YYYY-MM-DDTHH:mm"; the API speaks ISO-8601 UTC.
 export function toDateTimeLocal(iso?:string|null){if(!iso)return '';const d=new Date(iso);if(isNaN(d.getTime()))return '';const p=(n:number)=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`}
 export function fromDateTimeLocal(value?:string|null){if(!value)return null;const d=new Date(value);return isNaN(d.getTime())?null:d.toISOString()}
