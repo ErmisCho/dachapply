@@ -506,6 +506,26 @@ def start_cv_revision(task_id, user_id, instructions, correction_image=None):
     return start_cv_task(job_id, user_id, **config, **kwargs)
 
 
+def rename_task_paths(user_id, renamed):
+    """TASK-271: finished tasks follow a rename of their files -- artifact paths (so Readjust and
+    Reveal keep working), the download zip's entry names and the Copy TeX text."""
+    names={Path(old).name:Path(new).name for old,new in renamed.items()}
+    with _lock:
+        tasks=[task for task in _tasks.values() if task['user_id'] == user_id and set(renamed)&{value for value in (task.get('artifacts') or {}).values() if isinstance(value,str)}]
+        for task in tasks:
+            task['artifacts']={key:renamed.get(value,value) if isinstance(value,str) else value for key,value in task['artifacts'].items()}
+            if task.get('archive'):
+                source=zipfile.ZipFile(BytesIO(task['archive']))
+                archive=BytesIO()
+                with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as bundle:
+                    for info in source.infolist():
+                        bundle.writestr(names.get(info.filename,info.filename),source.read(info))
+                task['archive']=archive.getvalue()
+    for task in tasks:
+        if task.get('clipboard_tex'):
+            task['clipboard_tex']=_clipboard_payload(task['artifacts'],JobLead.objects.filter(id=task['job_id']).values_list('url',flat=True).first())
+
+
 def get_cv_task_download(task_id, user_id):
     with _lock:
         task=_tasks.get(task_id)
