@@ -5,10 +5,13 @@ name: Uptime monitor
 # would otherwise be discovered only on the next manual visit. This checks every 30 minutes and
 # fails the run when it cannot, which GitHub reports by email.
 #
-# TASK-275: no longer scheduled. Every probe woke the scale-to-zero app and was most of the ~0.22
-# EUR/day Azure bill; the owner runs it on request only.
+# Owner, 2026-10-09: every 30 minutes on weekdays, 08:00-18:00 Berlin time only. GitHub cron is
+# UTC, so the schedule covers both CET and CEST and the first step skips runs outside local hours.
+# (TASK-275 blamed this probe for the Azure bill; that was wrong -- it was minReplicas=1, TASK-257.)
 
 on:
+  schedule:
+    - cron: '*/30 6-16 * * 1-5'
   workflow_dispatch:
 
 permissions:
@@ -23,7 +26,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Skip outside 08:00-18:00 Berlin
+        id: hours
+        if: github.event_name == 'schedule'
+        shell: bash
+        run: |
+          hour=$(TZ=Europe/Berlin date +%H)
+          if [ "$hour" -ge 8 ] && [ "$hour" -lt 18 ]; then echo "in=1" >> "$GITHUB_OUTPUT"; else echo "outside local hours ($hour)"; fi
+
       - name: Probe the health endpoint
+        if: github.event_name != 'schedule' || steps.hours.outputs.in == '1'
         shell: bash
         run: |
           set -uo pipefail
@@ -53,20 +65,5 @@ jobs:
 
           echo "::error::dachapply health check failed after 3 attempts against $APP_URL"
           exit 1
-
-      # TASK-160: a broken mailbox check is not the site being down (AC5), so this step must never
-      # fail the workflow -- continue-on-error plus a script that always exits 0 belt-and-suspenders
-      # the same guarantee. jobradar.views.mailbox_health computes health from MailboxRun rows alone
-      # and, on a failing or stale result, emails the owner itself (cooldown-bounded); this step only
-      # needs to trigger the probe and log what it said.
-      - name: Probe mailbox health (best-effort, never fails this workflow)
-        shell: bash
-        continue-on-error: true
-        run: |
-          set -uo pipefail
-          APP_URL="${{ vars.APP_URL || '' }}"
-          [ -n "$APP_URL" ] || APP_URL="$DEFAULT_APP_URL"
-          echo "probing $APP_URL/api/mailbox-health/"
-          body=$(curl --silent --show-error --max-time 20 "$APP_URL/api/mailbox-health/") || true
-          echo "mailbox health: ${body:-no response}"
-          exit 0
+      # The mailbox-health probe was removed: mail is checked only while the local app runs (TASK-276),
+      # so that probe would email a stale-mailbox alert after every weekend.
