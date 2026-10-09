@@ -87,10 +87,15 @@ Brevo requires authorized sending IPs for SMTP keys. For Azure, add the Azure ou
 
 ## Hybrid mailbox check (TASK-109/TASK-110/TASK-195)
 
-This is separate from password-reset email. An hourly local Windows scheduled task (TASK-275,
-registered by `scripts/register-mailbox-task.ps1`) fetches Gmail and runs deterministic
-classification against the shared database while the owner's PC is on and they are logged in;
-`.github/workflows/mailbox-check.yml` is a manual (`workflow_dispatch`) cloud fallback. It never uses an LLM and never sends mail; sending remains exclusively the owner
+This is separate from password-reset email. While the owner runs the app locally (`manage.py runserver`,
+via `scripts/dachapply-local-runtime.cmd`), an in-process loop (TASK-276,
+`backend/jobradar/services/mailbox_loop.py`) ticks every five minutes and runs the `check_mailbox`
+logic; the Settings cadence, check window and calendar quiet hours decide when it actually fetches.
+It never runs in Azure (gunicorn) and stops when the app stops. Disable it with
+`DACHAPPLY_LOCAL_MAILBOX_LOOP=0`;
+`.github/workflows/mailbox-check.yml` is a manual (`workflow_dispatch`) cloud fallback. The cloud
+fallback forces `LLM_PROVIDER=heuristic`; the local loop uses whatever `LLM_PROVIDER` the local `.env`
+sets (default `heuristic`). Neither ever sends mail; sending remains exclusively the owner
 acting in Gmail. When the app is opened locally, the Mailbox page can explicitly ask the owner's
 Codex CLI subscription to review up to ten messages the heuristic left `uncertain`. That local pass
 changes only the stored classification/evaluator -- never a job, suggestion, Gmail draft, or message.
@@ -193,9 +198,9 @@ publishing needs a purchased domain hosting a privacy policy. "Make internal" is
 needs a Google Workspace account, not a gmail.com one.
 
 So the 7-day re-authorization stands, and TASK-160 covers it instead: the deployed site watches the
-shared database and emails the owner when the cloud workflow is failing or has not succeeded within
-`MAILBOX_STALE_ALERT_HOURS` (default 24). Re-authorize locally, update the GitHub secret, and the next
-hourly/manual workflow run recovers; the watchdog means nobody has to remember to check.
+shared database and emails the owner when the mailbox check is failing or has not succeeded within
+`MAILBOX_STALE_ALERT_HOURS` (default 24). Re-authorize locally (and update the GitHub secret if you use
+the manual workflow), and the local app's next loop tick recovers; the watchdog means nobody has to remember to check.
 
 ## Which file to use
 

@@ -32,3 +32,15 @@ def test_local_runtime_resolves_ignored_candidate_evidence_from_source_checkout(
     )
 
     assert Path(result.stdout.strip()) == tmp_path/'Ermis-Chorinopoulos-Candidate-Evidence.md'
+
+
+def test_local_runtime_links_the_gitignored_gmail_token_without_requiring_it():
+    # TASK-276: the in-app mailbox loop reads the OAuth token from the runtime root, like .env.
+    launcher = (ROOT / 'scripts' / 'dachapply-local-runtime.cmd').read_text().lower()
+    guard = 'if exist "%repo%\\dachapply-gmail-oauth-token.json" ('
+    link = 'mklink /h "%runtime%\\dachapply-gmail-oauth-token.json" "%repo%\\dachapply-gmail-oauth-token.json"'
+    token_block = launcher[launcher.index(guard):launcher.index('echo local release ready')]
+    assert link in token_block
+    assert 'goto' not in token_block, 'a missing token or failed link never aborts start'
+    ignored = subprocess.run(['git', 'check-ignore', 'dachapply-gmail-oauth-token.json'], cwd=ROOT, capture_output=True)
+    assert ignored.returncode == 0
