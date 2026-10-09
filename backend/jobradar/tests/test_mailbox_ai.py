@@ -126,7 +126,7 @@ def test_non_owner_cannot_reach_local_codex_review(db, settings):
 
 def test_cloud_workflow_is_manual_forced_and_explicitly_non_llm():
     workflow = (Path(__file__).resolve().parents[3] / '.github/workflows/mailbox-check.yml').read_text()
-    # TASK-275: the hourly cadence is a local scheduled task; the cloud run is a manual fallback.
+    # TASK-275/TASK-276: the hourly cadence runs in the local app; the cloud run is a manual fallback.
     assert 'schedule:' not in workflow
     assert 'workflow_dispatch:' in workflow
     assert 'LLM_PROVIDER: heuristic' in workflow

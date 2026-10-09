@@ -1,7 +1,7 @@
 name: Mailbox check
 
-# TASK-275: the hourly run moved to a local Windows scheduled task
-# (scripts/register-mailbox-task.ps1) so no scheduled cloud job runs; this stays as a manual fallback.
+# TASK-275/TASK-276: the hourly check runs inside the local app while the owner runs it
+# (backend/jobradar/services/mailbox_loop.py), so no scheduled cloud job runs; this stays as a manual fallback.
 on:
   workflow_dispatch:
 
@@ -55,6 +55,6 @@ jobs:
 
       - name: Fetch and deterministically classify mail
         working-directory: backend
-        # --force makes the caller (this manual run, or the local hourly task) the only cadence timer. Profile on/off, time-window,
+        # --force makes the caller (this manual run) the only cadence timer. Profile on/off, time-window,
         # and calendar quiet-hours gates still run inside check_mailbox.
         run: uv run --locked --no-dev python manage.py check_mailbox --force

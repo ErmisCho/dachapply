@@ -1,7 +1,6 @@
 from django.core.management.base import BaseCommand
-from django.utils import timezone
 
-from jobradar.services.mailbox import MailboxCheckInProgress, pending_mailbox_check_request, run_check, seed_fake_run
+from jobradar.services.mailbox import MailboxCheckInProgress, check_mailbox_tick, seed_fake_run
 
 
 class Command(BaseCommand):
@@ -10,8 +9,8 @@ class Command(BaseCommand):
         '`manage.py gmail_oauth_setup` for an owner who has declined 2-Step Verification -- plus '
         'calendar-aware quiet hours, all from the local .env) for new job-search email, produce '
         'reviewable pipeline suggestions, and draft guarded replies into Gmail Drafts for '
-        'reply-wanting messages. Invoked hourly by .github/workflows/mailbox-check.yml (or manually '
-        'by a developer); the cloud workflow uses --force as its sole cadence timer. The app only '
+        'reply-wanting messages. TASK-276: the same tick runs in-process while the local app runs '
+        '(services.mailbox_loop); .github/workflows/mailbox-check.yml is a manual --force fallback. The app only '
         'ever appends drafts -- sending is exclusively '
         'the owner in Gmail.\n\n'
         'TASK-124 AC3: before its own cadence-gated tick, this command first looks for a mailbox '
@@ -34,28 +33,15 @@ class Command(BaseCommand):
             ))
             return
 
-        pending_request = pending_mailbox_check_request()
-        if pending_request is not None:
-            try:
-                run = run_check(force=True)
-            except MailboxCheckInProgress as exc:
-                # Left unhandled on purpose: a check already in flight means this request will get
-                # picked up on a later tick instead, not lost.
-                self.stdout.write(self.style.WARNING(f'A mailbox check request is queued, but {exc} Will retry on the next tick.'))
-                return
-            pending_request.handled_at = timezone.now()
-            pending_request.result_run = run
-            pending_request.save(update_fields=['handled_at', 'result_run'])
-            self.stdout.write(f'Handled queued check request #{pending_request.id}.')
-            self._report(run)
-            return
-
         try:
-            run = run_check(force=opts['force'])
+            run, handled_request = check_mailbox_tick(force=opts['force'])
         except MailboxCheckInProgress as exc:
-            self.stdout.write(self.style.WARNING(str(exc)))
+            # A queued request stays unhandled here, so a later tick picks it up instead of losing it.
+            self.stdout.write(self.style.WARNING(f'{exc} Will retry on the next tick.'))
             return
-        if run is None:
+        if handled_request is not None:
+            self.stdout.write(f'Handled queued check request #{handled_request.id}.')
+        elif run is None:
             self.stdout.write('Not due yet (or neither GMAIL_IMAP_USER/APP_PASSWORD nor GMAIL_OAUTH_CLIENT_ID/SECRET, nor the owner account, are configured).')
             return
         self._report(run)

@@ -625,7 +625,7 @@ ERROR_ALERT_COOLDOWN_SECONDS = int(os.getenv('ERROR_ALERT_COOLDOWN_SECONDS', '30
 DEFAULT_EXCEPTION_REPORTER_FILTER = 'config.error_filters.DachApplyExceptionReporterFilter'
 
 # TASK-160/TASK-195: jobradar.views.mailbox_health on the deployed site reads the same database the
-# hourly GitHub Actions mailbox workflow writes to. If that external scheduler or Gmail OAuth fails,
+# local app's in-process mailbox loop writes to (TASK-276). If that loop or Gmail OAuth fails,
 # the deployed app remains the independent component able to notice and alert. This
 # threshold is a fixed, generous default rather than derived from
 # UserProfile.mailbox_check_cadence_minutes: quiet hours and a closed check window already create

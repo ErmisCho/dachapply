@@ -32,6 +32,12 @@ if exist "%REPO%\.env" (
   mklink /H "%RUNTIME%\.env" "%REPO%\.env" >nul
   if errorlevel 1 goto env_failed
 )
+rem TASK-276: the in-app mailbox loop reads GMAIL_OAUTH_TOKEN_PATH, which defaults to the runtime root.
+rem Optional: a missing token (or a failed link) never aborts start; the mailbox check then cannot authenticate.
+if exist "%REPO%\dachapply-gmail-oauth-token.json" (
+  if exist "%RUNTIME%\dachapply-gmail-oauth-token.json" del /q "%RUNTIME%\dachapply-gmail-oauth-token.json"
+  mklink /H "%RUNTIME%\dachapply-gmail-oauth-token.json" "%REPO%\dachapply-gmail-oauth-token.json" >nul
+)
 
 echo Local release ready: !LOCAL_SHA!
 if "%DACHAPPLY_PREPARE_ONLY%"=="1" exit /b 0

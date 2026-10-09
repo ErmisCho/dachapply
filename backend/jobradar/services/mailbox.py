@@ -26,9 +26,9 @@ see run_check()/_default_transport()): ImapTransport (app password, needs 2-Step
 GmailApiTransport (OAuth, TASK-109 AC1 -- the route for an owner who has declined 2SV, since Google
 only issues app passwords with 2SV on and retired "less secure app access" entirely).
 
-TASK-195 splits execution by capability. `.github/workflows/mailbox-check.yml` runs this deterministic
-fetch/classify pipeline hourly in GitHub Actions with Gmail/Database repository secrets and
-`LLM_PROVIDER=heuristic`; it works while the owner's PC is off. Stored heuristic-uncertain messages
+TASK-195 splits execution by capability. TASK-276: the fetch/classify pipeline runs on the local app's
+cadence-gated in-process loop (services.mailbox_loop) only while the owner runs the app;
+`.github/workflows/mailbox-check.yml` is a manual fallback with `LLM_PROVIDER=heuristic`. Stored heuristic-uncertain messages
 can later be reclassified explicitly from the local Mailbox page by services.mailbox_ai using the
 owner's Codex CLI subscription. That local pass updates only MailboxMessage.classification/evaluator:
 it never changes a job, creates a suggestion/draft, or contacts Gmail. CV generation and every other
@@ -4133,7 +4133,7 @@ def mailbox_check_estimate() -> dict:
 
 def queue_mailbox_check_request(user) -> MailboxCheckRequest:
     """AC2: recorded instead of failing when this backend has no credentials -- picked up by
-    pending_mailbox_check_request() on the hourly cloud workflow's next check_mailbox tick."""
+    pending_mailbox_check_request() on the local app's next mailbox-loop tick (TASK-276)."""
     return MailboxCheckRequest.objects.filter(requested_by=user, handled_at__isnull=True).first() or MailboxCheckRequest.objects.create(requested_by=user)
 
 
@@ -4141,6 +4141,22 @@ def pending_mailbox_check_request() -> MailboxCheckRequest | None:
     """AC3: the oldest not-yet-handled request, if any -- the cloud check_mailbox command picks this up ahead of its
     own cadence-gated tick and runs it regardless of whether the cadence is due."""
     return MailboxCheckRequest.objects.filter(handled_at__isnull=True).order_by('requested_at').first()
+
+
+def check_mailbox_tick(force=False):
+    """TASK-276: one tick of the check_mailbox command, shared with the in-app local loop
+    (services.mailbox_loop). A pending request (AC3) runs first, regardless of cadence, and is marked
+    handled; otherwise the cadence-gated run_check(force). Returns (run, handled_request_or_None).
+    Raises MailboxCheckInProgress -- a pending request is then left unhandled for a later tick.
+    """
+    pending_request = pending_mailbox_check_request()
+    if pending_request is None:
+        return run_check(force=force), None
+    run = run_check(force=True)
+    pending_request.handled_at = timezone.now()
+    pending_request.result_run = run
+    pending_request.save(update_fields=['handled_at', 'result_run'])
+    return run, pending_request
 
 
 def current_mailbox_run() -> MailboxRun | None:
