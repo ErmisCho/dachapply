@@ -362,6 +362,9 @@ Before public deployment:
 
 The Docker image is built by GitHub Actions and pushed to the private GitHub Container Registry package `ghcr.io/ermischo/dachapply` with both `latest` and commit-SHA tags. Keep this GHCR package private; do not make the image public.
 
+Deploys are manual (TASK-275): pushes and pull requests to `main` only run the test job. The owner
+deploys on request with `gh workflow run deploy-container-apps.yml --ref main`.
+
 Azure Container Apps should pull `ghcr.io/ermischo/dachapply:latest` from GHCR using registry credentials backed by a GitHub PAT that has `read:packages` permission. Application secrets such as `DATABASE_URL` and `SECRET_KEY` must remain Azure Container Apps secrets/environment references and must not be committed to the repository.
 
 Delete the old Azure Container Registry only after Azure Container Apps has successfully pulled and is running the GHCR image.
