@@ -47,10 +47,11 @@ Consequences worth stating, because they have already bitten in this repo:
 - A stacked PR whose base branch is deleted gets **auto-closed by GitHub** and cannot be reopened or
   retargeted. Rebase the child onto `main`, force-push with `--force-with-lease`, and open a
   replacement PR referencing the closed one.
-- Merging to `main` deploys to production (`.github/workflows/deploy-container-apps.yml`), and
-  `scripts/start-container.sh` runs `migrate --noinput` under `set -e`. So step 4 is also the moment
-  any migration reaches the production database, and a live 200 afterwards is what proves the
-  migration applied. Record the rollback image before merging (TW-006).
+- Merging to `main` does NOT deploy (TASK-275). Deploys are manual and the owner's call:
+  `gh workflow run deploy-container-apps.yml --ref main`. `scripts/start-container.sh` runs
+  `migrate --noinput` under `set -e`, so that deploy is the moment any migration reaches the
+  production database, and a live 200 afterwards is what proves the migration applied. Record the
+  rollback image before deploying (TW-006).
 - A task with an unverifiable criterion does NOT get marked Done to tidy the board. Leave it In
   Progress and name the blocker (TW-005).
 
@@ -120,6 +121,7 @@ and the deploy job depends on it. Do not weaken or bypass that gate. Its first r
 suite had never been portable — several tests depended on an untracked personal file and passed only
 on the author's machine.
 
-Production deploys on push to `main` and is the owner's call, not an agent's. Record the rollback
-image before pushing, and verify the live health endpoint afterwards rather than trusting the
+Production deploys only when the owner runs `gh workflow run deploy-container-apps.yml --ref main`
+(TASK-275); pushing to `main` runs tests only. It is the owner's call, not an agent's. Record the
+rollback image before deploying, and verify the live health endpoint afterwards rather than trusting the
 workflow's own check.

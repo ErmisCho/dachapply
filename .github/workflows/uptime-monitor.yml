@@ -4,10 +4,11 @@ name: Uptime monitor
 # release but says nothing about the hours in between -- a database outage or a crashed revision
 # would otherwise be discovered only on the next manual visit. This checks every 30 minutes and
 # fails the run when it cannot, which GitHub reports by email.
+#
+# TASK-275: no longer scheduled. Every probe woke the scale-to-zero app and was most of the ~0.22
+# EUR/day Azure bill; the owner runs it on request only.
 
 on:
-  schedule:
-    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 permissions:

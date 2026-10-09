@@ -87,15 +87,16 @@ Brevo requires authorized sending IPs for SMTP keys. For Azure, add the Azure ou
 
 ## Hybrid mailbox check (TASK-109/TASK-110/TASK-195)
 
-This is separate from password-reset email. The hourly `.github/workflows/mailbox-check.yml` job
-fetches Gmail and runs deterministic classification against the shared database even while the
-owner's PC is off. It never uses an LLM and never sends mail; sending remains exclusively the owner
+This is separate from password-reset email. An hourly local Windows scheduled task (TASK-275,
+registered by `scripts/register-mailbox-task.ps1`) fetches Gmail and runs deterministic
+classification against the shared database while the owner's PC is on and they are logged in;
+`.github/workflows/mailbox-check.yml` is a manual (`workflow_dispatch`) cloud fallback. It never uses an LLM and never sends mail; sending remains exclusively the owner
 acting in Gmail. When the app is opened locally, the Mailbox page can explicitly ask the owner's
 Codex CLI subscription to review up to ten messages the heuristic left `uncertain`. That local pass
 changes only the stored classification/evaluator -- never a job, suggestion, Gmail draft, or message.
 
 Gmail-API OAuth is the cloud-supported transport. IMAP remains available for a manual local
-`manage.py check_mailbox`, but the scheduled workflow uses OAuth repository secrets.
+`manage.py check_mailbox`, but the cloud workflow uses OAuth repository secrets.
 
 ### Option A: IMAP app password (needs 2-Step Verification)
 
@@ -148,7 +149,7 @@ to permanently delete anything or send mail.
    committed. `manage.py check_mailbox` then uses it automatically; IMAP wins if both Option A and
    Option B are configured locally.
 
-### Configure hourly cloud ingestion
+### Configure cloud ingestion (manual fallback)
 
 In GitHub repository Settings -> Secrets and variables -> Actions, configure these repository
 secrets (never commit their values):
@@ -159,8 +160,7 @@ secrets (never commit their values):
 - `GMAIL_OAUTH_REFRESH_TOKEN` (the `refresh_token` value from the local token JSON, not the JSON)
 - `CODEX_CV_OWNER_EMAIL`
 
-The workflow runs at minute 17 of every hour and can also be started from Actions -> Mailbox check ->
-Run workflow. It sets `LLM_PROVIDER=heuristic` explicitly. The local Codex review endpoint is guarded
+The workflow has no schedule since TASK-275; start it from Actions -> Mailbox check -> Run workflow. It sets `LLM_PROVIDER=heuristic` explicitly. The local Codex review endpoint is guarded
 by owner authentication, `DEBUG=True`, and a loopback client address; it is unavailable from the
 hosted site and does nothing until the owner clicks the button.
 
