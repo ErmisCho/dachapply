@@ -51,6 +51,13 @@ export function isUnknownCompany(company?:string){return !company?.trim()||compa
 
 export function cvClipboardTex(task:any, preview:any){return task?.clipboard_tex||preview?.clipboard_tex||''}
 
+// TASK-279: per-document TeX (each already carries the '% Job listing:' line), from the same source as cvClipboardTex.
+export type TexParts={cv?:string;letter?:string}
+export type TexChoice='both'|'cv'|'letter'
+export function cvClipboardParts(task:any, preview:any):TexParts|undefined{return task?.clipboard_tex?task.clipboard_tex_parts:preview?.clipboard_tex_parts}
+export function hasTexChoice(parts?:TexParts){return !!(parts?.cv&&parts?.letter)}
+export function texForChoice(all:string,parts:TexParts|undefined,choice:TexChoice){return choice==='both'?all:parts?.[choice]||all}
+
 export type CvPick={provider:string;model:string;effort:string;speed:string}
 export const emptyCvPick:CvPick={provider:'openai',model:'',effort:'',speed:'normal'}
 

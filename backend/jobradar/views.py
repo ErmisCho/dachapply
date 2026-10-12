@@ -47,7 +47,7 @@ from .services.draft_chat import ChatTurn, run_chat_turn
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, rename_generated_artifact, reveal_artifact_folder, validate_model_capability
 from .services import cv_tasks
-from .services.cv_tasks import _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, rename_task_paths, start_cv_compile_task, start_cv_literal_task, start_cv_noop_task, start_cv_revision, start_cv_task
+from .services.cv_tasks import _clipboard_parts, _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, rename_task_paths, start_cv_compile_task, start_cv_literal_task, start_cv_noop_task, start_cv_revision, start_cv_task
 from .services.literal_edits import deterministic_edit_pairs, local_literal_model
 from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
 from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
@@ -1953,6 +1953,7 @@ def cv_generation_preview(request, job_id):
         return Response({'detail':'Job not found.'}, status=404)
     preview=generation_preview(job, request.user)
     preview['clipboard_tex']=_clipboard_payload(preview['artifacts'],job.url)
+    preview['clipboard_tex_parts']=_clipboard_parts(preview['artifacts'],job.url)
     return Response(preview)
 
 
@@ -2118,7 +2119,7 @@ def recompile_latest_cv_documents(request, job_id):
     source_letter=source_letter if request.data.get('create_letter',True) is not False else None
     if not source_cv and not source_letter:
         return Response({'detail':'No previous generated TeX files were found for this job.'},status=400)
-    task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv,source_letter)
+    task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv,source_letter,letter_key=request.data.get('letter_template') or '')
     return Response(_started_cv_task(task_id,request.user.id),status=status.HTTP_202_ACCEPTED)
 
 
@@ -2162,7 +2163,7 @@ def revise_latest_cv_documents(request, job_id):
             use_letter=create_letter or str(source_letter) in exact_updates
             unticked=[name for name,ticked,used in (('CV',create_cv,use_cv),('letter',create_letter,use_letter)) if used and not ticked]
             report={'changed_files':[Path(path).name for path in exact_updates],'main_changes':['Applied exact OLD/NEW replacements without AI.']+[f'Also updated the {name}: some blocks were only found there.' for name in unticked],'unsupported_requirements_not_claimed':[]}
-            task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv if use_cv else None,source_letter if use_letter else None,source_updates=exact_updates,task_report=report)
+            task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv if use_cv else None,source_letter if use_letter else None,source_updates=exact_updates,task_report=report,letter_key=letter_key)
             return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
     # TASK-278: free-form literal edits -- parsed deterministically, else translated by the installed
     # local model. Both are gated in the task, which falls back to the full optimization below.

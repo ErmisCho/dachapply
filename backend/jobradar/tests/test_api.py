@@ -832,7 +832,7 @@ def test_cv_task_status_and_download_are_owner_only(client, owner, job, monkeypa
     monkeypatch.setattr('jobradar.views.cancel_cv_task', lambda task_id,user_id: True if user_id==owner.id else None)
     monkeypatch.setattr('jobradar.views.start_cv_revision', lambda task_id,user_id,instructions,image=None: 'revision123' if user_id==owner.id and (instructions or image) else None)
     compile_config={}
-    monkeypatch.setattr('jobradar.views.start_cv_compile_task',lambda *args: compile_config.update(args=args) or 'compile123')
+    monkeypatch.setattr('jobradar.views.start_cv_compile_task',lambda *args,**kwargs: compile_config.update(args=args) or 'compile123')
     recovered_config={}
     monkeypatch.setattr('jobradar.views.latest_generated_sources',lambda job,user,letter_key='':('latest-cv.tex',None))
     monkeypatch.setattr('jobradar.views.load_candidate_evidence', lambda profile, learned='', evidence='': profile + learned)
