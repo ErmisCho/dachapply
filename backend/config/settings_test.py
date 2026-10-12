@@ -58,3 +58,7 @@ GMAIL_IMAP_USER = ''
 GMAIL_IMAP_APP_PASSWORD = ''
 GMAIL_OAUTH_CLIENT_ID = ''
 GMAIL_OAUTH_CLIENT_SECRET = ''
+
+# TASK-278: the literal-edit route would otherwise call whatever Ollama model this machine has
+# installed. Tests that exercise it set the model and patch the runner themselves.
+CODEX_CV_LITERAL_EDIT_MODEL = ''

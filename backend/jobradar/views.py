@@ -47,7 +47,8 @@ from .services.draft_chat import ChatTurn, run_chat_turn
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, rename_generated_artifact, reveal_artifact_folder, validate_model_capability
 from .services import cv_tasks
-from .services.cv_tasks import _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, rename_task_paths, start_cv_compile_task, start_cv_noop_task, start_cv_revision, start_cv_task
+from .services.cv_tasks import _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, rename_task_paths, start_cv_compile_task, start_cv_literal_task, start_cv_noop_task, start_cv_revision, start_cv_task
+from .services.literal_edits import deterministic_edit_pairs, local_literal_model
 from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
 from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
@@ -2151,14 +2152,22 @@ def revise_latest_cv_documents(request, job_id):
         if no_change_requested(instructions):
             task_id=start_cv_noop_task(job.id,request.user.id,artifacts)
             return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
-        exact_updates=exact_revision_plan([source_cv if create_cv else None,source_letter if create_letter else None],instructions)
+        # TASK-278: blocks only found in the unticked document are applied there too; ticked ones win.
+        exact_updates=exact_revision_plan([source_cv if create_cv else None,source_letter if create_letter else None],instructions,[None if create_cv else source_cv,None if create_letter else source_letter])
         if exact_updates == {}:
             task_id=start_cv_noop_task(job.id,request.user.id,artifacts)
             return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
         if exact_updates:
-            report={'changed_files':[Path(path).name for path in exact_updates],'main_changes':['Applied exact OLD/NEW replacements without AI.'],'unsupported_requirements_not_claimed':[]}
-            task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv if create_cv else None,source_letter if create_letter else None,source_updates=exact_updates,task_report=report)
+            use_cv=create_cv or str(source_cv) in exact_updates
+            use_letter=create_letter or str(source_letter) in exact_updates
+            unticked=[name for name,ticked,used in (('CV',create_cv,use_cv),('letter',create_letter,use_letter)) if used and not ticked]
+            report={'changed_files':[Path(path).name for path in exact_updates],'main_changes':['Applied exact OLD/NEW replacements without AI.']+[f'Also updated the {name}: some blocks were only found there.' for name in unticked],'unsupported_requirements_not_claimed':[]}
+            task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv if use_cv else None,source_letter if use_letter else None,source_updates=exact_updates,task_report=report)
             return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
+    # TASK-278: free-form literal edits -- parsed deterministically, else translated by the installed
+    # local model. Both are gated in the task, which falls back to the full optimization below.
+    literal_pairs=None if correction_image else deterministic_edit_pairs(instructions)
+    literal_model=None if correction_image or literal_pairs else local_literal_model()
     try:
         # needs_tools: both endpoints generate or readjust LaTeX, whose prompt tells the model to read
         # the copied source files (TASK-221 AC3).
@@ -2170,6 +2179,10 @@ def revise_latest_cv_documents(request, job_id):
         candidate_context=load_candidate_evidence(build_candidate_profile_text(request.user), cv_profile.learned_application_preferences, cv_profile.candidate_evidence)
     except RuntimeError as exc:
         return Response({'detail':str(exc)}, status=503)
+    if literal_pairs or literal_model:
+        fallback={'profile':candidate_context,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'provider':request.data.get('provider') or '','model':request.data.get('model') or '','effort':request.data.get('effort') or '','speed':request.data.get('speed') or 'normal','source_cv':source_cv,'source_letter':source_letter,'revision_instructions':instructions[:5000],'create_cv':create_cv}
+        task_id=start_cv_literal_task(job.id,request.user.id,source_cv if create_cv else None,source_letter if create_letter else None,instructions,literal_pairs,literal_model,fallback)
+        return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
     try:
         task_id=start_cv_task(job.id, request.user.id, candidate_context, cv_key, request.data.get('letter_template') or '', create_letter, request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', source_cv=source_cv, source_letter=source_letter, revision_instructions=instructions[:5000], create_cv=create_cv, correction_image=correction_image)
     except RuntimeError:
