@@ -3,9 +3,10 @@ id: TASK-281
 title: >-
   Local runtime: reuse Neon DB connections so a request costs milliseconds, not
   ~1 s
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-13 08:57'
+updated_date: '2026-10-13 09:42'
 labels:
   - performance
 dependencies: []
@@ -20,9 +21,15 @@ Owner chose (2026-10-13) to investigate why every localhost request takes ~1 s. 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 With the local runtime (runserver against the Neon DATABASE_URL), GET /api/auth/me/ direct to 127.0.0.1:8000 has a median under 150 ms over 20 warm requests (before: ~600 ms)
-- [ ] #2 Connections come from Django's native psycopg pool (OPTIONS pool) with persistent connections disabled as Django requires; psycopg[pool] is added to the locked dependencies
-- [ ] #3 The pool is on for the local DEBUG runtime; production behaviour is unchanged unless explicitly enabled by an env var
-- [ ] #4 Dropped/idle connections (Neon closes idle ones) do not surface as request errors: a request after 10+ minutes idle succeeds
-- [ ] #5 Backend tests (sqlite) and CI pass; the Vite proxy target uses 127.0.0.1 instead of localhost so it never waits on an IPv6 attempt
+- [x] #1 With the local runtime (runserver against the Neon DATABASE_URL), GET /api/auth/me/ direct to 127.0.0.1:8000 has a median under 150 ms over 20 warm requests (before: ~600 ms)
+- [x] #2 Connections come from Django's native psycopg pool (OPTIONS pool) with persistent connections disabled as Django requires; psycopg[pool] is added to the locked dependencies
+- [x] #3 The pool is on for the local DEBUG runtime; production behaviour is unchanged unless explicitly enabled by an env var
+- [x] #4 Dropped/idle connections (Neon closes idle ones) do not surface as request errors: a request after 10+ minutes idle succeeds
+- [x] #5 Backend tests (sqlite) and CI pass; the Vite proxy target uses 127.0.0.1 instead of localhost so it never waits on an IPv6 attempt
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-13 verified on the owner's localhost (ca296ad, #227): anonymous GET /api/auth/me/ direct 3-4 ms (was ~600-1,583 ms); logged-in /api/auth/me/ 309 ms (was ~500), /api/jobs/<id>/ 305 ms (was ~570) via Vite; after 11 min idle /api/health/ (DB query) 200 in 66 ms. Remaining logged-in cost is per-endpoint query count x ~35 ms RTT to Neon Frankfurt (possible follow-up).
+<!-- SECTION:NOTES:END -->
