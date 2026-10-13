@@ -495,24 +495,22 @@ def test_applied_at_survives_later_transitions_and_reentry(client, job):
     assert r.status_code==200 and r.data['applied_at']=='2025-12-01'
 
 
-def test_stale_rank_breaks_ties_within_a_status_but_attention_rank_decides_across_statuses(client):
-    """TASK-145 AC1/AC3: attention_rank now groups by status FIRST (new, then interview, then
-    the rest in pipeline order, closed last) -- a stale 'offer' still outranks 'accepted' and
-    'withdrawn' (both closed, later in the group order) no matter how old its status_date is;
-    that reversal is the owner's explicit choice (declined keeping stale_rank on top, so a stale
-    lead no longer floats -- or sinks -- past everything regardless of status). stale_rank is
-    demoted, not deleted (AC3): it still decides between two jobs of the SAME status, exactly as
-    before this task -- this replaces test_terminal_statuses_never_go_stale_but_an_old_offer_does,
-    whose premise (staleness overriding status) is exactly what this task reverses.
+def test_staleness_never_reorders_a_status_group_and_attention_rank_decides_across_statuses(client):
+    """TASK-145 AC1/AC3: attention_rank groups by status FIRST (new, then interview, then the rest
+    in pipeline order, closed last) -- a stale 'offer' outranks 'accepted' and 'withdrawn' (both
+    closed, later in the group order) no matter how old its status_date is. TASK-277 (owner
+    decision 2026-10-12): staleness no longer reorders rows WITHIN a group either -- it used to sink
+    the stale offer below the fresh one; now fit/priority/newest decide and the badge shows it.
     """
     old=timezone.localdate()-timezone.timedelta(days=30)
     fresh_offer=make_job(client, company='FreshOffer', title='a', status='offer', status_date=timezone.localdate())
     stale_offer=make_job(client, company='StaleOffer', title='b', status='offer', status_date=old)
     accepted=make_job(client, company='Accepted', title='c', status='accepted', status_date=old)
     withdrawn=make_job(client, company='Withdrawn', title='d', status='withdrawn', status_date=old)
+    _pin_created_at(fresh_offer, 2); _pin_created_at(stale_offer, 1)
     ids=[row['id'] for row in client.get('/api/jobs/').data]
-    # Same status ('offer'): stale_rank still decides -- the stale one sinks below the fresh one.
-    assert ids.index(fresh_offer.id) < ids.index(stale_offer.id)
+    # Same status ('offer'), both unscored: newest created wins -- the stale one is no longer sunk.
+    assert ids.index(stale_offer.id) < ids.index(fresh_offer.id)
     # Different status: attention_rank decides first -- 'offer' (open, earlier in the group
     # order) outranks 'accepted'/'withdrawn' (closed, last) even though it is the stale one.
     assert ids.index(stale_offer.id) < ids.index(accepted.id)
@@ -3640,14 +3638,13 @@ def test_stats_list_upcoming_interviews_soonest_first_and_drop_past_ones(client)
     assert r.data['jobs_needing_follow_up']==1 and r.data['interviews']==2
 
 
-def test_board_surfaces_approaching_deadlines_within_its_status_group_and_sinks_untouched_old_leads(client):
-    """TASK-145 AC1/AC3: attention_rank groups by status first now -- every 'new' job sorts ahead
+def test_board_groups_by_status_and_urgency_no_longer_reorders_rows_within_a_group(client):
+    """TASK-145 AC1/AC3: attention_rank groups by status first -- every 'new' job sorts ahead
     of every 'to_apply' job regardless of urgency (both are in the same "everything else, pipeline
-    order" band, and 'new' is pulled to the very front). stale_rank (demoted, not deleted) still
-    decides which job leads WITHIN a status group -- this replaces
-    test_board_surfaces_approaching_deadlines_and_sinks_untouched_old_leads, whose top-two
-    assertion assumed urgency could win across different statuses, which this task's AC1/AC3
-    default no longer does.
+    order" band, and 'new' is pulled to the very front). TASK-277 (owner decision 2026-10-12): an
+    imminent/past apply_by or an old untouched lead no longer moves a row within its group either
+    -- this used to assert the overdue job surfaced and the forgotten one sank; with no fit or
+    priority to tell them apart, newest created now decides.
     """
     today=timezone.localdate()
     normal=make_job(client, company='Normal', title='Fresh lead', status='new')
@@ -3655,16 +3652,13 @@ def test_board_surfaces_approaching_deadlines_within_its_status_group_and_sinks_
     evergreen=make_job(client, company='Evergreen', title='Far off deadline', status='new', apply_by=today+timezone.timedelta(days=90))
     due_soon=make_job(client, company='DueSoon', title='Closes this week', status='to_apply', apply_by=today+timezone.timedelta(days=JobLead.DEADLINE_SOON_DAYS-1))
     forgotten=make_job(client, company='Forgotten', title='Never touched', status='to_apply')
-    JobLead.objects.filter(pk=forgotten.pk).update(created_at=timezone.now()-timezone.timedelta(days=JobLead.STALE_UNAPPLIED_DAYS+1))
+    _pin_created_at(normal, 1); _pin_created_at(evergreen, 2); _pin_created_at(overdue, 3)
+    _pin_created_at(due_soon, 1); _pin_created_at(forgotten, JobLead.STALE_UNAPPLIED_DAYS+1)
     ids=[row['id'] for row in client.get('/api/jobs/').data]
     # The whole 'new' trio precedes both 'to_apply' rows -- status group wins over urgency.
     assert max(ids.index(j.id) for j in (normal, overdue, evergreen)) < min(ids.index(j.id) for j in (due_soon, forgotten))
-    # stale_rank still breaks ties within a status: an imminent apply_by surfaces a job above its
-    # same-status peers, exactly as before this task.
-    assert ids.index(overdue.id) < ids.index(normal.id)
-    assert ids.index(overdue.id) < ids.index(evergreen.id)
-    assert ids.index(due_soon.id) < ids.index(forgotten.id)
-    assert ids[-1]==forgotten.id
+    # Within a group, newest first: the overdue job no longer surfaces above its newer peers.
+    assert ids==[normal.id, evergreen.id, overdue.id, due_soon.id, forgotten.id]
     # one click archives a stale lead through the existing jobs endpoint -- no new route needed
     assert client.patch(f'/api/jobs/{forgotten.id}/', {'status':'archived'}, format='json').status_code==200
     assert forgotten.id not in [row['id'] for row in client.get('/api/jobs/').data]
@@ -4136,14 +4130,15 @@ def _pin_created_at(job, days_ago):
 def sortable_board(client):
     """Three jobs, one evaluation each, distinct fit scores / ages / feedback dates.
 
-    `Low` also carries an imminent apply_by, which makes stale_rank surface it under the
-    default formula. That is deliberate: without it the default order would coincide with
-    `-fit_score` and the fallback test could not tell the two apart.
+    `Low` is the only 'new' job, so the default's status grouping puts it first despite its worst
+    fit score. That is deliberate: without it the default order would coincide with `-fit_score`
+    and the fallback test could not tell the two apart. (Before TASK-277 an imminent apply_by did
+    this job; urgency no longer reorders the default.)
     """
     today=timezone.localdate()
-    low=make_job(client, company='Low', title='a', apply_by=today, feedback_due_date=today+timezone.timedelta(days=30))
-    high=make_job(client, company='High', title='b', feedback_due_date=today+timezone.timedelta(days=1))
-    mid=make_job(client, company='Mid', title='c', feedback_due_date=None)
+    low=make_job(client, company='Low', title='a', status='new', feedback_due_date=today+timezone.timedelta(days=30))
+    high=make_job(client, company='High', title='b', status='reviewed', feedback_due_date=today+timezone.timedelta(days=1))
+    mid=make_job(client, company='Mid', title='c', status='reviewed', feedback_due_date=None)
     _evaluate(low, 40); _evaluate(high, 90); _evaluate(mid, 70)
     _pin_created_at(low, 3); _pin_created_at(high, 2); _pin_created_at(mid, 1)
     return {'low':low, 'high':high, 'mid':mid}
@@ -4186,7 +4181,7 @@ def test_unknown_ordering_falls_back_to_the_default_instead_of_reaching_order_by
     a partial reorder, and above all not an ordering over a related auth column, which would
     leak password-hash ordering one bit at a time.
     """
-    # Urgency-first: Low has an imminent apply_by, so it outranks the better fit scores. This
+    # Group-first: Low is the only 'new' job, so it outranks the better fit scores. This
     # order matches none of the three whitelisted ones, so "fell back" is distinguishable
     # from "silently applied a sort" -- without it the assertion below would be vacuous.
     default=[j['company'] for j in client.get('/api/jobs/').data]
@@ -4198,22 +4193,24 @@ def test_unknown_ordering_falls_back_to_the_default_instead_of_reaching_order_by
 
 
 def test_ordering_keeps_the_urgency_annotations_applied(client):
-    """Sorting overrides the final order_by only; stale_rank and friends must still annotate.
+    """Sorting overrides the final order_by only; the board's annotations must still apply.
 
     If the annotations were dropped instead, the queryset would raise FieldError the moment
-    anything referenced them, and the board's urgency signals would silently vanish.
+    anything referenced them. TASK-277: the deadline no longer reorders the default board -- it
+    sorts by age like any other unscored job (the '7d left' badge still shows the urgency).
     """
     today=timezone.localdate()
     urgent=make_job(client, company='Deadline', title='a', status='new', apply_by=today)
     calm=make_job(client, company='Calm', title='b', status='new')
     _pin_created_at(urgent, 1); _pin_created_at(calm, 2)
-    # Default: the deadline job is surfaced by stale_rank=-1 regardless of age.
+    # Default: same group, both unscored -- newest first, which is the deadline job here.
     assert [j['company'] for j in client.get('/api/jobs/').data]==['Deadline', 'Calm']
     # Overridden: pure recency wins, and the request still succeeds with the annotations live.
     assert [j['company'] for j in client.get('/api/jobs/?ordering=-created_at').data]==['Deadline', 'Calm']
     JobLead.objects.filter(pk=urgent.pk).update(created_at=timezone.now()-timezone.timedelta(days=9))
     assert [j['company'] for j in client.get('/api/jobs/?ordering=-created_at').data]==['Calm', 'Deadline']
-    assert [j['company'] for j in client.get('/api/jobs/').data]==['Deadline', 'Calm']
+    # ...and the default follows age too: the 9-day-old deadline job is no longer surfaced.
+    assert [j['company'] for j in client.get('/api/jobs/').data]==['Calm', 'Deadline']
 
 
 def test_job_with_two_evaluations_is_returned_twice_by_the_board(client):

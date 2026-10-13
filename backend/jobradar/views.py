@@ -54,8 +54,8 @@ from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, Im
 
 logger = logging.getLogger(__name__)
 
-# Shipped in /api/auth/me/ so the board badges read the same numbers stale_rank orders by,
-# instead of the frontend keeping its own copy of them.
+# Shipped in /api/auth/me/ so the board badges read the model's urgency thresholds instead of the
+# frontend keeping its own copy of them. (TASK-277: they no longer reorder the board -- badges only.)
 CV_LOCAL_ONLY_NOTICE = 'CV and letter generation stays in the owner’s local app. This deployed server stores account-scoped profile data but does not run Codex or LaTeX.'
 
 BOARD_THRESHOLDS = {
@@ -72,15 +72,20 @@ BOARD_THRESHOLDS = {
 }
 
 
-# TASK-145 AC1/AC3: the board's default ordering -- attention order first (new, then interview,
-# then everything else in pipeline order, closed statuses last -- see _attention_rank below),
-# then the age/urgency formula as tiebreakers within a group. Sorting is an opt-in override of
-# this, never a replacement -- ?ordering= absent, empty or unrecognised lands here.
-# stale_rank is demoted, not deleted (AC3): it no longer leads (the owner declined that variant),
-# but it is still the second key, so two jobs in the same attention group still surface an
-# imminent deadline or a stale one before the rest -- ordering *within* a group is unchanged from
-# before this task.
-DEFAULT_BOARD_ORDERING = ('attention_rank', 'stale_rank', 'priority_rank', '-evaluations__fit_score', '-created_at')
+# TASK-145 AC1/AC3: the board's default ordering ("Sort: recommended") -- attention order first
+# (the user's status order, TASK-267; new first by default -- see _attention_rank below). Sorting
+# is an opt-in override of this, never a replacement -- ?ordering= empty, unrecognised or the
+# explicit 'recommended' token lands here (absent reads the saved board_sort_keys first).
+# TASK-277 (owner decision 2026-10-12): within a group, highest fit first, then priority
+# high>medium>low (unscored last), then newest. Urgency no longer reorders rows inside a group --
+# the old stale_rank tiebreaker (imminent apply_by up, stale lead down) is gone from the order;
+# the '7d left' / 'Stale lead' badges still show it. Fit is nulls_last explicitly: PostgreSQL
+# puts NULLs first on DESC, so an unscored job would otherwise lead its group.
+DEFAULT_BOARD_ORDERING = ('attention_rank', F('evaluations__fit_score').desc(nulls_last=True), 'priority_rank', '-created_at')
+# TASK-277: the explicit wire token for DEFAULT_BOARD_ORDERING, so ?ordering=recommended can beat
+# an account-saved board_sort_keys (an absent ?ordering= reads the saved one). Never reaches
+# order_by() itself -- parse_board_ordering maps it.
+RECOMMENDED_ORDERING_TOKEN = 'recommended'
 
 # TASK-97/TASK-108's sort control. The query parameter is a lookup *key*, never an argument to
 # order_by(): passing it through would let a client order by any related column
@@ -133,8 +138,10 @@ def parse_board_ordering(raw):
     '-created_at' then 'id' are always appended as final tiebreakers so pagination can't
     interleave. Falls back to DEFAULT_BOARD_ORDERING when nothing valid remains. Only
     BOARD_ORDERINGS' values ever reach order_by() -- a raw query token that isn't one of its
-    keys never does.
+    keys never does. 'recommended' as the first token is the explicit default (TASK-277).
     """
+    if (raw or '').split(',')[0].strip() == RECOMMENDED_ORDERING_TOKEN:
+        return DEFAULT_BOARD_ORDERING
     seen = set()
     exprs = []
     for token in (raw or '').split(','):
@@ -798,7 +805,6 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             qs=qs.filter(evaluations__isnull=False)
         if p.get('board') in ('1','true','yes'):
             qs=qs.exclude(Q(title='')|Q(title__istartswith='Untitled role'))
-        today=timezone.localdate()
         # TASK-145 AC4: an absent ?ordering= -- the key missing from the request entirely, distinct
         # from an explicit ?ordering= that is empty or hostile (those already resolve to the default
         # via parse_board_ordering's own '(raw or '').split(',')' fallback, and an explicit param must
@@ -812,12 +818,6 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         if raw_ordering is None:
             raw_ordering=profile.board_sort_keys if profile else ''
         qs=qs.annotate(
-            # -1 surfaces, 1 sinks. One expression owns every age/deadline signal on the board.
-            stale_rank=Case(
-                When(status__in=JobLead.UNAPPLIED_STATUSES, apply_by__lte=today+timezone.timedelta(days=JobLead.DEADLINE_SOON_DAYS), then=Value(-1)),
-                When(status__in=JobLead.DATED_STATUSES, status_date__lt=today-timezone.timedelta(days=JobLead.STALE_APPLIED_DAYS), then=Value(1)),
-                When(status__in=JobLead.UNAPPLIED_STATUSES, created_at__lt=timezone.now()-timezone.timedelta(days=JobLead.STALE_UNAPPLIED_DAYS), then=Value(1)),
-                default=Value(0), output_field=IntegerField()),
             # TASK-145 AC1/AC2: the default board GROUP order -- see _attention_rank's own docstring.
             # TASK-267: ranked by the user's saved status order; only read when the ordering resolves
             # to DEFAULT_BOARD_ORDERING, so explicit/profile sorts are unaffected.

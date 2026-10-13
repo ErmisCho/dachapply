@@ -8,6 +8,8 @@ untouched); every fixture and helper needed here is local to this file.
 """
 import pytest
 from django.contrib.auth.models import User
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -168,13 +170,14 @@ def test_a_saved_board_sort_with_four_keys_is_capped_the_same_way_as_a_typed_one
 def sortable_board(client):
     """Low/High/Mid, tuned so the default board order, -fit_score, -created_at and
     feedback_due_date all disagree -- so a test asserting one of them can't be vacuously true of
-    another. Low's imminent apply_by makes stale_rank surface it first under the default
-    formula regardless of its (worst) fit score.
+    another. Low is the only 'new' job, so the default's status grouping puts it first regardless
+    of its (worst) fit score. (Before TASK-277 an imminent apply_by did this; urgency no longer
+    reorders the default, so High/Mid moved to 'reviewed' to keep the orders distinct.)
     """
     today = timezone.localdate()
-    low = make_job(client, company='Low', status='new', apply_by=today, feedback_due_date=today + timezone.timedelta(days=30))
-    high = make_job(client, company='High', status='new', feedback_due_date=today + timezone.timedelta(days=1))
-    mid = make_job(client, company='Mid', status='new', feedback_due_date=None)
+    low = make_job(client, company='Low', status='new', feedback_due_date=today + timezone.timedelta(days=30))
+    high = make_job(client, company='High', status='reviewed', feedback_due_date=today + timezone.timedelta(days=1))
+    mid = make_job(client, company='Mid', status='reviewed', feedback_due_date=None)
     _evaluate(low, 40); _evaluate(high, 90); _evaluate(mid, 70)
     _pin(low, created_at=timezone.now() - timezone.timedelta(days=3))
     _pin(high, created_at=timezone.now() - timezone.timedelta(days=2))
@@ -322,3 +325,73 @@ def test_ordering_is_deterministic_and_stable_across_slices(client, tie_break_bo
     page1, page2 = first[:2], first[2:]
     assert set(page1) & set(page2) == set()
     assert set(page1) | set(page2) == set(first)
+
+
+# --- TASK-277: Sort: recommended = status group, then fit (nulls last), priority, newest; urgency
+# never reorders a group; ?ordering=recommended is the explicit token for it. -------------------
+
+def _ids(client, **params):
+    r = client.get('/api/jobs/', params)
+    assert r.status_code == 200
+    return [j['id'] for j in r.data]
+
+
+def test_parse_board_ordering_maps_the_recommended_token_to_the_default_and_never_passes_it_through():
+    from jobradar.views import DEFAULT_BOARD_ORDERING, parse_board_ordering
+    assert parse_board_ordering('recommended') == DEFAULT_BOARD_ORDERING
+    assert parse_board_ordering(' recommended ,-fit_score') == DEFAULT_BOARD_ORDERING
+    # Not first -> just an unknown key, dropped like any other.
+    assert 'recommended' not in parse_board_ordering('-fit_score,recommended')
+
+
+def test_recommended_orders_groups_then_fit_then_priority_then_newest(client):
+    now = timezone.now()
+    jobs = {}
+    for name, status, fit, prio, days in [
+        ('n_fit90_high', 'new', 90, 'high', 5),
+        ('n_fit90_med', 'new', 90, 'medium', 1),     # ties n_fit90_high on fit -> priority decides
+        ('n_fit70_old', 'new', 70, 'high', 4),
+        ('n_fit70_new', 'new', 70, 'high', 2),       # ties n_fit70_old on fit AND priority -> newest
+        ('i_fit95_low', 'interview', 95, 'low', 1),  # best fit overall, but a later group
+        ('i_fit60_high', 'interview', 60, 'high', 1),
+    ]:
+        jobs[name] = make_job(client, company=name, status=status)
+        _evaluate(jobs[name], fit, prio)
+        _pin(jobs[name], created_at=now - timezone.timedelta(days=days))
+    expected = [jobs[n].id for n in ('n_fit90_high', 'n_fit90_med', 'n_fit70_new', 'n_fit70_old', 'i_fit95_low', 'i_fit60_high')]
+    assert _ids(client, ordering='recommended') == expected
+    assert _ids(client) == expected  # absent ordering, no saved sort -> the same default
+
+
+def test_recommended_puts_unscored_jobs_after_every_scored_job_of_their_group(client):
+    """Pins NULL placement rather than trusting the DB default. The row-order assertion alone
+    can't: SQLite already sorts NULLs last on DESC, PostgreSQL (production) sorts them FIRST -- so
+    the emitted SQL must carry an explicit NULLS LAST, which is what PostgreSQL would execute."""
+    unscored = make_job(client, company='unscored', status='new')
+    low = make_job(client, company='low', status='new'); _evaluate(low, 10, 'low')
+    mid = make_job(client, company='mid', status='new'); _evaluate(mid, 50, 'low')
+    interview = make_job(client, company='interview', status='interview'); _evaluate(interview, 99, 'high')
+    now = timezone.now()
+    _pin(unscored, created_at=now); _pin(low, created_at=now - timezone.timedelta(days=2)); _pin(mid, created_at=now - timezone.timedelta(days=3))
+    with CaptureQueriesContext(connection) as queries:
+        assert _ids(client, ordering='recommended') == [mid.id, low.id, unscored.id, interview.id]
+    assert any('"fit_score" DESC NULLS LAST' in q['sql'] for q in queries.captured_queries)
+
+
+def test_recommended_ignores_deadline_and_staleness_within_a_group(client):
+    today = timezone.localdate()
+    due_soon = make_job(client, company='due_soon', status='new', apply_by=today + timezone.timedelta(days=JobLead.DEADLINE_SOON_DAYS - 1))
+    stale = make_job(client, company='stale', status='new')
+    _evaluate(due_soon, 40, 'medium'); _evaluate(stale, 90, 'medium')
+    _pin(stale, created_at=timezone.now() - timezone.timedelta(days=JobLead.STALE_UNAPPLIED_DAYS + 5))
+    # Pre-TASK-277 stale_rank put due_soon first and sank stale; now fit alone decides.
+    assert _ids(client, ordering='recommended') == [stale.id, due_soon.id]
+
+
+def test_explicit_recommended_beats_the_saved_sort_but_an_absent_ordering_still_uses_it(client):
+    from jobradar.models import UserProfile
+    new_low = make_job(client, company='new_low', status='new'); _evaluate(new_low, 50, 'low')
+    int_high = make_job(client, company='int_high', status='interview'); _evaluate(int_high, 90, 'high')
+    UserProfile.objects.update_or_create(user=client.user, defaults={'board_sort_keys': '-fit_score,priority'})
+    assert _ids(client) == [int_high.id, new_low.id]                         # saved sort applies
+    assert _ids(client, ordering='recommended') == [new_low.id, int_high.id]  # explicit token wins
