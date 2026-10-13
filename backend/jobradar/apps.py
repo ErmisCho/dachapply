@@ -6,6 +6,7 @@ class JobradarConfig(AppConfig):
     name='jobradar'
 
     def ready(self):
+        from jobradar import local_cache  # noqa: F401 -- connects the TASK-283.1 eviction receivers
         from jobradar.services.demo_scheduler import start_demo_seed_scheduler
         start_demo_seed_scheduler()
         from jobradar.services.mailbox_loop import start_local_mailbox_loop

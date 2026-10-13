@@ -532,6 +532,13 @@ if cached_sessions_enabled(DATABASES['default'], DEBUG):
     SESSION_ENGINE='django.contrib.sessions.backends.cached_db'
     SESSION_CACHE_ALIAS='sessions'
     CACHES['sessions']={'BACKEND':'django.core.cache.backends.locmem.LocMemCache','LOCATION':'dachapply-sessions'}
+    # TASK-283.1: same gate, same reasoning -- the auth_user row and the profile's board columns
+    # (jobradar/local_cache.py) are read from this process-local cache, evicted by signals on save.
+    # TIMEOUT bounds how long a change made by another process (the deployed site shares the
+    # database) goes unseen. The only backend, because login(request, user) without backend= (register,
+    # change_password) refuses to pick one of several; a session from the plain ModelBackend logs in once more.
+    CACHES['local']={'BACKEND':'django.core.cache.backends.locmem.LocMemCache','LOCATION':'dachapply-local','TIMEOUT':60}
+    AUTHENTICATION_BACKENDS=['jobradar.local_cache.CachedModelBackend']
 
 AUTH_PASSWORD_VALIDATORS=[{'NAME':'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},{'NAME':'django.contrib.auth.password_validation.MinimumLengthValidator'},{'NAME':'django.contrib.auth.password_validation.CommonPasswordValidator'},{'NAME':'django.contrib.auth.password_validation.NumericPasswordValidator'}]
 LANGUAGE_CODE='en-us'; TIME_ZONE='Europe/Vienna'; USE_I18N=True; USE_TZ=True
