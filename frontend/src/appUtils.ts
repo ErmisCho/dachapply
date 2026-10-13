@@ -732,3 +732,10 @@ export function statusGroupHeaders(rows:{id:number;status:string}[]):Record<numb
   rows.forEach((r,i)=>{if(i===0||rows[i-1].status!==r.status)out[r.id]=counts[r.status]})
   return out
 }
+
+// TASK-285. Splits the board rows into the Interviews table and the main table. Shown: every
+// interview row goes to `interviews` and none stays in `main`. Hidden: `main` is the board as before.
+export function splitInterviewRows<T extends {status:string}>(rows:T[],shown:boolean):{interviews:T[];main:T[]}{
+  if(!shown)return {interviews:[],main:rows}
+  return {interviews:rows.filter(r=>r.status==='interview'),main:rows.filter(r=>r.status!=='interview')}
+}
