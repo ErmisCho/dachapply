@@ -1,5 +1,5 @@
 import {afterEach,beforeEach,describe,expect,it} from 'vitest'
-import {api,authMe,cachedAuthUser,clearAuthCache} from './client'
+import {api,authMe,boardCacheKey,cacheBoardRows,cachedAuthUser,cachedBoardRows,clearAuthCache} from './client'
 
 // RequireAuth wraps every protected route, so /auth/me/ is cached for the session. The cache
 // surviving a logout or a dead session would be a security bug, not a performance win.
@@ -52,5 +52,17 @@ describe('session auth check cache',()=>{
     expect(cachedAuthUser()).toBe(null)
     status=200
     expect(await authMe()).toEqual({username:'me'})
+  })
+})
+
+// TASK-283: the board's stale-while-revalidate rows must never cross accounts.
+describe('board rows cache',()=>{
+  it('is keyed by user and dropped on logout',()=>{
+    const q='status=new&board=1'
+    cacheBoardRows(boardCacheKey('alice',q),[{id:1}])
+    expect(cachedBoardRows(boardCacheKey('alice',q))).toEqual([{id:1}])
+    expect(cachedBoardRows(boardCacheKey('bob',q))).toBeUndefined()
+    clearAuthCache()
+    expect(cachedBoardRows(boardCacheKey('alice',q))).toBeUndefined()
   })
 })

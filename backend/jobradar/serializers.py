@@ -316,7 +316,10 @@ class JobLeadSerializer(serializers.ModelSerializer):
     def get_latest_evaluation(self, obj):
         ev=obj.evaluations.first()
         return JobEvaluationSerializer(ev).data if ev else None
-    def get_has_pending_source(self, obj): return bool(obj.pending_source_text)
+    def get_has_pending_source(self, obj):
+        # TASK-283: the board list annotates the flag instead of loading the whole pending posting.
+        flag=getattr(obj, 'has_pending_source_flag', None)
+        return bool(obj.pending_source_text) if flag is None else flag
     def get_created_by_username(self, obj): return obj.created_by.username if obj.created_by else ''
     def get_created_by_email(self, obj): return (obj.created_by.email or obj.created_by.username) if obj.created_by else ''
     def get_submitted_for_username(self, obj): return obj.submitted_for.username if obj.submitted_for else ''
