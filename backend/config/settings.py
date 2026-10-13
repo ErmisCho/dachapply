@@ -102,6 +102,25 @@ def env_bool(name, default=False):
     return value.strip().lower() in ('1', 'true', 'yes', 'on')
 
 
+def with_db_pool(db, debug):
+    """TASK-281: give a PostgreSQL `db` settings dict Django's native psycopg pool when DB_POOL is on.
+
+    Measured 2026-10-13: runserver serves every request on a new thread, so CONN_MAX_AGE never
+    reuses a connection and each request paid a fresh TLS handshake to Neon (~0.5-1 s). A pool is
+    shared across threads. DB_POOL defaults to DEBUG, so the deployed site (gunicorn, DEBUG off)
+    is unchanged unless DB_POOL is set. Django refuses a pool alongside persistent connections
+    ("Pooling doesn't support persistent connections."), hence CONN_MAX_AGE=0. CONN_HEALTH_CHECKS
+    stays as configured: with it on, Django hands the pool ConnectionPool.check_connection, which
+    discards a connection Neon closed while idle and hands out a fresh one instead of an error.
+    """
+    if env_bool('DB_POOL', debug) and db.get('ENGINE') == 'django.db.backends.postgresql':
+        db['CONN_MAX_AGE'] = 0
+        # max_idle 240 s: close surplus idle connections before Neon's default 5-minute
+        # scale-to-zero does; timeout 10 s: fail a request fast rather than hang 30 s (the default).
+        db.setdefault('OPTIONS', {})['pool'] = {'min_size': 1, 'max_size': 8, 'max_idle': 240, 'timeout': 10}
+    return db
+
+
 def env_list(name, default=''):
     return [item.strip() for item in os.getenv(name, default).split(',') if item.strip()]
 
@@ -472,7 +491,7 @@ if DATABASE_URL:
     except ImportError as exc:
         raise ImproperlyConfigured('DATABASE_URL requires dj-database-url to be installed.') from exc
     DATABASES = {
-        'default': dj_database_url.parse(
+        'default': with_db_pool(dj_database_url.parse(
             DATABASE_URL,
             conn_max_age=int(os.getenv('DB_CONN_MAX_AGE', '600')),
             # A pooled/serverless Postgres (Neon) drops idle connections well inside conn_max_age.
@@ -480,12 +499,17 @@ if DATABASE_URL:
             # so the next query on a silently-dead socket fails instead of reconnecting.
             conn_health_checks=env_bool('DB_CONN_HEALTH_CHECKS', True),
             ssl_require=env_bool('DB_SSL_REQUIRE', not DEBUG),
-        )
+        ), DEBUG)
     }
 else:
     if not DEBUG:
         raise ImproperlyConfigured('DATABASE_URL must be set for production when DEBUG=False.')
     DATABASES={'default': {'ENGINE': os.getenv('DB_ENGINE','django.db.backends.sqlite3'), 'NAME': os.getenv('DB_NAME', str(BASE_DIR/'db.sqlite3'))}}
+
+# TASK-281: UserUsageMiddleware writes its counters on a background thread instead of before the
+# response. Defaults to on only with the pool: Django connections are per thread, so without one
+# every request's thread would open (and close) a brand-new database connection.
+USAGE_RECORD_ASYNC = env_bool('USAGE_RECORD_ASYNC', bool(DATABASES['default'].get('OPTIONS', {}).get('pool')))
 
 # Throttle counters live in the cache. The default per-process LocMemCache gave every gunicorn
 # worker its own counter, so a "5/hour" limit was really 5 x WEB_CONCURRENCY and reset on every
