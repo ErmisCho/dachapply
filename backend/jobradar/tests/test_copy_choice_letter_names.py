@@ -166,6 +166,27 @@ def test_a_letter_the_owner_named_is_not_renamed(owner, job, workspace, started)
     assert chosen.exists() and started[-1][12] == str(chosen)
 
 
+HELPERS = ('.aux', '.log', '.fls', '.fdb_latexmk', '.out', '.synctex.gz')
+
+
+def test_latex_helpers_follow_the_rename(owner, job, workspace):
+    old = _legacy_letter(workspace, job, owner)
+    for ext in HELPERS: old.with_name(old.stem+ext).write_bytes(ext.encode())
+    rename_generated_artifact(job, owner, 'letter', 'motivationsschreiben', 'New-Name')
+    assert not list(old.parent.glob(old.stem+'.*'))
+    assert all(old.with_name('New-Name'+ext).read_bytes() == ext.encode() for ext in HELPERS)
+
+
+def test_a_taken_helper_name_is_left_alone_and_the_rename_still_succeeds(owner, job, workspace):
+    old = _legacy_letter(workspace, job, owner)
+    for ext in HELPERS: old.with_name(old.stem+ext).write_bytes(ext.encode())
+    taken = old.with_name('New-Name.log'); taken.write_bytes(b'someone else')
+    renamed = rename_generated_artifact(job, owner, 'letter', 'motivationsschreiben', 'New-Name')
+    assert renamed == {str(old): str(old.with_name('New-Name.tex')), str(old.with_suffix('.pdf')): str(old.with_name('New-Name.pdf'))}
+    assert taken.read_bytes() == b'someone else' and old.with_name(old.stem+'.log').read_bytes() == b'.log'
+    assert all(old.with_name('New-Name'+ext).read_bytes() == ext.encode() for ext in HELPERS if ext != '.log')
+
+
 def test_a_sent_letter_is_not_renamed(owner, job, workspace, started):
     old = _legacy_letter(workspace, job, owner)
     cv_generator.delete_generated_metadata(job)  # Applied: the letter is now a read-only sent document
