@@ -4754,3 +4754,12 @@ def test_a_finished_run_does_not_open_a_folder_by_itself_while_reveal_still_does
 
     assert response.status_code==200 and opened==[str(pdf.parent)]  # the click still works
     cv_tasks._tasks.clear()
+
+
+def test_board_list_has_pending_source_matches_detail_without_loading_the_text(client):
+    """TASK-283: the list answers has_pending_source in SQL instead of loading pending_source_text."""
+    pending=make_job(client, company='P', title='Pending', pending_source_text='new posting body')
+    plain=make_job(client, company='N', title='None')
+    rows={r['id']: r for r in client.get('/api/jobs/?board=1').json()}
+    assert rows[pending.id]['has_pending_source'] is True and rows[plain.id]['has_pending_source'] is False
+    assert client.get(f'/api/jobs/{pending.id}/').json()['has_pending_source'] is True

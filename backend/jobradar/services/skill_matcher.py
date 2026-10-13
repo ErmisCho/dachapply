@@ -1,4 +1,5 @@
 import re
+from functools import lru_cache
 
 DISPLAY_NAMES = {
     'python': 'Python', 'python 3': 'Python', 'python3': 'Python',
@@ -54,6 +55,14 @@ def norm(s):
     return re.sub(r'[^a-z0-9]+', ' ', (s or '').lower()).strip()
 
 
+# TASK-283: the alias tables are constants, so normalise them once. smart_skill_status used to
+# re-normalise every alias for every skill of every board row -- 945k regex calls, ~75% of a
+# 1.3 s /api/jobs/?board=1 on the owner's 111 jobs.
+_PROFILE_NORMS = [[norm(a) for a in aliases + [canonical]] for canonical, aliases in PROFILE_SKILL_GROUPS.items()]
+_WEAKER_NORMS = [[norm(a) for a in aliases + [canonical]] for canonical, aliases in WEAKER_FIT.items()]
+
+
+@lru_cache(maxsize=4096)
 def display_skill_name(skill):
     n=norm(skill)
     if n in DISPLAY_NAMES: return DISPLAY_NAMES[n]
@@ -63,13 +72,14 @@ def display_skill_name(skill):
     return ' '.join(w.capitalize() if w.islower() else w for w in words.split())[:32]
 
 
+@lru_cache(maxsize=4096)
 def smart_skill_status(skill):
     n=norm(skill)
     if not n: return 'unknown'
-    for canonical, aliases in PROFILE_SKILL_GROUPS.items():
-        if any(norm(a) == n or norm(a) in n or n in norm(a) for a in aliases + [canonical]):
+    for group in _PROFILE_NORMS:
+        if any(a == n or a in n or n in a for a in group):
             return 'match'
-    for canonical, aliases in WEAKER_FIT.items():
-        if any(norm(a) == n or norm(a) in n or n in norm(a) for a in aliases + [canonical]):
+    for group in _WEAKER_NORMS:
+        if any(a == n or a in n or n in a for a in group):
             return 'weak'
     return 'unknown'

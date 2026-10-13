@@ -14,7 +14,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.db import connection, transaction
-from django.db.models import Avg, Case, Count, Exists, F, IntegerField, Min, OuterRef, Q, Subquery, Value, When
+from django.db.models import Avg, Case, Count, Exists, F, IntegerField, Min, OuterRef, Prefetch, Q, Subquery, Value, When
 from django.db.models.functions import Substr
 from django.http import HttpResponse
 from django.utils import timezone
@@ -28,7 +28,7 @@ from rest_framework.decorators import api_view, permission_classes, action, thro
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile, InviteCode
-from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxDraftSerializer, MailboxMessageListSerializer, MailboxMessageSerializer, MailboxMessageWithSuggestionsSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, invalid_email_addresses, normalize_job_url
+from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxDraftSerializer, MailboxMessageListSerializer, MailboxMessageSerializer, MailboxMessageWithSuggestionsSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, invalid_email_addresses, normalize_job_url
 from .services.job_evaluator import evaluate_jobs
 from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, _profile_parts, user_profile_settings
 from .services.json_importer import import_any_json, duplicate_title
@@ -786,7 +786,15 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         # latency, not work. Both FKs are null=True, so this is a LEFT OUTER JOIN: it changes how
         # rows are fetched, never which rows come back, and TASK-184's accessible_jobs scoping
         # above is untouched (measured: same 69 ids, same order, before and after).
-        qs=qs.select_related('created_by','submitted_for').prefetch_related('evaluations'); p=self.request.query_params
+        qs=qs.select_related('created_by','submitted_for'); p=self.request.query_params
+        # TASK-283: Postgres runs the board query in ~4 ms; the rest of ~330 ms was shipping ~1.8 MB
+        # from Neon -- full postings and raw LLM replies the list serializers drop anyway. Load only
+        # the columns they read. pending_source_text (482 KB of it) only feeds a yes/no, so SQL answers that.
+        if self.action == 'list':
+            qs=qs.defer(*JobLeadListSerializer.Meta.exclude).annotate(has_pending_source_flag=~Q(pending_source_text='')).prefetch_related(
+                Prefetch('evaluations', queryset=JobEvaluation.objects.only('job', 'created_at', *(f for f in JobEvaluationListSerializer.Meta.fields if f != 'skill_statuses'))))
+        else:
+            qs=qs.prefetch_related('evaluations')
         if p.get('status'):
             statuses=[s for s in p.get('status','').split(',') if s]
             qs=qs.filter(status__in=statuses)
@@ -821,7 +829,8 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         raw_ordering=p.get('ordering')
         # TASK-282: only the list's row order reads the profile. Detail actions resolve one row with
         # get(), which drops the ordering anyway, so reading it there was a wasted round trip.
-        profile=getattr(self.request.user, 'jobradar_profile', None) if self.action == 'list' else None
+        # TASK-283: only the two board columns -- the full row is ~160 KB of prompts and profile text.
+        profile=UserProfile.objects.filter(user=self.request.user).only('board_sort_keys', 'board_status_order').first() if self.action == 'list' else None
         if raw_ordering is None:
             raw_ordering=profile.board_sort_keys if profile else ''
         qs=qs.annotate(

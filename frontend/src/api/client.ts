@@ -9,5 +9,12 @@ export const fileUrl=(path:string)=>API+path;
 // and on any 401 from any endpoint (above), so a dead session cannot keep rendering routes.
 let authUser:any=null,authCheck:Promise<any>|null=null;
 export const cachedAuthUser=()=>authUser;
-export function clearAuthCache(){authUser=null;authCheck=null}
+export function clearAuthCache(){authUser=null;authCheck=null;boardRows=null}
+// TASK-283: last board rows, so returning to the board paints instantly while /jobs/?board=1 revalidates.
+// Keyed by username + query and dropped by clearAuthCache (logout, login, account deletion, any 401),
+// so one account's rows can never be painted for another. In-memory only; one entry.
+let boardRows:{key:string;rows:any[]}|null=null;
+export const boardCacheKey=(username:any,query:string)=>JSON.stringify([String(username||''),query]);
+export const cachedBoardRows=(key:string)=>boardRows?.key===key?boardRows.rows:undefined;
+export function cacheBoardRows(key:string,rows:any[]){boardRows={key,rows}}
 export function authMe(){return authCheck||(authCheck=api('/auth/me/').then(u=>{authUser=u;return u},e=>{clearAuthCache();throw e}))}
