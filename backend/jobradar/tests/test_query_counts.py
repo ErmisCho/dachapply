@@ -135,6 +135,82 @@ def cached_sessions(settings):
     settings.CACHES = {**settings.CACHES, 'sessions': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache', 'LOCATION': 'qc-sessions'}}
 
 
+@pytest.fixture
+def local_runtime(cached_sessions, settings):
+    """TASK-283.1: everything config/settings.py turns on under cached_sessions_enabled."""
+    settings.CACHES = {**settings.CACHES, 'local': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache', 'LOCATION': 'qc-local'}}
+    settings.AUTHENTICATION_BACKENDS = ['jobradar.local_cache.CachedModelBackend']
+    from django.core.cache import caches
+    caches['local'].clear()
+
+
+# Warm requests on the local runtime: session, user and board settings all come from the process,
+# so what is left is the endpoint's own data (+ the same 4 usage UPDATEs, async there).
+EXPECTED_LOCAL = {
+    'me': (5, 1),
+    'job_detail': (6, 2),
+    'board_list': (6, 2),
+}
+
+
+@pytest.mark.parametrize('name', list(ENDPOINTS))
+def test_query_counts_on_the_local_runtime_are_pinned(local_runtime, owner_client, name):
+    owner_client.get(ENDPOINTS[name])  # fills the caches a fresh process would fill once
+    _, with_usage = measure(owner_client, ENDPOINTS[name], usage=True)
+    _, without_usage = measure(owner_client, ENDPOINTS[name], usage=False)
+    assert (len(with_usage), len(without_usage)) == EXPECTED_LOCAL[name], without_usage
+
+
+def test_local_runtime_responses_match_the_snapshot(local_runtime, owner_client):
+    for name, url in ENDPOINTS.items():
+        owner_client.get(url)
+        assert json.loads(measure(owner_client, url, usage=False)[0].content) == json.loads(SNAPSHOT.read_text(encoding='utf-8'))[name]
+
+
+def _replay(client):
+    """A second browser holding the same session cookie."""
+    replay = Client()
+    replay.cookies['app_sessionid'] = client.cookies['app_sessionid'].value
+    return replay
+
+
+def test_local_runtime_password_change_rejects_the_old_session_next_request(local_runtime, owner_client):
+    other = _replay(owner_client)
+    assert other.get(BOARD_URL).status_code == 200  # user now cached
+    response = owner_client.post('/api/auth/change-password/', {'current_password': 'pw', 'new_password': 'a-much-Longer-pw-2026'}, content_type='application/json')
+    assert response.status_code == 200, response.content
+    assert other.get(BOARD_URL).status_code == 403
+    assert owner_client.get(BOARD_URL).status_code == 200  # change_password re-logs this session in
+
+
+def test_local_runtime_logout_makes_the_next_request_anonymous(local_runtime, owner_client):
+    assert owner_client.get(BOARD_URL).status_code == 200
+    owner_client.post('/api/auth/logout/')
+    assert owner_client.get(BOARD_URL).status_code == 403
+
+
+def test_local_runtime_deactivation_rejects_the_next_request(local_runtime, owner_client):
+    assert owner_client.get(BOARD_URL).status_code == 200
+    owner = User.objects.get(pk=501)
+    owner.is_active = False
+    owner.save()
+    assert owner_client.get(BOARD_URL).status_code == 403
+
+
+def test_local_runtime_board_uses_profile_edits_on_the_next_request(local_runtime, owner_client):
+    url = '/api/jobs/?status=new,reviewed,to_apply,applied,interview&board=1'  # no ?ordering=: the saved one applies
+    before = [row['id'] for row in json.loads(owner_client.get(url).content)]
+    response = owner_client.patch('/api/profile/', {'board_sort_keys': '-fit_score'}, content_type='application/json')
+    assert response.status_code == 200, response.content
+    by_score = [row['id'] for row in json.loads(owner_client.get(url).content)]
+    assert by_score != before
+    response = owner_client.patch('/api/profile/', {'board_sort_keys': '', 'board_status_order': 'interview,applied'}, content_type='application/json')
+    assert response.status_code == 200, response.content
+    by_status = [row['id'] for row in json.loads(owner_client.get(url).content)]
+    assert by_status != before and by_status != by_score
+    assert by_status.index(905) < by_status.index(904) < by_status.index(901)  # interview, applied, then the rest
+
+
 def test_cached_sessions_skip_the_session_query_and_logout_still_ends_the_session(cached_sessions, owner_client):
     _, warm = measure(owner_client, '/api/auth/me/', usage=False)
     assert not any('django_session' in sql for sql in warm)

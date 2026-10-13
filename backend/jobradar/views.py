@@ -34,6 +34,7 @@ from .services.prompt_builder import build_prompt, build_enrichment_prompt, buil
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
+from .local_cache import board_settings
 from .services.access import accessible_jobs, job_create_defaults, owned_by, submitted_away_jobs
 from .services.cleaning import clean_job_location
 from .services.posting_fetch import fetch_posting_text, normalized
@@ -830,14 +831,15 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         # TASK-282: only the list's row order reads the profile. Detail actions resolve one row with
         # get(), which drops the ordering anyway, so reading it there was a wasted round trip.
         # TASK-283: only the two board columns -- the full row is ~160 KB of prompts and profile text.
-        profile=UserProfile.objects.filter(user=self.request.user).only('board_sort_keys', 'board_status_order').first() if self.action == 'list' else None
+        # TASK-283.1: board_settings() serves the two columns from the local cache where enabled.
+        saved_sort_keys, saved_status_order=board_settings(self.request.user) if self.action == 'list' else ('', '')
         if raw_ordering is None:
-            raw_ordering=profile.board_sort_keys if profile else ''
+            raw_ordering=saved_sort_keys
         qs=qs.annotate(
             # TASK-145 AC1/AC2: the default board GROUP order -- see _attention_rank's own docstring.
             # TASK-267: ranked by the user's saved status order; only read when the ordering resolves
             # to DEFAULT_BOARD_ORDERING, so explicit/profile sorts are unaffected.
-            attention_rank=_attention_rank(JobLead.effective_status_order(profile.board_status_order if profile else '')),
+            attention_rank=_attention_rank(JobLead.effective_status_order(saved_status_order)),
             priority_rank=Case(When(evaluations__priority='high', then=Value(0)), When(evaluations__priority='medium', then=Value(1)), When(evaluations__priority='low', then=Value(2)), default=Value(3), output_field=IntegerField()),
             # TASK-108: pipeline order for ordering=status, distinct from status_rank's attention
             # order above -- see BOARD_ORDERINGS' comment.
