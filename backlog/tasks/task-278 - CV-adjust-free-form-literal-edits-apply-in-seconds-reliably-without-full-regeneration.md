@@ -3,10 +3,10 @@ id: TASK-278
 title: >-
   CV adjust: free-form literal edits apply in seconds, reliably, without full
   regeneration
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-12 12:03'
-updated_date: '2026-10-12 14:33'
+updated_date: '2026-10-13 07:52'
 labels:
   - cv
   - performance
@@ -23,16 +23,16 @@ Owner request 2026-10-12: 'would it be possible that the local llm can just repl
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Deterministic phrasings bypass every model and apply like OLD:/NEW: blocks: at least 'replace "X" with "Y"', 'change "X" to "Y"', 'X -> Y' / 'X → Y' (quoted or unquoted single line), case-insensitive keywords, several per message; server time under 1s measured on the owner's real CV
-- [ ] #2 Other instructions first go to an installed local model (ollama or LM Studio) that returns only a structured list of {old,new} edits or 'not literal'; it never returns a whole document. If no local model is installed or it errors/times out, the request falls back to full optimization with no user-visible failure
-- [ ] #3 Reliability gate, applied to every edit from either route before anything is written: each old matches exactly once across the selected documents; every byte outside the replaced spans is identical to the source; the edited documents compile; page limits (CV max 2 pages, letter max 1) still hold. Any failure discards ALL edits of that request (never a partial apply) and falls back to full optimization
-- [ ] #4 No invented content: every word an edit adds (present in new but not in old) appears in the owner's instruction text; otherwise the edit set is rejected and the request falls back. A test shows a model proposing an unrequested word is refused
-- [ ] #5 Mixed instructions (a literal edit plus a semantic one such as 'and make the summary more concise') never apply the literal part alone; the whole request goes to full optimization
-- [ ] #6 The task result lists each applied edit as old -> new and states which route ran (exact, deterministic, local-model, full optimization), so the owner can see exactly what changed
-- [ ] #7 A committed evaluation set of at least 25 instructions (literal phrasings, ambiguous references, semantic requests, mixed, unrequested-content traps) run against the owner's local model: zero wrong edits applied (precision 100%), and the share handled without full optimization is measured and reported, not estimated
-- [ ] #8 Local-model route latency measured on the owner's machine with the installed model: median and max over the evaluation set's literal cases reported; target median 10s or less
-- [ ] #9 Existing exact OLD:/NEW: and from:/with: behaviour and its tests are unchanged; backend pytest, frontend npm test and tsc pass; verified end-to-end on the owner's localhost with one deterministic and one local-model edit
-- [ ] #10 With only the CV (or only the letter) ticked, OLD/NEW and from:/with: blocks found only in the unticked document are applied there (ticked document wins a block both contain); the run stays instant without AI and the report says the unticked document was updated
+- [x] #1 Deterministic phrasings bypass every model and apply like OLD:/NEW: blocks: at least 'replace "X" with "Y"', 'change "X" to "Y"', 'X -> Y' / 'X → Y' (quoted or unquoted single line), case-insensitive keywords, several per message; server time under 1s measured on the owner's real CV
+- [x] #2 Other instructions first go to an installed local model (ollama or LM Studio) that returns only a structured list of {old,new} edits or 'not literal'; it never returns a whole document. If no local model is installed or it errors/times out, the request falls back to full optimization with no user-visible failure
+- [x] #3 Reliability gate, applied to every edit from either route before anything is written: each old matches exactly once across the selected documents; every byte outside the replaced spans is identical to the source; the edited documents compile; page limits (CV max 2 pages, letter max 1) still hold. Any failure discards ALL edits of that request (never a partial apply) and falls back to full optimization
+- [x] #4 No invented content: every word an edit adds (present in new but not in old) appears in the owner's instruction text; otherwise the edit set is rejected and the request falls back. A test shows a model proposing an unrequested word is refused
+- [x] #5 Mixed instructions (a literal edit plus a semantic one such as 'and make the summary more concise') never apply the literal part alone; the whole request goes to full optimization
+- [x] #6 The task result lists each applied edit as old -> new and states which route ran (exact, deterministic, local-model, full optimization), so the owner can see exactly what changed
+- [x] #7 A committed evaluation set of at least 25 instructions (literal phrasings, ambiguous references, semantic requests, mixed, unrequested-content traps) run against the owner's local model: zero wrong edits applied (precision 100%), and the share handled without full optimization is measured and reported, not estimated
+- [x] #8 Local-model route latency measured on the owner's machine with the installed model: median and max over the evaluation set's literal cases reported; target median 10s or less
+- [x] #9 Existing exact OLD:/NEW: and from:/with: behaviour and its tests are unchanged; backend pytest, frontend npm test and tsc pass; verified end-to-end on the owner's localhost with one deterministic and one local-model edit
+- [x] #10 With only the CV (or only the letter) ticked, OLD/NEW and from:/with: blocks found only in the unticked document are applied there (ticked document wins a block both contain); the run stays instant without AI and the report says the unticked document was updated
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -40,3 +40,9 @@ Owner request 2026-10-12: 'would it be possible that the local llm can just repl
 <!-- SECTION:PLAN:BEGIN -->
 Backend only (the UI already renders report.main_changes). New module services/literal_edits.py: deterministic phrase parser -> pairs; local-model translator -> pairs or not-literal; shared reliability gate (unique match via the exact_revision_plan machinery, byte-identity outside spans, no-invented-words, mixed detection). views.py revise endpoint: exact -> deterministic -> local model -> full optimization. Compile gate (compiles + page limits) runs before anything is persisted; failure discards all edits and starts the normal full-optimization task. Eval set (>=25) committed with a fixture CV; latency and coverage measured on the owner's installed local model; real CV used only locally, never committed.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-13 verified: merged #220 and follow-up #222. Real data on localhost with main (BEKO letter, all text changes reverted afterwards, tex byte-identical to original): letter-only OLD/NEW with only CV ticked applied without AI in <3s; 'should say X rather than Y' deterministic in ~2s; local model edit 'Stubenbastei 2 -> 3' with report 'Route: local model (gemma3:4b)' in ~9s incl. model load. Eval gemma3:4b: 0 wrong edits, 16/18 coverage, median 2.4s max 2.6s. #222 fixed a fallback found live (CV+letter sent to gemma3:4b returned non-existent text; gate refused correctly, then full AI ~49s).
+<!-- SECTION:NOTES:END -->
