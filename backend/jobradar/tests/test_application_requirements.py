@@ -191,3 +191,34 @@ def test_replacing_a_duplicate_drops_requirements_quoted_from_the_old_posting():
     replace_job_with_supplied_data(job, {'company': 'New Co', 'title': 'Engineer', 'url': 'https://example.test/new'})
     job.refresh_from_db()
     assert job.application_requirements == {}
+
+
+@pytest.mark.django_db
+def test_api_shows_and_owner_edits_requirements_and_reanalysis_keeps_the_edit():
+    from rest_framework.test import APIClient
+    owner, other = User.objects.create_user('req-api-owner'), User.objects.create_user('req-api-other')
+    stored = {**analysis([doc('cover_letter', 'not_accepted', 'Please do not send a cover letter.')]), 'source': 'analysis'}
+    job = JobLead.objects.create(company='Api Co', title='Engineer', original_source_text=EN_NOT_WANTED, application_requirements=stored, created_by=owner)
+    client = APIClient(); client.force_authenticate(owner)
+    assert client.get(f'/api/jobs/{job.id}/').json()['application_requirements'] == stored
+    assert [j['application_requirements'] for j in client.get('/api/jobs/').json() if j['id'] == job.id] == [stored]
+
+    # The client cannot claim 'analysis'; an owner status needs no posting quote.
+    edit = {**analysis([doc('cover_letter', 'required'), doc('other', 'optional', name=' Portfolio ')], application_language='de'), 'source': 'analysis'}
+    r = client.patch(f'/api/jobs/{job.id}/', {'application_requirements': edit}, format='json')
+    assert r.status_code == 200, r.content
+    expected = {**analysis([doc('cover_letter', 'required'), doc('other', 'optional', name='Portfolio')], application_language='de'), 'source': 'owner'}
+    job.refresh_from_db(); assert job.application_requirements == expected == r.json()['application_requirements']
+
+    for garbage in ('nope', [1], {'documents': 'cover letter'}, {'documents': [doc('cover_letter', 'mandatory')]}, {'posting_language': 'fr'}):
+        r = client.patch(f'/api/jobs/{job.id}/', {'application_requirements': garbage}, format='json')
+        assert r.status_code == 400 and 'application_requirements' in r.json(), (garbage, r.content)
+    job.refresh_from_db(); assert job.application_requirements == expected
+
+    intruder = APIClient(); intruder.force_authenticate(other)
+    assert intruder.patch(f'/api/jobs/{job.id}/', {'application_requirements': {}}, format='json').status_code == 404
+    job.refresh_from_db(); assert job.application_requirements == expected
+
+    update = {'job_updates': [{'job_id': job.id, 'application_requirements': stored}]}
+    assert import_jobs_data(update, user=owner)['ok']
+    job.refresh_from_db(); assert job.application_requirements == expected
