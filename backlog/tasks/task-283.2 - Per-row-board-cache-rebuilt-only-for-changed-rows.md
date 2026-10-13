@@ -1,7 +1,7 @@
 ---
 id: TASK-283.2
 title: Per-row board cache rebuilt only for changed rows
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-13 14:23'
 labels:
@@ -22,9 +22,15 @@ Keep each job's serialized board row in a server cache with a version stamp deri
 <!-- AC:BEGIN -->
 - [ ] #1 Board list (all 111 jobs) median TTFB under 200 ms on localhost against Neon, 20 warm requests
 - [ ] #2 Board list on Azure median under 200 ms, 20 warm requests
-- [ ] #3 Response is byte-identical to the uncached response for the same data (hash compare on the owner's board)
-- [ ] #4 Changing any field the board shows - job, evaluation, note, mailbox match, submitted-for - updates that row on the next load; one test per source, each fails if the stamp ignores that source
-- [ ] #5 A guard test fails if a new field is added to the board list serializers without the stamp covering it
-- [ ] #6 Rows are never served across accounts (cache key includes the viewer)
+- [x] #3 Response is byte-identical to the uncached response for the same data (hash compare on the owner's board)
+- [x] #4 Changing any field the board shows - job, evaluation, note, mailbox match, submitted-for - updates that row on the next load; one test per source, each fails if the stamp ignores that source
+- [x] #5 A guard test fails if a new field is added to the board list serializers without the stamp covering it
+- [x] #6 Rows are never served across accounts (cache key includes the viewer)
 - [ ] #7 Full backend suite, vitest and tsc pass
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-13: serialized board rows cached per (viewer, job) in a process-local LocMem alias (board_rows, all runtimes incl. Azure). A warm load runs one stamp query (ids + version stamp built in SQL from BOARD_ROW_SOURCES) and only fetches/serializes rows whose stamp changed. No invalidation needed: every request reads stamps from the DB. Writes that skip updated_at are covered by stamping those columns; two update_fields saves now include updated_at. 16 new tests, each falsified; byte-identical on vs off. Local board_list 2 -> 1 query warm. AC#1/#2 (timings on Neon/Azure) to be measured after deploy.
+<!-- SECTION:NOTES:END -->

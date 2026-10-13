@@ -404,7 +404,7 @@ def import_user_export(user, payload):
                 normalized = normalize_application_requirements(obj.application_requirements, obj)
                 if normalized != obj.application_requirements:
                     obj.application_requirements = normalized
-                    obj.save(update_fields=['application_requirements'])
+                    obj.save(update_fields=['application_requirements', 'updated_at'])
             if item.get('id'):
                 job_map[item['id']] = obj
 

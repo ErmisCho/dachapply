@@ -253,7 +253,7 @@ def import_jobs_data(data, user=None):
             # job's stored posting after the save above; an owner's hand edit is not overwritten by analysis.
             if isinstance(rec.get('application_requirements'), dict) and (job.application_requirements or {}).get('source') != 'owner':
                 job.application_requirements=normalize_application_requirements(rec['application_requirements'], job, source='analysis')
-                job.save(update_fields=['application_requirements']); changed.append('application_requirements')
+                job.save(update_fields=['application_requirements', 'updated_at']); changed.append('application_requirements')
             note=rec.get('notes') or rec.get('note') or rec.get('uncertainty')
             if note: ApplicationNote.objects.create(job=job, note=str(note), note_type='general', created_by=user if user is not None else None)
             if isinstance(rec.get('evaluation'), dict):

@@ -10,7 +10,7 @@ from django.contrib.auth import authenticate, login, logout, get_user_model
 from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
-from django.core.cache import cache
+from django.core.cache import cache, caches
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.db import connection, transaction
@@ -279,6 +279,60 @@ def submission_row(row):
     # the two apart without inferring it from blank fields.
     limited['submission_only']=True
     return limited
+
+
+# TASK-283.2: every key a board row emits -> the stamp member that changes whenever that key's
+# value can. JobLeadViewSet.list() caches each serialized row under (viewer, job id) together with
+# its stamp and reuses it only while the database still returns the same stamp, so a key whose
+# source is missing here would be served stale. test_board_row_cache's guard test fails when the
+# list serializers emit a key this dict does not name.
+# Most job columns ride updated_at (auto_now). The ones below that are their own stamp member are
+# written by .update() calls that skip auto_now: cv_tasks.mark_ready_to_submit (status, status_date,
+# feedback_due_date, last_update_date), followup_digest.record_job_followup_sent (feedback_due_date),
+# mailbox's interview-date backfill (interview_at) and JobLeadViewSet.source_text (company).
+# (json_importer and user_data_portability save application_requirements with update_fields, so
+# they name updated_at too.) created_by / submitted_for are their own members because deleting a
+# user SET_NULLs them in SQL.
+BOARD_ROW_SOURCES = {
+    'id': 'id', 'updated_at': 'updated_at', 'created_at': 'updated_at',
+    'title': 'updated_at', 'location': 'updated_at', 'url': 'updated_at', 'source': 'updated_at',
+    'submitted_by': 'updated_at', 'submitter_reason': 'updated_at', 'salary_info': 'updated_at',
+    'language_requirements': 'updated_at', 'application_requirements': 'updated_at', 'work_mode': 'updated_at',
+    'applied_at': 'updated_at', 'interview_stage': 'updated_at', 'interview_total': 'updated_at',
+    'interview_note': 'updated_at', 'apply_by': 'updated_at',
+    'company': 'company', 'status': 'status', 'status_date': 'status_date', 'feedback_due_date': 'feedback_due_date',
+    'last_update_date': 'last_update_date', 'interview_at': 'interview_at',
+    'created_by': 'created_by_id', 'submitted_for': 'submitted_for_id',
+    # submission_row() projects on the viewer (part of the cache key) and these two ids.
+    'submission_only': 'submitted_for_id',
+    # The users' own rows: auth_user has no updated_at, so the values themselves. The *_email
+    # fields fall back to the username, which is a member through *_username.
+    'created_by_username': 'created_by__username', 'created_by_email': 'created_by__email',
+    'submitted_for_username': 'submitted_for__username', 'submitted_for_email': 'submitted_for__email',
+    # The list annotations are the shown values themselves (note text, mail/pending-source flags).
+    'has_pending_source': 'has_pending_source_flag', 'has_mailbox_history': 'has_mailbox_history',
+    'note_preview': 'note_preview_raw',
+    # Only the newest evaluation is shown (obj.evaluations.first(), Meta ordering -created_at):
+    # a new or deleted one changes its id, an edit its updated_at (no .update() writes them).
+    'latest_evaluation': 'latest_evaluation_id', 'latest_evaluation.id': 'latest_evaluation_id',
+    **{f'latest_evaluation.{name}': 'latest_evaluation_updated_at' for name in JobEvaluationListSerializer.Meta.fields if name != 'id'},
+}
+BOARD_ROW_STAMP = tuple(dict.fromkeys(BOARD_ROW_SOURCES.values()))
+
+
+def _board_stamp_annotations():
+    latest=JobEvaluation.objects.filter(job=OuterRef('pk')).order_by('-created_at')
+    return {'latest_evaluation_id': Subquery(latest.values('id')[:1]), 'latest_evaluation_updated_at': Subquery(latest.values('updated_at')[:1])}
+
+
+def _board_stamp(job):
+    """BOARD_ROW_STAMP read off a fetched job -- the same values values_list() returns for it."""
+    def path(name):
+        value=job
+        for part in name.split('__'):
+            value=getattr(value, part) if value is not None else None
+        return value
+    return tuple(path(name) for name in BOARD_ROW_STAMP)
 
 
 def find_existing_by_url(url, owner=None, queryset=None):
@@ -869,13 +923,46 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             note_preview_raw=Subquery(ApplicationNote.objects.filter(job=OuterRef('pk'), note_type='general').exclude(note='').order_by('-created_at').values(preview=Substr('note', 1, JobLeadListSerializer.NOTE_PREVIEW_FETCH_CHARS))[:1]),
         ).order_by(*parse_board_ordering(raw_ordering))
         return qs.distinct()
-    def list(self, request, *args, **kwargs):
-        response=super().list(request, *args, **kwargs)
+    def _board_rows(self, qs, cache=None):
+        """Serialize `qs` into the rows list() returns, in its order; store each with its stamp."""
+        jobs=list(qs)
         # TASK-282: services.access.submitted_away_jobs' rule (created by me, submitted for someone
         # else) read off the rows already fetched, instead of a second query for their ids.
+        uid=self.request.user.pk
+        rows=[submission_row(row) if row['created_by'] == uid and row['submitted_for'] not in (None, uid) else row for row in self.get_serializer(jobs, many=True).data]
+        if cache is not None:
+            cache.set_many({f'board-row:{uid}:{job.pk}': (_board_stamp(job), row) for job, row in zip(jobs, rows)})
+        return rows
+    def list(self, request, *args, **kwargs):
+        # TASK-283.2: per-row cache, see BOARD_ROW_SOURCES. Safe in every process (each gunicorn
+        # worker has its own copy) because nothing is ever invalidated: every request reads the
+        # stamps from the database, and a row whose stamp moved is simply rebuilt.
+        cache=caches['board_rows'] if 'board_rows' in settings.CACHES else None
+        qs=self.filter_queryset(self.get_queryset())
+        if cache is None:
+            return Response(self._board_rows(qs))
+        qs=qs.annotate(**_board_stamp_annotations())
         uid=request.user.pk
-        response.data=[submission_row(row) if row['created_by'] == uid and row['submitted_for'] not in (None, uid) else row for row in response.data]
-        return response
+        if not cache.get(f'board-rows:{uid}'):
+            # First board of this viewer in this process: nothing to reuse, so skip the stamp query.
+            rows=self._board_rows(qs, cache)
+            cache.set(f'board-rows:{uid}', True)
+            return Response(rows)
+        # One query: the board's own filters, ordering and DISTINCT, selecting only ids + stamps.
+        # priority_rank stays selected because the full query's DISTINCT sees it too (it varies per
+        # joined evaluation), so both return the same rows.
+        stamps=list(qs.prefetch_related(None).values_list('id', 'priority_rank', *BOARD_ROW_STAMP))
+        cached=cache.get_many([f'board-row:{uid}:{job_id}' for job_id, *_ in stamps])
+        by_id={}
+        for job_id, _rank, *stamp in stamps:
+            hit=cached.get(f'board-row:{uid}:{job_id}')
+            if hit and hit[0] == tuple(stamp):
+                by_id[job_id]=hit[1]
+        missing=[job_id for job_id, *_ in stamps if job_id not in by_id]
+        if missing:
+            by_id.update((row['id'], row) for row in self._board_rows(qs.filter(pk__in=missing), cache))
+        # A job deleted between the two queries is just left out.
+        return Response([by_id[job_id] for job_id, *_ in stamps if job_id in by_id])
     def create(self, request, *args, **kwargs):
         ser=self.get_serializer(data=request.data); ser.is_valid(raise_exception=True)
         url=ser.validated_data.get('url')
