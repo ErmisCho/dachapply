@@ -517,6 +517,8 @@ def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter
     renamed=_adopt_letter_label(job_id,user_id,letter_key,source_letter)
     if renamed != source_letter:
         source_updates={(renamed if key == str(source_letter) else key):value for key,value in (source_updates or {}).items()}
+        if task_report and task_report.get('changed_files'):  # the report was written before the rename
+            task_report={**task_report,'changed_files':[Path(renamed).name if name == Path(source_letter).name else name for name in task_report['changed_files']]}
         source_letter=renamed
     task_id=uuid.uuid4().hex
     now=time.monotonic()

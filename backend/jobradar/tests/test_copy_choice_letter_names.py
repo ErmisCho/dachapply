@@ -142,9 +142,11 @@ def test_recompile_renames_through_the_same_guard(client, owner, job, workspace,
 
 def test_exact_edit_keeps_its_edit_after_the_rename(owner, job, workspace, started):
     old = _legacy_letter(workspace, job, owner)
-    cv_tasks.start_cv_compile_task(job.id, owner.id, 'de', None, str(old), source_updates={str(old): 'EDITED'}, letter_key='motivationsschreiben')
+    report = {'changed_files': [old.name], 'main_changes': [], 'unsupported_requirements_not_claimed': []}
+    cv_tasks.start_cv_compile_task(job.id, owner.id, 'de', None, str(old), source_updates={str(old): 'EDITED'}, task_report=report, letter_key='motivationsschreiben')
     new = old.with_name(_labelled(job, owner)+'.tex')
     assert started[-1][5] == str(new) and started[-1][6] == {str(new): 'EDITED'}
+    assert started[-1][7]['changed_files'] == [new.name]  # the report names the file as it now is
 
 
 def test_a_taken_label_name_overwrites_nothing_and_keeps_the_old_name(owner, job, workspace, started):
