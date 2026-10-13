@@ -234,8 +234,8 @@ class JobLead(models.Model):
     # "can I still act on this", not "is the application still open". The complement (rejected, withdrawn,
     # skipped, archived) is never spelled out as its own list; it is just "not in this one".
     ACTIONABLE_STATUSES=['new','reviewed','to_apply','ready_to_submit','applied','interview','offer','accepted']
-    # The only home for the board's urgency thresholds. views.stale_rank orders by them and
-    # /api/auth/me/ ships them to the frontend badge, so the numbers are never written twice.
+    # The only home for the board's urgency thresholds. /api/auth/me/ ships them to the frontend
+    # badge, so the numbers are never written twice (TASK-277: they no longer reorder the board).
     STALE_APPLIED_DAYS=21  # applied/interview/offer with no movement since status_date
     STALE_UNAPPLIED_DAYS=30  # new/reviewed/to_apply/ready_to_submit never acted on since created_at (postings expire in weeks)
     DEADLINE_SOON_DAYS=7  # apply_by this close (or past) counts as urgent

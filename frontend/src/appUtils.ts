@@ -337,6 +337,7 @@ export function sortOrderingString(keys:SortKey[]):string{return keys.map(k=>(k.
 // beyond `max` are dropped, the same 3-key cap nextSortKeys already enforces when building the string,
 // so a saved value with more keys (e.g. tampered or from an older cap) is truncated rather than honoured.
 export function parseSortKeys(ordering?:string|null,max=3):SortKey[]{
+  if(ordering===RECOMMENDED_ORDERING)return []
   const keys=String(ordering||'').split(',').map(s=>s.trim()).filter(Boolean).map(k=>k.startsWith('-')?{key:k.slice(1),dir:'desc' as const}:{key:k,dir:'asc' as const})
   return keys.slice(0,max)
 }
@@ -613,11 +614,35 @@ export function mailboxEstimateWording(elapsedSeconds:number|null,estimatedSecon
 // build its own column buttons from this SAME key/label map instead of retyping the list a third time
 // (the board's own <select> options are the second, already-existing, copy).
 export const orderingKeyLabels:Record<string,string>={status:'Status',fit_score:'Fit score',priority:'Priority',created_at:'Newest',applied_at:'Applied date',updated_at:'Last update',feedback_due_date:'Feedback due'}
-export function describeOrdering(ordering?:string|null):string{
+export function describeOrdering(ordering?:string|null):string{return 'Sorted by: '+orderingLabel(ordering)}
+function orderingLabel(ordering?:string|null):string{
   const keys=String(ordering||'').split(',').map(s=>s.trim()).filter(Boolean)
-  if(!keys.length)return 'Sorted by: recommended'
-  return 'Sorted by: '+keys.map(k=>{const desc=k.startsWith('-');const key=desc?k.slice(1):k;return (orderingKeyLabels[key]||key)+(desc?' (desc)':'')}).join(', then ')
+  if(!keys.length||ordering===RECOMMENDED_ORDERING)return 'recommended'
+  return keys.map(k=>{const desc=k.startsWith('-');const key=desc?k.slice(1):k;return (orderingKeyLabels[key]||key)+(desc?' (desc)':'')}).join(', then ')
 }
+// TASK-277. 'recommended' is an explicit wire token: the server always answers it with the default
+// order (status group, fit, priority, newest), even when the account has saved board_sort_keys. An
+// EMPTY ordering still means "the saved sort if any, else the default" - so '' and 'recommended' only
+// coincide when nothing is saved, and the dropdown must not treat them as the same choice.
+export const RECOMMENDED_ORDERING='recommended'
+export const boardSortPresets:{value:string;label:string}[]=[{value:RECOMMENDED_ORDERING,label:'Sort: recommended'},{value:'status',label:'Sort: status'},{value:'status,-fit_score',label:'Sort: status, then fit score'},{value:'-fit_score',label:'Sort: fit score'},{value:'-created_at',label:'Sort: newest'},{value:'feedback_due_date',label:'Sort: feedback due'}]
+// What the board is really sorted by: the explicit ordering, else the account's saved keys, else the default.
+export function effectiveOrdering(ordering?:string|null,savedKeys?:string|null):string{return ordering||savedKeys||RECOMMENDED_ORDERING}
+// The select's value and options. A header-click combo or the saved sort gets its own named option, so
+// the browser never falls back to showing the first option ("recommended") for a value it cannot match
+// - and picking recommended then always is a real change event that sends ordering=recommended.
+export function boardSortChoice(ordering?:string|null,savedKeys?:string|null):{value:string;options:{value:string;label:string}[]}{
+  const options=[...boardSortPresets]
+  if(savedKeys)options.push({value:'',label:'Sort: saved — '+orderingLabel(savedKeys)})
+  const value=ordering||(savedKeys?'':RECOMMENDED_ORDERING)
+  if(!options.some(o=>o.value===value))options.push({value,label:'Sort: custom — '+orderingLabel(value)})
+  return {value,options}
+}
+// TASK-267 section headers only make sense while the server is grouping rows by status: recommended,
+// or no ordering with nothing saved (which the server answers with the same default).
+export function boardGroupedByStatus(ordering?:string|null,savedKeys?:string|null):boolean{return effectiveOrdering(ordering,savedKeys)===RECOMMENDED_ORDERING}
+// The /jobs/ query the board sends: empty filters are omitted (so an empty ordering stays absent).
+export function boardJobsQuery(f:Record<string,any>):string{const q=new URLSearchParams(Object.fromEntries(Object.entries(f).filter(([,v])=>v).map(([k,v])=>[k,String(v)])));q.set('board','1');return String(q)}
 
 // TASK-146 AC1/AC2/AC3. Splits GET /jobs/feedback-due/'s rows into overdue (< today) and
 // today-or-later, in the two groups the pane renders - a pure function so the grouping has a test
