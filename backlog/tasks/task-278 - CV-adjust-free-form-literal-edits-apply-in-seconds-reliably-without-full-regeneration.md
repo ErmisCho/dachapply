@@ -3,10 +3,10 @@ id: TASK-278
 title: >-
   CV adjust: free-form literal edits apply in seconds, reliably, without full
   regeneration
-status: Done
+status: In Progress
 assignee: []
 created_date: '2026-10-12 12:03'
-updated_date: '2026-10-13 07:52'
+updated_date: '2026-10-13 08:24'
 labels:
   - cv
   - performance
@@ -23,7 +23,7 @@ Owner request 2026-10-12: 'would it be possible that the local llm can just repl
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [x] #1 Deterministic phrasings bypass every model and apply like OLD:/NEW: blocks: at least 'replace "X" with "Y"', 'change "X" to "Y"', 'X -> Y' / 'X → Y' (quoted or unquoted single line), case-insensitive keywords, several per message; server time under 1s measured on the owner's real CV
+- [ ] #1 Deterministic phrasings bypass every model and apply like OLD:/NEW: blocks: at least 'replace "X" with "Y"', 'change "X" to "Y"', 'X -> Y' / 'X → Y' (quoted or unquoted single line), case-insensitive keywords, several per message; server time under 1s measured on the owner's real CV
 - [x] #2 Other instructions first go to an installed local model (ollama or LM Studio) that returns only a structured list of {old,new} edits or 'not literal'; it never returns a whole document. If no local model is installed or it errors/times out, the request falls back to full optimization with no user-visible failure
 - [x] #3 Reliability gate, applied to every edit from either route before anything is written: each old matches exactly once across the selected documents; every byte outside the replaced spans is identical to the source; the edited documents compile; page limits (CV max 2 pages, letter max 1) still hold. Any failure discards ALL edits of that request (never a partial apply) and falls back to full optimization
 - [x] #4 No invented content: every word an edit adds (present in new but not in old) appears in the owner's instruction text; otherwise the edit set is rejected and the request falls back. A test shows a model proposing an unrequested word is refused
@@ -31,7 +31,7 @@ Owner request 2026-10-12: 'would it be possible that the local llm can just repl
 - [x] #6 The task result lists each applied edit as old -> new and states which route ran (exact, deterministic, local-model, full optimization), so the owner can see exactly what changed
 - [x] #7 A committed evaluation set of at least 25 instructions (literal phrasings, ambiguous references, semantic requests, mixed, unrequested-content traps) run against the owner's local model: zero wrong edits applied (precision 100%), and the share handled without full optimization is measured and reported, not estimated
 - [x] #8 Local-model route latency measured on the owner's machine with the installed model: median and max over the evaluation set's literal cases reported; target median 10s or less
-- [x] #9 Existing exact OLD:/NEW: and from:/with: behaviour and its tests are unchanged; backend pytest, frontend npm test and tsc pass; verified end-to-end on the owner's localhost with one deterministic and one local-model edit
+- [ ] #9 Existing exact OLD:/NEW: and from:/with: behaviour and its tests are unchanged; backend pytest, frontend npm test and tsc pass; verified end-to-end on the owner's localhost with one deterministic and one local-model edit
 - [x] #10 With only the CV (or only the letter) ticked, OLD/NEW and from:/with: blocks found only in the unticked document are applied there (ticked document wins a block both contain); the run stays instant without AI and the report says the unticked document was updated
 <!-- AC:END -->
 
@@ -45,4 +45,6 @@ Backend only (the UI already renders report.main_changes). New module services/l
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-13 verified: merged #220 and follow-up #222. Real data on localhost with main (BEKO letter, all text changes reverted afterwards, tex byte-identical to original): letter-only OLD/NEW with only CV ticked applied without AI in <3s; 'should say X rather than Y' deterministic in ~2s; local model edit 'Stubenbastei 2 -> 3' with report 'Route: local model (gemma3:4b)' in ~9s incl. model load. Eval gemma3:4b: 0 wrong edits, 16/18 coverage, median 2.4s max 2.6s. #222 fixed a fallback found live (CV+letter sent to gemma3:4b returned non-existent text; gate refused correctly, then full AI ~49s).
+
+2026-10-13 asian-dad eval reopened this. AC1: measured on the owner's localhost (8000 via Vite), the deterministic revise endpoint took 1,080 / 1,074 / 2,247 ms, over the 1 s bar; a bare GET /api/auth/me/ took 1,028 ms in the same session, so nearly all of it is per-request baseline, not the route. AC9: exact OLD/NEW behaviour was deliberately changed by owner request (AC10: blocks found only in the unticked document now apply there instead of falling back), so 'behaviour unchanged' is not true as written; existing exact-route tests are untouched and pass. Both need an owner decision: accept/reword, or investigate the ~1 s localhost baseline.
 <!-- SECTION:NOTES:END -->
