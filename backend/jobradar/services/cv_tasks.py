@@ -13,7 +13,8 @@ from django.conf import settings
 from django.db import close_old_connections
 
 from jobradar.models import ApplicationNote, JobLead, UserProfile
-from jobradar.services.cv_generator import GenerationCancelled, generate_cv_package, preference_exclusion, recompile_generated_package
+from jobradar.services.cv_generator import GenerationCancelled, RecoverableGenerationError, generate_cv_package, preference_exclusion, read_revision_sources, recompile_generated_package
+from jobradar.services.literal_edits import NotLiteral, gate_literal_edits, literal_report, translate_literal_edits
 from jobradar.services.posting_fetch import fetch_posting_text
 
 
@@ -155,6 +156,8 @@ def _benchmark_row(task, now):
     key=task.get('_estimate_key') or ()
     if key and key[0] == 'compile-only':
         details={'route':'recompile'}
+    elif key and key[0] == 'literal-edit':
+        details={'route':'literal-edit'}
     elif len(key) == 7:
         provider,model,effort,speed,create_cv,create_letter,is_revision=key
         details={'route':'revision' if is_revision else 'generation','provider':provider,'model':model,'effort':effort,'speed':speed,'create_cv':create_cv,'create_letter':create_letter}
@@ -342,7 +345,7 @@ def _retry_missing_source(job):
     job.refresh_from_db()
 
 
-def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, cancel_event=None, auto_clipboard=True):
+def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, cancel_event=None, auto_clipboard=True, route_reason=''):
     close_old_connections()
     try:
         if cancel_event.is_set():
@@ -378,7 +381,11 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         if 'base_templates' in artifacts:
             _record_base_templates(job,artifacts['base_templates'])
         mark_ready_to_submit(job.id)
-        _update(task_id, status='ready', progress=100, stage='Ready', archive=archive, filename=filename, artifacts=artifacts, report=artifacts.get('report'), clipboard_tex=clipboard_tex, clipboard_copied=clipboard_copied, learned_preference=learned_preference, learned_preference_exclusion=learned_exclusion)
+        report=artifacts.get('report')
+        if revision_instructions and isinstance(report,dict):
+            # TASK-278 AC6: a readjustment names the route that produced it.
+            report={**report,'main_changes':[*report.get('main_changes',[]),'Route: full optimization'+(f' ({route_reason})' if route_reason else '')+'.']}
+        _update(task_id, status='ready', progress=100, stage='Ready', archive=archive, filename=filename, artifacts=artifacts, report=report, clipboard_tex=clipboard_tex, clipboard_copied=clipboard_copied, learned_preference=learned_preference, learned_preference_exclusion=learned_exclusion)
     except GenerationCancelled:
         _update(task_id, status='cancelled', stage='Cancelled', error='')
     except Exception as exc:
@@ -388,7 +395,10 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         close_old_connections()
 
 
-def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, source_updates, task_report, cancel_event):
+def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, source_updates, task_report, cancel_event, fall_back=False):
+    """Compile (with source_updates: edit, then compile) the latest documents. With fall_back, a
+    compile or page-limit failure -- raised before recompile_generated_package writes anything --
+    is returned as a reason instead of failing the task, so the caller can run full optimization."""
     close_old_connections()
     try:
         job=JobLead.objects.get(id=job_id)
@@ -404,9 +414,41 @@ def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, sou
     except GenerationCancelled:
         _update(task_id,status='cancelled',stage='Cancelled',error='')
     except Exception as exc:
+        if fall_back and isinstance(exc,RecoverableGenerationError):
+            return f'the edited document failed the compile check: {str(exc).splitlines()[0][:200]}'
         _update(task_id,status='failed',stage='Failed',error=str(exc).splitlines()[0][:500],diagnostics=getattr(exc,'diagnostics',str(exc)))
     finally:
         close_old_connections()
+    return ''
+
+
+def _run_literal(task_id, job_id, user_id, source_cv, source_letter, instructions, pairs, local_model, fallback, cancel_event):
+    """TASK-278: deterministic pairs (or the local model's translation) -> gate -> compile check ->
+    write. Any refusal on the way discards every edit and runs full optimization in this same task."""
+    try:
+        documents=read_revision_sources([source_cv,source_letter])
+        if documents is None:
+            raise NotLiteral('a selected source file is missing')
+        if pairs:
+            route='deterministic (no AI)'
+        else:
+            _update(task_id,status='running',progress=5,stage=f'Reading the edit with {local_model[1]}')
+            pairs=translate_literal_edits(documents,instructions,*local_model,cancel_event.is_set)
+            route=f'local model ({local_model[1]})'
+        updates,edits=gate_literal_edits(documents,instructions,pairs)
+        reason=_run_compile(task_id,job_id,user_id,fallback['cv_key'],source_cv,source_letter,updates,literal_report(updates,edits,route),cancel_event,fall_back=True)
+    except NotLiteral as exc:
+        reason=str(exc)
+    except GenerationCancelled:
+        _update(task_id,status='cancelled',stage='Cancelled',error='')
+        return
+    if not reason:
+        return
+    plan,defaults,estimate_key=_task_timing(fallback['provider'],fallback['model'],fallback['effort'],fallback['speed'],fallback['create_cv'],fallback['create_letter'],True)
+    with _lock:
+        if task_id in _tasks:
+            _tasks[task_id].update(_stage_plan=plan,_stage_defaults=defaults,_estimate_key=estimate_key)
+    _run(task_id,job_id,user_id,cancel_event=cancel_event,route_reason=reason,**fallback)
 
 
 def no_change_requested(instructions):
@@ -443,6 +485,23 @@ def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter
         _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':task_report,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('compile-only',bool(compile_cv),bool(compile_letter)),'_stage_times':{},'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in _tasks[task_id]['_stage_plan'])
     Thread(target=_run_compile,args=(task_id,job_id,user_id,cv_key,source_cv,source_letter,source_updates or {},task_report,cancel_event),name=f'cv-compile-{task_id[:8]}',daemon=True).start()
+    return task_id
+
+
+def start_cv_literal_task(job_id, user_id, source_cv, source_letter, instructions, pairs, local_model, fallback):
+    """TASK-278: a literal readjustment from deterministic `pairs` or, when pairs is None, from
+    `local_model`'s translation. `fallback` holds _run's keyword arguments (profile, cv_key, ...,
+    revision_instructions) for the full-optimization run that any refusal turns into."""
+    _cleanup()
+    task_id=uuid.uuid4().hex
+    now=time.monotonic()
+    cancel_event=Event()
+    plan=([] if pairs else ['working'])+(['compiling_cv','cv_compiled'] if source_cv else [])+(['compiling_letter','letter_compiled'] if source_letter else [])
+    config={key:fallback[key] for key in ('profile','cv_key','letter_key','create_letter','create_cv','provider','model','effort','speed')}
+    with _lock:
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_config':config,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'working':6,'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('literal-edit',bool(pairs),bool(source_cv),bool(source_letter)),'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in plan)
+    Thread(target=_run_literal,args=(task_id,job_id,user_id,source_cv,source_letter,instructions,pairs,local_model,fallback,cancel_event),name=f'cv-literal-{task_id[:8]}',daemon=True).start()
     return task_id
 
 

@@ -1144,7 +1144,9 @@ def latest_generated_artifacts(job, user=None, letter_key=''):
     return artifacts
 
 
-def exact_revision_plan(sources, instructions):
+def exact_revision_plan(sources, instructions, unselected=()):
+    """`unselected`: the job's other document, not ticked. A block found only there is applied to it
+    (TASK-278) instead of sending the whole request to full optimization; ticked documents win."""
     lines=(instructions or '').replace('\r\n','\n').split('\n')
     pairs=[]
     index=0
@@ -1174,51 +1176,68 @@ def exact_revision_plan(sources, instructions):
         if not old or not new: return None
         pairs.append((old,new))
     if not pairs: return None
+    documents=read_revision_sources(sources)
+    others=read_revision_sources(unselected) or {}
+    if documents is None: return None
+    changed=set()
+    for old,new in pairs:
+        selected=match_exact_pair(documents,old,new) or others and match_exact_pair(others,old,new)
+        if not selected: return None
+        path,start,end,replacement=selected
+        texts=documents if path in documents else others
+        if path and texts[path][start:end] != replacement:
+            texts[path]=texts[path][:start]+replacement+texts[path][end:]
+            changed.add(path)
+    return {path:{**others,**documents}[path] for path in changed}
+
+
+def read_revision_sources(sources):
+    """Read every selected source byte-for-byte (newline=''); None when a selected file is missing."""
     documents={}
     for path in sources:
         if path and Path(path).is_file():
             with Path(path).open(encoding='utf-8',newline='') as source:
                 documents[str(path)]=source.read()
     if len(documents) != len([path for path in sources if path]): return None
-    changed=set()
+    return documents
+
+
+def match_exact_pair(documents, old, new):
+    """Locate one OLD/NEW pair in `documents` with the TASK-214/215 rules (unique match, LaTeX
+    escape variant, CRLF variant, one bounded '...' wildcard line).
+
+    Returns (path, start, end, replacement) for the single match, ('', 0, 0, replacement) when OLD
+    occurs nowhere but NEW occurs exactly once (already applied), or None (ambiguous or missing).
+    """
     def latex(value): return re.sub(r'(?<!\\)([&%$#_])',r'\\\1',value)
-    for old,new in pairs:
-        old_lines=old.split('\n')
-        wildcard_lines=[line for line,value in enumerate(old_lines) if value.strip() == '...']
-        if wildcard_lines and (len(wildcard_lines) != 1 or wildcard_lines[0] in (0,len(old_lines)-1)):
-            return None
-        wildcard_parts=('\n'.join(old_lines[:wildcard_lines[0]]),'\n'.join(old_lines[wildcard_lines[0]+1:])) if wildcard_lines else None
-        variants=[(old,new)]
-        if '\n' not in old and '\\' not in old+new:
-            escaped=(latex(old),latex(new))
-            if escaped != variants[0]: variants.append(escaped)
-        variants += [(candidate.replace('\n','\r\n'),replacement.replace('\n','\r\n')) for candidate,replacement in list(variants) if '\n' in candidate]
-        selected=None
-        candidate_counts=[]
-        for candidate,replacement in variants:
-            if wildcard_lines:
-                separator='\r\n' if '\r\n' in candidate else '\n'
-                prefix,suffix=(part.replace('\n',separator) for part in wildcard_parts)
-                pattern=re.compile(re.escape(prefix)+'.*?'+re.escape(suffix),re.DOTALL)
-                matches=[(path,match.start(),match.end(),replacement) for path,text in documents.items() for match in pattern.finditer(text)]
-            else:
-                matches=[(path,match.start(),match.end(),replacement) for path,text in documents.items() for match in re.finditer(re.escape(candidate),text)]
-            candidate_counts.append(len(matches))
+    old_lines=old.split('\n')
+    wildcard_lines=[line for line,value in enumerate(old_lines) if value.strip() == '...']
+    if wildcard_lines and (len(wildcard_lines) != 1 or wildcard_lines[0] in (0,len(old_lines)-1)):
+        return None
+    wildcard_parts=('\n'.join(old_lines[:wildcard_lines[0]]),'\n'.join(old_lines[wildcard_lines[0]+1:])) if wildcard_lines else None
+    variants=[(old,new)]
+    if '\n' not in old and '\\' not in old+new:
+        escaped=(latex(old),latex(new))
+        if escaped != variants[0]: variants.append(escaped)
+    variants += [(candidate.replace('\n','\r\n'),replacement.replace('\n','\r\n')) for candidate,replacement in list(variants) if '\n' in candidate]
+    candidate_counts=[]
+    for candidate,replacement in variants:
+        if wildcard_lines:
+            separator='\r\n' if '\r\n' in candidate else '\n'
+            prefix,suffix=(part.replace('\n',separator) for part in wildcard_parts)
+            pattern=re.compile(re.escape(prefix)+'.*?'+re.escape(suffix),re.DOTALL)
+            matches=[(path,match.start(),match.end(),replacement) for path,text in documents.items() for match in pattern.finditer(text)]
+        else:
+            matches=[(path,match.start(),match.end(),replacement) for path,text in documents.items() for match in re.finditer(re.escape(candidate),text)]
+        candidate_counts.append(len(matches))
+        if len(matches) == 1:
+            return matches[0]
+    if not any(candidate_counts):
+        for _,replacement in variants:
+            matches=[path for path,text in documents.items() for _ in range(text.count(replacement))]
             if len(matches) == 1:
-                selected=matches[0]
-                break
-        if selected is None and not any(candidate_counts):
-            for _,replacement in variants:
-                matches=[path for path,text in documents.items() for _ in range(text.count(replacement))]
-                if len(matches) == 1:
-                    selected=('',0,0,replacement)
-                    break
-        if selected is None: return None
-        path,start,end,replacement=selected
-        if path and documents[path][start:end] != replacement:
-            documents[path]=documents[path][:start]+replacement+documents[path][end:]
-            changed.add(path)
-    return {path:documents[path] for path in changed}
+                return ('',0,0,replacement)
+    return None
 
 
 def _unique_destination(directory, filename):
