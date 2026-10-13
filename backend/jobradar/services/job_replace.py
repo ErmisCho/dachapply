@@ -68,6 +68,10 @@ def replace_job_with_supplied_data(job, data, user=None, clear_related=True):
         if getattr(job, field) != value:
             setattr(job, field, value)
             changed.append(field)
+    # TASK-280.1: the old requirements quoted the old posting; the importer re-derives them, verified.
+    if job.application_requirements:
+        job.application_requirements = {}
+        changed.append('application_requirements')
     for field, value in ownership.items():
         if getattr(job, field, None) != value:
             setattr(job, field, value)

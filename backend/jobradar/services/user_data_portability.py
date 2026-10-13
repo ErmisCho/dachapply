@@ -13,13 +13,14 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from jobradar.models import ApplicationNote, FollowUp, JobEvaluation, JobLead, PracticeSession, UserProfile
 from jobradar.services.access import owned_by
+from jobradar.services.application_requirements import normalize_application_requirements
 from jobradar.services.cleaning import clean_job_location
 from jobradar.services.cv_generator import delete_generated_metadata
 
 SCHEMA_VERSION = 1
 APP_NAME = 'dachapply'
 
-JOB_FIELDS = ['company','title','location','url','source','raw_description','original_source_text','submitted_by','submitter_reason','salary_info','language_requirements','work_mode','status','status_date','applied_at','interview_stage','interview_total','interview_at','interview_note','apply_by','last_update_date','feedback_due_date']
+JOB_FIELDS = ['company','title','location','url','source','raw_description','original_source_text','submitted_by','submitter_reason','salary_info','language_requirements','application_requirements','work_mode','status','status_date','applied_at','interview_stage','interview_total','interview_at','interview_note','apply_by','last_update_date','feedback_due_date']
 EVALUATION_FIELDS = ['fit_score','priority','recommendation','summary','main_match_reasons','main_gaps','required_skills','nice_to_have_skills','matched_skills','missing_skills','cv_adjustment_notes','interview_prep_notes','risk_notes','next_action','structured_json_raw']
 NOTE_FIELDS = ['note','note_type']
 FOLLOWUP_FIELDS = ['follow_up_date','reason','completed','sent_at']
@@ -255,9 +256,17 @@ def _parse_value(obj, field, value):
     # otherwise (applied_at, interview_at, apply_by), so an exported ISO string was
     # compared against a date object and every re-import reported a false conflict.
     model_field = obj._meta.get_field(field)
+    if field == 'application_requirements':
+        # TASK-280.1: CSV/XLSX carry it as a JSON string; null or junk becomes "not analysed yet".
+        if isinstance(value, str):
+            try:
+                value = json.loads(value) if value.strip() else {}
+            except ValueError:
+                value = {}
+        return value if isinstance(value, dict) else {}
     is_temporal = isinstance(model_field, DateField)
     if value in ('', None):
-        return None if is_temporal else value
+        return None if is_temporal or model_field.null else value  # CSV gives "" for an empty number too
     if is_temporal:
         return model_field.to_python(value) if isinstance(value, str) else value
     if field == 'location':
@@ -389,6 +398,13 @@ def import_user_export(user, payload):
                 obj.title = obj.title or 'Untitled role'
                 obj.save()
                 summary['created']['jobs'] += 1
+            if 'application_requirements' in item:
+                # TASK-280.1: same normaliser as every other write, against the posting as saved (save()
+                # keeps an existing original_source_text). Keeps the file's own source (owner/analysis).
+                normalized = normalize_application_requirements(obj.application_requirements, obj)
+                if normalized != obj.application_requirements:
+                    obj.application_requirements = normalized
+                    obj.save(update_fields=['application_requirements'])
             if item.get('id'):
                 job_map[item['id']] = obj
 
