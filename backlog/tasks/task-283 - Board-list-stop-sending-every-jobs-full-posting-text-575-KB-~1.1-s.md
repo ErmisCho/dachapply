@@ -22,7 +22,7 @@ Re-measured 2026-10-13 on the owner's localhost (111 jobs): the response is gzip
 <!-- AC:BEGIN -->
 - [ ] #1 Board list (/api/jobs/?board=1, owner's 111 jobs, localhost against Neon) median time-to-first-byte over 20 warm requests is under 200 ms
 - [x] #2 The board list response body is byte-identical before and after the server change (same hash of the full JSON for the same data)
-- [ ] #3 Returning to the board from a job page shows the previous rows immediately (no skeleton, no wait for the request) and then replaces them with the fresh response - verified in the browser
+- [x] #3 Returning to the board from a job page shows the previous rows immediately (no skeleton, no wait for the request) and then replaces them with the fresh response - verified in the browser
 - [x] #4 The cached rows are never shown to a different account: cache is keyed by user and cleared on logout
 - [x] #5 Query counts stay pinned (TASK-282 tests) and the full backend suite, frontend tests and tsc pass
 <!-- AC:END -->
@@ -35,5 +35,6 @@ Re-measured 2026-10-13 on the owner's localhost (111 jobs): the response is gzip
 - Board list loads only the columns its serializers read: no full postings, no raw LLM replies, has_pending_source answered in SQL, profile reduced to the two board columns (~1.8 MB -> ~0.3 MB from Neon per request).
 - Frontend: last board rows kept in memory per user+query, painted on return while the list revalidates; cleared by clearAuthCache (logout/login/401).
 - AC#1 (<200 ms) NOT met: what remains is 4 Neon round trips (~30 ms each) plus the analysis text the board's popups and skill tooltips read, and ~150 ms of Python. Owner chose to ship this and keep the task open for the target.
-- AC#3 to be verified in the browser on the relaunched localhost.
+- AC#3 verified on the relaunched localhost (37ddac8): back from a job page, cached rows visible after 38-87 ms; a marker injected into the fresh response replaced them at 273 ms.
+- Localhost after merge (TTFB, warm): all 111 jobs median 427 ms (min 367); owner's saved filter (34 jobs) median 256 ms (min 241).
 <!-- SECTION:NOTES:END -->
