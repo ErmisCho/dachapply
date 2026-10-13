@@ -1,9 +1,10 @@
 ---
 id: TASK-282
 title: 'API: logged-in requests answer in about 100 ms on the local runtime'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-13 09:56'
+updated_date: '2026-10-13 10:41'
 labels:
   - performance
 dependencies: []
@@ -24,3 +25,9 @@ Owner request 2026-10-13 ('get it to 100ms'). After TASK-281 the local runtime (
 - [ ] #4 Backend tests pin the reduced query counts (assertNumQueries or equivalent) so they cannot silently regress; full backend suite and CI pass
 - [ ] #5 Production behaviour is unchanged except fewer queries
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-13 merged part 1: query counts me 4->3, detail 5->4, board 6->5 (excl. usage), usage middleware 8->4 writes, local-only cached_db sessions. Measured direct on Neon: /api/auth/me/ 187->149 ms, /api/jobs/<id>/ 227->154 ms. Board list is ~1.1 s because the response is 575 KB (full posting text for every job) - not query count; separate follow-up. Vite proxy adds ~1 ms (measured). Not Done: 100 ms target not met yet.
+<!-- SECTION:NOTES:END -->

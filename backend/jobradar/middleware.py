@@ -82,18 +82,24 @@ class UserUsageMiddleware:
         finally:
             connection.close()
 
+    @staticmethod
+    def bump(rows, updates, get_or_create):
+        """F()-increment the counter row in `rows`, creating it first only when the UPDATE matched
+        nothing; returns whether it was created. TASK-282: get_or_create-then-update was two round
+        trips per counter on every request, and all but the first request of a day/visitor find the
+        row, so they now pay one. A lost create race still lands on get_or_create's get, and the
+        increment is still the same single F() UPDATE."""
+        if rows.update(**updates):
+            return False
+        row, created = get_or_create()
+        type(row).objects.filter(pk=row.pk).update(**updates)
+        return created
+
     def record_usage_values(self, now, date, visitor_id, real_user_id):
         is_real_authenticated = real_user_id is not None
+        counter_defaults = {'request_count': 0, 'last_seen_at': now}
 
-        site_usage, _ = SiteDailyUsage.objects.get_or_create(
-            date=date,
-            defaults={'request_count': 0, 'last_seen_at': now},
-        )
         if visitor_id:
-            visitor, _ = SiteVisitor.objects.get_or_create(
-                visitor_id=visitor_id,
-                defaults={'last_seen_at': now},
-            )
             visitor_updates = {
                 'request_count': F('request_count') + 1,
                 'last_seen_at': now,
@@ -101,18 +107,16 @@ class UserUsageMiddleware:
             }
             if is_real_authenticated:
                 visitor_updates['user_id'] = real_user_id
-            SiteVisitor.objects.filter(pk=visitor.pk).update(**visitor_updates)
-            daily_visitor, daily_visitor_created = VisitorDailyUsage.objects.get_or_create(
-                visitor=visitor,
-                date=date,
-                defaults={'request_count': 0, 'last_seen_at': now},
-            )
+            self.bump(SiteVisitor.objects.filter(visitor_id=visitor_id), visitor_updates,
+                      lambda: SiteVisitor.objects.get_or_create(visitor_id=visitor_id, defaults={'last_seen_at': now}))
             daily_visitor_updates = {
                 'request_count': F('request_count') + 1,
                 'last_seen_at': now,
                 'had_authenticated' if is_real_authenticated else 'had_anonymous': True,
             }
-            VisitorDailyUsage.objects.filter(pk=daily_visitor.pk).update(**daily_visitor_updates)
+            daily_visitor_created = self.bump(
+                VisitorDailyUsage.objects.filter(visitor__visitor_id=visitor_id, date=date), daily_visitor_updates,
+                lambda: VisitorDailyUsage.objects.get_or_create(visitor=SiteVisitor.objects.get(visitor_id=visitor_id), date=date, defaults=counter_defaults))
         else:
             daily_visitor_created = False
 
@@ -126,17 +130,12 @@ class UserUsageMiddleware:
             site_updates['authenticated_count'] = F('authenticated_count') + 1
         else:
             site_updates['anonymous_count'] = F('anonymous_count') + 1
-        SiteDailyUsage.objects.filter(pk=site_usage.pk).update(**site_updates)
+        self.bump(SiteDailyUsage.objects.filter(date=date), site_updates,
+                  lambda: SiteDailyUsage.objects.get_or_create(date=date, defaults=counter_defaults))
 
         if not is_real_authenticated:
             return
 
-        usage, _ = UserDailyUsage.objects.get_or_create(
-            user_id=real_user_id,
-            date=date,
-            defaults={'request_count': 0, 'last_seen_at': now},
-        )
-        UserDailyUsage.objects.filter(pk=usage.pk).update(
-            request_count=F('request_count') + 1,
-            last_seen_at=now,
-        )
+        self.bump(UserDailyUsage.objects.filter(user_id=real_user_id, date=date),
+                  {'request_count': F('request_count') + 1, 'last_seen_at': now},
+                  lambda: UserDailyUsage.objects.get_or_create(user_id=real_user_id, date=date, defaults=counter_defaults))

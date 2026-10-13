@@ -1,0 +1,508 @@
+{
+ "me": {
+  "username": "qc-owner",
+  "is_staff": true,
+  "is_demo": false,
+  "can_use_mailbox": true,
+  "submit_for_username": null,
+  "requested_submit_for_username": null,
+  "is_friend_submitter": false,
+  "can_generate_cv": false,
+  "cv_generation_notice": "",
+  "candidate_profile_missing": false,
+  "email_verified": true,
+  "feedback_url": "mailto:ermis.chorinopoulos@gmail.com?subject=DACHApply%20feedback",
+  "board_thresholds": {
+   "stale_applied_days": 21,
+   "stale_unapplied_days": 30,
+   "deadline_soon_days": 7,
+   "unapplied_statuses": [
+    "new",
+    "reviewed",
+    "to_apply",
+    "ready_to_submit"
+   ],
+   "dated_statuses": [
+    "applied",
+    "interview",
+    "offer"
+   ],
+   "actionable_statuses": [
+    "new",
+    "reviewed",
+    "to_apply",
+    "ready_to_submit",
+    "applied",
+    "interview",
+    "offer",
+    "accepted"
+   ]
+  },
+  "board_status_order": [
+   "new",
+   "interview",
+   "reviewed",
+   "to_apply",
+   "ready_to_submit",
+   "applied",
+   "offer",
+   "accepted",
+   "rejected",
+   "withdrawn",
+   "skipped",
+   "archived"
+  ],
+  "board_status_order_custom": false,
+  "board_sort_keys": ""
+ },
+ "job_detail": {
+  "id": 904,
+  "latest_evaluation": {
+   "id": 704,
+   "skill_statuses": {
+    "Python": {
+     "status": "match",
+     "display": "Python"
+    },
+    "Django": {
+     "status": "match",
+     "display": "Django"
+    },
+    "Go": {
+     "status": "match",
+     "display": "Go"
+    },
+    "Kubernetes": {
+     "status": "match",
+     "display": "Kubernetes"
+    }
+   },
+   "fit_score": 70,
+   "priority": "medium",
+   "recommendation": "apply",
+   "summary": "Summary 4",
+   "main_match_reasons": [],
+   "main_gaps": [],
+   "required_skills": [
+    "Python",
+    "Django"
+   ],
+   "nice_to_have_skills": [
+    "Go"
+   ],
+   "matched_skills": [
+    "Python"
+   ],
+   "missing_skills": [
+    "Kubernetes"
+   ],
+   "cv_adjustment_notes": "",
+   "interview_prep_notes": "",
+   "risk_notes": "",
+   "next_action": "",
+   "structured_json_raw": {},
+   "created_at": "2026-10-01T12:00:00+02:00",
+   "updated_at": "2026-10-01T12:00:00+02:00",
+   "job": 904
+  },
+  "has_pending_source": false,
+  "created_by_username": "qc-owner",
+  "created_by_email": "owner@example.test",
+  "submitted_for_username": "",
+  "submitted_for_email": "",
+  "url": "https://jobs.example.test/4",
+  "company": "Company 4",
+  "title": "Engineer 4",
+  "location": "Berlin",
+  "source": "",
+  "raw_description": "Posting 4",
+  "original_source_text": "Posting 4",
+  "pending_source_text": "",
+  "pending_source_fetched_at": null,
+  "dismissed_source_hash": "",
+  "source_checked_at": null,
+  "source_fetch_error": "",
+  "submitted_by": "",
+  "submitter_reason": "",
+  "salary_info": "",
+  "language_requirements": "",
+  "work_mode": "unknown",
+  "status": "applied",
+  "status_date": null,
+  "applied_at": "2026-10-13",
+  "interview_stage": null,
+  "interview_total": null,
+  "interview_at": null,
+  "interview_note": "",
+  "apply_by": null,
+  "last_update_date": null,
+  "feedback_due_date": null,
+  "created_at": "2026-10-01T12:00:00+02:00",
+  "updated_at": "2026-10-01T12:00:00+02:00",
+  "created_by": 501,
+  "submitted_for": null
+ },
+ "board_list": [
+  {
+   "id": 901,
+   "latest_evaluation": {
+    "id": 701,
+    "fit_score": 55,
+    "priority": "medium",
+    "recommendation": "apply",
+    "summary": "Summary 1",
+    "main_match_reasons": [],
+    "main_gaps": [],
+    "required_skills": [
+     "Python",
+     "Django"
+    ],
+    "matched_skills": [
+     "Python"
+    ],
+    "missing_skills": [
+     "Kubernetes"
+    ],
+    "skill_statuses": {
+     "Python": "match",
+     "Django": "match",
+     "Kubernetes": "match"
+    }
+   },
+   "has_pending_source": false,
+   "created_by_username": "qc-owner",
+   "created_by_email": "owner@example.test",
+   "submitted_for_username": "",
+   "submitted_for_email": "",
+   "url": "https://jobs.example.test/1",
+   "has_mailbox_history": false,
+   "note_preview": "Note for job 1 more text",
+   "company": "Company 1",
+   "title": "Engineer 1",
+   "location": "Berlin",
+   "source": "",
+   "submitted_by": "",
+   "submitter_reason": "",
+   "salary_info": "",
+   "language_requirements": "",
+   "work_mode": "unknown",
+   "status": "new",
+   "status_date": null,
+   "applied_at": null,
+   "interview_stage": null,
+   "interview_total": null,
+   "interview_at": null,
+   "interview_note": "",
+   "apply_by": null,
+   "last_update_date": null,
+   "feedback_due_date": null,
+   "created_at": "2026-10-01T12:00:00+02:00",
+   "updated_at": "2026-10-01T12:00:00+02:00",
+   "created_by": 501,
+   "submitted_for": null
+  },
+  {
+   "id": 906,
+   "latest_evaluation": null,
+   "has_pending_source": false,
+   "created_by_username": "qc-owner",
+   "created_by_email": "owner@example.test",
+   "submitted_for_username": "",
+   "submitted_for_email": "",
+   "url": "https://jobs.example.test/6",
+   "has_mailbox_history": false,
+   "note_preview": "",
+   "company": "Company 6",
+   "title": "Engineer 6",
+   "location": "Berlin",
+   "source": "",
+   "submitted_by": "",
+   "submitter_reason": "",
+   "salary_info": "",
+   "language_requirements": "",
+   "work_mode": "unknown",
+   "status": "new",
+   "status_date": null,
+   "applied_at": null,
+   "interview_stage": null,
+   "interview_total": null,
+   "interview_at": null,
+   "interview_note": "",
+   "apply_by": null,
+   "last_update_date": null,
+   "feedback_due_date": null,
+   "created_at": "2026-10-01T12:00:00+02:00",
+   "updated_at": "2026-10-01T12:00:00+02:00",
+   "created_by": 501,
+   "submitted_for": null
+  },
+  {
+   "id": 950,
+   "latest_evaluation": null,
+   "has_pending_source": null,
+   "created_by_username": "qc-owner",
+   "created_by_email": "owner@example.test",
+   "submitted_for_username": "qc-friend",
+   "submitted_for_email": "friend@example.test",
+   "url": "https://jobs.example.test/friend",
+   "has_mailbox_history": null,
+   "note_preview": "",
+   "company": "Friend Co",
+   "title": "Friend role",
+   "location": "",
+   "source": "",
+   "submitted_by": "",
+   "submitter_reason": "",
+   "salary_info": "",
+   "language_requirements": "",
+   "work_mode": "unknown",
+   "status": "new",
+   "status_date": null,
+   "applied_at": null,
+   "interview_stage": null,
+   "interview_total": null,
+   "interview_at": null,
+   "interview_note": "",
+   "apply_by": null,
+   "last_update_date": null,
+   "feedback_due_date": null,
+   "created_at": "2026-10-01T12:00:00+02:00",
+   "updated_at": "",
+   "created_by": null,
+   "submitted_for": null,
+   "submission_only": true
+  },
+  {
+   "id": 905,
+   "latest_evaluation": {
+    "id": 705,
+    "fit_score": 75,
+    "priority": "low",
+    "recommendation": "apply",
+    "summary": "Summary 5",
+    "main_match_reasons": [],
+    "main_gaps": [],
+    "required_skills": [
+     "Python",
+     "Django"
+    ],
+    "matched_skills": [
+     "Python"
+    ],
+    "missing_skills": [
+     "Kubernetes"
+    ],
+    "skill_statuses": {
+     "Python": "match",
+     "Django": "match",
+     "Kubernetes": "match"
+    }
+   },
+   "has_pending_source": false,
+   "created_by_username": "qc-owner",
+   "created_by_email": "owner@example.test",
+   "submitted_for_username": "",
+   "submitted_for_email": "",
+   "url": "https://jobs.example.test/5",
+   "has_mailbox_history": false,
+   "note_preview": "Note for job 5 more text",
+   "company": "Company 5",
+   "title": "Engineer 5",
+   "location": "Berlin",
+   "source": "",
+   "submitted_by": "",
+   "submitter_reason": "",
+   "salary_info": "",
+   "language_requirements": "",
+   "work_mode": "unknown",
+   "status": "interview",
+   "status_date": null,
+   "applied_at": null,
+   "interview_stage": null,
+   "interview_total": null,
+   "interview_at": null,
+   "interview_note": "",
+   "apply_by": null,
+   "last_update_date": null,
+   "feedback_due_date": null,
+   "created_at": "2026-10-01T12:00:00+02:00",
+   "updated_at": "2026-10-01T12:00:00+02:00",
+   "created_by": 501,
+   "submitted_for": null
+  },
+  {
+   "id": 902,
+   "latest_evaluation": {
+    "id": 702,
+    "fit_score": 60,
+    "priority": "low",
+    "recommendation": "apply",
+    "summary": "Summary 2",
+    "main_match_reasons": [],
+    "main_gaps": [],
+    "required_skills": [
+     "Python",
+     "Django"
+    ],
+    "matched_skills": [
+     "Python"
+    ],
+    "missing_skills": [
+     "Kubernetes"
+    ],
+    "skill_statuses": {
+     "Python": "match",
+     "Django": "match",
+     "Kubernetes": "match"
+    }
+   },
+   "has_pending_source": false,
+   "created_by_username": "qc-owner",
+   "created_by_email": "owner@example.test",
+   "submitted_for_username": "",
+   "submitted_for_email": "",
+   "url": "https://jobs.example.test/2",
+   "has_mailbox_history": false,
+   "note_preview": "",
+   "company": "Company 2",
+   "title": "Engineer 2",
+   "location": "Berlin",
+   "source": "",
+   "submitted_by": "",
+   "submitter_reason": "",
+   "salary_info": "",
+   "language_requirements": "",
+   "work_mode": "unknown",
+   "status": "reviewed",
+   "status_date": null,
+   "applied_at": null,
+   "interview_stage": null,
+   "interview_total": null,
+   "interview_at": null,
+   "interview_note": "",
+   "apply_by": null,
+   "last_update_date": null,
+   "feedback_due_date": null,
+   "created_at": "2026-10-01T12:00:00+02:00",
+   "updated_at": "2026-10-01T12:00:00+02:00",
+   "created_by": 501,
+   "submitted_for": null
+  },
+  {
+   "id": 903,
+   "latest_evaluation": {
+    "id": 703,
+    "fit_score": 65,
+    "priority": "high",
+    "recommendation": "apply",
+    "summary": "Summary 3",
+    "main_match_reasons": [],
+    "main_gaps": [],
+    "required_skills": [
+     "Python",
+     "Django"
+    ],
+    "matched_skills": [
+     "Python"
+    ],
+    "missing_skills": [
+     "Kubernetes"
+    ],
+    "skill_statuses": {
+     "Python": "match",
+     "Django": "match",
+     "Kubernetes": "match"
+    }
+   },
+   "has_pending_source": false,
+   "created_by_username": "qc-owner",
+   "created_by_email": "owner@example.test",
+   "submitted_for_username": "",
+   "submitted_for_email": "",
+   "url": "https://jobs.example.test/3",
+   "has_mailbox_history": false,
+   "note_preview": "Note for job 3 more text",
+   "company": "Company 3",
+   "title": "Engineer 3",
+   "location": "Berlin",
+   "source": "",
+   "submitted_by": "",
+   "submitter_reason": "",
+   "salary_info": "",
+   "language_requirements": "",
+   "work_mode": "unknown",
+   "status": "to_apply",
+   "status_date": null,
+   "applied_at": null,
+   "interview_stage": null,
+   "interview_total": null,
+   "interview_at": null,
+   "interview_note": "",
+   "apply_by": null,
+   "last_update_date": null,
+   "feedback_due_date": null,
+   "created_at": "2026-10-01T12:00:00+02:00",
+   "updated_at": "2026-10-01T12:00:00+02:00",
+   "created_by": 501,
+   "submitted_for": null
+  },
+  {
+   "id": 904,
+   "latest_evaluation": {
+    "id": 704,
+    "fit_score": 70,
+    "priority": "medium",
+    "recommendation": "apply",
+    "summary": "Summary 4",
+    "main_match_reasons": [],
+    "main_gaps": [],
+    "required_skills": [
+     "Python",
+     "Django"
+    ],
+    "matched_skills": [
+     "Python"
+    ],
+    "missing_skills": [
+     "Kubernetes"
+    ],
+    "skill_statuses": {
+     "Python": "match",
+     "Django": "match",
+     "Kubernetes": "match"
+    }
+   },
+   "has_pending_source": false,
+   "created_by_username": "qc-owner",
+   "created_by_email": "owner@example.test",
+   "submitted_for_username": "",
+   "submitted_for_email": "",
+   "url": "https://jobs.example.test/4",
+   "has_mailbox_history": true,
+   "note_preview": "",
+   "company": "Company 4",
+   "title": "Engineer 4",
+   "location": "Berlin",
+   "source": "",
+   "submitted_by": "",
+   "submitter_reason": "",
+   "salary_info": "",
+   "language_requirements": "",
+   "work_mode": "unknown",
+   "status": "applied",
+   "status_date": null,
+   "applied_at": "2026-10-13",
+   "interview_stage": null,
+   "interview_total": null,
+   "interview_at": null,
+   "interview_note": "",
+   "apply_by": null,
+   "last_update_date": null,
+   "feedback_due_date": null,
+   "created_at": "2026-10-01T12:00:00+02:00",
+   "updated_at": "2026-10-01T12:00:00+02:00",
+   "created_by": 501,
+   "submitted_for": null
+  }
+ ]
+}
