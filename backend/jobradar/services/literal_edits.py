@@ -47,7 +47,11 @@ _FORMS=((r'(?:replace)',r'with'),(r'(?:change)',r'to'),('',r'->|\u2192'))
 _BULLET=re.compile(r'^\s*(?:[-*\u2022]|\d+[.)])\s+')
 _PLEASE=re.compile(r'^please\s+',re.IGNORECASE)
 _GOAL=re.compile(r'^(?:be|sound|read|look|feel|make|more|less|something|shorter|longer|better|fit|match|reflect|focus|emphasi[sz]e|highlight|mention|include)\b',re.IGNORECASE)
-_CLAUSE=re.compile(r'\b(?:and|also|then|but|plus|und|auch)\b|[.!?;]\s',re.IGNORECASE)
+# A '.' after a digit is a German date ('1. Oktober'), not the end of a sentence.
+_CLAUSE=re.compile(r'\b(?:and|also|then|but|plus|und|auch)\b|(?<!\d)[.!?;]\s',re.IGNORECASE)
+# TASK-278 follow-up: '... should say NEW rather than OLD' names the new text first.
+_INVERTED=re.compile(r'^(?:.*?\s)?(?:say|says|read|reads|lauten|lautet)\s+(.+?)\s+(?:rather\s+than|instead\s+of|anstatt|statt)\s+(.+?)\s*[.!]?$',re.IGNORECASE|re.DOTALL)
+_INVERTED_SEPARATOR=re.compile(r'\b(?:rather\s+than|instead\s+of|anstatt|statt)\b',re.IGNORECASE)
 _KEEP_REST=re.compile(r"^(?:please\s+)?(?:(?:keep|leave)\s+(?:everything|all|the\s+rest)\s+else\s+(?:unchanged|as\s+is|the\s+same)|(?:do\s+not|don't)\s+change\s+anything\s+else)[.!]?$",re.IGNORECASE)
 
 
@@ -61,6 +65,12 @@ def _parse_segment(segment):
     """One edit from one segment, or None. Separators inside quotes are fine; unquoted text must
     contain its separator exactly once, otherwise the split is ambiguous and nothing is claimed."""
     segment=_PLEASE.sub('',_BULLET.sub('',segment).strip()).strip()
+    inverted=_INVERTED.match(segment)
+    if inverted and len(_INVERTED_SEPARATOR.findall(segment)) == 1:
+        new,old=(part.strip() for part in inverted.groups())
+        if any(';' in part or _CLAUSE.search(part) and _quoted(part) is None for part in (new,old)) or _quoted(new) is None and _GOAL.match(new):
+            return None
+        return (_quoted(old) if _quoted(old) is not None else old),(_quoted(new) if _quoted(new) is not None else new)
     for verb,separator in _FORMS:
         head=rf'^{verb}\s+' if verb else '^'
         # Lazy and greedy must agree: `replace 'a' with 'b' and 'c' with 'd'` splits two ways.
@@ -91,7 +101,7 @@ def _parse_segment(segment):
 
 def deterministic_edit_pairs(instructions):
     """Pairs for an instruction made only of `replace "X" with "Y"`, `change "X" to "Y"`,
-    `X -> Y` / `X → Y` lines (quotes optional, keywords case-insensitive, several per message, one
+    `X -> Y` / `X → Y` and `... should say Y rather than / instead of X` lines (quotes optional, keywords case-insensitive, several per message, one
     per line or separated by ';'). None as soon as any line is something else -- no partial claim."""
     pairs=[]
     for line in (instructions or '').replace('\r\n','\n').split('\n'):
@@ -119,6 +129,7 @@ word words text name title role city location phone number mobile email e mail a
 line entry instead moved now keep everything else unchanged all rest same do not don t anything
 ersetze ersetzen durch mit zu statt ändere ändern bitte die der das den dem mein meine meinen ist
 soll sollte jetzt neu
+rather than anstatt lauten lautet letter cv resume date datum lebenslauf anschreiben motivationsschreiben brief zeile
 '''.split())
 
 

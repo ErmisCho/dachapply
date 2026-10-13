@@ -129,6 +129,9 @@ def _assert_fell_back(env, task):
     ("replace 'R&D' with 'research'",[('R\\&D','research')]),
     ('- change "German (C1)" to "German (C2)"\n- replace "Greek (native)" with "Greek (C2)"\nKeep everything else unchanged.',[('German (C1)','German (C2)'),('Greek (native)','Greek (C2)')]),
     ('replace "Docker" with "Podman"; change "University of Bremen" to "University of Hamburg"',[('Docker','Podman'),('University of Bremen','University of Hamburg')]),
+    # Localhost finding: the new text first, and the location words around it.
+    ('In the CV the city line should say Berlin rather than Hamburg',[('Hamburg','Berlin')]),
+    ('The line should read "University of Hamburg" instead of "University of Bremen".',[('University of Bremen','University of Hamburg')]),
 ])
 def test_deterministic_phrasings_apply_without_any_model(env, instructions, pairs):
     task=env.revise(instructions)
@@ -244,3 +247,11 @@ def test_gate_splices_only_the_matched_spans_and_checks_the_rest():
 ])
 def test_parser_never_claims_mixed_or_ambiguous_wording(instructions):
     assert literal_edits.deterministic_edit_pairs(instructions) is None
+
+
+def test_inverted_phrasing_parses_german_dates_and_never_claims_a_goal():
+    pairs=literal_edits.deterministic_edit_pairs
+    assert pairs('In the letter the date line should say Wien, 1. Oktober 2026 rather than Wien, 13. Oktober 2026')==[('Wien, 13. Oktober 2026','Wien, 1. Oktober 2026')]
+    assert pairs('Make it sound confident rather than arrogant') is None
+    assert pairs('The summary should read more concise rather than long') is None
+    assert pairs('It should say Berlin rather than Hamburg and rather than Bremen') is None
