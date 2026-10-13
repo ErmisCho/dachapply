@@ -1,9 +1,10 @@
 ---
 id: TASK-282
 title: 'API: logged-in requests answer in about 100 ms on the local runtime'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-13 09:56'
+updated_date: '2026-10-13 10:12'
 labels:
   - performance
 dependencies: []

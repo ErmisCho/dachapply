@@ -30,7 +30,7 @@ from rest_framework.response import Response
 from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile, InviteCode
 from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxDraftSerializer, MailboxMessageListSerializer, MailboxMessageSerializer, MailboxMessageWithSuggestionsSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, invalid_email_addresses, normalize_job_url
 from .services.job_evaluator import evaluate_jobs
-from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, has_candidate_profile, user_profile_settings
+from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, _profile_parts, user_profile_settings
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
@@ -723,12 +723,16 @@ def delete_account(request):
 
 @api_view(['GET'])
 def me(request):
-    profile=getattr(request.user, 'jobradar_profile', None)
+    # TASK-282: one query for the profile and both friend links, and the same row answers
+    # candidate_profile_missing (it used to be re-read by has_candidate_profile) -- it is queried
+    # fresh, never a reused cached relation, which is the property has_candidate_profile needs.
+    profile=UserProfile.objects.select_related('submit_for','requested_submit_for').filter(user=request.user).first()
+    request.user.jobradar_profile=profile  # is_cv_owner / is_email_verified read this relation
     submit_for=profile.submit_for if profile else None
     requested=profile.requested_submit_for if profile else None
     # candidate_profile_missing is the nudge signal: true means every prompt endpoint will refuse
     # with 400 {'code':'candidate_profile_required'} until the user fills in Settings -> profile.
-    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'is_demo':is_demo_user(request.user), 'can_use_mailbox':is_mailbox_owner(request.user), 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user), 'cv_generation_notice':'' if settings.CODEX_CV_ENABLED else CV_LOCAL_ONLY_NOTICE, 'candidate_profile_missing':not has_candidate_profile(request.user), 'email_verified':is_email_verified(request.user), 'feedback_url':settings.FEEDBACK_URL, 'board_thresholds':BOARD_THRESHOLDS,
+    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'is_demo':is_demo_user(request.user), 'can_use_mailbox':is_mailbox_owner(request.user), 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user), 'cv_generation_notice':'' if settings.CODEX_CV_ENABLED else CV_LOCAL_ONLY_NOTICE, 'candidate_profile_missing':not (profile and _profile_parts(profile)), 'email_verified':is_email_verified(request.user), 'feedback_url':settings.FEEDBACK_URL, 'board_thresholds':BOARD_THRESHOLDS,
         # TASK-267: the effective (full) status order plus whether it is custom, and the saved sort,
         # so the board knows whether grouping is active without a second request.
         'board_status_order':JobLead.effective_status_order(profile.board_status_order if profile else ''),
@@ -815,7 +819,9 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         # allowlist, same 3-key cap, same degrade-on-hostile-input -- so there is no second parser to
         # keep in sync with the one that already guards against ?ordering=-created_by__password.
         raw_ordering=p.get('ordering')
-        profile=getattr(self.request.user, 'jobradar_profile', None)
+        # TASK-282: only the list's row order reads the profile. Detail actions resolve one row with
+        # get(), which drops the ordering anyway, so reading it there was a wasted round trip.
+        profile=getattr(self.request.user, 'jobradar_profile', None) if self.action == 'list' else None
         if raw_ordering is None:
             raw_ordering=profile.board_sort_keys if profile else ''
         qs=qs.annotate(
@@ -854,9 +860,10 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         return qs.distinct()
     def list(self, request, *args, **kwargs):
         response=super().list(request, *args, **kwargs)
-        handed_off=set(submitted_away_jobs(request.user).values_list('id', flat=True))
-        if handed_off:
-            response.data=[submission_row(row) if row['id'] in handed_off else row for row in response.data]
+        # TASK-282: services.access.submitted_away_jobs' rule (created by me, submitted for someone
+        # else) read off the rows already fetched, instead of a second query for their ids.
+        uid=request.user.pk
+        response.data=[submission_row(row) if row['created_by'] == uid and row['submitted_for'] not in (None, uid) else row for row in response.data]
         return response
     def create(self, request, *args, **kwargs):
         ser=self.get_serializer(data=request.data); ser.is_valid(raise_exception=True)

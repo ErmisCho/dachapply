@@ -518,6 +518,21 @@ USAGE_RECORD_ASYNC = env_bool('USAGE_RECORD_ASYNC', bool(DATABASES['default'].ge
 # creates the table itself.
 CACHES={'default':{'BACKEND':'django.core.cache.backends.db.DatabaseCache','LOCATION':os.getenv('CACHE_TABLE','dachapply_cache')}}
 
+# TASK-282: on the local runtime (DEBUG + the TASK-281 pool, i.e. one threaded runserver process)
+# the session row is read through a process-local cache in front of the database: one Neon round
+# trip less on every logged-in request. cached_db keeps django_session as the source of truth --
+# every write goes to both, a restart just starts with an empty cache and reads the database again,
+# and logout / password change run in this same process, so they clear the cached copy too.
+# Never on the deployed site: with several gunicorn workers a logout would only clear the cache of
+# the worker that served it, and the default (DatabaseCache) alias would save no round trip at all.
+def cached_sessions_enabled(db, debug):
+    return bool(debug and db.get('OPTIONS', {}).get('pool'))
+
+if cached_sessions_enabled(DATABASES['default'], DEBUG):
+    SESSION_ENGINE='django.contrib.sessions.backends.cached_db'
+    SESSION_CACHE_ALIAS='sessions'
+    CACHES['sessions']={'BACKEND':'django.core.cache.backends.locmem.LocMemCache','LOCATION':'dachapply-sessions'}
+
 AUTH_PASSWORD_VALIDATORS=[{'NAME':'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},{'NAME':'django.contrib.auth.password_validation.MinimumLengthValidator'},{'NAME':'django.contrib.auth.password_validation.CommonPasswordValidator'},{'NAME':'django.contrib.auth.password_validation.NumericPasswordValidator'}]
 LANGUAGE_CODE='en-us'; TIME_ZONE='Europe/Vienna'; USE_I18N=True; USE_TZ=True
 STATIC_URL='/static/'; STATIC_ROOT=BASE_DIR/'staticfiles'; STATICFILES_DIRS=[]
