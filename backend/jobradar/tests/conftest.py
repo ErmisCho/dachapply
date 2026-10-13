@@ -61,6 +61,15 @@ def _reset_model_options_cache():
     cv_generator._model_options_cache.update(at=0.0, options=None)
 
 
+@pytest.fixture(autouse=True)
+def _empty_board_row_cache(settings):
+    """TASK-283.2: CACHES['board_rows'] lives as long as the process, and fixtures reuse pks and
+    pinned timestamps, so one test's rows would otherwise be warm hits in the next."""
+    from django.core.cache import caches
+    if 'board_rows' in settings.CACHES:
+        caches['board_rows'].clear()
+
+
 @pytest.fixture
 def cv_assets(db):
     """Give an account its own CV templates and photograph (TASK-99a).

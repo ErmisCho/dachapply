@@ -96,10 +96,12 @@ class _nullcontext:
 #   job_detail: joblead + its evaluations (prefetch)
 #   board_list: userprofile (saved status order) + joblead + evaluations (prefetch)
 # The usage middleware adds 4 (one F() UPDATE per counter; it was get_or_create + UPDATE = 8).
+# TASK-283.2: the second (excluding-usage) board request is warm -- every row comes from
+# CACHES['board_rows'], so joblead + evaluations become one id/stamp query (was (9, 5)).
 EXPECTED = {
     'me': (7, 3),
     'job_detail': (8, 4),
-    'board_list': (9, 5),
+    'board_list': (9, 4),
 }
 
 
@@ -146,10 +148,11 @@ def local_runtime(cached_sessions, settings):
 
 # Warm requests on the local runtime: session, user and board settings all come from the process,
 # so what is left is the endpoint's own data (+ the same 4 usage UPDATEs, async there).
+# TASK-283.2: for the board that is the single id/stamp query, all rows cached (was (6, 2)).
 EXPECTED_LOCAL = {
     'me': (5, 1),
     'job_detail': (6, 2),
-    'board_list': (6, 2),
+    'board_list': (5, 1),
 }
 
 

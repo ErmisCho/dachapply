@@ -517,6 +517,11 @@ USAGE_RECORD_ASYNC = env_bool('USAGE_RECORD_ASYNC', bool(DATABASES['default'].ge
 # scripts/start-container.sh runs createcachetable next to migrate, and Django's test runner
 # creates the table itself.
 CACHES={'default':{'BACKEND':'django.core.cache.backends.db.DatabaseCache','LOCATION':os.getenv('CACHE_TABLE','dachapply_cache')}}
+# TASK-283.2: serialized board rows (JobLeadViewSet.list). Process-local on every runtime, the deployed
+# workers included: each entry carries the version stamp it was built from and is only reused while
+# the database returns that same stamp, so a worker that never saw a write just rebuilds the row --
+# nothing to invalidate across processes. No expiry; MAX_ENTRIES bounds memory (~5 KB per row).
+CACHES['board_rows']={'BACKEND':'django.core.cache.backends.locmem.LocMemCache','LOCATION':'dachapply-board-rows','TIMEOUT':None,'OPTIONS':{'MAX_ENTRIES':5000}}
 
 # TASK-282: on the local runtime (DEBUG + the TASK-281 pool, i.e. one threaded runserver process)
 # the session row is read through a process-local cache in front of the database: one Neon round
