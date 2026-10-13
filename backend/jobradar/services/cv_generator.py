@@ -979,6 +979,14 @@ def rename_generated_artifact(job, user, artifact, letter_key, name, remember=Tr
         for moved_from,moved_to in reversed(done):
             moved_to.rename(moved_from)
         raise ValueError(f'Could not rename {old.name}: {exc.strerror or exc}') from None
+    # TASK-279: LaTeX helpers follow best-effort; a taken target or an OSError leaves that helper where it is.
+    for ext in ('.aux','.log','.fls','.fdb_latexmk','.out','.synctex.gz'):
+        src,dst=tex.with_name(tex.stem+ext),tex.with_name(stem+ext)
+        try:
+            if src.is_file() and (not dst.exists() or dst.samefile(src)):
+                src.rename(dst)
+        except OSError:
+            pass
     renamed={str(old):str(new) for old,new in done}
     workspace=Path(settings.CODEX_CV_WORKSPACE)
     sidecar=_artifact_metadata_path(workspace,job.id,user.pk)

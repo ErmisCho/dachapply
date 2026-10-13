@@ -6,6 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-12 14:35'
+updated_date: '2026-10-13 06:56'
 labels: []
 dependencies: []
 ordinal: 275000
@@ -27,4 +28,11 @@ Owner request 2026-10-12: 'maybe I can select afterwards if I want to copy both 
 - [ ] #6 The rename never overwrites an existing file and never renames a letter the owner named themselves (TASK-271 preferred name)
 - [ ] #7 Backend and frontend tests cover the copy choice and the legacy-letter rename; full backend suite, frontend tests and tsc pass
 - [ ] #8 Verified on localhost: copy each choice on a real job and see the clipboard content; revise a legacy-named letter and see the renamed files on disk
+- [ ] #9 A rename (automatic or owner-chosen) also moves the LaTeX helper files beside the TeX (.aux, .log, .fls, .fdb_latexmk, .out, .synctex.gz) so no file keeps the old name; a helper whose new name is taken is left in place, never overwritten, and never blocks the rename
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-13 owner request after localhost check: 'can you fix those' -- BEKO's rename left Letter-named .aux/.log/.fls/.fdb_latexmk files behind in C:/latex/output.
+<!-- SECTION:NOTES:END -->
