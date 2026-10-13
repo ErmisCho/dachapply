@@ -62,3 +62,7 @@ GMAIL_OAUTH_CLIENT_SECRET = ''
 # TASK-278: the literal-edit route would otherwise call whatever Ollama model this machine has
 # installed. Tests that exercise it set the model and patch the runner themselves.
 CODEX_CV_LITERAL_EDIT_MODEL = ''
+
+# TASK-281: usage counters are written before the response so tests can assert on them right away.
+# The one test of the background path turns this on itself.
+USAGE_RECORD_ASYNC = False
