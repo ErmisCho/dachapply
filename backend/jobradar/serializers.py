@@ -12,6 +12,7 @@ from .services.access import accessible_jobs
 from .services.demo_data import is_demo_job_payload, is_demo_user
 from .services.prompt_builder import decode_profile_value, encode_profile_value
 from .services.cleaning import clean_job_location
+from .services import application_requirements as app_reqs
 
 
 def normalize_job_url(value):
@@ -235,6 +236,23 @@ class JobLeadSerializer(serializers.ModelSerializer):
         if value:
             serializers.URLField(max_length=1000).run_validation(value)
         return value
+    def validate_application_requirements(self, value):
+        """TASK-280.1: the owner's edit. Reject a wrong shape or enum with a 400 instead of letting the
+        normaliser silently coerce it, then store the normalised value as source 'owner' (the client
+        cannot claim 'analysis'; owner statuses need no quote). {} clears it back to "not analysed"."""
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('Must be an object.')
+        docs=value.get('documents') or []
+        if not isinstance(docs, list) or not all(isinstance(d, dict) for d in docs):
+            raise serializers.ValidationError('documents must be a list of objects.')
+        checks=[('posting_language', value.get('posting_language'), app_reqs.POSTING_LANGUAGES),
+                ('application_language', value.get('application_language'), app_reqs.APPLICATION_LANGUAGES)]
+        checks+=[(f'documents[{i}].{k}', d.get(k), allowed) for i, d in enumerate(docs)
+                 for k, allowed in (('type', app_reqs.DOCUMENT_TYPES), ('status', app_reqs.DOCUMENT_STATUSES))]
+        for name, v, allowed in checks:
+            if v not in (None, '') and v not in allowed:
+                raise serializers.ValidationError(f'{name} must be one of: {", ".join(allowed)}.')
+        return app_reqs.normalize_application_requirements(value, self.instance or JobLead(), source='owner')
     def validate(self, attrs):
         embedded=extract_url_from_text(attrs.get('url')) or extract_url_from_text(attrs.get('company')) or extract_url_from_text(attrs.get('title'))
         if embedded and not attrs.get('url'):

@@ -268,6 +268,9 @@ class JobLead(models.Model):
     # LLM-generated prose: do not put sentence-length limits back on these fields.
     salary_info=models.TextField(blank=True)
     language_requirements=models.TextField(blank=True)
+    # TASK-280.1: posting/application language and letter/message requirements, with evidence
+    # quotes. Shape and every write go through services.application_requirements.normalize_application_requirements.
+    application_requirements=models.JSONField(default=dict, blank=True)
     work_mode=models.CharField(max_length=20, choices=WORK_MODES, default='unknown')
     status=models.CharField(max_length=20, choices=STATUSES, default='new')
     status_date=models.DateField(null=True, blank=True)

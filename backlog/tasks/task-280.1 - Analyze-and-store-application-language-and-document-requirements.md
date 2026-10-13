@@ -1,9 +1,10 @@
 ---
 id: TASK-280.1
 title: Analyze and store application language and document requirements
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-12 15:03'
+updated_date: '2026-10-13 10:12'
 labels: []
 dependencies: []
 parent_task_id: TASK-280

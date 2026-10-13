@@ -39,6 +39,17 @@ Location / work mode
 Other details (benefits, application process)
 Use the posting's own sentences and bullet points, in its original language. Do not translate or paraphrase them; only the Overview may be condensed. Omit a heading the posting has no content for, and never invent content for one. Leave out page clutter such as navigation, hiring counters, and unrelated links. Write no commentary about what is or is not included.'''
 SOURCE_TEXT_SCHEMA_FIELD = '"original_source_text":"posting requirements and details in its own words, under the headings in the original_source_text rules"'
+# TASK-280.1: letter/message requirements and application language, read in the same analysis call.
+# services.application_requirements checks every quote against the stored posting text and turns an
+# unsupported required/preferred/optional/not_accepted into unclear, so the rules ask for exact quotes.
+# No braces here either (str.format), and no "verbatim" (TASK-260: it triggers the copy refusal).
+APPLICATION_REQUIREMENTS_RULES = '''application_requirements rules:
+posting_language: the language the posting is written in (en, de, mixed, or unclear).
+application_language: en or de only when the posting explicitly asks for the application in that language (for example "Bewerbung bitte auf Deutsch" or "please apply in English"); otherwise empty. That instruction outranks the language the posting is written in. application_language_quote: the sentence that asks for it.
+documents: one entry each for cover_letter, motivation_letter and short_message (a short application message or note), plus type other with a name for any other application document the posting asks for. Do not list the CV.
+status: required, preferred, optional, not_accepted (the posting asks you not to send it), not_mentioned, or unclear (ambiguous or contradictory). Classify what the sentence says, including negation: "kein Anschreiben erforderlich" or "no cover letter required" is optional, "please do not send a cover letter" is not_accepted.
+quote: for required, preferred, optional and not_accepted, copy the short supporting sentence from the posting character for character, and include that sentence in original_source_text under Other details; the app discards a status whose quote it cannot find in the posting. Otherwise leave quote empty. Prefer not_mentioned over guessing; never infer a requirement from the posting language or from keywords alone.'''
+APPLICATION_REQUIREMENTS_SCHEMA_FIELD = '"application_requirements":{"posting_language":"en|de|mixed|unclear","application_language":"en|de| (empty unless explicitly requested)","application_language_quote":"exact posting text or empty","documents":[{"type":"cover_letter|motivation_letter|short_message|other","name":"label when type is other","status":"required|preferred|optional|not_accepted|not_mentioned|unclear","quote":"exact posting text or empty"}]}'
 
 RECOMMENDATION_RULES = '''Recommendation rules:
 apply = realistic fit with acceptable gaps.
@@ -54,9 +65,9 @@ missing_skills must include hard requirements that are missing, weak, basic, lea
 Do not leave required_skills, matched_skills, or missing_skills empty unless the job description truly provides no skill signals.'''
 
 EVALUATION_SCHEMA = '{"evaluations":[{"job_id":1,"company":"...","title":"...","fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}],"overall_ranking":[{"job_id":1,"rank":1,"reason":"..."}],"strategic_advice":"..."}'
-COMBINED_SCHEMA = '{"jobs":[{"job_id":1,"url":"https://...","company":"...","title":"...","location":"...","source":"...","raw_description":"...",' + SOURCE_TEXT_SCHEMA_FIELD + ',"salary_info":"...","language_requirements":"...","work_mode":"onsite|hybrid|remote|unknown","evaluation":{"fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}}],"strategic_advice":"..."}'
-ENRICHMENT_SCHEMA = '{"job_updates":[{"job_id":1,"company":"...","title":"...","location":"...","url":"...","source":"...","raw_description":"...",' + SOURCE_TEXT_SCHEMA_FIELD + ',"salary_info":"...","language_requirements":"...","work_mode":"onsite|hybrid|remote|unknown","notes":"any uncertainty or assumptions"}]}'
-BULK_LINKS_SCHEMA = '{"jobs":[{"temp_id":"link_1","url":"https://...","company":"...","title":"...","location":"...","source":"...","raw_description":"...",' + SOURCE_TEXT_SCHEMA_FIELD + ',"salary_info":"...","language_requirements":"...","work_mode":"onsite|hybrid|remote|unknown","evaluation":{"fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}}],"strategic_advice":"..."}'
+COMBINED_SCHEMA = '{"jobs":[{"job_id":1,"url":"https://...","company":"...","title":"...","location":"...","source":"...","raw_description":"...",' + SOURCE_TEXT_SCHEMA_FIELD + ',"salary_info":"...","language_requirements":"...",' + APPLICATION_REQUIREMENTS_SCHEMA_FIELD + ',"work_mode":"onsite|hybrid|remote|unknown","evaluation":{"fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}}],"strategic_advice":"..."}'
+ENRICHMENT_SCHEMA = '{"job_updates":[{"job_id":1,"company":"...","title":"...","location":"...","url":"...","source":"...","raw_description":"...",' + SOURCE_TEXT_SCHEMA_FIELD + ',"salary_info":"...","language_requirements":"...",' + APPLICATION_REQUIREMENTS_SCHEMA_FIELD + ',"work_mode":"onsite|hybrid|remote|unknown","notes":"any uncertainty or assumptions"}]}'
+BULK_LINKS_SCHEMA = '{"jobs":[{"temp_id":"link_1","url":"https://...","company":"...","title":"...","location":"...","source":"...","raw_description":"...",' + SOURCE_TEXT_SCHEMA_FIELD + ',"salary_info":"...","language_requirements":"...",' + APPLICATION_REQUIREMENTS_SCHEMA_FIELD + ',"work_mode":"onsite|hybrid|remote|unknown","evaluation":{"fit_score":0,"priority":"high|medium|low","recommendation":"apply|maybe|skip","summary":"...","main_match_reasons":["..."],"main_gaps":["..."],"required_skills":["..."],"nice_to_have_skills":["..."],"matched_skills":["..."],"missing_skills":["..."],"cv_adjustment_notes":"...","interview_prep_notes":"...","risk_notes":"...","next_action":"..."}}],"strategic_advice":"..."}'
 
 DEFAULT_EVALUATION_PROMPT_TEMPLATE = '''Evaluate these DACH software engineering jobs against the candidate profile.
 Be honest, direct, and do not invent experience. Consider DACH market fit, language requirements, target roles, preferred stack, selling points, red flags, and gaps described in the candidate profile.
@@ -78,6 +89,7 @@ JOBS:
 DEFAULT_COMBINED_PROMPT_TEMPLATE = '''For each existing job below, first fill missing/incorrect job details, then evaluate the job against the candidate profile.
 Preserve job_id exactly. Open the job URL when available. Put links only in url. Never put URLs in company or title. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna). Do not invent experience or facts; use unknown/empty values when needed.
 ''' + ORIGINAL_SOURCE_TEXT_RULES + '''
+''' + APPLICATION_REQUIREMENTS_RULES + '''
 Return one valid JSON object only. No markdown, code fences, citations, reference footnotes, or prose outside JSON. Escape double quotes and control characters inside every string value. Before replying, verify the complete response parses as JSON.
 
 CANDIDATE PROFILE:
@@ -95,6 +107,7 @@ JOBS:
 
 DEFAULT_ENRICHMENT_PROMPT_TEMPLATE = '''Extract missing structured job details from the provided job URLs/descriptions. Open the job URL when available. Use only information visible in the text or URL context. If a detail is unknown, use an empty string or unknown. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna). Do not invent facts.
 ''' + ORIGINAL_SOURCE_TEXT_RULES + '''
+''' + APPLICATION_REQUIREMENTS_RULES + '''
 Use the candidate profile only as context for which job details are most relevant; do not evaluate unless the schema asks for it.
 Return one valid JSON object only. No markdown, code fences, citations, reference footnotes, or prose outside JSON. Escape double quotes and control characters inside every string value. Before replying, verify the complete response parses as JSON.
 For each job, preserve job_id exactly so the app can update the right record.
@@ -112,6 +125,7 @@ DEFAULT_BULK_LINKS_PROMPT_TEMPLATE = '''You will receive a list of job links. Fo
 Important: put the link only in the url field. Never put a URL in company or title. Company must be the employer name, or Unknown company if unknown. Title must be the position name, or Untitled role if unknown. For location, use the city only when a city is known (for example Vienna, not AUT 1100 Vienna).
 Open each job URL when available. Use only information from the page, provided link text, and job description text supplied by the user. If you cannot access a page or a detail is unknown, use an empty string or unknown. Do not invent experience or facts.
 ''' + ORIGINAL_SOURCE_TEXT_RULES + '''
+''' + APPLICATION_REQUIREMENTS_RULES + '''
 Return one valid JSON object only. No markdown, code fences, citations, reference footnotes, or prose outside JSON. Escape double quotes and control characters inside every string value. Before replying, verify the complete response parses as JSON.
 
 CANDIDATE PROFILE:

@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models import Q
 from jobradar.models import JobLead, JobEvaluation, ApplicationNote
 from jobradar.services.access import accessible_jobs, job_create_defaults
+from jobradar.services.application_requirements import normalize_application_requirements
 from jobradar.services.cleaning import clean_job_location
 from jobradar.services.job_replace import replace_job_with_supplied_data
 from jobradar.services.demo_data import is_demo_job_payload, is_demo_user
@@ -248,6 +249,11 @@ def import_jobs_data(data, user=None):
                 source=create_defaults.pop('source', rec.get('source','bulk_links'))
                 job=JobLead.objects.create(company=rec.get('company') or 'Unknown company', title=title, location=rec.get('location',''), url=normalize_job_url(rec.get('url','')), source=source, raw_description=rec.get('raw_description',''), original_source_text=rec.get('original_source_text',''), salary_info=rec.get('salary_info',''), language_requirements=rec.get('language_requirements',''), work_mode=rec.get('work_mode') or 'unknown', **create_defaults)
                 action='created_duplicate' if dup_action and dup_action.get('action') == 'duplicate' else 'created'; changed=sorted(JOB_UPDATE_FIELDS)
+            # TASK-280.1: optional, so JSON from before the field imports unchanged. Checked against the
+            # job's stored posting after the save above; an owner's hand edit is not overwritten by analysis.
+            if isinstance(rec.get('application_requirements'), dict) and (job.application_requirements or {}).get('source') != 'owner':
+                job.application_requirements=normalize_application_requirements(rec['application_requirements'], job, source='analysis')
+                job.save(update_fields=['application_requirements']); changed.append('application_requirements')
             note=rec.get('notes') or rec.get('note') or rec.get('uncertainty')
             if note: ApplicationNote.objects.create(job=job, note=str(note), note_type='general', created_by=user if user is not None else None)
             if isinstance(rec.get('evaluation'), dict):
