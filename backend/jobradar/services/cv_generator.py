@@ -948,11 +948,12 @@ def clean_artifact_stem(name):
     return stem
 
 
-def rename_generated_artifact(job, user, artifact, letter_key, name):
+def rename_generated_artifact(job, user, artifact, letter_key, name, remember=True):
     """Renames a job's generated TeX and its PDF together, in their own folder (TASK-271).
 
     Returns {old path: new path}. Raises ValueError for an invalid request and FileExistsError when a
     target name is taken. The two files move together or neither moves; tracking follows the move.
+    remember=False (TASK-279's automatic rename) leaves the owner's preferred name unset.
     """
     if artifact not in ('cv','letter'):
         raise ValueError('Choose the CV or the letter to rename.')
@@ -1001,7 +1002,8 @@ def rename_generated_artifact(job, user, artifact, letter_key, name):
             else:
                 data.setdefault('letters',{})[key]={'letter_tex':str(new_tex),'letter_pdf':str(new_tex.with_suffix('.pdf'))}
                 data['latest_letter']=key
-        _set_preferred_name(data,artifact,key,stem)
+        if remember:
+            _set_preferred_name(data,artifact,key,stem)
     _edit_sidecar(job,user.pk,change)
     return renamed
 
@@ -1250,9 +1252,12 @@ def _unique_destination(directory, filename):
     return path
 
 
-def _fresh_pair(source):
+def _fresh_pair(source, base=None):
     # Next free `<stem>-N` beside a read-only source, never reusing an existing TeX or PDF name.
-    base=re.sub(r'-\d+$','',source.stem)
+    # TASK-279: `base` renames the copy (a legacy 'Letter' name taking its label), unsuffixed if free.
+    if base and not (source.parent/f'{base}.tex').exists() and not (source.parent/f'{base}.pdf').exists():
+        return source.parent/f'{base}.tex'
+    base=re.sub(r'-\d+$','',base or source.stem)
     index=2
     while (source.parent/f'{base}-{index}.tex').exists() or (source.parent/f'{base}-{index}.pdf').exists():
         index+=1
@@ -1979,11 +1984,17 @@ def recompile_generated_package(job, cv_key, source_cv=None, source_letter=None,
                 progress(82 if kind == 'cv' else 95,'CV compiled' if kind == 'cv' else 'Motivation letter compiled')
         written=[]
         redirected={}
+        sent_letters=_retired_entry(job,user).get('letters',{}) if user and source_letter else {}
+        letter_key=next((key for key,value in sent_letters.items() if value.get('letter_tex') == str(source_letter)),'')
+        legacy=f'{applicant_name(user)}-Letter-' if user else None
+        label=_filename_label(_letter_label(user,letter_key)) if letter_key else 'Letter'
         for kind,source in sources:
             target=source
             if (kind,source) in compiled:
                 if _is_sent(source,sent):
-                    target=_fresh_pair(source)
+                    # TASK-279: the fresh copy of a pre-TASK-253 '<applicant>-Letter-<target>' letter takes its label.
+                    relabel=kind == 'letter' and label != 'Letter' and legacy and source.stem.startswith(legacy)
+                    target=_fresh_pair(source,re.sub(r'-\d+$','',f'{applicant_name(user)}-{label}-{source.stem[len(legacy):]}') if relabel else None)
                     redirected.update({f'{kind}_tex':str(target),f'{kind}_pdf':str(target.with_suffix('.pdf'))})
                 if str(source) in source_updates or target != source:
                     shutil.copy2(output/source.name,target)
@@ -1991,8 +2002,6 @@ def recompile_generated_package(job, cv_key, source_cv=None, source_letter=None,
             written.append(target)
             saved.update({f'{kind}_tex':str(target),f'{kind}_pdf':str(target.with_suffix('.pdf'))})
         if redirected:
-            sent_letters=_retired_entry(job,user).get('letters',{})
-            letter_key=next((key for key,value in sent_letters.items() if value.get('letter_tex') == str(source_letter)),'') if source_letter else ''
             _record_artifact_metadata(job,user_id,redirected,letter_key)
         with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as bundle:
             for target in written:

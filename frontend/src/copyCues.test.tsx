@@ -42,9 +42,9 @@ describe('wiring (AC1/AC3/AC4/AC5)',()=>{
   const gen=appSource.slice(appSource.indexOf('export function CvGenerator'),appSource.indexOf('function BatchCvGenerator'))
   const batch=appSource.slice(appSource.indexOf('function BatchCvGenerator'),appSource.indexOf('type NoteTable'))
   it('copy cue fires only when the copy succeeded, in the generator and in every bulk row',()=>{
-    expect(appSource).toContain('onClick={async()=>{if(await onCopy())flash()}}')
-    expect(gen).toContain('<CopyTexAction disabled={loading||revisionLoading||compileLoading||!clipboardTex} onCopy={()=>copyTex()}/>')
-    expect(batch).toContain('<CopyTexAction disabled={!row.clipboard_tex} onCopy={()=>copyRowTex(row)}/>')
+    expect(appSource).toContain('if(await onCopy(split?texForChoice(tex,parts,choice):tex))flash()}}')
+    expect(gen).toContain('<CopyTexAction tex={clipboardTex} parts={clipboardParts} disabled={loading||revisionLoading||compileLoading||!clipboardTex} onCopy={copyTex}/>')
+    expect(batch).toContain('<CopyTexAction tex={row.clipboard_tex} parts={row.clipboard_tex_parts} disabled={!row.clipboard_tex} onCopy={text=>copyRowTex(row,text)}/>')
     expect(gen).toContain("return false}async function waitForTask")
     expect(batch).toContain("update(row.job.id,{error:null});return true}")
   })

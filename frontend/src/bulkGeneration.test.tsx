@@ -51,7 +51,7 @@ describe('auto-copy toggle storage (TASK-261 AC6/AC7)',()=>{
 describe('bulk panel wiring (TASK-261 AC2/AC3/AC6)',()=>{
   const panel=appSource.slice(appSource.indexOf('function BatchCvGenerator'),appSource.indexOf('type NoteTable'))
   it('copies through the shared helper, never navigator.clipboard directly',()=>{
-    expect(panel).toContain('async function copyRowTex(row:any){if(await copyToClipboard(row.clipboard_tex))')
+    expect(panel).toContain('async function copyRowTex(row:any,text=row.clipboard_tex){if(await copyToClipboard(text))')
     expect(panel).not.toContain('navigator.clipboard')
     expect(panel).not.toContain('Clipboard access was blocked')
   })
