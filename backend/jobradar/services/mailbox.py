@@ -79,6 +79,7 @@ from urllib.request import Request, urlopen
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.mail import mail_admins
 from django.db import DatabaseError, IntegrityError, transaction
 from django.db.models import F, Max, Q
 from django.utils import timezone
@@ -4216,6 +4217,63 @@ def current_mailbox_run() -> MailboxRun | None:
     return real_mailbox_runs().filter(finished_at__isnull=True).order_by('-started_at').first()
 
 
+# TASK-289: mail capture failed silently for six weeks (invalid_grant, then rateLimitExceeded) because
+# errors only reached MailboxRun.error. Skipped runs (165 outside_window in that stretch) are ignored on
+# purpose: a skip is neither a failure nor a success, and counting it as "alive" hid the outage.
+_NETWORK_ERROR = re.compile(r'could not reach|timed out|getaddrinfo|name resolution|connection (reset|refused|aborted)', re.I)
+
+
+def _mailbox_failure(error: str) -> dict:
+    if 'invalid_grant' in error:
+        return {'reason': 'invalid_grant', 'message': 'Gmail login expired',
+                'action': 'Re-authorize Gmail: run manage.py gmail_oauth_setup (see docs/email-setup.md).'}
+    if 'rateLimitExceeded' in error or 'HTTP 429' in error:
+        return {'reason': 'rate_limit', 'message': 'Gmail rate limit', 'action': 'Retrying automatically, nothing to do.'}
+    if _NETWORK_ERROR.search(error):
+        return {'reason': 'network', 'message': "Couldn't reach Gmail", 'action': 'Check the internet connection; the next check retries.'}
+    return {'reason': 'other', 'message': error.strip().splitlines()[0][:300], 'action': 'See the latest mailbox run for details.'}
+
+
+def mailbox_health(enabled: bool, now=None) -> dict | None:
+    """TASK-289 AC1: None while healthy, else {reason, message, action, since}. Failing when the latest
+    finished non-skipped run has an error (since = first error after the last success), or when checks
+    are enabled and no non-skipped run succeeded within MAILBOX_STALE_ALERT_HOURS (since = that success).
+    """
+    now = now or timezone.now()
+    runs = real_mailbox_runs().filter(skipped=False, finished_at__isnull=False)
+    last_ok = runs.filter(error='').order_by('-started_at').first()
+    latest = runs.order_by('-started_at').first()
+    if latest is not None and latest.error:
+        first_error = runs.filter(started_at__gt=last_ok.started_at) if last_ok else runs
+        return {**_mailbox_failure(latest.error), 'since': first_error.order_by('started_at').first().started_at}
+    if enabled and (last_ok is None or last_ok.finished_at < now - timedelta(hours=settings.MAILBOX_STALE_ALERT_HOURS)):
+        return {'reason': 'stale', 'message': f'No successful mailbox check in {settings.MAILBOX_STALE_ALERT_HOURS} h',
+                'action': 'Mail is checked only while the local app runs; start it, or check the latest run.',
+                'since': last_ok.finished_at if last_ok else None}
+    return None
+
+
+def _alert_on_failure_transition(run: MailboxRun) -> None:
+    """TASK-289 AC3: one mail when checks start failing, one when they recover -- de-duplicated by the
+    previous non-skipped run's own state, so no extra field or migration. Same recipients as every other
+    alert (settings.ADMINS from ERROR_ALERT_EMAILS); mail_admins is a no-op while that is unset.
+    ponytail: run-driven only, so pure staleness (the local app not running) shows on the board but is
+    not mailed -- that is what TASK-276 removed the mailbox-health probe for (an alert every weekend).
+    """
+    try:
+        previous = real_mailbox_runs().filter(skipped=False, finished_at__isnull=False, started_at__lt=run.started_at).order_by('-started_at').first()
+        if bool(run.error) == bool(previous and previous.error):
+            return
+        if run.error:
+            failure = _mailbox_failure(run.error)
+            subject, body = f'Mailbox check failing: {failure["message"]}', f'{failure["message"]}.\n\nWhat to do: {failure["action"]}\n\nError: {run.error}\n'
+        else:
+            subject, body = 'Mailbox check recovered', f'The mailbox check succeeded again at {timezone.localtime(run.finished_at):%Y-%m-%d %H:%M}.\n'
+        mail_admins(subject, body)
+    except Exception as exc:  # never let a broken alert channel fail a run that already finished
+        logger.warning('Mailbox health alert failed: %s', exc)
+
+
 def run_check(force=False, transport=None) -> MailboxRun | None:
     """The one entry point management/commands/check_mailbox.py (and the manual "run now" trigger,
     services.mailbox_tasks) calls.
@@ -4459,7 +4517,9 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         run.finished_at = timezone.now()
         run.save()
     except Exception as exc:
-        logger.exception('Mailbox check failed')
+        # TASK-289: WARNING, not ERROR -- the jobradar logger's ERROR-level mail_admins handler would mail
+        # every hourly failure; _alert_on_failure_transition below sends the one mail per transition.
+        logger.warning('Mailbox check failed', exc_info=True)
         run.error = str(exc)[:2000]
         run.finished_at = timezone.now()
         run.save()
@@ -4468,6 +4528,7 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         # skip, the normal completion, and the exception path all go through this one finally, so a
         # claimed run is never left marked "in progress" after run_check has actually returned.
         _release_run()
+    _alert_on_failure_transition(run)  # TASK-289: skipped runs returned above and never get here
     return run
 
 
