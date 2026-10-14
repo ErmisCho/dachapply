@@ -2,6 +2,7 @@ import time
 from importlib import import_module
 
 from django.conf import settings
+from django.db import connection
 from django.contrib.sessions.backends.base import UpdateError
 from django.contrib.sessions.exceptions import SessionInterrupted
 from django.contrib.sessions.middleware import SessionMiddleware
@@ -22,6 +23,36 @@ class NoCacheHtmlMiddleware:
             response['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
             response['Pragma'] = 'no-cache'
             response['Expires'] = '0'
+        return response
+
+
+class ServerTimingMiddleware:
+    """TASK-283.3: Server-Timing header on API responses for logged-in users (total, database time and
+    query count), so the browser's Resource Timing shows where a slow request spends its time."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        if not request.path.startswith('/api/'):
+            return self.get_response(request)
+        db = [0.0, 0]
+
+        def timed(execute, sql, params, many, context):
+            start = time.perf_counter()
+            try:
+                return execute(sql, params, many, context)
+            finally:
+                db[0] += time.perf_counter() - start
+                db[1] += 1
+
+        start = time.perf_counter()
+        with connection.execute_wrapper(timed):
+            response = self.get_response(request)
+        user = getattr(request, 'user', None)
+        if user is not None and user.is_authenticated:
+            total = (time.perf_counter() - start) * 1000
+            response['Server-Timing'] = f'total;dur={total:.1f}, db;dur={db[0] * 1000:.1f};desc="{db[1]} queries"'
         return response
 
 
