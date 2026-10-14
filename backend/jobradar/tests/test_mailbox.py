@@ -2708,6 +2708,95 @@ def test_gmail_api_transport_two_consecutive_runs_the_second_fetches_nothing_new
         assert MailboxMessage.objects.count() == 1, 'the second run re-read mail it had already seen'
 
 
+# ===================================================================================================
+# TASK-287: Gmail's per-user rate limit (429 / 403 rateLimitExceeded) is waited out, not fatal, and a
+# part-way failure keeps what it fetched. _gmail_api_request is exercised for real against a fake
+# urlopen; time.sleep is patched so no test actually waits.
+# ===================================================================================================
+
+def _gmail_http_error(code, reason='', retry_after=None):
+    from email.message import Message
+    from urllib.error import HTTPError
+    headers = Message()
+    if retry_after is not None:
+        headers['Retry-After'] = retry_after
+    body = json.dumps({'error': {'code': code, 'errors': [{'domain': 'usageLimits', 'reason': reason}]}}).encode('utf-8')
+    return HTTPError('https://gmail.test', code, 'err', headers, io.BytesIO(body))
+
+
+def _patch_urlopen(monkeypatch, outcomes):
+    """Each urlopen call pops the next outcome: an HTTPError is raised, a dict is served as JSON."""
+    sleeps, calls = [], []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(request.full_url)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return io.BytesIO(json.dumps(outcome).encode('utf-8'))
+
+    monkeypatch.setattr(mailbox, 'urlopen', fake_urlopen)
+    monkeypatch.setattr(mailbox.time, 'sleep', sleeps.append)
+    return sleeps, calls
+
+
+def test_gmail_rate_limited_call_is_retried_then_succeeds(monkeypatch):
+    """AC1: 429 honours Retry-After (7s); the 403 rateLimitExceeded after it falls back to the doubled backoff."""
+    sleeps, calls = _patch_urlopen(monkeypatch, [_gmail_http_error(429, retry_after='7'), _gmail_http_error(403, 'rateLimitExceeded'), {'id': 'ok'}])
+    assert mailbox._gmail_api_request('GET', 'https://gmail.test/x', 'token') == {'id': 'ok'}
+    assert sleeps == [7, 2]
+    assert len(calls) == 3
+
+
+def test_gmail_rate_limit_gives_up_after_the_bounded_wait(monkeypatch):
+    """AC1: a quota that never frees fails exactly as before, after a bounded total sleep."""
+    sleeps, _calls = _patch_urlopen(monkeypatch, [_gmail_http_error(403, 'userRateLimitExceeded') for _ in range(20)])
+    with pytest.raises(RuntimeError, match='HTTP 403'):
+        mailbox._gmail_api_request('GET', 'https://gmail.test/x', 'token')
+    assert sleeps == [1, 2, 4, 8, 16, 32]
+    assert sum(sleeps) <= mailbox.GMAIL_RATE_LIMIT_MAX_WAIT_SECONDS
+
+
+def test_gmail_non_rate_limit_403_fails_immediately(monkeypatch):
+    """AC1: a permission 403 is not a quota -- no sleep, no retry."""
+    sleeps, calls = _patch_urlopen(monkeypatch, [_gmail_http_error(403, 'insufficientPermissions'), {'id': 'never'}])
+    with pytest.raises(RuntimeError, match='HTTP 403'):
+        mailbox._gmail_api_request('GET', 'https://gmail.test/x', 'token')
+    assert sleeps == [] and len(calls) == 1
+
+
+def test_gmail_partial_fetch_keeps_progress_without_moving_the_marker(not_cold_start, db, owner, monkeypatch):
+    """AC2: a run whose third GET fails stores the two it fetched (marker untouched, so nothing older
+    is skipped); the next run GETs only the missing one instead of the whole backlog again."""
+    details = {
+        f'msg-{n}': {'internalDate': str(n * 1_000_000), 'threadId': f't{n}', 'raw': _gmail_raw_b64('hr@acme.test', f'Mail {n}', f'body {n}')}
+        for n in (1, 2, 3)
+    }
+    fake_http = _FakeGmailHttp(['msg-3', 'msg-2', 'msg-1'], details)
+    quota_exhausted = [True]
+
+    def flaky_http(method, url, access_token, data=None):
+        if quota_exhausted[0] and url.endswith('/messages/msg-1?format=raw'):
+            raise RuntimeError('Gmail API GET .../messages/msg-1?format=raw failed with HTTP 403: rateLimitExceeded')
+        return fake_http(method, url, access_token, data)
+
+    _patch_gmail_oauth(monkeypatch, flaky_http)
+    marker_before = MailboxMessage.objects.aggregate(Max('internal_date_ms'))['internal_date_ms__max']
+    with override_settings(GMAIL_IMAP_USER='', GMAIL_OAUTH_CLIENT_ID='cid', GMAIL_OAUTH_CLIENT_SECRET='secret'):
+        transport = mailbox.GmailApiTransport('cid', 'secret', 'unused-token-path')
+        first = run_check(transport=transport, force=True)
+        assert 'HTTP 403' in first.error
+        assert set(MailboxMessage.objects.filter(gmail_id__startswith='msg-').values_list('gmail_id', flat=True)) == {'msg-3', 'msg-2'}
+        assert MailboxMessage.objects.aggregate(Max('internal_date_ms'))['internal_date_ms__max'] == marker_before
+
+        quota_exhausted[0] = False
+        fake_http.calls.clear()
+        second = run_check(transport=transport, force=True)
+    assert not second.error
+    assert [url for _m, url in fake_http.calls if 'format=raw' in url] == [f'{mailbox.GMAIL_API_BASE}/messages/msg-1?format=raw']
+    assert MailboxMessage.objects.filter(gmail_id__startswith='msg-').count() == 3
+
+
 def test_widened_fetch_still_refuses_a_board_style_newsletter_via_bulk_mail_reason(not_cold_start, db, owner, applied_job, monkeypatch):
     """AC6: TASK-114's guard must still hold now that fetch_new() reads more than the inbox -- a
     List-Unsubscribe-bearing message reaching classification via the WIDENED, Gmail-API-sourced path

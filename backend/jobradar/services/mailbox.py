@@ -64,6 +64,7 @@ import base64
 import json
 import logging
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time, timedelta
@@ -379,19 +380,59 @@ def _oauth_token_request(body: bytes) -> dict:
         raise RuntimeError(f'Could not reach {GMAIL_OAUTH_TOKEN_URL}: {exc}') from exc
 
 
+# TASK-287 AC1: the longest one call may sleep out Google's per-user rate limit before failing as it
+# always did. Backoff doubles from 1s (1+2+...+32 = 63s), so it outlasts one full "units per minute
+# per user" window -- the quota the owner's runs were hitting ~50s into every hourly check.
+GMAIL_RATE_LIMIT_MAX_WAIT_SECONDS = 120
+
+
+def _is_gmail_rate_limit(code: int, details: str) -> bool:
+    """TASK-287 AC1: 429, or a 403 whose reason says rate limit -- Gmail reuses 403 for quota AND
+    for real permission errors (insufficientPermissions, ...), and only the first is worth waiting on."""
+    if code == 429:
+        return True
+    if code != 403:
+        return False
+    try:
+        return any(e.get('reason') in ('rateLimitExceeded', 'userRateLimitExceeded') for e in json.loads(details)['error']['errors'])
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 @sensitive_variables('client_id', 'client_secret', 'refresh_token', 'access_token', 'code', 'body', 'token', 'payload')
 def _gmail_api_request(method: str, url: str, access_token: str, data: bytes | None = None) -> dict:
     request = Request(url, data=data, headers={'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'}, method=method)
-    try:
-        with urlopen(request, timeout=15) as response:
-            # drafts.delete answers 204 with an empty body -- json.loads('') would raise.
-            payload = response.read().decode('utf-8')
-            return json.loads(payload) if payload.strip() else {}
-    except HTTPError as exc:
-        details = exc.read().decode('utf-8', errors='replace')
-        raise RuntimeError(f'Gmail API {method} {url} failed with HTTP {exc.code}: {details}') from exc
-    except URLError as exc:
-        raise RuntimeError(f'Could not reach Gmail API at {url}: {exc}') from exc
+    waited, delay = 0, 1
+    while True:
+        try:
+            with urlopen(request, timeout=15) as response:
+                # drafts.delete answers 204 with an empty body -- json.loads('') would raise.
+                payload = response.read().decode('utf-8')
+                return json.loads(payload) if payload.strip() else {}
+        except HTTPError as exc:
+            details = exc.read().decode('utf-8', errors='replace')
+            if _is_gmail_rate_limit(exc.code, details):
+                # TASK-287 AC1: Retry-After (seconds form) wins when Google sends it; an HTTP-date or
+                # missing header falls back to the exponential delay. Past the budget, fail as before.
+                retry_after = (exc.headers or {}).get('Retry-After') or ''
+                wait = int(retry_after) if retry_after.isdigit() else delay
+                if waited + wait <= GMAIL_RATE_LIMIT_MAX_WAIT_SECONDS:
+                    time.sleep(wait)
+                    waited, delay = waited + wait, delay * 2
+                    continue
+            raise RuntimeError(f'Gmail API {method} {url} failed with HTTP {exc.code}: {details}') from exc
+        except URLError as exc:
+            raise RuntimeError(f'Could not reach Gmail API at {url}: {exc}') from exc
+
+
+class GmailFetchIncomplete(RuntimeError):
+    """TASK-287 AC2: a per-message GET failed part-way through fetch_new(). Carries what WAS fetched so
+    run_check() can still store it -- before this, one failed GET threw the whole batch away and the
+    next run re-downloaded the same backlog from zero, hitting the same quota at the same point."""
+
+    def __init__(self, message: str, messages: list):
+        super().__init__(message)
+        self.messages = messages
 
 
 def _body_text(body) -> str:
@@ -682,9 +723,18 @@ class GmailApiTransport:
                     seen_ids.add(msg_id)
                     message_ids.append(msg_id)
 
+        # TASK-287 AC2: never re-GET an id already stored -- run_check() would only dedup it away, and
+        # after a part-way failure (GmailFetchIncomplete) the stored part is exactly what the next run
+        # re-lists, since those rows deliberately do not move the marker (see run_check).
+        stored_ids = set(real_mailbox_messages().filter(gmail_id__in=message_ids).values_list('gmail_id', flat=True)) if message_ids else set()
         messages = []
         for msg_id in message_ids:
-            detail = _gmail_api_request('GET', f'{GMAIL_API_BASE}/messages/{msg_id}?format=raw', access_token)
+            if msg_id in stored_ids:
+                continue
+            try:
+                detail = _gmail_api_request('GET', f'{GMAIL_API_BASE}/messages/{msg_id}?format=raw', access_token)
+            except RuntimeError as exc:
+                raise GmailFetchIncomplete(str(exc), messages) from exc
             # Deliberately NOT skipped on `internal_date_ms <= last_marker_ms`. That filter dropped a
             # message permanently and silently in three reachable cases, because run_check()'s
             # gmail_id dedup -- the check that is actually exact -- never got to run:
@@ -4274,7 +4324,13 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         # mailbox_lookback_months (re-read from `profile` on every call, so a settings-page edit
         # takes effect on the very next run with no restart); the IMAP path has no such floor to pass
         # (ImapTransport.fetch_new only ever reads the INBOX mailbox forward from last_uid).
-        raw_messages = active_transport.fetch_new(last_marker, lookback_days=_lookback_days(profile)) if is_gmail_api else active_transport.fetch_new(last_marker)
+        # TASK-287 AC2: a part-way Gmail failure still stores what it fetched (below), then re-raises so
+        # the run records the error exactly as before.
+        fetch_error = None
+        try:
+            raw_messages = active_transport.fetch_new(last_marker, lookback_days=_lookback_days(profile)) if is_gmail_api else active_transport.fetch_new(last_marker)
+        except GmailFetchIncomplete as exc:
+            raw_messages, fetch_error = exc.messages, exc
         newest_owner_reply_by_thread = {}
         for candidate in raw_messages:
             if candidate.thread_id and candidate.received_at and _is_owner_address(candidate.sender):
@@ -4325,7 +4381,10 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             else:
                 assigned_uid = raw.uid
             message = MailboxMessage.objects.create(
-                run=run, uid=assigned_uid, gmail_id=raw.gmail_id, internal_date_ms=raw.internal_date_ms,
+                # TASK-287 AC2: rows from an incomplete fetch keep internal_date_ms NULL (the
+                # thread/body backfill idiom) so they never move MAX(internal_date_ms): Gmail lists
+                # newest first, and a marker taken from a partial batch would skip the unfetched rest.
+                run=run, uid=assigned_uid, gmail_id=raw.gmail_id, internal_date_ms=None if fetch_error else raw.internal_date_ms,
                 message_id=raw.message_id[:250], thread_id=raw.thread_id[:32], sender=raw.sender[:254], subject=raw.subject[:500],
                 # TASK-117 AC1: both transports already cap body_text at 5000 chars off the wire; the
                 # cap is re-applied here too, so the column itself cannot exceed it even if a
@@ -4380,6 +4439,9 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             # the row mid-run must see fetched_count actually move, and the first live run's 641
             # messages is exactly the case a save-only-at-the-end would leave silent the whole time.
             run.save(update_fields=['fetched_count', 'job_related_count', 'uncertain_count', 'suggestion_count', 'suggestion_blocked_count', 'draft_written_count', 'draft_blocked_count'])
+
+        if fetch_error:
+            raise fetch_error
 
         # TASK-113: deletion of a Gmail draft is not proof of sending. Reconciliation also requires
         # a newer owner-authored message in the same thread and reuses the manual confirmation path.
