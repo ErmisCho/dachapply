@@ -375,7 +375,9 @@ def test_recommended_puts_unscored_jobs_after_every_scored_job_of_their_group(cl
     _pin(unscored, created_at=now); _pin(low, created_at=now - timezone.timedelta(days=2)); _pin(mid, created_at=now - timezone.timedelta(days=3))
     with CaptureQueriesContext(connection) as queries:
         assert _ids(client, ordering='recommended') == [mid.id, low.id, unscored.id, interview.id]
-    assert any('"fit_score" DESC NULLS LAST' in q['sql'] for q in queries.captured_queries)
+    # TASK-284: the fit sort is now the latest_fit_score annotation, which Django orders by column
+    # position ('30 DESC NULLS LAST'), so pin the clause itself -- the fit key is its only user.
+    assert any('DESC NULLS LAST' in q['sql'] for q in queries.captured_queries)
 
 
 def test_recommended_ignores_deadline_and_staleness_within_a_group(client):
