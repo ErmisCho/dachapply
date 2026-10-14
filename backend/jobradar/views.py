@@ -1325,6 +1325,8 @@ class MailboxRunViewSet(viewsets.ReadOnlyModelViewSet):
             'elapsed_seconds': elapsed_seconds,
             'estimate': estimate,
             'taking_longer_than_usual': taking_longer_than_usual,
+            # TASK-289 AC1: the board banner's condition; the synthetic demo mailbox never fails.
+            'health': None if is_demo_user(request.user) else mailbox.mailbox_health(user_profile_settings(request.user).mailbox_check_enabled),
         })
     @action(detail=False, methods=['get'], url_path='calendars')
     def calendars_view(self, request):
