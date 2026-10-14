@@ -6390,6 +6390,13 @@ def test_named_non_interview_calendar_events_never_propose_an_interview_date(db,
 
 # --- TASK-291: same thread -> same job; confident single suggestions attach themselves -----------
 
+@pytest.fixture
+def interview_job(db, owner):
+    """TASK-296: auto-attach only targets jobs that reached an interview, so the TASK-291 thread cases use one."""
+    return JobLead.objects.create(company='Acme', title='Engineer', url='https://acme.test/1', status='interview',
+                                  status_date=timezone.localdate(), created_by=owner)
+
+
 def _stored(uid, sender, subject, classification, received_at=None, thread_id='', matched_job=None, body=''):
     return MailboxMessage.objects.create(
         run=MailboxRun.objects.create(), uid=uid, sender=sender, subject=subject, body_text=body,
@@ -6398,22 +6405,23 @@ def _stored(uid, sender, subject, classification, received_at=None, thread_id=''
     )
 
 
-def test_run_check_inbound_mail_inherits_the_job_of_its_gmail_thread(db, owner, applied_job):
+def test_run_check_inbound_mail_inherits_the_job_of_its_gmail_thread(db, owner, interview_job):
     """AC1: a reply from an address no domain rule knows still belongs to the thread's job -- attached
     like a manual attach, so it never gets a reply draft of its own."""
-    _stored(500, 'hr@acme.test', 'Your application', 'recruiter_reply', thread_id='thread-a', matched_job=applied_job)
+    _stored(500, 'hr@acme.test', 'Your application', 'recruiter_reply', thread_id='thread-a', matched_job=interview_job)
     reply = RawMessage(uid=501, sender='Jo Lee <jo.lee@freemail.test>', subject='Re: Your application',
                        body_text='Can we talk next week?', received_at=timezone.now(), thread_id='thread-a')
     transport = FakeTransport([reply])
     run = run_check(transport=transport, force=True)
     assert run is not None and not run.error
-    assert MailboxMessage.objects.get(uid=501).matched_job == applied_job
+    assert MailboxMessage.objects.get(uid=501).matched_job == interview_job
     assert transport.appended_drafts == [], 'auto-attach must never do more than a manual attach'
 
 
 @pytest.fixture
 def salesforce_job(db, owner):
-    return JobLead.objects.create(company='Salesforce', title='Forward Deployed Engineer', status='to_apply',
+    # TASK-296: 'interview' so it qualifies for auto-attach.
+    return JobLead.objects.create(company='Salesforce', title='Forward Deployed Engineer', status='interview',
                                   url='https://salesforce.wd12.myworkdayjobs.com/en-US/External/job/1382', created_by=owner)
 
 
@@ -6437,7 +6445,7 @@ def test_run_check_salesforce_mail_lands_on_the_salesforce_job_not_another_workd
     assert MailboxMessage.objects.get(uid=502).matched_job == salesforce_job
     assert MailboxSuggestion.objects.filter(job=salesforce_job, status='pending').exists()
     salesforce_job.refresh_from_db()
-    assert salesforce_job.status == 'to_apply', 'attaching proposes; it never changes the job itself'
+    assert salesforce_job.status == 'interview', 'attaching proposes; it never changes the job itself'
 
 
 def test_confident_job_requires_the_sender_to_name_the_company(db, owner):
@@ -6523,8 +6531,8 @@ def test_auto_attach_is_marked_and_a_detached_message_is_never_reattached(db, ow
     assert invitation.matched_job is None, 'a re-check must not undo the owner detaching it'
 
 
-def test_live_check_marks_its_own_auto_attach(db, owner, applied_job):
-    _stored(500, 'hr@acme.test', 'Your application', 'recruiter_reply', thread_id='thread-a', matched_job=applied_job)
+def test_live_check_marks_its_own_auto_attach(db, owner, interview_job):
+    _stored(500, 'hr@acme.test', 'Your application', 'recruiter_reply', thread_id='thread-a', matched_job=interview_job)
     reply = RawMessage(uid=501, sender='Jo Lee <jo.lee@freemail.test>', subject='Re: Your application',
                        body_text='Can we talk next week?', received_at=timezone.now(), thread_id='thread-a')
     run_check(transport=FakeTransport([reply]), force=True)
@@ -6555,6 +6563,54 @@ def test_recheck_unmatched_endpoint_is_owner_only(db, owner, salesforce_job):
     stranger.force_authenticate(User.objects.create_user('friend@example.test', password='pw'))
     assert stranger.post('/api/mailbox-messages/recheck-unmatched/', {'apply': True}, format='json').status_code == 404
     assert not MailboxMessage.objects.filter(matched_job=salesforce_job).exists()
+
+
+# --- TASK-296: auto-attach only for jobs that reached an interview and are not back before it -----
+
+SF_INVITE = 'Invitation: Your Salesforce Interview - Forward Deployed Engineer'
+
+
+@pytest.mark.parametrize('fields', [{'status': 'interview'}, {'status': 'rejected', 'interview_stage': 1}],
+                         ids=['interview', 'rejected_after_interview'])
+def test_auto_attach_targets_a_job_that_reached_an_interview(db, owner, salesforce_job, fields):
+    JobLead.objects.filter(pk=salesforce_job.pk).update(**fields)
+    jobs = [JobLead.objects.get(pk=salesforce_job.pk)]
+    _stored(9, 'hr@salesforce.com', 'Hello', 'recruiter_reply', thread_id='t-sf', matched_job=salesforce_job)
+    assert mailbox.auto_attach_job(_stored(10, 'Jane Doe <jane.doe@salesforce.com>', SF_INVITE, 'interview_invitation'), jobs) == (salesforce_job, 'confident')
+    assert mailbox.auto_attach_job(_stored(11, 'cal@freemail.test', 'Updated', 'uncertain', thread_id='t-sf'), jobs) == (salesforce_job, 'thread')
+
+
+@pytest.mark.parametrize('fields', [
+    {'status': 'applied'}, {'status': 'rejected'},  # never interviewed
+    {'status': 'applied', 'interview_stage': 2, 'interview_at': timezone.now()},  # interviewed, back at applied
+    {'status': 'new', 'interview_stage': 1},
+], ids=['applied', 'rejected_never_interviewed', 'back_to_applied', 'back_to_new'])
+def test_auto_attach_skips_a_job_that_never_interviewed_or_went_back(db, owner, salesforce_job, fields):
+    """Both rules: neither the confident match nor thread inheritance, and a known thread does not fall
+    through to the confident rule either."""
+    JobLead.objects.filter(pk=salesforce_job.pk).update(**fields)
+    jobs = [JobLead.objects.get(pk=salesforce_job.pk)]
+    _stored(9, 'hr@salesforce.com', 'Hello', 'recruiter_reply', thread_id='t-sf', matched_job=salesforce_job)
+    assert mailbox.auto_attach_job(_stored(10, 'Jane Doe <jane.doe@salesforce.com>', SF_INVITE, 'interview_invitation'), jobs) == (None, '')
+    assert mailbox.auto_attach_job(_stored(11, 'Jane Doe <jane.doe@salesforce.com>', SF_INVITE, 'interview_invitation', thread_id='t-sf'), jobs) == (None, '')
+
+
+def test_manual_attach_still_works_for_a_job_auto_attach_skips(db, owner, client, salesforce_job):
+    JobLead.objects.filter(pk=salesforce_job.pk).update(status='applied')
+    message = _stored(10, 'Jane Doe <jane.doe@salesforce.com>', SF_INVITE, 'interview_invitation')
+    assert mailbox.auto_attach_unmatched_messages(dry_run=False) == []
+    assert client.post(f'/api/mailbox-messages/{message.id}/attach/', {'job': salesforce_job.id}, format='json').status_code == 200
+    message.refresh_from_db()
+    assert message.matched_job == salesforce_job
+
+
+def test_recheck_dry_run_lists_only_mail_for_qualifying_jobs(db, owner, client, salesforce_job):
+    deltia = JobLead.objects.create(company='Deltia AI', title='ML Engineer', url='https://deltia.test/1', status='applied', created_by=owner)
+    invite = _stored(10, 'Jane Doe <jane.doe@salesforce.com>', SF_INVITE, 'interview_invitation')
+    _stored(11, 'Talent <talent@deltia.ai>', 'Deltia AI interview', 'interview_invitation')
+    dry = client.post('/api/mailbox-messages/recheck-unmatched/', {}, format='json').json()
+    assert [(r['id'], r['job']) for r in dry['results']] == [(invite.id, salesforce_job.id)]
+    assert deltia.id not in {r['job'] for r in dry['results']}
 
 
 @pytest.mark.django_db(transaction=True)

@@ -84,7 +84,7 @@ from django.db import DatabaseError, IntegrityError, transaction
 from django.db.models import F, Max, Q
 from django.utils import timezone
 
-from jobradar.models import ApplicationNote, JobLead, MailboxCheckRequest, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun
+from jobradar.models import REACHED_INTERVIEW, ApplicationNote, JobLead, MailboxCheckRequest, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, ScheduledTaskRun
 from jobradar.services.demo_data import DEMO_MAIL_PREFIX
 from jobradar.services.followup_digest import owned_jobs
 from jobradar.services.prompt_builder import user_profile_settings
@@ -2138,6 +2138,19 @@ def confident_job_for_message(message: MailboxMessage, jobs) -> JobLead | None:
     return job if len(same_company) == 1 or named == [job] else None
 
 
+# TASK-296 (owner, 2026-10-14): mail is auto-linked only for jobs that reached an interview -- the
+# stats funnel's own REACHED_INTERVIEW, not a second rule -- and are not back at a pre-interview
+# status. Every other job's mail stays unmatched for the Attach button; "no need to map every listing".
+AUTO_ATTACH_TARGETS = REACHED_INTERVIEW & ~Q(status__in=[*JobLead.UNAPPLIED_STATUSES, 'applied'])
+
+
+def _auto_attach_target(job: JobLead | None) -> JobLead | None:
+    """TASK-296: `job` when auto-attach may target it, else None. Checked on the job the matching
+    rules already picked (never by narrowing `jobs` first): a second job at the same company must
+    still make confident_job_for_message refuse, not hand the mail to the qualifying one."""
+    return job if job is not None and JobLead.objects.filter(AUTO_ATTACH_TARGETS, pk=job.pk).exists() else None
+
+
 def auto_attach_job(message: MailboxMessage, jobs) -> tuple[JobLead | None, str]:
     """TASK-291: (job, rule) for an unmatched, undismissed inbound message that attaches by itself --
     its Gmail thread's job first (AC1, rule 'thread', _match_by_thread: the same rule the owner's own
@@ -2145,13 +2158,17 @@ def auto_attach_job(message: MailboxMessage, jobs) -> tuple[JobLead | None, str]
     otherwise. A message the owner ever detached (detached_at) is never auto-attached again. The
     caller attaches through auto_attach(), so the effect is exactly a manual attach plus the
     auto_attached_at marker: pending suggestions only, no reply draft, no job status written.
+    TASK-296: both rules only ever target AUTO_ATTACH_TARGETS jobs; thread inheritance included, since
+    a thread the owner attached by hand to a never-interviewed job is exactly the mail they opted out of.
     """
     if message.sent_by_owner or message.dismissed_at is not None or message.matched_job_id or message.detached_at is not None:
         return None, ''
     thread_job = _match_by_thread(message.thread_id) if message.thread_id else None
     if thread_job is not None:
-        return thread_job, 'thread'
-    job = confident_job_for_message(message, jobs)
+        # TASK-296: the thread's job decides even when it does not qualify -- falling through to the
+        # confident rule could hand a known-thread message to some other job.
+        return (thread_job, 'thread') if _auto_attach_target(thread_job) else (None, '')
+    job = _auto_attach_target(confident_job_for_message(message, jobs))
     return (job, 'confident') if job is not None else (None, '')
 
 

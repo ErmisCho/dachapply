@@ -2,6 +2,7 @@ from datetime import time
 
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 
 
@@ -223,6 +224,16 @@ class CvAsset(models.Model):
         unique_together=[('user','kind','key')]
         ordering=['user','kind','key']
     def __str__(self): return f'{self.user}: {self.get_kind_display()} {self.key or self.filename}'.strip()
+
+# "Reached interview" is about the journey, not the current column. A job now in `offer`,
+# `accepted`, or `rejected` obviously interviewed; counting only status='interview' would
+# undercount exactly the jobs that converted best. There is no status history, so past
+# interviews of a job that has since moved to a closed status are recovered from the
+# interview fields the board already records.
+# TASK-296: lives here, not in views, because the mailbox auto-attach (services.mailbox) must use the
+# exact rule the stats funnel uses -- one definition, two consumers.
+REACHED_INTERVIEW = Q(status__in=['interview', 'offer', 'accepted']) | Q(interview_stage__isnull=False) | Q(interview_at__isnull=False)
+
 
 class JobLead(models.Model):
     WORK_MODES=[('onsite','Onsite'),('hybrid','Hybrid'),('remote','Remote'),('unknown','Unknown')]
