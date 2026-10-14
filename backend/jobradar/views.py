@@ -27,7 +27,7 @@ from rest_framework.exceptions import ValidationError as RestValidationError
 from rest_framework.decorators import api_view, permission_classes, action, throttle_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
-from .models import JobLead, JobEvaluation, ApplicationNote, FollowUp, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile, InviteCode
+from .models import REACHED_INTERVIEW, JobLead, JobEvaluation, ApplicationNote, FollowUp, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile, InviteCode
 from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxDraftSerializer, MailboxMessageListSerializer, MailboxMessageSerializer, MailboxMessageWithSuggestionsSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, invalid_email_addresses, normalize_job_url
 from .services.job_evaluator import evaluate_jobs
 from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, _profile_parts, user_profile_settings
@@ -164,14 +164,9 @@ def parse_board_ordering(raw):
     return (*exprs, '-created_at', 'id') if exprs else DEFAULT_BOARD_ORDERING
 
 
-# "Reached interview" is about the journey, not the current column. A job now in `offer`,
-# `accepted`, or `rejected` obviously interviewed; counting only status='interview' would
-# undercount exactly the jobs that converted best. There is no status history, so past
-# interviews of a job that has since moved to a closed status are recovered from the
-# interview fields the board already records.
+# REACHED_INTERVIEW (models.py, TASK-296) is the funnel's "reached interview" rule.
 # Known gap: a job rejected *after* an offer leaves no offer trace, so REACHED_OFFER
 # undercounts those. Recording an offer date would be the fix, and needs its own task.
-REACHED_INTERVIEW = Q(status__in=['interview', 'offer', 'accepted']) | Q(interview_stage__isnull=False) | Q(interview_at__isnull=False)
 REACHED_OFFER = Q(status__in=['offer', 'accepted'])
 
 
