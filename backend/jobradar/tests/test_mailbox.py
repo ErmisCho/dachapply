@@ -12,6 +12,7 @@ import email
 import email.policy
 import io
 import json
+import subprocess
 import threading
 import time
 from datetime import datetime, time as dt_time, timedelta
@@ -6501,3 +6502,135 @@ def test_detach_undoes_an_auto_attach_in_one_call(db, owner, client, salesforce_
     invitation.refresh_from_db(); suggestion.refresh_from_db()
     assert invitation.matched_job is None
     assert suggestion.status == 'dismissed'
+
+
+# --- TASK-291 follow-ups: auto_attached_at marker, detach is final, owner re-check endpoint ---------
+
+def test_auto_attach_is_marked_and_a_detached_message_is_never_reattached(db, owner, client, salesforce_job):
+    """AC4 + owner decision B: auto-attach sets auto_attached_at; detach clears it and records
+    detached_at, so a later re-check leaves the message alone."""
+    invitation = _stored(10, 'Jane Doe <jane.doe@salesforce.com>', 'Invitation: Your Salesforce Interview - Forward Deployed Engineer',
+                         'interview_invitation')
+    mailbox.auto_attach_unmatched_messages(dry_run=False)
+    invitation.refresh_from_db()
+    assert invitation.matched_job == salesforce_job and invitation.auto_attached_at is not None
+    body = client.post(f'/api/mailbox-messages/{invitation.id}/detach/').json()
+    assert body['auto_attached_at'] is None
+    invitation.refresh_from_db()
+    assert invitation.detached_at is not None
+    assert mailbox.auto_attach_unmatched_messages(dry_run=False) == []
+    invitation.refresh_from_db()
+    assert invitation.matched_job is None, 'a re-check must not undo the owner detaching it'
+
+
+def test_live_check_marks_its_own_auto_attach(db, owner, applied_job):
+    _stored(500, 'hr@acme.test', 'Your application', 'recruiter_reply', thread_id='thread-a', matched_job=applied_job)
+    reply = RawMessage(uid=501, sender='Jo Lee <jo.lee@freemail.test>', subject='Re: Your application',
+                       body_text='Can we talk next week?', received_at=timezone.now(), thread_id='thread-a')
+    run_check(transport=FakeTransport([reply]), force=True)
+    assert MailboxMessage.objects.get(uid=501).auto_attached_at is not None
+    assert MailboxMessage.objects.get(uid=500).auto_attached_at is None, 'a domain/manual match is not an auto-attach'
+
+
+def test_recheck_unmatched_endpoint_dry_run_then_apply(db, owner, client, salesforce_job):
+    invitation = _stored(10, 'Jane Doe <jane.doe@salesforce.com>', 'Invitation: Your Salesforce Interview - Forward Deployed Engineer',
+                         'interview_invitation', thread_id='t-sf')
+    follow_up = _stored(11, 'Calendar <calendar@freemail.test>', 'Updated invitation', 'uncertain', thread_id='t-sf')
+    dry = client.post('/api/mailbox-messages/recheck-unmatched/', {}, format='json').json()
+    assert dry['applied'] is False
+    assert [(r['id'], r['sender'], r['job'], r['job_label'], r['rule']) for r in dry['results']] == [
+        (invitation.id, 'Jane Doe', salesforce_job.id, 'Salesforce — Forward Deployed Engineer', 'confident')]
+    invitation.refresh_from_db()
+    assert invitation.matched_job is None, 'the dry run writes nothing'
+    applied = client.post('/api/mailbox-messages/recheck-unmatched/', {'apply': True}, format='json').json()
+    assert applied['applied'] is True
+    assert [(r['id'], r['rule']) for r in applied['results']] == [(invitation.id, 'confident'), (follow_up.id, 'thread')]
+    follow_up.refresh_from_db()
+    assert follow_up.matched_job == salesforce_job and follow_up.auto_attached_at is not None
+
+
+def test_recheck_unmatched_endpoint_is_owner_only(db, owner, salesforce_job):
+    _stored(10, 'Jane Doe <jane.doe@salesforce.com>', 'Invitation: Your Salesforce Interview - Forward Deployed Engineer', 'interview_invitation')
+    stranger = APIClient()
+    stranger.force_authenticate(User.objects.create_user('friend@example.test', password='pw'))
+    assert stranger.post('/api/mailbox-messages/recheck-unmatched/', {'apply': True}, format='json').status_code == 404
+    assert not MailboxMessage.objects.filter(matched_job=salesforce_job).exists()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_task_291_293_migration_applies_and_reverts_on_sqlite():
+    def columns(table):
+        with connection.cursor() as cursor:
+            return {c.name for c in connection.introspection.get_table_description(cursor, table)}
+    call_command('migrate', 'jobradar', '0057', verbosity=0)
+    assert 'auto_attached_at' not in columns('jobradar_mailboxmessage')
+    call_command('migrate', 'jobradar', '0058', verbosity=0)
+    assert {'auto_attached_at', 'detached_at'} <= columns('jobradar_mailboxmessage')
+    assert {'draft_provider', 'draft_model', 'draft_effort', 'draft_auto_replies_with_model'} <= columns('jobradar_userprofile')
+
+
+# --- TASK-293 D: mailbox-check reply drafts written by the Settings -> Drafts model ---------------
+
+CODEX_NEWEST = {'provider': 'openai', 'key': 'gpt-6.1-sol', 'label': 'GPT-6.1-Sol', 'efforts': ['low', 'xhigh', 'max'], 'default_effort': 'low', 'fast_tier': ''}
+
+
+@pytest.fixture
+def model_drafting(monkeypatch):
+    """A fake Codex: options stubbed, binary faked, `_run` records calls and answers via `reply`."""
+    from jobradar.services import draft_chat
+    calls = []
+    state = {'reply': 'Dear Jo, thank you -- I would be glad to talk. Best, Owner'}
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if state['reply'] is None:
+            raise subprocess.TimeoutExpired(command, 120)
+        out = command[command.index('--output-last-message') + 1]
+        with open(out, 'w', encoding='utf-8') as fh:
+            json.dump({'revised_text': state['reply']}, fh)
+        return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+    monkeypatch.setattr(draft_chat, 'MODEL_REPLY_DRAFTS_PER_RUN', 3)
+    monkeypatch.setattr(draft_chat, 'available_model_options', lambda: [CODEX_NEWEST])
+    monkeypatch.setattr(draft_chat, '_binary_for', lambda provider: 'codex')
+    monkeypatch.setattr(draft_chat, '_run', fake_run)
+    return {'calls': calls, 'state': state}
+
+
+def test_reply_draft_is_written_by_the_configured_model_at_xhigh(not_cold_start, db, owner, applied_job, model_drafting):
+    transport = FakeTransport([raw(2, sender='hr@acme.test', body='Thanks for your patience, still reviewing internally.')])
+    run_check(transport=transport)
+    draft = MailboxDraft.objects.get(message__uid=2)
+    assert draft.status == 'written' and draft.evaluator == 'openai:gpt-6.1-sol'
+    assert draft.body_text.startswith('Dear Jo')
+    assert 'model_reasoning_effort="xhigh"' in model_drafting['calls'][0]
+
+
+@pytest.mark.parametrize('reply', [None, 'We expect at least 30000 EUR.'], ids=['timeout', 'guardrail'])
+def test_reply_draft_falls_back_to_the_template_when_the_model_fails(not_cold_start, db, owner, applied_job, model_drafting, reply, settings):
+    settings.MAILBOX_SALARY_FLOOR_EUR = '60000'
+    model_drafting['state']['reply'] = reply
+    run = run_check(transport=FakeTransport([raw(2, sender='hr@acme.test', body='Thanks for your patience, still reviewing internally.')]))
+    assert not run.error
+    draft = MailboxDraft.objects.get(message__uid=2)
+    assert draft.status == 'written' and draft.evaluator == 'template'
+    assert len(model_drafting['calls']) == 1
+
+
+def test_reply_draft_uses_the_template_when_the_switch_is_off(not_cold_start, db, owner, applied_job, model_drafting):
+    profile = user_profile_settings(owner)
+    profile.draft_auto_replies_with_model = False
+    profile.save()
+    run_check(transport=FakeTransport([raw(2, sender='hr@acme.test', body='Thanks for your patience, still reviewing internally.')]))
+    assert MailboxDraft.objects.get(message__uid=2).evaluator == 'template'
+    assert model_drafting['calls'] == []
+
+
+def test_model_reply_drafts_are_capped_per_check(db, owner, applied_job, model_drafting):
+    other = JobLead.objects.create(company='Beta', title='Engineer', url='https://beta.test/1', status='applied', created_by=owner)
+    budget = {'left': 1}
+    for uid, job in ((2, applied_job), (3, other)):
+        r = raw(uid, sender='hr@acme.test', body='Thanks for your patience, still reviewing internally.')
+        message = _stored(uid, r.sender, r.subject, 'recruiter_reply', matched_job=job)
+        mailbox.maybe_draft_reply(message, r, job, 'recruiter_reply', None, owner, user_profile_settings(owner), FakeTransport([]), model_budget=budget)
+    assert len(model_drafting['calls']) == 1
+    assert sorted(MailboxDraft.objects.values_list('evaluator', flat=True)) == ['openai:gpt-6.1-sol', 'template']

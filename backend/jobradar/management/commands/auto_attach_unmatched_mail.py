@@ -10,8 +10,8 @@ class Command(BaseCommand):
         "message is attached to its Gmail thread's job, or to a confident single suggestion "
         '(services.mailbox.auto_attach_job, the same rule the live mailbox check uses). Attaches '
         'exactly like the panel\'s Attach button: pending suggestions only, no drafts, no status '
-        'change. Run it once: a message the owner later detaches would be re-attached by a second '
-        'run. Dry run by default; --yes actually attaches.'
+        'change. Safe to re-run: a message the owner detached is never re-attached. '
+        'Dry run by default; --yes actually attaches.'
     )
 
     def add_arguments(self, parser):

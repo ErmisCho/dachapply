@@ -1,6 +1,6 @@
 import pytest
 
-from jobradar.services import cv_generator
+from jobradar.services import cv_generator, draft_chat
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +47,13 @@ def _never_send_real_email(settings):
     Tests that want a specific backend still override it.
     """
     settings.EMAIL_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
+
+
+@pytest.fixture(autouse=True)
+def _no_model_reply_drafts(monkeypatch):
+    """TASK-293: run_check may write reply drafts with the local Codex/Claude CLI, which this machine
+    really has. Off for every test; tests of that path set the budget themselves and stub the CLI."""
+    monkeypatch.setattr(draft_chat, 'MODEL_REPLY_DRAFTS_PER_RUN', 0)
 
 
 @pytest.fixture(autouse=True)

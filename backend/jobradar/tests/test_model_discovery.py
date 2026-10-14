@@ -47,3 +47,17 @@ def test_draft_default_is_newest_codex_model_at_xhigh():
     assert default_draft_choice(options, 'openai', 'gpt-6-luna') == (options[1], 'high', False)
     # A stored model Codex no longer offers falls back to the newest, and says so.
     assert default_draft_choice(options, 'openai', 'gpt-5.4') == (options[0], 'xhigh', True)
+
+
+def test_settings_draft_choice_uses_the_stored_model_and_effort_and_says_when_it_is_gone():
+    from types import SimpleNamespace
+    from jobradar.services.draft_chat import profile_draft_choice
+    options = [
+        {'provider': 'openai', 'key': 'gpt-6.1-sol', 'efforts': ['low', 'medium', 'xhigh', 'max'], 'default_effort': 'low'},
+        {'provider': 'anthropic', 'key': 'opus', 'efforts': ['low', 'high', 'xhigh'], 'default_effort': 'medium'},
+    ]
+    pick = lambda p='', m='', e='': profile_draft_choice(SimpleNamespace(draft_provider=p, draft_model=m, draft_effort=e), options)
+    assert pick() == (options[0], 'xhigh', False), 'empty Settings -> newest Codex at xhigh'
+    assert pick('anthropic', 'opus', 'high') == (options[1], 'high', False), 'the stored model and effort win'
+    assert pick('anthropic', 'opus', 'max') == (options[1], 'xhigh', False), 'an effort the model lacks falls back'
+    assert pick('openai', 'gpt-5.4', 'low') == (options[0], 'xhigh', True), 'a vanished model -> newest Codex, flagged'

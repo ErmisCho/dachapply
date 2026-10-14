@@ -117,7 +117,9 @@ class CandidateProfileSerializer(serializers.ModelSerializer):
         # TASK-169: mailbox_identify_window_months sits right next to mailbox_lookback_months -- same
         # family, deliberately a different field (see the model comment on both for why fetch and
         # identify must not share one setting).
-        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','posting_refresh_cadence','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_check_enabled','mailbox_check_window_start','mailbox_check_window_end','mailbox_lookback_months','mailbox_identify_window_months','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ids','board_sort_keys','board_status_order','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
+        # TASK-293: draft_provider/draft_model/draft_effort/draft_auto_replies_with_model are
+        # Settings -> Drafts (services.draft_chat.profile_draft_choice resolves them).
+        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','posting_refresh_cadence','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_check_enabled','mailbox_check_window_start','mailbox_check_window_end','mailbox_lookback_months','mailbox_identify_window_months','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ids','board_sort_keys','board_status_order','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template','draft_provider','draft_model','draft_effort','draft_auto_replies_with_model')
     # The profile codec is a text codec: it JSON-wraps values for drifted SQLite schemas and
     # coerces falsy values to ''. Running a boolean through it would store '' in a
     # BooleanField and serialise False as ''. Booleans (and mailbox_check_cadence_minutes, an int
@@ -537,7 +539,7 @@ class MailboxMessageSerializer(serializers.ModelSerializer):
         # attachments were added to the model (migration 0042) but never added here -- see
         # MailboxMessage's own docstring for exactly what each holds. Read-only like everything else
         # in this serializer (ModelSerializer default for a field with no explicit writable=True).
-        fields=('id','sender','subject','body_text','received_at','classification','matched_job','matched_job_company','matched_job_title','draft','app_draft','thread_id','gmail_url','to_addrs','cc_addrs','sent_by_owner','created_at','calendar_summary','calendar_location','calendar_organizer','calendar_start','calendar_end','attachments')
+        fields=('id','sender','subject','body_text','received_at','classification','matched_job','matched_job_company','matched_job_title','draft','app_draft','thread_id','gmail_url','to_addrs','cc_addrs','sent_by_owner','created_at','calendar_summary','calendar_location','calendar_organizer','calendar_start','calendar_end','attachments','auto_attached_at')
     def get_draft(self, obj):
         draft=getattr(obj,'draft',None)
         return MailboxDraftSerializer(draft, context=self.context).data if draft else None

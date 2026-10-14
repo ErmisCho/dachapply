@@ -114,3 +114,42 @@ def test_without_a_pick_the_followup_uses_the_newest_codex_model_at_xhigh(owner,
 
     assert _post(owner, job).json()['model'] == 'gpt-6.1-sol'
     assert 'model_reasoning_effort="xhigh"' in seen['command']
+
+
+def test_followup_uses_the_settings_default_and_the_popup_pick_is_never_saved(owner, job, monkeypatch):
+    # TASK-293 AC1/AC2: Settings -> Drafts is the default; a popup pick applies to that draft only.
+    newest = {'provider': 'openai', 'key': 'gpt-6.1-sol', 'label': 'GPT-6.1-Sol', 'efforts': ['low', 'xhigh'], 'default_effort': 'low', 'fast_tier': ''}
+    for module in (cv_generator, draft_chat):
+        monkeypatch.setattr(module, 'available_model_options', lambda: [newest, CLAUDE_MODEL])
+    monkeypatch.setattr(draft_chat, '_binary_for', lambda provider: None)
+    profile = user_profile_settings(owner)
+    profile.draft_provider, profile.draft_model, profile.draft_effort = 'anthropic', 'sonnet', 'high'
+    profile.save()
+    body = _post(owner, job).json()
+    assert (body['model'], body['effort']) == ('sonnet', 'high')
+    client = APIClient()
+    client.force_authenticate(owner)
+    picked = client.post(f'/api/jobs/{job.id}/followup-draft/', {'provider': 'openai', 'model': 'gpt-6.1-sol'}, format='json').json()
+    assert (picked['model'], picked['effort']) == ('gpt-6.1-sol', 'xhigh')
+    profile.refresh_from_db()
+    assert (profile.draft_model, profile.mailbox_chat_model) == ('sonnet', '')
+
+
+def test_model_options_reports_the_draft_default_and_a_vanished_stored_model(owner, monkeypatch):
+    newest = {'provider': 'openai', 'key': 'gpt-6.1-sol', 'label': 'GPT-6.1-Sol', 'efforts': ['low', 'xhigh'], 'default_effort': 'low', 'fast_tier': ''}
+    monkeypatch.setattr('jobradar.views.available_model_options', lambda: [newest, CLAUDE_MODEL])
+    profile = user_profile_settings(owner)
+    profile.draft_provider, profile.draft_model = 'openai', 'gpt-5.4'
+    profile.save()
+    client = APIClient()
+    client.force_authenticate(owner)
+    assert client.get('/api/mailbox-drafts/model-options/').json()['draft_default'] == {
+        'provider': 'openai', 'model': 'gpt-6.1-sol', 'label': 'GPT-6.1-Sol', 'effort': 'xhigh', 'stored_model_missing': True}
+
+
+def test_profile_exposes_and_saves_the_draft_settings(owner):
+    client = APIClient()
+    client.force_authenticate(owner)
+    assert client.get('/api/profile/').json()['draft_auto_replies_with_model'] is True
+    saved = client.patch('/api/profile/', {'draft_provider': 'anthropic', 'draft_model': 'sonnet', 'draft_effort': 'high', 'draft_auto_replies_with_model': False}, format='json').json()
+    assert (saved['draft_provider'], saved['draft_model'], saved['draft_effort'], saved['draft_auto_replies_with_model']) == ('anthropic', 'sonnet', 'high', False)
