@@ -1,10 +1,10 @@
 ---
 id: TASK-283.2
 title: Per-row board cache rebuilt only for changed rows
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-13 14:23'
-updated_date: '2026-10-14 06:15'
+updated_date: '2026-10-14 07:41'
 labels:
   - performance
 dependencies:
@@ -36,4 +36,6 @@ Keep each job's serialized board row in a server cache with a version stamp deri
 2026-10-13: serialized board rows cached per (viewer, job) in a process-local LocMem alias (board_rows, all runtimes incl. Azure). A warm load runs one stamp query (ids + version stamp built in SQL from BOARD_ROW_SOURCES) and only fetches/serializes rows whose stamp changed. No invalidation needed: every request reads stamps from the DB. Writes that skip updated_at are covered by stamping those columns; two update_fields saves now include updated_at. 16 new tests, each falsified; byte-identical on vs off. Local board_list 2 -> 1 query warm. AC#1/#2 (timings on Neon/Azure) to be measured after deploy.
 
 2026-10-14: localhost median TTFB 150 ms (113 jobs, 20 warm). Uncached first request and cached ones hash identically (18fd751e5fa3e9). AC#2 needs an Azure deploy.
+
+2026-10-14: Azure 226 ms (AC#2 not met), waived by owner: app is used mainly locally; follow-up in TASK-283.3.
 <!-- SECTION:NOTES:END -->
