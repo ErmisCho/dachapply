@@ -3,7 +3,7 @@
 // whether what is on screen has been saved yet. That distinction is wording, not logic: it cannot
 // fail a typecheck and it cannot fail the backend's own tests. It is pinned here instead.
 //
-// Rendered with react-dom/server, the same way stallPanel.test.tsx does it: this vitest run has no
+// Rendered with react-dom/server, the same way appPanels.test.tsx does it: this vitest run has no
 // DOM (no jsdom, no @testing-library) and TASK-177 forbids adding one. Reading the emitted markup is
 // enough to assert which branch was taken; it cannot press the confirm button, so the two-request
 // dry-run-then-commit flow itself is measured in the browser.
@@ -35,7 +35,7 @@ describe('EvaluateWithModelOutcome preview table',()=>{
 
   // A replace row whose previous score the server could not report must say so in words. `?? 0`
   // here would claim the board currently holds a fit of 0 for that job, which is a different and
-  // false statement - the same defect StallPanel is guarded against in stallPanel.test.tsx.
+  // false statement.
   it('does not invent a replaced score it was not given',()=>{
     const html=render(result({preview:[row({action:'replace',replaces_fit_score:null})]}))
     expect(html).toContain('Replaces the current evaluation')
