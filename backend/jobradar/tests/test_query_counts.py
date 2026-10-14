@@ -61,6 +61,8 @@ def owner_client(db):
     for model in (JobLead, JobEvaluation, ApplicationNote, FollowUp):
         fields = {f.name: T0 for f in model._meta.fields if f.name in ('created_at', 'updated_at')}
         model.objects.update(**fields)
+    # JobLead.save() stamps applied_at with today's date; pin it to the snapshot's.
+    JobLead.objects.filter(applied_at__isnull=False).update(applied_at=datetime.date(2026, 10, 13))
     client = Client()
     client.force_login(owner)
     client.cookies['app_sessionid'] = client.cookies['sessionid'].value
