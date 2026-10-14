@@ -1600,6 +1600,22 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         message.refresh_from_db()
         return Response(MailboxMessageWithSuggestionsSerializer(message).data)
 
+    @action(detail=True, methods=['post'])
+    def detach(self, request, pk=None):
+        """TASK-291 AC4: the one-click undo of an attach -- the owner's or the mailbox check's own
+        auto-attach (services.mailbox.auto_attach_job). Clears matched_job, so the message is an
+        unmatched row again, and dismisses the still-PENDING suggestions that attaching generated for
+        that job; a suggestion the owner already confirmed/dismissed/postponed is their decision and
+        stays. Idempotent on an unmatched message.
+        """
+        message=self.get_object()
+        if message.matched_job_id:
+            for suggestion in message.suggestions.filter(job_id=message.matched_job_id, status='pending'):
+                dismiss_suggestion(suggestion)
+            message.matched_job=None
+            message.save(update_fields=['matched_job'])
+        return Response(MailboxMessageWithSuggestionsSerializer(message).data)
+
     @action(detail=True, methods=['post'], url_path='create-job')
     def create_job(self, request, pk=None):
         """TASK-166 AC1/AC4: the THIRD honest ending for an unmatched message, alongside `attach`

@@ -1631,7 +1631,13 @@ def is_platform_notification(domain: str) -> bool:
 # before and after, and _match_by_ats_display_name answers None for all 6 rows (their display
 # name is the ATS's own, naming no tracked company). A one-word no-op today that closes a hole
 # that is one manual attach away.
-ATS_DOMAINS = frozenset({'ashbyhq.com', 'join.com', 'workable.com', 'workablemail.com', 'personio.com'})
+# TASK-291: 'myworkday.com' added -- Workday's shared outbound mail domain (salesforce@, dedalus@,
+# blackrock@myworkday.com all exist in this data), never one employer. Left out, it was learnable as a
+# single-employer domain by matched_sender_domains() and, via match_job()'s subdomain rule, by any job
+# URL on a *.myworkday.com host -- either way a Salesforce confirmation could land on another
+# company's Workday-using job. Job POSTINGS live on myworkdayjobs.com, a different registrable
+# domain, so owned_job_domains() loses nothing here.
+ATS_DOMAINS = frozenset({'ashbyhq.com', 'join.com', 'workable.com', 'workablemail.com', 'personio.com', 'myworkday.com'})
 
 
 def _registrable_domain(domain: str) -> str:
@@ -2093,6 +2099,55 @@ def _match_by_thread(thread_id: str) -> JobLead | None:
     """
     row = real_mailbox_messages().filter(thread_id=thread_id).exclude(matched_job__isnull=True).order_by('uid').first()
     return row.matched_job if row else None
+
+
+def _title_tokens(text: str) -> frozenset:
+    """TASK-291: 3+-character word tokens -- '(m/w/d)' drops out, 'Forward Deployed Engineer' stays."""
+    return frozenset(re.findall(r'\w{3,}', (text or '').lower()))
+
+
+def confident_job_for_message(message: MailboxMessage, jobs) -> JobLead | None:
+    """TASK-291 AC2: the tracked job an unmatched message may attach to WITHOUT the owner, or None.
+
+    The rule, conservative on purpose -- anything it refuses stays in the unmatched panel exactly as
+    before, with the same one-click suggestion:
+
+    1. suggest_job_for_message() names exactly one job (its own "more than one claimant -> None",
+       job-board refusal and same-company timing rules all apply unchanged).
+    2. The SENDER names that job's company: every company token appears in the From header -- the
+       display name, the address local part (salesforce@myworkday.com, an ATS sender) or the
+       employer's own domain (jane@salesforce.com). A company named only in free text (an agency
+       recruiter, a newsletter) is a suggestion, never an attachment.
+    3. Either that is the ONLY tracked job at the company, or the job's title is the only one of the
+       company's titles fully named in the subject/body (role keywords).
+    4. The message is job-related, inbound, has a received_at, and did not arrive more than
+       ATTRIBUTION_MAX_AGE_DAYS before the job was tracked -- a 2024 rejection must not land on a
+       2026 lead at the same company (the owner's own 90-day reasoning, see _job_by_process_timing).
+    """
+    if message.sent_by_owner or message.classification == 'not_job_related' or message.received_at is None:
+        return None
+    job = suggest_job_for_message(message.subject, message.body_text, message.sender, jobs, message.received_at)
+    if job is None or message.received_at < job.created_at - timedelta(days=ATTRIBUTION_MAX_AGE_DAYS):
+        return None
+    company = _company_name_tokens(job.company)
+    if not company.issubset(_company_name_tokens(message.sender)):
+        return None
+    same_company = [j for j in jobs if _company_name_tokens(j.company) == company]
+    text = _title_tokens(f'{message.subject}\n{message.body_text}')
+    named = [j for j in same_company if _title_tokens(j.title) and _title_tokens(j.title) <= text]
+    return job if len(same_company) == 1 or named == [job] else None
+
+
+def auto_attach_job(message: MailboxMessage, jobs) -> JobLead | None:
+    """TASK-291: the job an unmatched, undismissed inbound message attaches to by itself -- its Gmail
+    thread's job first (AC1, _match_by_thread: the same rule the owner's own sent mail already
+    follows), else confident_job_for_message (AC2). The caller attaches through
+    attach_message_to_job(), so the effect is exactly a manual attach: pending suggestions only, no
+    reply draft, no job status written.
+    """
+    if message.sent_by_owner or message.dismissed_at is not None or message.matched_job_id:
+        return None
+    return (_match_by_thread(message.thread_id) if message.thread_id else None) or confident_job_for_message(message, jobs)
 
 
 # --- RFC5545 ICS parsing primitives -------------------------------------------------------------
@@ -3185,6 +3240,37 @@ def rematch_sender_domain_messages(dry_run: bool = True) -> list[dict]:
         for job, messages in by_job.items():
             MailboxMessage.objects.filter(pk__in=[m.pk for m in messages]).update(matched_job=job)
 
+    return [{'job': job, 'message_count': len(messages), 'messages': messages} for job, messages in by_job.items()]
+
+
+# --- TASK-291 AC3: re-evaluate already-captured unmatched mail once -------------------------------
+
+def auto_attach_unmatched_messages(dry_run: bool = True) -> list[dict]:
+    """Back-catalogue pass for TASK-291's auto_attach_job(): every stored unmatched, undismissed,
+    inbound message is run through the same rule the live path now uses -- no second rule. Same
+    one-directional shape as rematch_sender_domain_messages: only an empty match is ever filled.
+
+    Unlike its siblings this DOES generate suggestions, because it attaches through
+    attach_message_to_job() -- the owner asked for auto-attach to behave exactly like their own
+    click, and the click generates them (pending only; nothing is drafted or applied).
+
+    A management command (auto_attach_unmatched_mail), not a step inside run_check: a pass on every
+    check would re-attach whatever the owner detached. Re-running it attaches nothing already handled;
+    it WOULD re-attach a detached message, so run it once. Ascending uid, so a thread's first message
+    attached here lets its later ones inherit the job in the same pass (a dry run cannot see that
+    chain and may report fewer). Returns {'job', 'message_count', 'messages'} per job.
+    """
+    owner = _owner_user()
+    if owner is None:
+        return []
+    jobs = list(owned_jobs(owner).exclude(company=''))
+    by_job: dict = {}
+    for message in real_mailbox_messages().filter(matched_job__isnull=True, sent_by_owner=False).order_by('uid'):
+        job = auto_attach_job(message, jobs)
+        if job is not None:
+            by_job.setdefault(job, []).append(message)
+            if not dry_run:
+                attach_message_to_job(message, job)
     return [{'job': job, 'message_count': len(messages), 'messages': messages} for job, messages in by_job.items()]
 
 
@@ -4400,6 +4486,7 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         # over the whole message table, and rebuilding it per message would be the per-row cost
         # TASK-142 already paid to remove from this path's sibling endpoint.
         sender_domains = matched_sender_domains(owner)
+        tracked_jobs = list(owned_jobs(owner).exclude(company=''))  # TASK-291: once per run, like the two maps above
 
         # Gmail-sourced messages get a locally-assigned uid (MailboxMessage.uid is a required, unique,
         # IMAP-shaped int; Gmail's own id is a hex string that does not fit it) -- assigned here in
@@ -4467,6 +4554,14 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
                 run.uncertain_count += 1
             elif classification != 'not_job_related':
                 run.job_related_count += 1
+            # TASK-291 AC1/AC2: what match_job() left unmatched may still follow its thread or a confident
+            # suggestion -- attached exactly as a manual attach would be. `matched` stays None, so the
+            # drafting block below never runs for it: auto-attach does no more than the owner's click.
+            if matched is None and not sent_by_owner:
+                auto_job = auto_attach_job(message, tracked_jobs)
+                if auto_job is not None:
+                    attach_message_to_job(message, auto_job)
+                    run.suggestion_count += message.suggestions.count()
             # TASK-144 AC3: never generate a suggestion or a reply draft from the owner's OWN words --
             # _classify_heuristic (and an LLM prompt built the same way) has no idea who sent a
             # message, and a sent "thank you for the invitation" reads exactly like a recruiter's mail

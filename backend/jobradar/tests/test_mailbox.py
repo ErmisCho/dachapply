@@ -6385,3 +6385,119 @@ def test_named_non_interview_calendar_events_never_propose_an_interview_date(db,
     assert board_url_job.status == 'interview'
     assert build_suggestions(message, board_url_job, 'recruiter_reply', None) == 0
     assert not MailboxSuggestion.objects.filter(job=board_url_job, suggestion_type='interview_date').exists()
+
+
+# --- TASK-291: same thread -> same job; confident single suggestions attach themselves -----------
+
+def _stored(uid, sender, subject, classification, received_at=None, thread_id='', matched_job=None, body=''):
+    return MailboxMessage.objects.create(
+        run=MailboxRun.objects.create(), uid=uid, sender=sender, subject=subject, body_text=body,
+        classification=classification, evaluator='heuristic', thread_id=thread_id, matched_job=matched_job,
+        received_at=received_at or timezone.now(),
+    )
+
+
+def test_run_check_inbound_mail_inherits_the_job_of_its_gmail_thread(db, owner, applied_job):
+    """AC1: a reply from an address no domain rule knows still belongs to the thread's job -- attached
+    like a manual attach, so it never gets a reply draft of its own."""
+    _stored(500, 'hr@acme.test', 'Your application', 'recruiter_reply', thread_id='thread-a', matched_job=applied_job)
+    reply = RawMessage(uid=501, sender='Jo Lee <jo.lee@freemail.test>', subject='Re: Your application',
+                       body_text='Can we talk next week?', received_at=timezone.now(), thread_id='thread-a')
+    transport = FakeTransport([reply])
+    run = run_check(transport=transport, force=True)
+    assert run is not None and not run.error
+    assert MailboxMessage.objects.get(uid=501).matched_job == applied_job
+    assert transport.appended_drafts == [], 'auto-attach must never do more than a manual attach'
+
+
+@pytest.fixture
+def salesforce_job(db, owner):
+    return JobLead.objects.create(company='Salesforce', title='Forward Deployed Engineer', status='to_apply',
+                                  url='https://salesforce.wd12.myworkdayjobs.com/en-US/External/job/1382', created_by=owner)
+
+
+def test_run_check_salesforce_mail_lands_on_the_salesforce_job_not_another_workday_tenant(db, owner, salesforce_job):
+    """AC2/AC3's measured case: a myworkday.com confirmation from Salesforce, while ANOTHER company's
+    Workday mail (Dedalus) is already attached to its own job. Before TASK-291 myworkday.com was a
+    learnable single-employer domain, so this confirmation went to Dedalus and never reached the
+    unmatched panel. The recruiter's invitation (message 1577's shape) attaches too, with the same
+    pending suggestion the Attach button would create."""
+    dedalus = JobLead.objects.create(company='Dedalus', title='Backend Developer', url='https://dedalus.test/jobs/1',
+                                     status='applied', status_date=timezone.localdate(), created_by=owner)
+    _stored(500, 'Dedalus <dedalus@myworkday.com>', 'Thank you for applying', 'application_confirmed', matched_job=dedalus)
+    confirmation = RawMessage(uid=501, sender='salesforce@myworkday.com', subject='Thank you for applying to Salesforce',
+                              body_text='Thank you for applying for Forward Deployed Engineer.', received_at=timezone.now())
+    invitation = RawMessage(uid=502, sender='Jane Doe <jane.doe@salesforce.com>',
+                            subject='Invitation: Your Salesforce Interview - Forward Deployed Engineer',
+                            body_text='We would like to invite you to an interview.', received_at=timezone.now())
+    run = run_check(transport=FakeTransport([confirmation, invitation]), force=True)
+    assert run is not None and not run.error
+    assert MailboxMessage.objects.get(uid=501).matched_job == salesforce_job
+    assert MailboxMessage.objects.get(uid=502).matched_job == salesforce_job
+    assert MailboxSuggestion.objects.filter(job=salesforce_job, status='pending').exists()
+    salesforce_job.refresh_from_db()
+    assert salesforce_job.status == 'to_apply', 'attaching proposes; it never changes the job itself'
+
+
+def test_confident_job_requires_the_sender_to_name_the_company(db, owner):
+    """AC2: a company named only in free text (an agency recruiter) stays a suggestion for the owner."""
+    job = JobLead.objects.create(company='Deltia AI', title='ML Engineer', url='https://deltia.test/1', status='applied', created_by=owner)
+    agency = _stored(10, 'Sam <sam@agency.test>', 'Deltia AI interview', 'interview_invitation')
+    direct = _stored(11, 'Talent <talent@deltia.ai>', 'Deltia AI interview', 'interview_invitation')
+    jobs = [job]
+    assert mailbox.suggest_job_for_message(agency.subject, '', agency.sender, jobs) == job
+    assert mailbox.confident_job_for_message(agency, jobs) is None
+    assert mailbox.confident_job_for_message(direct, jobs) == job
+
+
+def test_confident_job_needs_the_role_when_the_company_has_several_jobs(db, owner, salesforce_job):
+    """AC2: two tracked Salesforce roles -- only a message naming exactly one role attaches."""
+    other = JobLead.objects.create(company='Salesforce', title='Solutions Engineer', url='https://salesforce.test/2',
+                                   status='applied', status_date=timezone.localdate(), created_by=owner)
+    jobs = [salesforce_job, other]
+    vague = _stored(10, 'salesforce@myworkday.com', 'Your Salesforce application', 'rejection')
+    named = _stored(11, 'salesforce@myworkday.com', 'Your Salesforce application: Solutions Engineer', 'rejection')
+    assert mailbox.confident_job_for_message(vague, jobs) is None
+    assert mailbox.confident_job_for_message(named, jobs) == other
+
+
+def test_confident_job_refuses_mail_from_long_before_the_job_was_tracked(db, owner, salesforce_job):
+    """AC2: a 2024 Salesforce rejection must not land on a 2026 Salesforce lead."""
+    old = _stored(10, 'salesforce@myworkday.com', 'Your Salesforce application', 'rejection',
+                  received_at=timezone.now() - timedelta(days=400))
+    assert mailbox.confident_job_for_message(old, [salesforce_job]) is None
+
+
+def test_auto_attach_unmatched_messages_re_evaluates_once_and_is_dry_by_default(db, owner, salesforce_job):
+    """AC3: the back catalogue -- dry by default, attaches like the Attach button (pending suggestion),
+    a thread follower inherits in the same pass, a dismissed message is left alone, a second run finds
+    nothing."""
+    invitation = _stored(10, 'Jane Doe <jane.doe@salesforce.com>', 'Invitation: Your Salesforce Interview - Forward Deployed Engineer',
+                         'interview_invitation', thread_id='t-sf')
+    follow_up = _stored(11, 'Calendar <calendar@freemail.test>', 'Updated invitation', 'uncertain', thread_id='t-sf')
+    dismissed = _stored(12, 'salesforce@myworkday.com', 'Thank you for applying to Salesforce', 'application_confirmed')
+    dismissed.dismissed_at = timezone.now()
+    dismissed.save()
+    assert [(r['job'], r['message_count']) for r in mailbox.auto_attach_unmatched_messages()] == [(salesforce_job, 1)]
+    invitation.refresh_from_db()
+    assert invitation.matched_job is None, 'a dry run must write nothing'
+    result = mailbox.auto_attach_unmatched_messages(dry_run=False)
+    assert [(r['job'], r['message_count']) for r in result] == [(salesforce_job, 2)]
+    invitation.refresh_from_db(); follow_up.refresh_from_db(); dismissed.refresh_from_db()
+    assert invitation.matched_job == salesforce_job and follow_up.matched_job == salesforce_job
+    assert dismissed.matched_job is None
+    assert MailboxSuggestion.objects.filter(message=invitation, job=salesforce_job, status='pending').exists()
+    assert mailbox.auto_attach_unmatched_messages(dry_run=False) == [], 'a second run finds nothing left to do'
+
+
+def test_detach_undoes_an_auto_attach_in_one_call(db, owner, client, salesforce_job):
+    """AC4: one POST returns the message to the unmatched panel and withdraws its pending suggestion."""
+    invitation = _stored(10, 'Jane Doe <jane.doe@salesforce.com>', 'Invitation: Your Salesforce Interview - Forward Deployed Engineer',
+                         'interview_invitation')
+    mailbox.auto_attach_unmatched_messages(dry_run=False)
+    suggestion = MailboxSuggestion.objects.get(message=invitation)
+    response = client.post(f'/api/mailbox-messages/{invitation.id}/detach/')
+    assert response.status_code == 200
+    invitation.refresh_from_db(); suggestion.refresh_from_db()
+    assert invitation.matched_job is None
+    assert suggestion.status == 'dismissed'
