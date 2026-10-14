@@ -3,9 +3,10 @@ id: TASK-293
 title: >-
   AI drafts default to the latest Codex model at xhigh effort, configurable in
   settings
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-14 09:02'
+updated_date: '2026-10-14 12:49'
 labels: []
 dependencies: []
 ordinal: 294000
