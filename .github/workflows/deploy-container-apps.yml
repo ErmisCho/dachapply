@@ -128,12 +128,13 @@ jobs:
           # --set-env-vars is additive: it adds or updates only the names listed and leaves every
           # other variable on the app alone. Declaring it on each deploy means the alert address
           # survives a revision being recreated, instead of living as a one-off console edit nobody
-          # remembers making.
+          # remembers making. TASK-283.3: DB_POOL turns on the psycopg pool and with it
+          # USAGE_RECORD_ASYNC, so the usage counters (4 of the board's 8 queries) leave the request.
           az containerapp update \
             --name "$CONTAINER_APP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
             --image "$IMAGE_NAME:$GITHUB_SHA" \
-            --set-env-vars "ERROR_ALERT_EMAILS=${ERROR_ALERT_EMAILS}" \
+            --set-env-vars "ERROR_ALERT_EMAILS=${ERROR_ALERT_EMAILS}" "DB_POOL=true" \
             --min-replicas 0 \
             --max-replicas 1 \
             --output none
