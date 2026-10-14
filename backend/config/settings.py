@@ -451,7 +451,7 @@ INSTALLED_APPS = [
 # (ensure_csrf_cookie) -- no view writes it into a body -- on top of which this Django version
 # already pads every compressed body with up to `max_random_bytes` of noise for exactly that reason.
 MIDDLEWARE = [
- 'django.middleware.gzip.GZipMiddleware',
+ 'config.middleware.ServerTimingMiddleware','django.middleware.gzip.GZipMiddleware',
  'django.middleware.security.SecurityMiddleware','whitenoise.middleware.WhiteNoiseMiddleware','corsheaders.middleware.CorsMiddleware',
  'django.middleware.common.CommonMiddleware','config.middleware.NoCacheHtmlMiddleware','django.middleware.csrf.CsrfViewMiddleware','config.middleware.SplitAdminSessionMiddleware','django.contrib.auth.middleware.AuthenticationMiddleware','jobradar.middleware.UserUsageMiddleware',
  'django.contrib.messages.middleware.MessageMiddleware','django.middleware.clickjacking.XFrameOptionsMiddleware'

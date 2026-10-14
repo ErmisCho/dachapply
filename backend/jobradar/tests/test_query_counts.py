@@ -225,3 +225,10 @@ def test_cached_sessions_skip_the_session_query_and_logout_still_ends_the_sessio
     assert replay.get('/api/auth/me/').status_code == 200
     owner_client.post('/api/auth/logout/')
     assert replay.get('/api/auth/me/').status_code == 403
+
+
+def test_server_timing_header_counts_the_queries_for_logged_in_users_only(owner_client):
+    """TASK-283.3: the header reports the same query count the tests above pin."""
+    response, queries = measure(owner_client, BOARD_URL, usage=False)
+    assert f'desc="{len(queries)} queries"' in response['Server-Timing'], response['Server-Timing']
+    assert 'Server-Timing' not in Client().get('/api/health/')
