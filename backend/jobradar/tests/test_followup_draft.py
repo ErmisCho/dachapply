@@ -97,3 +97,20 @@ def test_a_missing_cli_is_reported_as_the_reason(owner, job, monkeypatch):
     monkeypatch.setattr(draft_chat, '_binary_for', lambda provider: None)
     monkeypatch.setattr(draft_chat, '_run', lambda *a, **k: pytest.fail('no process may be spawned'))
     assert 'CLI is not installed' in _post(owner, job).json()['reason']
+
+
+def test_without_a_pick_the_followup_uses_the_newest_codex_model_at_xhigh(owner, job, monkeypatch):
+    # TASK-293 AC2: nothing requested and nothing remembered -> newest Codex model, xhigh.
+    newest = {'provider': 'openai', 'key': 'gpt-6.1-sol', 'label': 'GPT-6.1-Sol', 'efforts': ['low', 'xhigh', 'max'], 'default_effort': 'low', 'fast_tier': 'priority'}
+    for module in (cv_generator, draft_chat):
+        monkeypatch.setattr(module, 'available_model_options', lambda: [newest, CLAUDE_MODEL])
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen['command'] = command
+        return subprocess.CompletedProcess(command, 1, stdout='', stderr='stubbed')
+    monkeypatch.setattr(draft_chat, '_binary_for', lambda provider: 'codex')
+    monkeypatch.setattr(draft_chat, '_run', fake_run)
+
+    assert _post(owner, job).json()['model'] == 'gpt-6.1-sol'
+    assert 'model_reasoning_effort="xhigh"' in seen['command']

@@ -146,7 +146,9 @@ def codex_model_options():
     try:
         models=json.loads(cache.read_text(encoding='utf-8')).get('models', [])
         options=[]
-        for model in models:
+        # TASK-290: newest first. Codex ranks its own list with `priority` (gpt-6.1-sol=1 ...
+        # gpt-5.6-luna=9 in the 0.162.1 cache); sorted() is stable, so unranked models keep file order last.
+        for model in sorted(models, key=lambda item: item.get('priority') if isinstance(item.get('priority'), int) else 10**9):
             if model.get('visibility') != 'list' or str(model.get('slug','')).startswith('codex-auto'):
                 continue
             tiers=model.get('service_tiers') or []
@@ -158,9 +160,14 @@ def codex_model_options():
                 'default_effort':model.get('default_reasoning_level') or 'medium',
                 'fast_tier':next((tier['id'] for tier in tiers if tier.get('name') == 'Fast'), ''),
             })
-        return options or [dict(option, provider='openai') for option in FALLBACK_MODELS]
+        return options or _fallback_codex_options()
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return [dict(option, provider='openai') for option in FALLBACK_MODELS]
+        return _fallback_codex_options()
+
+
+def _fallback_codex_options():
+    # TASK-290 AC4: `fallback` lets every picker say this is the built-in list, not what Codex offers.
+    return [dict(option, provider='openai', fallback=True) for option in FALLBACK_MODELS]
 
 
 _model_options_cache={'at':0.0,'options':None}
