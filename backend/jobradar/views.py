@@ -43,7 +43,7 @@ from .services.interview_coach import analyze_answer, suggest_questions
 from .services import mailbox, mailbox_tasks
 from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_suggestion, postpone_suggestion, suggest_job_for_message
 from .services.followup_digest import owned_jobs, record_job_followup_sent
-from .services.draft_chat import ChatTurn, run_chat_turn
+from .services.draft_chat import ChatTurn, generate_followup_draft, run_chat_turn
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, rename_generated_artifact, reveal_artifact_folder, validate_model_capability
 from .services import cv_tasks
@@ -990,6 +990,24 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             'followup': FollowUpSerializer(followup).data,
             'next_followup': FollowUpSerializer(next_followup).data if next_followup else None,
         })
+    @action(detail=True, methods=['post'], url_path='followup-draft')
+    def followup_draft(self, request, pk=None):
+        """TASK-288: generate (or regenerate) the feedback-deadline popup's follow-up draft. Always 200:
+        a missing model/CLI or a guardrail block is `reason` in the body so the popup still opens and
+        says why (AC3). Owner-gated like CV generation -- it spawns the same local Codex/Claude CLI --
+        and the chosen (provider, model) is remembered exactly as the draft chat's own picker does.
+        """
+        job=self.get_object()
+        if not is_cv_owner(request.user):
+            return Response({'to':[], 'subject':'', 'body_text':'', 'reply_to_message_id':None, 'provider':'', 'model':'', 'reason':'drafting runs only in the owner’s local app'})
+        provider=request.data.get('provider') or ''
+        model=request.data.get('model') or ''
+        profile=user_profile_settings(request.user)
+        if provider and model and (profile.mailbox_chat_provider != provider or profile.mailbox_chat_model != model):
+            profile.mailbox_chat_provider=provider
+            profile.mailbox_chat_model=model
+            profile.save(update_fields=['mailbox_chat_provider','mailbox_chat_model'])
+        return Response(generate_followup_draft(job, request.user, provider, model, request.data.get('effort') or '', request.data.get('speed') or 'normal'))
     @action(detail=True, methods=['get'])
     def mailbox(self, request, pk=None):
         """TASK-117 AC2 / TASK-120 AC1,AC3,AC4,AC5: every mailbox message matched to this job --
