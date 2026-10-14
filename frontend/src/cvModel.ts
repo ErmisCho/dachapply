@@ -6,6 +6,11 @@ export function modelEffort(model:any){return model?.default_effort||model?.effo
 
 export function modelSpeed(model:any){return model?.fast_tier?'fast':'normal'}
 
+// TASK-293: AI email drafts run at xhigh, else the highest declared level below it - mirrors
+// draft_chat.default_draft_choice so a model switched in the popup gets the same default the server uses.
+const DRAFT_EFFORTS=['minimal','low','medium','high','xhigh']
+export function draftEffort(model:any){return (model?.efforts||[]).filter((e:string)=>DRAFT_EFFORTS.includes(e)).sort((a:string,b:string)=>DRAFT_EFFORTS.indexOf(b)-DRAFT_EFFORTS.indexOf(a))[0]||modelEffort(model)}
+
 // A model with no fast_tier (e.g. every Anthropic entry today) may only run at normal speed.
 export function comboValid(model:any, effort:string, speed:string){
   if(!model) return false

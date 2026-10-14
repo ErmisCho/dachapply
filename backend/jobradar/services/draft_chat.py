@@ -302,8 +302,25 @@ def build_followup_prompt(job, evaluation, messages, profile_text: str, followup
     )
 
 
+_EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh']
+
+
+def default_draft_choice(options: list[dict], provider: str = '', model: str = '') -> tuple[dict | None, str, bool]:
+    """(option, effort, stored_model_missing) for an AI email draft. TASK-293: the stored (provider,
+    model) when it is still offered, else the newest Codex model (options arrive newest first, see
+    cv_generator.codex_model_options), else the first non-Ollama option. Effort is xhigh where the
+    model declares it, else the highest declared level below it, else the model's own default.
+    """
+    stored = next((o for o in options if model and o['provider'] == provider and o['key'] == model), None)
+    option = stored or next((o for o in options if o['provider'] == 'openai'), None) or next((o for o in options if o['provider'] != 'ollama'), None)
+    if not option:
+        return None, '', bool(model)
+    below = [e for e in option.get('efforts', []) if e in _EFFORT_ORDER]
+    return option, max(below, key=_EFFORT_ORDER.index, default=option.get('default_effort', '')), bool(model) and not stored
+
+
 def generate_followup_draft(job, user, provider: str = '', model: str = '', effort: str = '', speed: str = 'normal') -> dict:
-    """{to, subject, body_text, reply_to_message_id, provider, model, reason}. Never raises: no model on
+    """{to, subject, body_text, reply_to_message_id, provider, model, effort, reason}. Never raises: no model on
     this machine, a missing CLI, a provider failure or a guardrail block all come back as `reason`
     (TASK-288 AC3), with recipient and subject still filled so the owner can write the mail by hand.
     """
@@ -318,18 +335,15 @@ def generate_followup_draft(job, user, provider: str = '', model: str = '', effo
     }
     profile = user_profile_settings(user)
     options = available_model_options()
-    # The requested model, else the owner's last chat pick, else the first non-Ollama option (Ollama's
-    # codex local-provider path is refused by run_chat_turn too).
-    option = (
-        next((o for o in options if o['provider'] == provider and o['key'] == model), None)
-        or next((o for o in options if o['provider'] == profile.mailbox_chat_provider and o['key'] == profile.mailbox_chat_model), None)
-        or next((o for o in options if o['provider'] != 'ollama'), None)
-    )
+    # The requested model, else the owner's last chat pick, else the newest Codex model (TASK-293).
+    requested = any(o['provider'] == provider and o['key'] == model for o in options)
+    option, default_effort, _ = default_draft_choice(options, *((provider, model) if requested else (profile.mailbox_chat_provider, profile.mailbox_chat_model)))
     if not option or option['provider'] == 'ollama':
         result['reason'] = 'no drafting model is available on this machine (neither the Codex nor the Claude CLI was found)'
         return result
-    result.update(provider=option['provider'], model=option['key'])
-    effort = effort if effort in option['efforts'] else option['default_effort']
+    effort = effort if effort in option['efforts'] else default_effort
+    # `effort` goes back so the popup's effort control shows what this draft actually ran at.
+    result.update(provider=option['provider'], model=option['key'], effort=effort)
     try:
         model_option = validate_model_capability(option['provider'], option['key'], effort, speed)
     except ValueError as exc:
