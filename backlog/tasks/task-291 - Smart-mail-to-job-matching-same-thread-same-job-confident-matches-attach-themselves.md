@@ -3,9 +3,10 @@ id: TASK-291
 title: >-
   Smart mail-to-job matching: same thread, same job; confident matches attach
   themselves
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-14 09:01'
+updated_date: '2026-10-14 12:49'
 labels: []
 dependencies: []
 ordinal: 292000
