@@ -118,6 +118,13 @@ class UserProfile(models.Model):
     # of those options back, never a second source of truth for what the machine can run.
     mailbox_chat_provider=models.CharField(max_length=30, blank=True, default='')
     mailbox_chat_model=models.CharField(max_length=120, blank=True, default='')
+    # TASK-293: the default model/effort for AI email drafts (follow-ups and the mailbox check's
+    # reply drafts), set in Settings -> Drafts. '' = newest Codex at xhigh, resolved by
+    # services.draft_chat.profile_draft_choice. Popups override per draft but never write these.
+    draft_provider=models.CharField(max_length=30, blank=True, default='')
+    draft_model=models.CharField(max_length=120, blank=True, default='')
+    draft_effort=models.CharField(max_length=20, blank=True, default='')
+    draft_auto_replies_with_model=models.BooleanField(default=True)
     # TASK-116: one or more Google Calendar ids the owner has selected for quiet hours, one per line
     # (same one-per-line idiom as mailbox_do_not_disclose above -- see
     # services.mailbox._effective_calendar_ids). Replaces TASK-115's mailbox_calendar_ics_urls: the
@@ -645,6 +652,11 @@ class MailboxMessage(models.Model):
     # matched_job and generates NO suggestion; attach_message_to_job remains the only path that does
     # either, so dismissing can never be mistaken for (or implemented as) attaching to a placeholder.
     dismissed_at=models.DateTimeField(null=True, blank=True)
+    # TASK-291: set when the app attached this message by itself (services.mailbox.auto_attach), so
+    # the UI can badge it with a one-click Detach; cleared by detach. detached_at records that the
+    # owner undid an attach, so auto-attach never puts the message back.
+    auto_attached_at=models.DateTimeField(null=True, blank=True)
+    detached_at=models.DateTimeField(null=True, blank=True)
     created_at=models.DateTimeField(auto_now_add=True)
     class Meta: ordering=['-uid']
     def __str__(self): return f'{self.sender}: {self.subject[:60]} ({self.classification})'

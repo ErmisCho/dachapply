@@ -2,6 +2,7 @@ import logging
 import hashlib
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from email.utils import parseaddr
 from html import escape
 from pathlib import Path
 
@@ -43,7 +44,7 @@ from .services.interview_coach import analyze_answer, suggest_questions
 from .services import mailbox, mailbox_tasks
 from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_suggestion, postpone_suggestion, suggest_job_for_message
 from .services.followup_digest import owned_jobs, record_job_followup_sent
-from .services.draft_chat import ChatTurn, generate_followup_draft, run_chat_turn
+from .services.draft_chat import ChatTurn, generate_followup_draft, profile_draft_choice, run_chat_turn
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, rename_generated_artifact, reveal_artifact_folder, validate_model_capability
 from .services import cv_tasks
@@ -1003,19 +1004,15 @@ class JobLeadViewSet(viewsets.ModelViewSet):
     def followup_draft(self, request, pk=None):
         """TASK-288: generate (or regenerate) the feedback-deadline popup's follow-up draft. Always 200:
         a missing model/CLI or a guardrail block is `reason` in the body so the popup still opens and
-        says why (AC3). Owner-gated like CV generation -- it spawns the same local Codex/Claude CLI --
-        and the chosen (provider, model) is remembered exactly as the draft chat's own picker does.
+        says why (AC3). Owner-gated like CV generation -- it spawns the same local Codex/Claude CLI.
+        TASK-293: the popup's pick applies to this draft only and is never saved -- the default is
+        Settings -> Drafts (draft_chat.profile_draft_choice).
         """
         job=self.get_object()
         if not is_cv_owner(request.user):
             return Response({'to':[], 'subject':'', 'body_text':'', 'reply_to_message_id':None, 'provider':'', 'model':'', 'reason':'drafting runs only in the owner’s local app'})
         provider=request.data.get('provider') or ''
         model=request.data.get('model') or ''
-        profile=user_profile_settings(request.user)
-        if provider and model and (profile.mailbox_chat_provider != provider or profile.mailbox_chat_model != model):
-            profile.mailbox_chat_provider=provider
-            profile.mailbox_chat_model=model
-            profile.save(update_fields=['mailbox_chat_provider','mailbox_chat_model'])
         return Response(generate_followup_draft(job, request.user, provider, model, request.data.get('effort') or '', request.data.get('speed') or 'normal'))
     @action(detail=True, methods=['get'])
     def mailbox(self, request, pk=None):
@@ -1607,14 +1604,34 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         unmatched row again, and dismisses the still-PENDING suggestions that attaching generated for
         that job; a suggestion the owner already confirmed/dismissed/postponed is their decision and
         stays. Idempotent on an unmatched message.
+
+        Records detached_at and clears auto_attached_at, so auto-attach (live check or the re-check
+        below) never puts back what the owner took off.
         """
         message=self.get_object()
         if message.matched_job_id:
             for suggestion in message.suggestions.filter(job_id=message.matched_job_id, status='pending'):
                 dismiss_suggestion(suggestion)
             message.matched_job=None
-            message.save(update_fields=['matched_job'])
+            message.auto_attached_at=None
+            message.detached_at=timezone.now()
+            message.save(update_fields=['matched_job','auto_attached_at','detached_at'])
         return Response(MailboxMessageWithSuggestionsSerializer(message).data)
+
+    @action(detail=False, methods=['post'], url_path='recheck-unmatched')
+    def recheck_unmatched(self, request):
+        """TASK-291: the /mailbox page's "Re-check unmatched mail" -- services.mailbox.
+        auto_attach_unmatched_messages, dry run unless `apply` is true. Owner-only; the demo account
+        is refused because that pass reads the real mailbox, not the demo's synthetic rows.
+        """
+        if not is_mailbox_owner(request.user) or is_demo_user(request.user):
+            return Response({'detail': 'Not found.'}, status=404)
+        apply=request.data.get('apply') is True
+        groups=mailbox.auto_attach_unmatched_messages(dry_run=not apply)
+        rows=[{'id': m.id, 'received_at': m.received_at, 'sender': parseaddr(m.sender)[0] or parseaddr(m.sender)[1] or m.sender,
+               'subject': m.subject, 'job': g['job'].id, 'job_label': f"{g['job'].company} — {g['job'].title}", 'rule': rule}
+              for g in groups for m, rule in zip(g['messages'], g['rules'])]
+        return Response({'applied': apply, 'results': rows})
 
     @action(detail=True, methods=['post'], url_path='create-job')
     def create_job(self, request, pk=None):
@@ -1789,10 +1806,15 @@ class MailboxDraftViewSet(viewsets.GenericViewSet):
         every mount the way CV generation's does.
         """
         profile=user_profile_settings(request.user)
+        options=available_model_options()
+        # TASK-293: what Settings -> Drafts resolves to right now, and whether the stored model is gone.
+        option, effort, missing=profile_draft_choice(profile, options)
         return Response({
-            'models': available_model_options(),
+            'models': options,
             'selected_provider': profile.mailbox_chat_provider,
             'selected_model': profile.mailbox_chat_model,
+            'draft_default': {'provider': option['provider'] if option else '', 'model': option['key'] if option else '',
+                              'label': option['label'] if option else '', 'effort': effort, 'stored_model_missing': missing},
         })
     @action(detail=True, methods=['post'])
     def chat(self, request, pk=None):

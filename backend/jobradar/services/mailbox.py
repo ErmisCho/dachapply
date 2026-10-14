@@ -2138,16 +2138,30 @@ def confident_job_for_message(message: MailboxMessage, jobs) -> JobLead | None:
     return job if len(same_company) == 1 or named == [job] else None
 
 
-def auto_attach_job(message: MailboxMessage, jobs) -> JobLead | None:
-    """TASK-291: the job an unmatched, undismissed inbound message attaches to by itself -- its Gmail
-    thread's job first (AC1, _match_by_thread: the same rule the owner's own sent mail already
-    follows), else confident_job_for_message (AC2). The caller attaches through
-    attach_message_to_job(), so the effect is exactly a manual attach: pending suggestions only, no
-    reply draft, no job status written.
+def auto_attach_job(message: MailboxMessage, jobs) -> tuple[JobLead | None, str]:
+    """TASK-291: (job, rule) for an unmatched, undismissed inbound message that attaches by itself --
+    its Gmail thread's job first (AC1, rule 'thread', _match_by_thread: the same rule the owner's own
+    sent mail already follows), else confident_job_for_message (AC2, rule 'confident'); (None, '')
+    otherwise. A message the owner ever detached (detached_at) is never auto-attached again. The
+    caller attaches through auto_attach(), so the effect is exactly a manual attach plus the
+    auto_attached_at marker: pending suggestions only, no reply draft, no job status written.
     """
-    if message.sent_by_owner or message.dismissed_at is not None or message.matched_job_id:
-        return None
-    return (_match_by_thread(message.thread_id) if message.thread_id else None) or confident_job_for_message(message, jobs)
+    if message.sent_by_owner or message.dismissed_at is not None or message.matched_job_id or message.detached_at is not None:
+        return None, ''
+    thread_job = _match_by_thread(message.thread_id) if message.thread_id else None
+    if thread_job is not None:
+        return thread_job, 'thread'
+    job = confident_job_for_message(message, jobs)
+    return (job, 'confident') if job is not None else (None, '')
+
+
+def auto_attach(message: MailboxMessage, job: JobLead) -> MailboxMessage:
+    """TASK-291 AC4: attach like the owner's click, and mark it as the app's own doing so the UI can
+    badge it with a one-click Detach (views.MailboxMessageViewSet.detach clears the marker)."""
+    attach_message_to_job(message, job)
+    message.auto_attached_at = timezone.now()
+    message.save(update_fields=['auto_attached_at'])
+    return message
 
 
 # --- RFC5545 ICS parsing primitives -------------------------------------------------------------
@@ -3254,11 +3268,12 @@ def auto_attach_unmatched_messages(dry_run: bool = True) -> list[dict]:
     attach_message_to_job() -- the owner asked for auto-attach to behave exactly like their own
     click, and the click generates them (pending only; nothing is drafted or applied).
 
-    A management command (auto_attach_unmatched_mail), not a step inside run_check: a pass on every
-    check would re-attach whatever the owner detached. Re-running it attaches nothing already handled;
-    it WOULD re-attach a detached message, so run it once. Ascending uid, so a thread's first message
+    Run on demand (management command auto_attach_unmatched_mail, or the /mailbox page's "Re-check
+    unmatched mail" button), not inside run_check. Safe to re-run: a message the owner detached
+    carries detached_at, which auto_attach_job refuses. Ascending uid, so a thread's first message
     attached here lets its later ones inherit the job in the same pass (a dry run cannot see that
-    chain and may report fewer). Returns {'job', 'message_count', 'messages'} per job.
+    chain and may report fewer). Returns {'job', 'message_count', 'messages', 'rules'} per job;
+    `rules` is aligned with `messages` ('thread' | 'confident').
     """
     owner = _owner_user()
     if owner is None:
@@ -3266,12 +3281,12 @@ def auto_attach_unmatched_messages(dry_run: bool = True) -> list[dict]:
     jobs = list(owned_jobs(owner).exclude(company=''))
     by_job: dict = {}
     for message in real_mailbox_messages().filter(matched_job__isnull=True, sent_by_owner=False).order_by('uid'):
-        job = auto_attach_job(message, jobs)
+        job, rule = auto_attach_job(message, jobs)
         if job is not None:
-            by_job.setdefault(job, []).append(message)
+            by_job.setdefault(job, []).append((message, rule))
             if not dry_run:
-                attach_message_to_job(message, job)
-    return [{'job': job, 'message_count': len(messages), 'messages': messages} for job, messages in by_job.items()]
+                auto_attach(message, job)
+    return [{'job': job, 'message_count': len(rows), 'messages': [m for m, _ in rows], 'rules': [r for _, r in rows]} for job, rows in by_job.items()]
 
 
 # --- TASK-162 AC6: re-run the new false-positive guard over already-stored classifications --------
@@ -3711,11 +3726,15 @@ def draft_stale_reason(draft: MailboxDraft) -> str:
     return ''
 
 
-def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, classification: str, interview_at, owner, profile, transport, newer_owner_reply=False) -> MailboxDraft | None:
+def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, classification: str, interview_at, owner, profile, transport, newer_owner_reply=False, model_budget: dict | None = None) -> MailboxDraft | None:
     """The one entry point run_check() calls per matched message. None when this classification
     never wants a reply (rejection, not_job_related, uncertain -- see _DRAFT_WORTHY_CLASSIFICATIONS);
     otherwise always returns a MailboxDraft row, written or blocked, logging the guardrail verdict
     and the final text either way (AC5).
+
+    TASK-293: `model_budget` ({'left': n}, shared across one run_check) lets up to n drafts be
+    written by the Settings -> Drafts model (draft_chat.model_reply_body); any failure keeps the
+    template, so drafting can never fail a check. None = template only (every other caller).
     """
     if classification not in _DRAFT_WORTHY_CLASSIFICATIONS:
         return None
@@ -3749,6 +3768,16 @@ def maybe_draft_reply(message: MailboxMessage, raw: RawMessage, job: JobLead, cl
     language = _detect_reply_language(raw.subject, raw.body_text)
     config = _load_llm_config()
     body_text, evaluator = _build_reply_body(raw, job, owner, classification, language, interview_at, config)
+    if model_budget and model_budget['left'] > 0 and getattr(profile, 'draft_auto_replies_with_model', False):
+        model_budget['left'] -= 1
+        from jobradar.services.draft_chat import model_reply_body  # draft_chat imports this module
+        try:
+            model_text, model_evaluator = model_reply_body(raw, job, classification, language, body_text, profile)
+        except Exception:
+            logger.warning('Model reply drafting failed; keeping the template', exc_info=True)
+            model_text = ''
+        if model_text:
+            body_text, evaluator = model_text, model_evaluator
     block_reason = check_guardrails(body_text, _effective_salary_floor_eur(profile), _effective_do_not_disclose(profile))
     subject = _reply_subject(raw.subject)
     if block_reason:
@@ -4464,6 +4493,9 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         # mailbox again.
         is_cold_start = last_marker == 0
         run.drafting_skipped = is_cold_start
+        # TASK-293: shared by every maybe_draft_reply below -- caps model-written drafts per check.
+        from jobradar.services.draft_chat import MODEL_REPLY_DRAFTS_PER_RUN
+        model_budget = {'left': MODEL_REPLY_DRAFTS_PER_RUN}
         # TASK-141 AC4/AC6: the Gmail-API path bounds a cold start to the owner's configured
         # mailbox_lookback_months (re-read from `profile` on every call, so a settings-page edit
         # takes effect on the very next run with no restart); the IMAP path has no such floor to pass
@@ -4558,9 +4590,9 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             # suggestion -- attached exactly as a manual attach would be. `matched` stays None, so the
             # drafting block below never runs for it: auto-attach does no more than the owner's click.
             if matched is None and not sent_by_owner:
-                auto_job = auto_attach_job(message, tracked_jobs)
+                auto_job, _rule = auto_attach_job(message, tracked_jobs)
                 if auto_job is not None:
-                    attach_message_to_job(message, auto_job)
+                    auto_attach(message, auto_job)
                     run.suggestion_count += message.suggestions.count()
             # TASK-144 AC3: never generate a suggestion or a reply draft from the owner's OWN words --
             # _classify_heuristic (and an LLM prompt built the same way) has no idea who sent a
@@ -4582,6 +4614,7 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
                     draft = maybe_draft_reply(
                         message, raw, matched, classification, interview_at, owner, profile, active_transport,
                         newer_owner_reply=bool(owner_reply_at and raw.received_at and owner_reply_at > raw.received_at),
+                        model_budget=model_budget,
                     )
                     if draft is not None:
                         if draft.status == 'written':
