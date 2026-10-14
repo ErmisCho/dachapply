@@ -14,7 +14,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.db import connection, transaction
 from django.db.models import Avg, Case, Count, Exists, F, IntegerField, Min, OuterRef, Prefetch, Q, Subquery, Value, When
-from django.db.models.functions import Substr
+from django.db.models.functions import Coalesce, Substr
 from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.encoding import force_str
@@ -82,7 +82,10 @@ BOARD_THRESHOLDS = {
 # the old stale_rank tiebreaker (imminent apply_by up, stale lead down) is gone from the order;
 # the '7d left' / 'Stale lead' badges still show it. Fit is nulls_last explicitly: PostgreSQL
 # puts NULLs first on DESC, so an unscored job would otherwise lead its group.
-DEFAULT_BOARD_ORDERING = ('attention_rank', F('evaluations__fit_score').desc(nulls_last=True), 'priority_rank', '-created_at')
+# TASK-284: fit and priority come from the latest evaluation only (latest_fit_score/priority_rank,
+# subqueries in get_queryset) -- ordering through the evaluations join put one row per evaluation
+# into the DISTINCT, duplicating the job on the board and 500ing its detail.
+DEFAULT_BOARD_ORDERING = ('attention_rank', F('latest_fit_score').desc(nulls_last=True), 'priority_rank', '-created_at')
 # TASK-277: the explicit wire token for DEFAULT_BOARD_ORDERING, so ?ordering=recommended can beat
 # an account-saved board_sort_keys (an absent ?ordering= reads the saved one). Never reaches
 # order_by() itself -- parse_board_ordering maps it.
@@ -97,7 +100,7 @@ RECOMMENDED_ORDERING_TOKEN = 'recommended'
 # then pipeline order for the rest), which is wrong for a user explicitly sorting by pipeline stage.
 BOARD_ORDERINGS = {
     'status': 'status_pipeline_rank',
-    'fit_score': 'evaluations__fit_score',
+    'fit_score': 'latest_fit_score',
     'priority': 'priority_rank',
     'created_at': 'created_at',
     'applied_at': 'applied_at',
@@ -841,12 +844,18 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         saved_sort_keys, saved_status_order=board_settings(self.request.user) if self.action == 'list' else ('', '')
         if raw_ordering is None:
             raw_ordering=saved_sort_keys
+        latest_evaluation=JobEvaluation.objects.filter(job=OuterRef('pk')).order_by('-created_at')
         qs=qs.annotate(
             # TASK-145 AC1/AC2: the default board GROUP order -- see _attention_rank's own docstring.
             # TASK-267: ranked by the user's saved status order; only read when the ordering resolves
             # to DEFAULT_BOARD_ORDERING, so explicit/profile sorts are unaffected.
             attention_rank=_attention_rank(JobLead.effective_status_order(saved_status_order)),
-            priority_rank=Case(When(evaluations__priority='high', then=Value(0)), When(evaluations__priority='medium', then=Value(1)), When(evaluations__priority='low', then=Value(2)), default=Value(3), output_field=IntegerField()),
+            # TASK-284: the latest evaluation's priority/fit -- the one the board shows
+            # (evaluations.first(), Meta ordering -created_at) -- as correlated subqueries, never a
+            # join, so a job with several evaluations stays one row under DISTINCT. No evaluation
+            # ranks 3 (last), as before.
+            priority_rank=Coalesce(Subquery(latest_evaluation.annotate(rank=Case(When(priority='high', then=Value(0)), When(priority='medium', then=Value(1)), When(priority='low', then=Value(2)), default=Value(3), output_field=IntegerField())).values('rank')[:1]), Value(3)),
+            latest_fit_score=Subquery(latest_evaluation.values('fit_score')[:1]),
             # TASK-108: pipeline order for ordering=status, distinct from status_rank's attention
             # order above -- see BOARD_ORDERINGS' comment.
             status_pipeline_rank=_status_pipeline_rank(),
@@ -901,12 +910,12 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             cache.set(f'board-rows:{uid}', True)
             return Response(rows)
         # One query: the board's own filters, ordering and DISTINCT, selecting only ids + stamps.
-        # priority_rank stays selected because the full query's DISTINCT sees it too (it varies per
-        # joined evaluation), so both return the same rows.
-        stamps=list(qs.prefetch_related(None).values_list('id', 'priority_rank', *BOARD_ROW_STAMP))
+        # TASK-284: priority_rank is one value per job now (latest evaluation), so it no longer has
+        # to ride along to keep this DISTINCT returning the same rows as the full query.
+        stamps=list(qs.prefetch_related(None).values_list('id', *BOARD_ROW_STAMP))
         cached=cache.get_many([f'board-row:{uid}:{job_id}' for job_id, *_ in stamps])
         by_id={}
-        for job_id, _rank, *stamp in stamps:
+        for job_id, *stamp in stamps:
             hit=cached.get(f'board-row:{uid}:{job_id}')
             if hit and hit[0] == tuple(stamp):
                 by_id[job_id]=hit[1]

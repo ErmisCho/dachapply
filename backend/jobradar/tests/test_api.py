@@ -4150,39 +4150,14 @@ def test_ordering_keeps_the_urgency_annotations_applied(client):
     assert [j['company'] for j in client.get('/api/jobs/').data]==['Calm', 'Deadline']
 
 
-def test_job_with_two_evaluations_is_returned_twice_by_the_board(client):
-    """PRE-EXISTING BUG, pinned here so it is visible and so a fix fails loudly.
-
-    `.distinct()` cannot dedupe a row whose SELECT list carries a per-evaluation column, and
-    get_queryset has two such columns: the `priority_rank` annotation (always) and
-    `-evaluations__fit_score` in the default/`-fit_score` order_by. So a job with two
-    evaluations comes back twice. This predates the ordering parameter -- the default board
-    has always done it -- and `?ordering=-fit_score` inherits exactly the default's exposure,
-    it adds none of its own. `-created_at` is only affected via `priority_rank`.
-
-    Fix (own task, changes the shared board formula so out of scope here): compute
-    priority_rank and the fit-score sort from aggregates/subqueries over evaluations
-    (Min('evaluations__priority')-style or a Subquery of the latest evaluation) so no
-    per-evaluation column reaches the SELECT list.
-    """
+def test_job_with_two_evaluations_is_returned_once_by_the_board(client):
+    """TASK-284 (was pinned here as a pre-existing bug): priority_rank and the fit sort read the
+    latest evaluation through subqueries, so no per-evaluation column reaches the DISTINCT and a
+    job with two differing evaluations is one row under every ordering."""
     job=make_job(client, company='Multi', title='a')
     _evaluate(job, 90, 'high'); _evaluate(job, 40, 'low')
-    assert JobLead.objects.count()==1
-    # Differing fit_score duplicates the default and -fit_score orderings...
-    assert [j['company'] for j in client.get('/api/jobs/').data]==['Multi', 'Multi']
-    assert [j['company'] for j in client.get('/api/jobs/?ordering=-fit_score').data]==['Multi', 'Multi']
-    # ...and differing priority duplicates every ordering, via the priority_rank annotation.
-    assert [j['company'] for j in client.get('/api/jobs/?ordering=-created_at').data]==['Multi', 'Multi']
-
-
-def test_two_evaluations_of_equal_priority_do_not_duplicate_the_non_related_orderings(client):
-    """Bounds the bug above: the fan-out needs a column that actually differs per evaluation."""
-    job=make_job(client, company='Multi', title='a')
-    _evaluate(job, 90, 'high'); _evaluate(job, 40, 'high')
-    assert [j['company'] for j in client.get('/api/jobs/?ordering=-created_at').data]==['Multi']
-    assert [j['company'] for j in client.get('/api/jobs/?ordering=feedback_due_date').data]==['Multi']
-    # Only the fit-score orderings still fan out, because fit_score is what differs.
-    assert [j['company'] for j in client.get('/api/jobs/?ordering=-fit_score').data]==['Multi', 'Multi']
+    for ordering in ('', '?ordering=-fit_score', '?ordering=-created_at', '?ordering=priority', '?ordering=feedback_due_date'):
+        assert [j['company'] for j in client.get(f'/api/jobs/{ordering}').data]==['Multi'], ordering
 
 
 def test_profile_endpoint_exposes_and_updates_the_digest_toggle(client):
