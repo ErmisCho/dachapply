@@ -294,6 +294,7 @@ class JobLeadSerializer(serializers.ModelSerializer):
         return super().create(attrs)
     def update(self, instance, attrs):
         new_status=attrs.get('status')
+        entering_to_apply=new_status == 'to_apply' and instance.status != 'to_apply'
         if new_status in JobLead.DATED_STATUSES and instance.status != new_status and not attrs.get('status_date'):
             attrs['status_date']=timezone.localdate()
         status_for_last_update=new_status or instance.status
@@ -314,6 +315,12 @@ class JobLeadSerializer(serializers.ModelSerializer):
             # workspace problem surface as a failed (or rolled-back) status change.
             from .services.cv_generator import delete_generated_metadata
             transaction.on_commit(lambda: delete_generated_metadata(updated), robust=True)
+        request=self.context.get('request')
+        if entering_to_apply and request:
+            # TASK-280.2: a move INTO To apply prepares the application documents in the background,
+            # after the status is committed; prepare() itself refuses a second, concurrent start.
+            from .services.application_prep import prepare_on_to_apply
+            transaction.on_commit(lambda: prepare_on_to_apply(updated.pk, request.user.pk), robust=True)
         return updated
     def get_latest_evaluation(self, obj):
         ev=obj.evaluations.first()
