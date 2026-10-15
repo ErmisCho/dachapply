@@ -354,7 +354,7 @@ def _retry_missing_source(job):
     job.refresh_from_db()
 
 
-def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, cancel_event=None, auto_clipboard=True, route_reason=''):
+def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, cancel_event=None, auto_clipboard=True, route_reason='', generation_options=None, mark_ready=True, on_finish=None):
     close_old_connections()
     try:
         if cancel_event.is_set():
@@ -370,6 +370,7 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
             generation_kwargs['base_templates']=base_templates
         if replace_existing:
             generation_kwargs['replace_existing']=True
+        generation_kwargs.update(generation_options or {})
         archive, filename, artifacts=generate_cv_package(job, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, lambda progress, stage: _update(task_id, status='running', progress=progress, stage=stage), source_cv, source_letter, revision_instructions, create_cv, correction_image, **generation_kwargs)
         if cancel_event.is_set():
             raise GenerationCancelled
@@ -389,7 +390,9 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         clipboard_copied=bool(auto_clipboard and clipboard_tex and _copy_to_clipboard(clipboard_tex))
         if 'base_templates' in artifacts:
             _record_base_templates(job,artifacts['base_templates'])
-        mark_ready_to_submit(job.id)
+        # TASK-280.2: automatic To-apply drafts are not a chosen package, so they leave the status alone.
+        if mark_ready:
+            mark_ready_to_submit(job.id)
         report=artifacts.get('report')
         if revision_instructions and isinstance(report,dict):
             # TASK-278 AC6: a readjustment names the route that produced it.
@@ -401,6 +404,12 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         error=getattr(exc,'public_message',str(exc).splitlines()[0][:500])
         _update(task_id, status='failed', stage='Failed', error=error, diagnostics=getattr(exc,'diagnostics',str(exc)), repair_attempts=getattr(exc,'repair_attempts',0))
     finally:
+        if on_finish:
+            # TASK-280.2: persists the outcome of a prepared variant; must never mask the task's own result.
+            try:
+                on_finish(task_id)
+            except Exception:
+                logger.exception('Recording the outcome of CV task %s failed', task_id)
         close_old_connections()
 
 
@@ -552,7 +561,7 @@ def start_cv_literal_task(job_id, user_id, source_cv, source_letter, instruction
     return task_id
 
 
-def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, auto_clipboard=True):
+def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, auto_clipboard=True, generation_options=None, mark_ready=True, on_finish=None):
     _cleanup()
     if create_letter:
         source_letter=_adopt_letter_label(job_id,user_id,letter_key,source_letter)
@@ -561,10 +570,10 @@ def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, p
     plan,defaults,estimate_key=_task_timing(provider,model,effort,speed,create_cv,create_letter,bool(source_cv or source_letter or revision_instructions or correction_image))
     cancel_event=Event()
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_tex_parts':{},'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_config':{'profile':profile,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'create_cv':create_cv,'provider':provider,'model':model,'effort':effort,'speed':speed},'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_tex_parts':{},'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_config':{'profile':profile,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'create_cv':create_cv,'provider':provider,'model':model,'effort':effort,'speed':speed,'generation_options':generation_options},'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'_stage_times':{},'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in plan)
     # ponytail: one local CLI agent per task; add a concurrency cap if large batches exhaust the workstation.
-    Thread(target=_run, args=(task_id,job_id,user_id,profile,cv_key,letter_key,create_letter,provider,model,effort,speed,source_cv,source_letter,revision_instructions,create_cv,correction_image,base_templates,replace_existing,cancel_event,auto_clipboard), name=f'cv-agent-{task_id[:8]}', daemon=True).start()
+    Thread(target=_run, args=(task_id,job_id,user_id,profile,cv_key,letter_key,create_letter,provider,model,effort,speed,source_cv,source_letter,revision_instructions,create_cv,correction_image,base_templates,replace_existing,cancel_event,auto_clipboard,'',generation_options,mark_ready,on_finish), name=f'cv-agent-{task_id[:8]}', daemon=True).start()
     return task_id
 
 
