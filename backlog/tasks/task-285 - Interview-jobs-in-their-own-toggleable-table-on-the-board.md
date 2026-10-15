@@ -1,10 +1,10 @@
 ---
 id: TASK-285
 title: Interview jobs in their own toggleable table on the board
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-13 14:37'
-updated_date: '2026-10-14 06:15'
+updated_date: '2026-10-15 09:50'
 labels:
   - board
   - frontend
@@ -23,7 +23,7 @@ Owner 2026-10-13: jobs in status 'interview' should sit in their own table on th
 - [x] #1 Board shows a separate 'Interviews' table holding every job in status interview that the board's filters allow
 - [x] #2 It renders the same columns as the main table, honours the same column visibility settings and row actions (edit, status change, notes, select)
 - [x] #3 A toggle shows/hides it; the choice survives a reload. Shown: interview jobs appear only there, not also in the main table. Hidden: they return to the main table as today
-- [ ] #4 Desktop and mobile layouts both work; verified in the browser on the owner's data
+- [x] #4 Desktop and mobile layouts both work; verified in the browser on the owner's data
 - [x] #5 vitest, tsc and backend suite pass
 <!-- AC:END -->
 
@@ -34,4 +34,6 @@ Owner 2026-10-13: jobs in status 'interview' should sit in their own table on th
 Not yet verified: phone width (browser automation could not shrink the viewport). Known limit: shift-click range selection across the two tables follows the full list order.
 
 2026-10-14: localhost shows Interviews (5 rows) with the same 12 headers as the main table. Split test fails when interview rows leak into main. CI green. Open: phone width check.
+
+2026-10-15: owner checked on the phone (board, email decisions, feedback popup, interviews table, menu, stats): all fine.
 <!-- SECTION:NOTES:END -->

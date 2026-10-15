@@ -1,10 +1,10 @@
 ---
 id: TASK-295
 title: Banner buttons move into the top navbar
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-14 09:02'
-updated_date: '2026-10-14 12:48'
+updated_date: '2026-10-15 09:50'
 labels: []
 dependencies: []
 ordinal: 296000
@@ -27,4 +27,6 @@ Owner (2026-10-14): 'Analyze X new jobs', 'Add job' and the other buttons of the
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-14: #251. Localhost desktop: Analyze N new jobs and + Add job in the navbar (Add job -> /add), bar gone, no horizontal overflow. Open: phone menu (owner).
+
+2026-10-15: owner checked on the phone (board, email decisions, feedback popup, interviews table, menu, stats): all fine.
 <!-- SECTION:NOTES:END -->

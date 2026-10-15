@@ -1,10 +1,10 @@
 ---
 id: TASK-286
 title: Declutter the board page; new Stats page
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-14 07:56'
-updated_date: '2026-10-14 12:48'
+updated_date: '2026-10-15 09:50'
 labels: []
 dependencies: []
 ordinal: 287000
@@ -24,7 +24,7 @@ Owner (2026-10-14): the board page is cluttered (~2,800 px of panels above the t
 - [x] #4 The 'Job command center' banner is a slim bar: title and its existing buttons, no tagline
 - [x] #5 Active interviews and Due follow-ups tiles list each job: company, title and stage (interview round x/y; follow-up: status and due date), each linking to the job
 - [x] #6 A saved panel order or hidden-panel list in localStorage that still names removed panels loads without errors
-- [ ] #7 Verified in the browser on localhost with the owner's data, desktop and phone width
+- [x] #7 Verified in the browser on localhost with the owner's data, desktop and phone width
 - [x] #8 vitest, tsc and the backend suite pass
 <!-- AC:END -->
 
@@ -32,4 +32,6 @@ Owner (2026-10-14): the board page is cluttered (~2,800 px of panels above the t
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-14: #246. Localhost desktop verified (table at 1579 px vs 3131, /stats shows 90-day funnel + weeks chart, tiles list company/title/round). Open: phone width (owner).
+
+2026-10-15: owner checked on the phone (board, email decisions, feedback popup, interviews table, menu, stats): all fine.
 <!-- SECTION:NOTES:END -->
