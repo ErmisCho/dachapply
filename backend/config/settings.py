@@ -115,6 +115,8 @@ def with_db_pool(db, debug):
     """
     if env_bool('DB_POOL', debug) and db.get('ENGINE') == 'django.db.backends.postgresql':
         db['CONN_MAX_AGE'] = 0
+        # TASK-282: same backend, minus the per-request health-check round trip (config/pooled_postgres).
+        db['ENGINE'] = 'config.pooled_postgres'
         # max_idle 240 s: close surplus idle connections before Neon's default 5-minute
         # scale-to-zero does; timeout 10 s: fail a request fast rather than hang 30 s (the default).
         db.setdefault('OPTIONS', {})['pool'] = {'min_size': 1, 'max_size': 8, 'max_idle': 240, 'timeout': 10}
