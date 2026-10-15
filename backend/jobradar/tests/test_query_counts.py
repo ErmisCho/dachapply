@@ -17,12 +17,13 @@ Regenerate the snapshot (only when a response is meant to change):
 import datetime
 import json
 import os
+import re
 from pathlib import Path
 from unittest import mock
 
 import pytest
 from django.contrib.auth.models import User
-from django.db import connection
+from django.db import connection, models
 from django.test import Client
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -123,6 +124,34 @@ def test_responses_match_the_pre_task_282_snapshot(owner_client):
     if os.environ.get('UPDATE_QUERY_SNAPSHOT'):
         SNAPSHOT.write_text(json.dumps(bodies, indent=1, sort_keys=False, ensure_ascii=False) + '\n', encoding='utf-8')
     assert bodies == json.loads(SNAPSHOT.read_text(encoding='utf-8'))
+
+
+def test_me_and_job_detail_read_only_what_they_serialize(owner_client):
+    """TASK-282 part 2: the counts above cannot see bytes. /me used to load the whole profile row
+    (~160 KB of CV/profile text, 70 ms of a 154 ms request on Neon) and the detail ran the board's six
+    correlated subqueries for one row whose serializer reads none of them."""
+    _, me = measure(owner_client, ENDPOINTS['me'], usage=False)
+    [profile_sql] = [sql for sql in me if 'FROM "jobradar_userprofile"' in sql]
+    selected = re.sub(r'SUBSTR\("jobradar_userprofile"\."\w+", 1, 65\)', '', profile_sql)  # the _profile_has_text heads
+    text_fields = [f.name for f in UserProfile._meta.fields if isinstance(f, models.TextField)]
+    assert [f for f in text_fields if f'"jobradar_userprofile"."{f}"' in selected] == []
+    _, detail = measure(owner_client, ENDPOINTS['job_detail'], usage=False)
+    [job_sql] = [sql for sql in detail if 'FROM "jobradar_joblead"' in sql]
+    assert '(SELECT' not in job_sql and 'EXISTS' not in job_sql
+
+
+@pytest.mark.parametrize('candidate_profile, missing, extra_query', [
+    ('x' * 1000, False, 0),              # long, decided by its head
+    (' ' * 100 + 'Engineer', False, 1),  # long and opens with whitespace: the full read decides
+    (' ' * 100, True, 1),
+    ('"   "', True, 0),                  # JSON-quoted blank (old sqlite schemas) still reads as blank
+    ('', True, 0),
+])
+def test_me_candidate_profile_missing_from_field_heads(owner_client, candidate_profile, missing, extra_query):
+    UserProfile.objects.filter(user_id=501).update(candidate_profile=candidate_profile)
+    response, queries = measure(owner_client, ENDPOINTS['me'], usage=False)
+    assert json.loads(response.content)['candidate_profile_missing'] is missing
+    assert len(queries) == EXPECTED['me'][1] + extra_query
 
 
 @pytest.mark.parametrize('debug, pooled, cached', [(True, True, True), (True, False, False), (False, True, False), (False, False, False)])

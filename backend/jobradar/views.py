@@ -30,7 +30,7 @@ from rest_framework.response import Response
 from .models import REACHED_INTERVIEW, JobLead, JobEvaluation, ApplicationNote, FollowUp, MailboxDraft, MailboxMessage, MailboxRun, MailboxSuggestion, PracticeSession, UserProfile, InviteCode
 from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxDraftSerializer, MailboxMessageListSerializer, MailboxMessageSerializer, MailboxMessageWithSuggestionsSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, invalid_email_addresses, normalize_job_url
 from .services.job_evaluator import evaluate_jobs
-from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, _profile_parts, user_profile_settings
+from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, user_profile_settings, PROFILE_FIELD_NAMES, decode_profile_value, has_candidate_profile
 from .services.json_importer import import_any_json, duplicate_title
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
@@ -727,18 +727,40 @@ def delete_account(request):
         user.delete()
     return Response({'detail':'Account deleted.', 'deleted': counts})
 
+# TASK-282: /me only needs to know whether any profile field has text, not the ~160 KB of it (that
+# full-row read was 70 ms of the 154 ms /me on Neon). SQL returns the first PROFILE_HEAD+1 chars of
+# each field: a head that is the whole value is judged exactly as _profile_parts judges it; a longer
+# one has text when it opens with a non-space, non-quote char (decode_profile_value only rewrites
+# quote-wrapped values, so such a value is returned as-is). A long value opening with whitespace or
+# a quote is the only undecided case and falls back to has_candidate_profile, the full read.
+PROFILE_HEAD=64
+PROFILE_HEADS={f'{field}_head': Substr(field, 1, PROFILE_HEAD + 1) for field in PROFILE_FIELD_NAMES}
+
+def _profile_has_text(profile, user):
+    unsure=False
+    for name in PROFILE_HEADS:
+        head=getattr(profile, name) or ''
+        if len(head) <= PROFILE_HEAD:
+            if (decode_profile_value(head) or '').strip(): return True
+        elif head[0] != '"' and not head[0].isspace(): return True
+        else: unsure=True
+    return unsure and has_candidate_profile(user)
+
 @api_view(['GET'])
 def me(request):
     # TASK-282: one query for the profile and both friend links, and the same row answers
     # candidate_profile_missing (it used to be re-read by has_candidate_profile) -- it is queried
     # fresh, never a reused cached relation, which is the property has_candidate_profile needs.
-    profile=UserProfile.objects.select_related('submit_for','requested_submit_for').filter(user=request.user).first()
+    # Only the columns this response reads, plus the PROFILE_HEADS prefixes (see _profile_has_text).
+    profile=(UserProfile.objects.select_related('submit_for','requested_submit_for').filter(user=request.user)
+             .only('user','email_verified','can_generate_cv','board_status_order','board_sort_keys','submit_for__username','requested_submit_for__username')
+             .annotate(**PROFILE_HEADS).first())
     request.user.jobradar_profile=profile  # is_cv_owner / is_email_verified read this relation
     submit_for=profile.submit_for if profile else None
     requested=profile.requested_submit_for if profile else None
     # candidate_profile_missing is the nudge signal: true means every prompt endpoint will refuse
     # with 400 {'code':'candidate_profile_required'} until the user fills in Settings -> profile.
-    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'is_demo':is_demo_user(request.user), 'can_use_mailbox':is_mailbox_owner(request.user), 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user), 'cv_generation_notice':'' if settings.CODEX_CV_ENABLED else CV_LOCAL_ONLY_NOTICE, 'candidate_profile_missing':not (profile and _profile_parts(profile)), 'email_verified':is_email_verified(request.user), 'feedback_url':settings.FEEDBACK_URL, 'board_thresholds':BOARD_THRESHOLDS,
+    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'is_demo':is_demo_user(request.user), 'can_use_mailbox':is_mailbox_owner(request.user), 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user), 'cv_generation_notice':'' if settings.CODEX_CV_ENABLED else CV_LOCAL_ONLY_NOTICE, 'candidate_profile_missing':not (profile and _profile_has_text(profile, request.user)), 'email_verified':is_email_verified(request.user), 'feedback_url':settings.FEEDBACK_URL, 'board_thresholds':BOARD_THRESHOLDS,
         # TASK-267: the effective (full) status order plus whether it is custom, and the saved sort,
         # so the board knows whether grouping is active without a second request.
         'board_status_order':JobLead.effective_status_order(profile.board_status_order if profile else ''),
@@ -824,6 +846,11 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             qs=qs.filter(evaluations__isnull=False)
         if p.get('board') in ('1','true','yes'):
             qs=qs.exclude(Q(title='')|Q(title__istartswith='Untitled role'))
+        # TASK-282: everything below is the board's row order and its list-only columns. Detail
+        # actions resolve one row with get(), which drops the ordering, and JobLeadSerializer reads
+        # none of the annotations, so they were six correlated subqueries computed for nothing.
+        if self.action != 'list':
+            return qs.distinct()
         # TASK-145 AC4: an absent ?ordering= -- the key missing from the request entirely, distinct
         # from an explicit ?ordering= that is empty or hostile (those already resolve to the default
         # via parse_board_ordering's own '(raw or '').split(',')' fallback, and an explicit param must
@@ -833,11 +860,9 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         # allowlist, same 3-key cap, same degrade-on-hostile-input -- so there is no second parser to
         # keep in sync with the one that already guards against ?ordering=-created_by__password.
         raw_ordering=p.get('ordering')
-        # TASK-282: only the list's row order reads the profile. Detail actions resolve one row with
-        # get(), which drops the ordering anyway, so reading it there was a wasted round trip.
         # TASK-283: only the two board columns -- the full row is ~160 KB of prompts and profile text.
         # TASK-283.1: board_settings() serves the two columns from the local cache where enabled.
-        saved_sort_keys, saved_status_order=board_settings(self.request.user) if self.action == 'list' else ('', '')
+        saved_sort_keys, saved_status_order=board_settings(self.request.user)
         if raw_ordering is None:
             raw_ordering=saved_sort_keys
         latest_evaluation=JobEvaluation.objects.filter(job=OuterRef('pk')).order_by('-created_at')

@@ -43,6 +43,8 @@ def test_pool_follows_debug_unless_db_pool_is_set(monkeypatch, debug, db_pool, p
     assert db['CONN_MAX_AGE'] == (0 if pooled else 600)
     # Kept on: it is what makes Django give the pool ConnectionPool.check_connection.
     assert db['CONN_HEALTH_CHECKS'] is True
+    # TASK-282: the pooled runtime's backend swaps that check for check_unless_recent.
+    assert db['ENGINE'] == ('config.pooled_postgres' if pooled else 'django.db.backends.postgresql')
 
 
 def test_pool_is_never_added_to_a_non_postgres_database(monkeypatch):
@@ -100,3 +102,31 @@ def test_a_failing_background_recorder_is_swallowed(monkeypatch):
     thread.join(5)
 
     assert returned == [True]
+
+
+def test_pooled_backend_checks_only_connections_idle_for_a_while(monkeypatch):
+    """TASK-282: the check is an empty query, one Neon round trip per request. Building the pool
+    opens nothing (open=False), so this stays hermetic."""
+    from config.pooled_postgres import base as pooled
+
+    monkeypatch.setenv('DB_POOL', '1')
+    wrapper = pooled.DatabaseWrapper({**with_db_pool(parsed(), True), 'TIME_ZONE': None, 'AUTOCOMMIT': True}, alias='t282-pool')
+    try:
+        assert wrapper.pool._check is pooled.check_unless_recent
+    finally:
+        wrapper.close_pool()
+
+    class Conn:
+        autocommit = True
+        def __init__(self): self.checks = 0
+        def execute(self, sql): self.checks += 1
+
+    clock = [1000.0]
+    monkeypatch.setattr(pooled, 'monotonic', lambda: clock[0])
+    conn = Conn()
+    pooled.check_unless_recent(conn)       # never handed out: checked
+    clock[0] += pooled.RECENT - 1
+    pooled.check_unless_recent(conn)       # used a moment ago: no round trip
+    clock[0] += pooled.RECENT
+    pooled.check_unless_recent(conn)       # idle long enough for Neon to have dropped it
+    assert conn.checks == 2
