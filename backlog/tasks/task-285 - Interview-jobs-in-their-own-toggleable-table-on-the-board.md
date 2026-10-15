@@ -4,7 +4,7 @@ title: Interview jobs in their own toggleable table on the board
 status: Done
 assignee: []
 created_date: '2026-10-13 14:37'
-updated_date: '2026-10-15 09:50'
+updated_date: '2026-10-15 09:58'
 labels:
   - board
   - frontend
@@ -36,4 +36,6 @@ Not yet verified: phone width (browser automation could not shrink the viewport)
 2026-10-14: localhost shows Interviews (5 rows) with the same 12 headers as the main table. Split test fails when interview rows leak into main. CI green. Open: phone width check.
 
 2026-10-15: owner checked on the phone (board, email decisions, feedback popup, interviews table, menu, stats): all fine.
+
+2026-10-15: row status change in the Interviews table saved (API showed offer), row left the table, fields restored exactly.
 <!-- SECTION:NOTES:END -->
