@@ -3,10 +3,10 @@ id: TASK-293
 title: >-
   AI drafts default to the latest Codex model at xhigh effort, configurable in
   settings
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-14 09:02'
-updated_date: '2026-10-15 09:34'
+updated_date: '2026-10-15 09:58'
 labels: []
 dependencies: []
 ordinal: 294000
@@ -30,4 +30,6 @@ Owner (2026-10-14): AI email drafts (reply drafts and follow-up drafts) should b
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-15: #255, #257, #261. Settings > Drafts shows Default newest Codex (GPT-6.1-Sol) @ xhigh; follow-up draft generated with it; checkbox layout fixed. Not yet done in the browser: change the setting and regenerate (needs owner OK to change a setting).
+
+2026-10-15: Settings -> GPT-6-Luna@high saved, the next follow-up draft used gpt-6-luna@high, then reset to default (gpt-6.1-sol@xhigh).
 <!-- SECTION:NOTES:END -->
