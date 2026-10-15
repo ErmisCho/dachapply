@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-14 09:02'
-updated_date: '2026-10-14 12:49'
+updated_date: '2026-10-15 09:34'
 labels: []
 dependencies: []
 ordinal: 294000
@@ -20,8 +20,14 @@ Owner (2026-10-14): AI email drafts (reply drafts and follow-up drafts) should b
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Profile settings has a 'Draft model' and 'Draft effort' choice fed by the dynamic model list (TASK on model discovery); default = newest Codex model and xhigh where supported
-- [ ] #2 Reply drafts written during the mailbox check and follow-up drafts use that default unless changed in the popup
-- [ ] #3 If the configured model disappears, the newest available one is used and the setting says so
-- [ ] #4 Tests cover the default resolution and the fallback
+- [x] #1 Profile settings has a 'Draft model' and 'Draft effort' choice fed by the dynamic model list (TASK on model discovery); default = newest Codex model and xhigh where supported
+- [x] #2 Reply drafts written during the mailbox check and follow-up drafts use that default unless changed in the popup
+- [x] #3 If the configured model disappears, the newest available one is used and the setting says so
+- [x] #4 Tests cover the default resolution and the fallback
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-15: #255, #257, #261. Settings > Drafts shows Default newest Codex (GPT-6.1-Sol) @ xhigh; follow-up draft generated with it; checkbox layout fixed. Not yet done in the browser: change the setting and regenerate (needs owner OK to change a setting).
+<!-- SECTION:NOTES:END -->

@@ -4,7 +4,7 @@ title: Mailbox check failures are never silent
 status: In Progress
 assignee: []
 created_date: '2026-10-14 08:19'
-updated_date: '2026-10-14 12:48'
+updated_date: '2026-10-15 09:34'
 labels: []
 dependencies: []
 ordinal: 290000
@@ -22,11 +22,13 @@ Owner (2026-10-14): mail capture failed silently for 6 weeks (OAuth invalid_gran
 - [x] #2 The banner disappears on the next successful run
 - [ ] #3 The owner gets one email alert when checks start failing (not one per hourly failure) and one when they recover, reusing the existing alert/mail path
 - [x] #4 Tests cover banner condition, alert de-duplication and recovery; each fails when its logic is removed
-- [ ] #5 Verified on localhost: a simulated failure shows the banner; vitest, tsc and backend suite pass
+- [x] #5 Verified on localhost: a simulated failure shows the banner; vitest, tsc and backend suite pass
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-14: #250. Health null on localhost (healthy, no banner). Banner on failure verified by test only. Mail alert is a no-op locally until ERROR_ALERT_EMAILS + SMTP are set in the runtime .env (owner).
+
+2026-10-15: banner rendered on the localhost board with a simulated failing status.
 <!-- SECTION:NOTES:END -->
