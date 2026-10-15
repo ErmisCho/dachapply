@@ -6690,3 +6690,56 @@ def test_model_reply_drafts_are_capped_per_check(db, owner, applied_job, model_d
         mailbox.maybe_draft_reply(message, r, job, 'recruiter_reply', None, owner, user_profile_settings(owner), FakeTransport([]), model_budget=budget)
     assert len(model_drafting['calls']) == 1
     assert sorted(MailboxDraft.objects.values_list('evaluator', flat=True)) == ['openai:gpt-6.1-sol', 'template']
+
+
+# --- TASK-297: every suggested / auto-attached match says why; ambiguous ones say 'unsure' ----------
+
+def test_recheck_and_job_panel_carry_the_reason_for_each_auto_attach_rule(db, owner, client, salesforce_job):
+    """AC1/AC3: the confident rule and the thread rule each explain themselves in the re-check list,
+    and the same reason reaches the auto-attached badge on the job's mailbox panel."""
+    invitation = _stored(10, 'Jane Doe <jane.doe@salesforce.com>', SF_INVITE, 'interview_invitation', thread_id='t-sf')
+    follow_up = _stored(11, 'Calendar <calendar@freemail.test>', 'Updated invitation', 'uncertain', thread_id='t-sf')
+    applied = client.post('/api/mailbox-messages/recheck-unmatched/', {'apply': True}, format='json').json()
+    assert [(r['id'], r['reason']['reason'], r['reason']['unsure']) for r in applied['results']] == [
+        (invitation.id, 'sender names Salesforce; only job there', False),
+        (follow_up.id, 'same Gmail thread as Salesforce — Forward Deployed Engineer', False)]
+    panel = client.get(f'/api/jobs/{salesforce_job.id}/mailbox/').json()['messages']
+    assert {m['id']: m['match_reason']['reason'] for m in panel} == {
+        invitation.id: 'sender names Salesforce; only job there',
+        follow_up.id: 'same Gmail thread as Salesforce — Forward Deployed Engineer'}
+
+
+def test_reason_names_the_title_when_it_singles_out_one_of_several_jobs(db, owner, salesforce_job):
+    other = JobLead.objects.create(company='Salesforce', title='Solutions Engineer', url='https://salesforce.test/2',
+                                   status='interview', status_date=timezone.localdate(), created_by=owner)
+    jobs = [salesforce_job, other]
+    named = _stored(11, 'salesforce@myworkday.com', 'Your Salesforce application: Solutions Engineer', 'rejection')
+    assert mailbox.auto_attach_job(named, jobs) == (other, 'confident')
+    assert mailbox.explain_match(named.subject, '', named.sender, jobs, other) == {
+        'reason': "sender names Salesforce; subject names the title 'Solutions Engineer'", 'unsure': False, 'candidates': []}
+
+
+def test_two_hays_jobs_with_nothing_singling_one_out_are_unsure_and_never_auto_attached(db, owner, client):
+    """AC2: the owner's own example. Both jobs qualify for auto-attach (TASK-296), so only the
+    ambiguity is what refuses it; the unmatched panel lists both candidates instead of parking the row."""
+    hays = [JobLead.objects.create(company='Hays', title=title, url=f'https://hays.test/{i}', status='interview', created_by=owner)
+            for i, title in enumerate(['Data Engineer', 'Platform Engineer'])]
+    message = _stored(10, 'Hays Recruiting <anna@hays.test>', 'Your application', 'uncertain')
+    assert mailbox.auto_attach_job(message, hays) == (None, '')
+    explained = mailbox.explain_match(message.subject, '', message.sender, hays)
+    assert explained['unsure'] is True and explained['reason'] == '2 jobs plausible, none singled out'
+    assert explained['candidates'] == [
+        {'id': hays[0].id, 'label': 'Hays — Data Engineer', 'why': 'sender names Hays; title not named'},
+        {'id': hays[1].id, 'label': 'Hays — Platform Engineer', 'why': 'sender names Hays; title not named'}]
+    # Still parked by default (TASK-170 AC4's contract); revealed, the row carries its candidates.
+    assert client.get('/api/mailbox-messages/unmatched/').json()['parked_count'] == 1
+    rows = client.get('/api/mailbox-messages/unmatched/?include_unidentified=1').json()['results']
+    assert [(r['id'], r['suggested_job'], r['match_reason']['unsure']) for r in rows] == [(message.id, None, True)]
+    # A pick made only by process timing is still a guess: suggested, but marked unsure with both candidates.
+    JobLead.objects.filter(pk=hays[1].pk).update(status_date=timezone.localdate() - timedelta(days=3))
+    hays = list(JobLead.objects.filter(company='Hays').order_by('id'))
+    assert mailbox.suggest_job_for_message(message.subject, '', message.sender, hays, message.received_at) == hays[1]
+    timed = mailbox.explain_match(message.subject, '', message.sender, hays, hays[1])
+    assert timed['unsure'] is True and timed['reason'] == 'sender names Hays; 2 jobs there, picked by timing (most recently started)'
+    assert len(timed['candidates']) == 2
+    assert mailbox.auto_attach_job(message, hays) == (None, '')
