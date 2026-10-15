@@ -1951,6 +1951,25 @@ def _job_by_process_timing(candidates, received_at, first_sent_at):
     return live[0] if len(live) == 1 else None
 
 
+def _company_claimants(subject: str, body_text: str, sender: str, jobs) -> dict[frozenset, list[JobLead]]:
+    """suggest_job_for_message's candidate step (see its docstring): company token set -> that
+    company's tracked jobs, for every company the message names. Split out for TASK-297 so
+    explain_match() reports the very candidates the suggestion was chosen from, not a second rule."""
+    if is_job_board(_sender_domain(sender)):
+        return {}
+    text_tokens = _company_name_tokens(f'{subject}\n{body_text}')
+    sender_tokens = _company_name_tokens(sender)
+    matches: dict[frozenset, list[JobLead]] = {}
+    for job in jobs:
+        company_tokens = _company_name_tokens(job.company)
+        if not company_tokens:
+            continue
+        haystack = sender_tokens if len(company_tokens) == 1 else text_tokens
+        if company_tokens.issubset(haystack):
+            matches.setdefault(company_tokens, []).append(job)
+    return matches
+
+
 def suggest_job_for_message(subject: str, body_text: str, sender: str, jobs, received_at=None, first_sent_at=None) -> JobLead | None:
     """TASK-163: a SUGGESTION for the unmatched-mail panel (views.py's `unmatched` action), never a
     match() -- the owner confirms it with one click, and this function never writes matched_job
@@ -2011,18 +2030,7 @@ def suggest_job_for_message(subject: str, body_text: str, sender: str, jobs, rec
     simply means a caller that cannot date the processes gets a suggestion only where a company has
     exactly one tracked job.
     """
-    if is_job_board(_sender_domain(sender)):
-        return None
-    text_tokens = _company_name_tokens(f'{subject}\n{body_text}')
-    sender_tokens = _company_name_tokens(sender)
-    matches: dict[frozenset, list[JobLead]] = {}
-    for job in jobs:
-        company_tokens = _company_name_tokens(job.company)
-        if not company_tokens:
-            continue
-        haystack = sender_tokens if len(company_tokens) == 1 else text_tokens
-        if company_tokens.issubset(haystack):
-            matches.setdefault(company_tokens, []).append(job)
+    matches = _company_claimants(subject, body_text, sender, jobs)
     if len(matches) != 1:
         return None
     candidates = next(iter(matches.values()))
@@ -2136,6 +2144,68 @@ def confident_job_for_message(message: MailboxMessage, jobs) -> JobLead | None:
     text = _title_tokens(f'{message.subject}\n{message.body_text}')
     named = [j for j in same_company if _title_tokens(j.title) and _title_tokens(j.title) <= text]
     return job if len(same_company) == 1 or named == [job] else None
+
+
+def _job_label(job: JobLead) -> str:
+    return f'{job.company} — {job.title}'
+
+
+def explain_match(subject: str, body_text: str, sender: str, jobs, job: JobLead | None = None, rule: str = '') -> dict | None:
+    """TASK-297: why a message is (or may be) about `job` -- {'reason', 'unsure', 'candidates'} -- or
+    None when nothing points at any job. `job` is what the caller already picked (the suggestion, the
+    auto-attach target, the stored match) and `rule` its auto-attach rule; this only explains, it
+    never picks, so it cannot drift from suggest_job_for_message / confident_job_for_message.
+
+    unsure=True whenever more than one tracked job is plausible and nothing singles `job` out -- two
+    Hays jobs and no title named, a pick made only by process timing, or several companies named --
+    with every candidate and why it was considered. confident_job_for_message refuses exactly those
+    (it needs "only job there" or a uniquely named title), so unsure mail is never auto-attached.
+    """
+    if rule == 'thread' and job is not None:
+        return {'reason': f'same Gmail thread as {_job_label(job)}', 'unsure': False, 'candidates': []}
+    claimants = _company_claimants(subject, body_text, sender, jobs)
+    sender_tokens = _company_name_tokens(sender)
+    subject_titles, text_titles = _title_tokens(subject), _title_tokens(f'{subject}\n{body_text}')
+
+    def named_title(j):
+        title = _title_tokens(j.title)
+        if not title or not title <= text_titles:
+            return ''
+        return f"{'subject' if title <= subject_titles else 'body'} names the title '{j.title}'"
+
+    def why(j):
+        where = 'sender' if _company_name_tokens(j.company) <= sender_tokens else 'mail'
+        return f'{where} names {j.company}'
+
+    same = next((js for js in claimants.values() if job in js), [])
+    reason = None
+    if job is not None and len(claimants) == 1 and same:
+        if len(same) == 1:
+            return {'reason': f'{why(job)}; only job there', 'unsure': False, 'candidates': []}
+        if [j for j in same if named_title(j)] == [job]:
+            return {'reason': f'{why(job)}; {named_title(job)}', 'unsure': False, 'candidates': []}
+        reason = f'{why(job)}; {len(same)} jobs there, picked by timing (most recently started)'
+    candidates = [j for js in claimants.values() for j in js]
+    if len(candidates) < 2:
+        return None
+    return {'reason': reason or f'{len(candidates)} jobs plausible, none singled out', 'unsure': True,
+            'candidates': [{'id': j.id, 'label': _job_label(j), 'why': f"{why(j)}; {named_title(j) or 'title not named'}"}
+                           for j in candidates]}
+
+
+def explain_auto_attach(message: MailboxMessage) -> dict | None:
+    """TASK-297 AC3: the reason behind an auto-attached message, recomputed rather than stored (no
+    migration). 'thread' when an earlier message of its Gmail thread is on the same job -- the order
+    auto_attach_unmatched_messages attaches in -- else the confident rule's evidence.
+    ponytail: two queries per auto-attached message (thread + jobs); fine for the few the job panel
+    shows, pass `jobs` in from the view if a list ever renders many."""
+    job = message.matched_job
+    if message.auto_attached_at is None or job is None:
+        return None
+    thread = bool(message.thread_id) and real_mailbox_messages().filter(
+        thread_id=message.thread_id, matched_job=job, uid__lt=message.uid).exists()
+    jobs = list(owned_jobs(job.created_by).exclude(company='')) if job.created_by_id else [job]
+    return explain_match(message.subject, message.body_text, message.sender, jobs, job, 'thread' if thread else '')
 
 
 # TASK-296 (owner, 2026-10-14): mail is auto-linked only for jobs that reached an interview -- the
@@ -3290,7 +3360,8 @@ def auto_attach_unmatched_messages(dry_run: bool = True) -> list[dict]:
     carries detached_at, which auto_attach_job refuses. Ascending uid, so a thread's first message
     attached here lets its later ones inherit the job in the same pass (a dry run cannot see that
     chain and may report fewer). Returns {'job', 'message_count', 'messages', 'rules'} per job;
-    `rules` is aligned with `messages` ('thread' | 'confident').
+    `rules` is aligned with `messages` ('thread' | 'confident'); TASK-297: so is `reasons`
+    (explain_match's dict for each).
     """
     owner = _owner_user()
     if owner is None:
@@ -3303,7 +3374,9 @@ def auto_attach_unmatched_messages(dry_run: bool = True) -> list[dict]:
             by_job.setdefault(job, []).append((message, rule))
             if not dry_run:
                 auto_attach(message, job)
-    return [{'job': job, 'message_count': len(rows), 'messages': [m for m, _ in rows], 'rules': [r for _, r in rows]} for job, rows in by_job.items()]
+    return [{'job': job, 'message_count': len(rows), 'messages': [m for m, _ in rows], 'rules': [r for _, r in rows],
+             'reasons': [explain_match(m.subject, m.body_text, m.sender, jobs, job, r) for m, r in rows]}
+            for job, rows in by_job.items()]
 
 
 # --- TASK-162 AC6: re-run the new false-positive guard over already-stored classifications --------

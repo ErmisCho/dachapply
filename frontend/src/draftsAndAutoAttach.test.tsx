@@ -1,6 +1,6 @@
 import {describe,expect,it} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {AutoAttachedControl,DraftSettings,RecheckUnmatchedMail} from './App'
+import {AutoAttachedControl,DraftSettings,MailboxUnmatchedRow,RecheckUnmatchedMail} from './App'
 
 const noop=()=>{}
 const options={
@@ -19,7 +19,7 @@ describe('Settings -> Drafts (TASK-293)',()=>{
     expect(html).toContain('Default: newest Codex (GPT-6.1-Sol)')
     expect(html).toContain('<option value="xhigh" selected="">xhigh</option>')
     expect(html).not.toContain('Speed')
-    expect(html).toMatch(/type="checkbox" checked=""\/>Write automatic reply drafts with the model/)
+    expect(html).toMatch(/type="checkbox" class="row-select" checked=""\/>Write automatic reply drafts with the model/)
     expect(html).not.toContain('no longer offered')
   })
 
@@ -28,7 +28,7 @@ describe('Settings -> Drafts (TASK-293)',()=>{
     expect(html).toContain('<option value="anthropic|sonnet" selected="">')
     expect(html).toContain('<option value="medium" selected="">medium</option>')
     expect(html).not.toContain('>xhigh<')
-    expect(html).toMatch(/type="checkbox"\/>Write automatic reply drafts/)
+    expect(html).toMatch(/type="checkbox" class="row-select"\/>Write automatic reply drafts/)
   })
 
   it('says when the stored model is no longer offered and what is used instead',()=>{
@@ -57,5 +57,23 @@ describe('auto-attached mail (TASK-291)',()=>{
     expect(html).toContain('confident match')
     expect(html).toContain('same thread')
     expect(html).toContain('Apply (2)')
+  })
+})
+
+describe('match reasons (TASK-297)',()=>{
+  const sure={reason:'sender names Salesforce; only job there',unsure:false,candidates:[]}
+  const unsure={reason:'2 jobs plausible, none singled out',unsure:true,candidates:[
+    {id:1,label:'Hays — Data Engineer',why:'sender names Hays; title not named'},
+    {id:2,label:'Hays — Platform Engineer',why:'sender names Hays; title not named'}]}
+  const row=(m:any)=>renderToStaticMarkup(<MailboxUnmatchedRow m={{id:7,sender:'Anna',subject:'Your application',classification:'uncertain',body_text:'',...m}} jobs={[]} busy={false} dismissBusy={false} onAttach={noop} onDismiss={noop} onRestore={noop} onCreateJob={noop}/>)
+  it('shows the reason next to the suggestion, and unsure candidates with why',()=>{
+    expect(row({suggested_job:{id:3,label:'Salesforce — FDE'},match_reason:sure})).toContain('suggested: Salesforce — FDE</span><span class="ml-1 text-slate-500">(sender names Salesforce; only job there)')
+    const html=row({suggested_job:null,match_reason:unsure})
+    expect(html).toContain('unsure — 2 jobs plausible, none singled out; candidates: Hays — Data Engineer (sender names Hays; title not named), Hays — Platform Engineer (sender names Hays; title not named)')
+    expect(html).toContain('text-amber-700')
+  })
+  it('puts the reason in the re-check list and on the auto-attached badge',()=>{
+    expect(renderToStaticMarkup(<RecheckUnmatchedMail initialRows={[{id:1,received_at:null,sender:'Jane',subject:'Hi',job:9,job_label:'Salesforce — FDE',rule:'confident',reason:sure}]}/>)).toContain('sender names Salesforce; only job there')
+    expect(renderToStaticMarkup(<AutoAttachedControl m={{id:5,matched_job:3,auto_attached_at:'2026-10-14T09:00:00Z',match_reason:{reason:'same Gmail thread as Salesforce — FDE',unsure:false,candidates:[]}} as any}/>)).toMatch(/title="Attached automatically [^"]* — same Gmail thread as Salesforce — FDE"/)
   })
 })

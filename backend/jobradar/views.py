@@ -1548,9 +1548,11 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
             # pay for guessing a job for it). No received_at at all counts as within the window, the
             # same "no measured age to filter by" rule the display filter above already applies.
             if row.received_at is not None and row.received_at < cutoff:
-                row.suggested_job = None
+                row.suggested_job = row.match_reason = None
             else:
                 row.suggested_job = suggest_job_for_message(row.subject, row.match_text, row.sender, jobs, row.received_at, first_sent_at)
+                # TASK-297: why -- or, with several plausible jobs, 'unsure' plus each candidate.
+                row.match_reason = mailbox.explain_match(row.subject, row.match_text, row.sender, jobs, row.suggested_job)
         # TASK-163 fix 3 (coordinator re-measurement, 2026-08-21): parking every suggestion-less row
         # hid 38 of TASK-161's 41 high-consequence rows -- rank 0 (rejection/interview_invitation) is
         # never age-filtered by the recency window above for exactly the same reason it must never be
@@ -1624,8 +1626,8 @@ class MailboxMessageViewSet(viewsets.GenericViewSet):
         apply=request.data.get('apply') is True
         groups=mailbox.auto_attach_unmatched_messages(dry_run=not apply)
         rows=[{'id': m.id, 'received_at': m.received_at, 'sender': parseaddr(m.sender)[0] or parseaddr(m.sender)[1] or m.sender,
-               'subject': m.subject, 'job': g['job'].id, 'job_label': f"{g['job'].company} — {g['job'].title}", 'rule': rule}
-              for g in groups for m, rule in zip(g['messages'], g['rules'])]
+               'subject': m.subject, 'job': g['job'].id, 'job_label': f"{g['job'].company} — {g['job'].title}", 'rule': rule, 'reason': reason}
+              for g in groups for m, rule, reason in zip(g['messages'], g['rules'], g['reasons'])]
         return Response({'applied': apply, 'results': rows})
 
     @action(detail=True, methods=['post'], url_path='create-job')

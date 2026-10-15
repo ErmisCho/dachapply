@@ -614,7 +614,12 @@ class MailboxMessageListSerializer(MailboxMessageSerializer):
     # requires those to arrive blank rather than guessed.
     lead_prefill = serializers.SerializerMethodField()
     class Meta(MailboxMessageSerializer.Meta):
-        fields = MailboxMessageSerializer.Meta.fields + ('body_truncated', 'suggested_job', 'dismissed', 'lead_prefill')
+        fields = MailboxMessageSerializer.Meta.fields + ('body_truncated', 'suggested_job', 'match_reason', 'dismissed', 'lead_prefill')
+    # TASK-297: services.mailbox.explain_match's {'reason', 'unsure', 'candidates'}, set transiently
+    # by the view beside suggested_job; null when the row names no tracked job.
+    match_reason = serializers.SerializerMethodField()
+    def get_match_reason(self, obj):
+        return getattr(obj, 'match_reason', None)
     def get_dismissed(self, obj):
         return obj.dismissed_at is not None
     def get_lead_prefill(self, obj):
@@ -647,7 +652,12 @@ class MailboxMessageWithSuggestionsSerializer(MailboxMessageSerializer):
     """
     suggestions=serializers.SerializerMethodField()
     class Meta(MailboxMessageSerializer.Meta):
-        fields=MailboxMessageSerializer.Meta.fields + ('suggestions',)
+        fields=MailboxMessageSerializer.Meta.fields + ('suggestions','match_reason')
+    # TASK-297 AC3: why an auto-attached message landed here (the badge's tooltip); null otherwise.
+    match_reason=serializers.SerializerMethodField()
+    def get_match_reason(self, obj):
+        from .services.mailbox import explain_auto_attach  # local: see _gmail_url above
+        return explain_auto_attach(obj)
     def get_suggestions(self, obj):
         return MailboxSuggestionSerializer(obj.suggestions.filter(status='pending'), many=True).data
 
