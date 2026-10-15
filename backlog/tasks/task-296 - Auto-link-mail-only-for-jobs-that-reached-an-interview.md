@@ -1,9 +1,10 @@
 ---
 id: TASK-296
 title: Auto-link mail only for jobs that reached an interview
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-14 20:32'
+updated_date: '2026-10-15 09:34'
 labels: []
 dependencies: []
 ordinal: 297000
@@ -17,8 +18,14 @@ Owner (2026-10-14): mail should only be tracked/auto-linked for jobs that reache
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Auto-attach (live check and re-check) only targets jobs that reached an interview (same rule as the funnel's 'reached interview') and whose current status is not new, reviewed, to_apply or applied
-- [ ] #2 Mail for other jobs stays unmatched and can still be attached by hand
-- [ ] #3 The re-check dry run on the owner's data lists only mail for qualifying jobs
-- [ ] #4 Tests cover qualifying, never-interviewed and back-to-applied jobs; each fails when its logic is removed
+- [x] #1 Auto-attach (live check and re-check) only targets jobs that reached an interview (same rule as the funnel's 'reached interview') and whose current status is not new, reviewed, to_apply or applied
+- [x] #2 Mail for other jobs stays unmatched and can still be attached by hand
+- [x] #3 The re-check dry run on the owner's data lists only mail for qualifying jobs
+- [x] #4 Tests cover qualifying, never-interviewed and back-to-applied jobs; each fails when its logic is removed
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-15: #258. Dry run on owner data: 9 -> 2, both interview jobs.
+<!-- SECTION:NOTES:END -->
