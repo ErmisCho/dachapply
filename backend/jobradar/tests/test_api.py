@@ -1232,6 +1232,8 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     assert sum('AUTOMATIC REPAIR ATTEMPT' in prompt for prompt in prompts)==repairs+2
     # The repair prompt names what was wrong instead of a bare "invalid".
     assert any('cv_tex (6 chars) is missing' in prompt and 'changed_files is not a list' in prompt for prompt in prompts)
+    # Codex 0.162 cannot read files under the read-only sandbox on Windows: the copies are inlined.
+    assert prompts and all('CONTENT OF ' in prompt and '<<<FILE' in prompt for prompt in prompts)
     generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'anthropic', 'sonnet', 'medium', 'normal', user_id=user.id)
     generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'ollama', 'qwen', 'default', 'normal', user_id=user.id)
     cv_only_progress=[]
@@ -1348,7 +1350,9 @@ def test_cv_revision_uses_minimal_prompt_and_preserves_unrelated_tex(db, tmp_pat
     assert 'Required CV language: German' in revision_prompt
     assert 'Never invent experience' in revision_prompt and 'CV maximum: two pages' in revision_prompt
     assert 'SOURCE PRIORITY' in revision_prompt and f'Company: {job.company}' in revision_prompt and f'Title: {job.title}' in revision_prompt
-    assert len(revision_prompt) < len(initial_prompt)*.5
+    # The inlined file copies are the same documents in both; compare the instructions around them.
+    instructions=lambda prompt: prompt.split('\n\nCONTENT OF ')[0]
+    assert len(instructions(revision_prompt)) < len(instructions(initial_prompt))*.5
 
 
 def test_cv_task_completes_and_is_user_scoped(job, monkeypatch, tmp_path, settings):
