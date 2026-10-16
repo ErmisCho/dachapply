@@ -4,7 +4,7 @@ from django.core.management.base import BaseCommand
 
 from jobradar.models import JobLead
 from jobradar.services.cv_generator import latest_generated_sources
-from jobradar.services.cv_tasks import READY_TO_SUBMIT_FROM, mark_ready_to_submit
+from jobradar.services.cv_tasks import READY_TO_SUBMIT_FROM, has_prepared_drafts, mark_ready_to_submit
 
 
 def _console_safe(text):
@@ -29,7 +29,8 @@ class Command(BaseCommand):
         for job in jobs:
             for user in dict.fromkeys(u for u in (job.submitted_for, job.created_by) if u):
                 cv, letter = latest_generated_sources(job, user)
-                if cv or letter:
+                # TASK-280.3: prepared drafts wait for the owner's package selection.
+                if (cv or letter) and not has_prepared_drafts(job.id, user.pk):
                     found.append((job, cv, letter))
                     break
         for job, cv, letter in found:

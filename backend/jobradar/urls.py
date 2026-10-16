@@ -2,7 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import *
 from .views_invites import InviteCodeViewSet
-from .views_application_prep import application_prep_retry, application_prep_status
+from .views_application_prep import application_prep_active, application_prep_adjust, application_prep_export, application_prep_retry, application_prep_review, application_prep_status
 
 router=DefaultRouter()
 router.register('jobs', JobLeadViewSet, basename='jobs')
@@ -24,6 +24,8 @@ urlpatterns=[
  path('jobs/bulk-create/', bulk_create_jobs), path('public/submit/', public_submit), path('prompts/generate/', generate_prompt), path('prompts/enrich/', generate_enrichment_prompt), path('prompts/combined/', generate_combined_prompt), path('prompts/bulk-links/', generate_bulk_links_prompt), path('jobs/<int:job_id>/cv-generation/', cv_generation_preview), path('jobs/<int:job_id>/source-text/live/', job_source_text_live), path('jobs/source-text/refresh-due/', refresh_due_job_sources), path('jobs/<int:job_id>/cv-generation/run/', generate_cv_documents), path('jobs/<int:job_id>/cv-generation/recompile-latest/', recompile_latest_cv_documents), path('jobs/<int:job_id>/cv-generation/revise-latest/', revise_latest_cv_documents), path('jobs/<int:job_id>/cv-generation/rename/', rename_cv_artifact), path('cv-generation/clipboard/', copy_cv_clipboard), path('cv-generation/tasks/<str:task_id>/', cv_generation_status), path('cv-generation/tasks/<str:task_id>/cancel/', cancel_cv_generation), path('cv-generation/tasks/<str:task_id>/reveal/', reveal_cv_artifact), path('cv-generation/tasks/<str:task_id>/revise/', revise_cv_documents), path('cv-generation/tasks/<str:task_id>/download/', cv_generation_download), path('mailbox-runs/tasks/<str:task_id>/', mailbox_check_task_status), path('jobs/evaluate-with-model/', evaluate_with_model), path('evaluations/import/', import_eval), path('stats/', stats),
  # TASK-280.2: automatic To-apply document preparation.
  path('jobs/<int:job_id>/application-prep/', application_prep_status), path('jobs/<int:job_id>/application-prep/retry/', application_prep_retry),
+ # TASK-280.3: review, adjust and export the prepared variants; TASK-299: the board's progress overlay.
+ path('jobs/<int:job_id>/application-prep/review/', application_prep_review), path('jobs/<int:job_id>/application-prep/adjust/', application_prep_adjust), path('jobs/<int:job_id>/application-prep/export/', application_prep_export), path('jobs/application-prep/active/', application_prep_active),
  path('debug/raise-test-error/', raise_test_error),
  path('practice/evaluate/', practice_evaluate), path('practice/history/', practice_history), path('practice/questions/', practice_questions),
  path('export/', export_user_data), path('import/', import_user_data),
