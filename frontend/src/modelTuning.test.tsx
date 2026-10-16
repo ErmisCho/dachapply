@@ -45,8 +45,8 @@ describe('expected duration in every model picker (TASK-303)',()=>{
     expect(expectedDuration(timed,'high','fast',{route:'revision',documents:'cv'})).toBe('~60 s')
     expect(expectedDuration(timed,'medium','fast')).toBe('~40 s (from other effort levels)')
   })
-  it('says there is no timing instead of borrowing one',()=>{
-    expect(expectedDuration(timed,'high','normal')).toBe('no timing yet')
+  it('labels a rough guess and says when there is no timing at all',()=>{
+    expect(expectedDuration(timed,'high','normal')).toBe('~5 min (rough guess: no runs of this model yet)')
     expect(expectedDuration({key:'draft-only',efforts:['low']},'low','normal')).toBe('no timing yet')
   })
   it('renders inside ModelTuning, also for a model with no effort choice',()=>{
