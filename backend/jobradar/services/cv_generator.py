@@ -1424,6 +1424,11 @@ def persist_generated_files(output, workspace, cv_name=None, letter_name=None, c
     return saved
 
 
+def _dropped_photo(base_tex, generated_tex):
+    """TASK-304: the base CV has a photo and a non-empty generated CV lost it."""
+    return bool(generated_tex.strip()) and r'\includegraphics' in base_tex and r'\includegraphics' not in generated_tex
+
+
 def _layout_context(output, source_cv, source_letter, instructions):
     if not re.search(r'layout|overflow|overlap|page break|orphan|spacing|margin|visual|seitenumbruch|überlapp', instructions or '', re.IGNORECASE):
         return ''
@@ -2033,6 +2038,9 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
                         return f'{label} has text after \\end{{document}}: {content.split(end,1)[1].strip()[:200]!r}'
                     return ''
                 problems=[problem for problem in (create_cv and tex_problem('cv_tex', cv_tex), create_letter and tex_problem('letter_tex', letter_tex)) if problem]
+                # TASK-304: a GPT-6.1 CV silently dropped the photo (2026-10-16); the base CV decides.
+                if create_cv and _dropped_photo(cv_text, cv_tex):
+                    problems.append('cv_tex dropped the photo: keep the \\includegraphics line from the base CV unchanged')
                 problems+=[f'{key} is not a list' for key in ('changed_files','main_changes','unsupported_requirements_not_claimed') if not isinstance(generated.get(key), list)]
                 if not isinstance(generated.get('confirmations'), dict):
                     problems.append('confirmations is not an object')
