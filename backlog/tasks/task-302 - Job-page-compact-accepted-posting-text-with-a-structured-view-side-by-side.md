@@ -22,3 +22,9 @@ Owner (2026-10-16): the 'Current accepted text' box is too big; a structured ver
 - [ ] #3 Root cause of the missing structured view is stated in the task notes
 - [ ] #4 Verified on Wienerberger and one older job in the browser; vitest and tsc pass
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Root cause (2026-10-16): there was no structured-view component to restore -- App.tsx has no Responsibilities/structured posting renderer (only the evaluation's skill lists), and git history has none either. The "structured version" the owner remembers was the accepted text itself: the TASK-260 ChatGPT extract (Overview / Required experience / Preferred qualifications / Tasks / responsibilities / Pay / Location / Other details) is written to original_source_text only when the job has no meaningful text yet (json_importer.py ~L226, job_replace.py ~L55). Jobs whose posting text was fetched or pasted first (intake fetch, TASK-254 fetch before generation, TASK-255/269 adopt-fetched) keep the raw page text, so the extract is discarded and nothing structured is stored. Fix: the job page derives the sections from headings in the accepted text (appUtils.postingSections, TASK-260 headings plus common EN/DE ones) and shows them beside a height-bounded accepted-text box; text without recognisable headings shows "No structured version yet".
+<!-- SECTION:NOTES:END -->

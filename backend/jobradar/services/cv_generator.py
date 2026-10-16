@@ -14,6 +14,7 @@ import tempfile
 import time
 import urllib.parse
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Lock, Thread
 
@@ -610,6 +611,9 @@ def generation_preview(job, user=None):
         # Letter names carry the selected template. Keep each template's files separate so changing
         # the selector cannot confirm or replace a different kind of letter.
         'letter_artifacts': {letter['key']:{key:value for key,value in latest_generated_artifacts(job,user,letter['key']).items() if key.startswith('letter_')} for letter in letters},
+        # TASK-301: every document generated for the job, newest first -- after 'artifacts', which
+        # has already followed any Explorer rename.
+        'generated_files': generated_files(job,user),
         # Lets the client show a short workspace-relative path while still copying the absolute one.
         'workspace': str(workspace) if workspace else '',
     }
@@ -787,16 +791,73 @@ def _edit_sidecar_locked(path, job, user_id, change):
     return _write_json(path,data)
 
 
-def _record_artifact_metadata(job, user_id, artifacts, letter_key=''):
+def _record_artifact_metadata(job, user_id, artifacts, letter_key='', cv_language=''):
     def change(data):
         current=data.setdefault('artifacts',{})
         for key in ('cv_tex','cv_pdf'):
             if artifacts.get(key): current[key]=artifacts[key]
+        # TASK-301: the pointers above keep only the latest document per kind; history keeps every
+        # one, so a file a later generation replaced as "current" still lists for the job.
+        history=data.setdefault('history',[])
+        at=datetime.now(timezone.utc).isoformat()
+        if artifacts.get('cv_tex'):
+            history.append({'path':artifacts['cv_tex'],'kind':'cv','language':cv_language,'at':at})
         if artifacts.get('letter_tex'):
             key=letter_key or artifacts.get('letter_template') or 'letter'
             data.setdefault('letters',{})[key]={name:artifacts[name] for name in ('letter_tex','letter_pdf') if artifacts.get(name)}
             data['latest_letter']=key
+            history.append({'path':artifacts['letter_tex'],'kind':'message' if key.endswith(':short') else 'letter','letter_template':key,'at':at})
     return _edit_sidecar(job,user_id,change)
+
+
+def _document_rows(entry):
+    # TASK-301: every TeX one sidecar entry names -- history, TASK-280.2/280.3 preparation variants
+    # (their files live only in 'preparation'), the current pointers, and an Applied job's paths.
+    rows=list(entry.get('history',[]))
+    for variant in ((entry.get('preparation') or {}).get('variants') or {}).values():
+        for name,path in (variant.get('files') or {}).items():
+            if name.endswith('_tex'):
+                kind='cv' if name == 'cv_tex' else 'message' if variant.get('document') == 'message' else 'letter'
+                rows.append({'path':path,'kind':kind,'language':variant.get('language',''),'letter_template':variant.get('letter_template','')})
+    if entry.get('artifacts',{}).get('cv_tex'):
+        rows.append({'path':entry['artifacts']['cv_tex'],'kind':'cv'})
+    for key,letter in entry.get('letters',{}).items():
+        if isinstance(letter,dict) and letter.get('letter_tex'):
+            rows.append({'path':letter['letter_tex'],'kind':'message' if key.endswith(':short') else 'letter','letter_template':key})
+    return rows+[{'path':path} for path in entry.get('paths',[]) if isinstance(path,str) and path.endswith('.tex')]
+
+
+def generated_files(job, user=None):
+    '''TASK-301: every document generated for this job, newest first, for its Generated files table.
+
+    One row per document: kind (cv / letter / message), language, TeX and PDF path, when it was
+    generated, and whether each file is still on disk -- a deleted file stays listed as missing.
+    '''
+    if not settings.CODEX_CV_WORKSPACE or not getattr(user,'pk',None):
+        return []
+    languages={key:language for language,template in user_templates(user).items() for key in template['letters']}
+    files={}
+    for row in _document_rows(_read_artifact_metadata(job,user))+_document_rows(_retired_entry(job,user)):
+        path=row.get('path')
+        if not isinstance(path,str) or not path:
+            continue
+        item=files.setdefault(os.path.normcase(str(Path(path))),{'kind':'','language':'','tex':path,'generated_at':''})
+        item['kind']=item['kind'] or row.get('kind','')
+        item['language']=item['language'] or row.get('language') or languages.get(str(row.get('letter_template','')).split(':')[0],'')
+        item['generated_at']=max(item['generated_at'],row.get('at',''))
+    result=[]
+    for item in files.values():
+        tex=Path(item['tex'])
+        pdf=tex.with_suffix('.pdf')
+        # Fallbacks for entries written before history existed: folder for kind, -EN/-DE suffix for language.
+        item['kind']=item['kind'] or ('cv' if tex.parent.name in ('CVs','sent') else 'letter')
+        suffix=re.search(r'-(EN|DE)(?:-\d+)?$',tex.stem)
+        item['language']=item['language'] or (suffix.group(1).lower() if suffix else '')
+        item.update(pdf=str(pdf),missing=not tex.is_file(),pdf_missing=not pdf.is_file())
+        if not item['generated_at'] and not item['missing']:
+            item['generated_at']=datetime.fromtimestamp(tex.stat().st_mtime,timezone.utc).isoformat()
+        result.append(item)
+    return sorted(result,key=lambda item:item['generated_at'],reverse=True)
 
 
 # TASK-271: a generated file renamed in Explorer is found again by its content. Every tracked TeX
@@ -841,6 +902,8 @@ def _move_tracking(entry, moves):
                 container[key]=moved(container[key]); found=True
     if 'paths' in entry:
         entry['paths']=[moved(value) for value in entry['paths']]
+    for row in entry.get('history',[]):
+        row['path']=moved(row.get('path'))  # TASK-301
     entry['hashes']={moved(key):value for key,value in entry.get('hashes',{}).items()}
     return found
 
@@ -1088,6 +1151,8 @@ def _retire(directory, job_hash, data):
     if data.get('latest_letter'): entry['latest_letter']=data['latest_letter']
     # Every path this job ever sent stays protected, even once a later send replaces the link.
     entry['paths']=sorted(set(entry.get('paths',[]))|set(_sidecar_paths(data)))
+    # TASK-301: the job's whole file list -- preparation included, which is not kept past here.
+    entry['history']=entry.get('history',[])+_document_rows(data)
     temporary=path.with_suffix('.tmp')
     temporary.write_text(json.dumps(retired,ensure_ascii=False),encoding='utf-8')
     temporary.replace(path)
@@ -1854,7 +1919,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
         cache_paths=_package_cache(workspace,job,profile,cache_sources,cache_options,user_id)
         cached=_cached_package(*cache_paths,create_cv,create_letter)
         if cached:
-            _record_artifact_metadata(job,user_id,cached[2],record_key)
+            _record_artifact_metadata(job,user_id,cached[2],record_key,cv_key if create_cv else '')
             report(97,'Using saved package')
             return cached
 
@@ -1973,7 +2038,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
         saved['letter_template']=letter_key if create_letter else ''
         saved['report']=generation_report
         saved['base_templates']=base_templates
-        _record_artifact_metadata(job,user_id,saved,record_key)
+        _record_artifact_metadata(job,user_id,saved,record_key,cv_key if create_cv else '')
         archive=io.BytesIO()
         with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
             for generated_file in generated_files:
