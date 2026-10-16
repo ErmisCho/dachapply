@@ -25,7 +25,7 @@ def test_owner_example_names_cv_letter_and_package_alike():
     ('Acme','Applied AI-Engineer','Acme-Applied-AI-Engineer'),
     ('Acme','GenAI Developer','Acme-GenAI-Developer'),
     ('OpenAI','Research Engineer','OpenAI-Research-Engineer'),
-    ('Mainz AG','Training Lead','Mainz-Ag-Training-Lead'),
+    ('Mainz AG','Training Lead','Mainz-Training-Lead'),
     ('Acme','Maintenance Engineer, Mainz','Acme-Maintenance-Engineer-Mainz'),
     ('Acme','MAINTENANCE ENGINEER','Acme-Maintenance-Engineer'),
     # AC3: gender markers anywhere, EN and DE, and the separator they leave behind.
@@ -61,3 +61,38 @@ def test_target_slug(company, title, expected):
 
 def test_target_slug_keeps_the_90_character_cap():
     assert len(_target_slug(_job('Acme','AI '*60)))==90
+
+
+@pytest.mark.parametrize('company,expected',[
+    # TASK-300 AC1/AC3: common legal forms leave the company part, whatever their spelling.
+    ('Wienerberger AG','Wienerberger'),
+    ('Siemens Mobility GmbH','Siemens-Mobility'),
+    ('SAP SE','Sap'),
+    ('Muster GmbH & Co. KG','Muster'),
+    ('Huber KG','Huber'),
+    ('Wien Digital OG','Wien-Digital'),
+    ('Maier e.U.','Maier'),
+    ('Acme, Inc.','Acme'),
+    ('Acme Ltd.','Acme'),
+    ('Acme LLC','Acme'),
+    ('Acme S.A.','Acme'),
+    ('Acme B.V.','Acme'),
+    ('Acme plc','Acme'),
+    ('Procter & Gamble Co.','Procter-Gamble'),
+    ('Porsche AG & Co. KGaA','Porsche'),
+    # Letters of a legal form inside a word are part of the name, not a legal form.
+    ('Agrana Beteiligungs-AG','Agrana-Beteiligungs'),
+    ('Segula Technologies','Segula-Technologies'),
+    ('Kognitiv Cogs','Kognitiv-Cogs'),
+    ('Ogilvy Incubator','Ogilvy-Incubator'),
+    ('EU Agency for Cybersecurity','Eu-Agency-For-Cybersecurity'),
+    ('AG','Ag'),
+])
+def test_company_part_drops_legal_form(company, expected):
+    assert _target_slug(_job(company,'Engineer'))==f'{expected}-Engineer'
+
+
+def test_owner_wienerberger_letter_name():
+    job=_job('Wienerberger AG','AI Solutions Engineer')
+    assert _target_names(job,'Chorinopoulos-Ermis','English Motivation Letter')[1]==(
+        'Chorinopoulos-Ermis-English-Motivation-Letter-Wienerberger-AI-Solutions-Engineer.tex')

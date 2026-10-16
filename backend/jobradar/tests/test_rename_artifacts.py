@@ -137,6 +137,16 @@ def test_rename_of_a_file_found_only_by_its_legacy_name_is_tracked_afterwards(cl
     assert latest_generated_sources(job, owner, 'anschreiben')[0] == str(cv_dir/'Hand-Named.tex')
 
 
+def test_file_named_with_the_legal_form_before_task_300_is_still_found_unrenamed(owner, workspace):
+    # TASK-300 AC2: dropping "AG" from new names must not lose or rename what is already on disk.
+    job = _job(owner, company='Wienerberger AG', title='AI Solutions Engineer')
+    cv_dir = workspace/'CVs'; cv_dir.mkdir()
+    old = cv_dir/f'{applicant_name(owner)}-CV-Wienerberger-Ag-AI-Solutions-Engineer.tex'
+    old.write_text('old cv', encoding='utf-8')
+    assert latest_generated_sources(job, owner, 'anschreiben')[0] == str(old)
+    assert [path.name for path in cv_dir.iterdir()] == [old.name]
+
+
 def test_renaming_updates_a_finished_tasks_paths_zip_and_copy_text(client, owner, workspace):
     job = _job(owner); saved = _generate(workspace, job, owner)
     archive = BytesIO()

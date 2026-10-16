@@ -27,8 +27,7 @@ from django.contrib.auth import get_user_model
 
 from jobradar.models import JobLead
 from jobradar.services import cv_tasks
-from jobradar.services.cv_generator import _edit_sidecar, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, is_cv_owner, latest_generated_sources, load_candidate_evidence, user_templates, validate_model_capability
-from jobradar.services.draft_chat import default_draft_choice
+from jobradar.services.cv_generator import _edit_sidecar, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, user_templates, validate_model_capability
 from jobradar.services.prompt_builder import build_candidate_profile_text, user_profile_settings
 
 logger = logging.getLogger(__name__)
@@ -117,7 +116,7 @@ def _gate(job, user):
             if not letters:
                 return f'No {language} letter template is stored on this account.', [], '', None
             variant['letter_template'] = _letter_template(letters, variant['letter_type'])
-    option, effort, _ = default_draft_choice(available_model_options())
+    option, effort = cv_default_choice(available_model_options())  # TASK-303 AC1
     if not option:
         return 'No document model is available on this machine.', [], '', None
     choice = {'provider': option['provider'], 'model': option['key'], 'effort': effort, 'speed': 'normal'}

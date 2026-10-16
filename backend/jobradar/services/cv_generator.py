@@ -185,6 +185,27 @@ def available_model_options():
     return options
 
 
+# TASK-303 AC1: owner decision 2026-10-16 -- CVs and automatic preparation run GPT-6.1-Sol at high
+# (xhigh measured 357 s for one CV). One place, so a later setting replaces these two constants.
+CV_DEFAULT_MODEL=('openai','gpt-6.1-sol')
+CV_DEFAULT_EFFORT='high'
+_EFFORT_ORDER=['minimal','low','medium','high','xhigh','max','ultra']
+
+
+def cv_default_choice(options):
+    """(option, effort) for CV generation and automatic preparation: CV_DEFAULT_MODEL when offered,
+    else the newest Codex model (options arrive newest first), else the first non-Ollama option;
+    at the highest declared effort not above CV_DEFAULT_EFFORT, else the model's own default."""
+    option=(next((o for o in options if (o['provider'],o['key']) == CV_DEFAULT_MODEL),None)
+            or next((o for o in options if o['provider'] == 'openai'),None)
+            or next((o for o in options if o['provider'] != 'ollama'),None))
+    if not option:
+        return None,''
+    ceiling=_EFFORT_ORDER.index(CV_DEFAULT_EFFORT)
+    allowed=[e for e in option.get('efforts',[]) if e in _EFFORT_ORDER and _EFFORT_ORDER.index(e) <= ceiling]
+    return option,max(allowed,key=_EFFORT_ORDER.index,default=option.get('default_effort',''))
+
+
 def _discover_model_options():
     options=codex_model_options()
     options += claude_model_options()
@@ -581,6 +602,7 @@ def generation_preview(job, user=None):
     # one language only, the other language is not an option to land on.
     selected_cv=language if language in templates else next(iter(templates), '')
     selected_letter=next(iter(templates[selected_cv]['letters']), '') if selected_cv else ''
+    default_option,default_effort=cv_default_choice(available_model_options())
     return {
         'language': language,
         'language_label': 'German' if language == 'de' else 'English',
@@ -599,6 +621,8 @@ def generation_preview(job, user=None):
         'cvs': cvs,
         'letters': letters,
         'models': available_model_options(),
+        # TASK-303 AC1: what the pickers start on when this browser has no remembered pick.
+        'default_pick': {'provider':default_option['provider'],'model':default_option['key'],'effort':default_effort} if default_option else None,
         'configured': bool(settings.CODEX_CV_ENABLED and workspace and workspace.is_dir() and templates),
         # TASK-99a AC6: why the Generate button is off, in the order the user can act on. The
         # capability flag is checked by the endpoint itself, so reaching here means it is granted.
@@ -631,8 +655,23 @@ _GENDER_MARKER=re.compile(
     re.IGNORECASE)
 
 
-def _target_slug(job):
-    text=f'{job.company}-{_GENDER_MARKER.sub(" ", job.title or "")}'
+# TASK-300: legal forms are not part of how anyone names the company, and slugify's capitalising
+# turned AG into "Ag". Matched as whole tokens only (never inside a word such as Agrana or Segula);
+# dotted forms keep their dots so e.U. is not confused with a plain "EU".
+_LEGAL_FORM=re.compile(
+    r'(?<![\w.])(?:&\s*Co\.?(?:\s*(?:KGaA|KG|OHG|OG))?|g?GmbH|Ges\.?\s?m\.?\s?b\.?\s?H\.?|mbH|AG|SE|KGaA|KG|OHG|OG'
+    r'|e\.\s?[UKV]\.|Inc\.?|Ltd\.?|LLC|LLP|plc|Corp\.?|S\.A\.|S\.p\.A\.|S\.r\.l\.|B\.V\.|N\.V\.|Co\.)(?!\w)',
+    re.IGNORECASE)
+
+
+def _company_without_legal_form(company):
+    stripped=_LEGAL_FORM.sub(' ',company or '').strip(' ,&-')
+    return stripped or company or ''
+
+
+def _target_slug(job, keep_legal_form=False):
+    company=job.company if keep_legal_form else _company_without_legal_form(job.company)
+    text=f'{company}-{_GENDER_MARKER.sub(" ", job.title or "")}'
     # TASK-270 AC2: slugify lowercases, so the casing of AI is restored from the title's own words.
     # "ai" alone is always AI; a mixed-case word the title writes with AI (GenAI, OpenAI) keeps it;
     # a word that merely contains the letters (Mainz, Training) has no uppercase AI and is untouched.
@@ -1179,7 +1218,8 @@ def latest_generated_sources(job, user=None, letter_key=''):
         metadata_cv=metadata_cv or (cv if cv and Path(cv).is_file() else None)
         metadata_letter=metadata_letter or (letter if letter and Path(letter).is_file() else None)
     # Exact legacy names remain readable after the human-facing id is removed.
-    legacy_targets=[_target_slug(job),_previous_target_slug(job),slugify(f'{job.company}-{job.title}')[:90] or f'job-{job.id}']
+    # TASK-300 AC2: files named before legal forms were dropped are found, not renamed.
+    legacy_targets=[_target_slug(job),_target_slug(job,keep_legal_form=True),_previous_target_slug(job),slugify(f'{job.company}-{job.title}')[:90] or f'job-{job.id}']
     legacy_cv=[f'{applicant}-CV-{target}.tex' for target in legacy_targets]
     legacy_letter=[f'{applicant}-Letter-{target}.tex' for target in legacy_targets]
     def latest(directories, names=(), pattern=None):
@@ -1962,7 +2002,10 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
             properties['letter_tex']={'type':'string'}
             required.append('letter_tex')
         schema={'type':'object','properties':properties,'required':required,'additionalProperties':False}
-        layout_context=_layout_context(output, source_cv, source_letter, revision_instructions) if revision_instructions else ''
+        # TASK-303 AC4: only the documents being readjusted. A CV-only readjustment used to pass the
+        # job's letter too, and a letter whose PDF is not beside its TeX (the owner renames PDFs in
+        # Explorer) failed the whole run before any model call -- the two GPT-6.1 failures of 2026-10-15.
+        layout_context=_layout_context(output, source_cv if create_cv else None, source_letter if create_letter else None, revision_instructions) if revision_instructions else ''
         report(10, 'Generating CV and motivation letter' if create_cv and create_letter else 'Generating CV' if create_cv else 'Generating motivation letter')
         base_prompt=_revision_prompt(job, cv_name, letter_name, cv_key, letter_language, create_letter, revision_instructions, create_cv, layout_context, correction_image_name) if is_revision else _prompt(job, profile, cv_name, letter_name, cv_key, letter_language, create_letter, revision_instructions, create_cv, layout_context, correction_image_name, short_message)
         generated_files=([cv_name] if create_cv else []) + ([letter_name] if create_letter else [])

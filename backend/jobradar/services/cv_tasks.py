@@ -119,7 +119,7 @@ def _task_timing(provider, model, effort, speed, create_cv, create_letter, is_re
     # the edit. Estimates were consequently ~2x optimistic, which was the original complaint.
     # Every remaining sample lands within ~7% of these constants; _stage_history still overrides
     # them with measured medians per (provider, model, effort, speed) once samples accumulate.
-    effort_factor={'low':.75,'medium':1,'high':1.3,'xhigh':1.6,'max':1.8,'ultra':2}.get(effort,1)
+    effort_factor=_EFFORT_FACTOR.get(effort,1)
     revision_factor=1.55 if is_revision else 1
     # ponytail: coarse name-substring buckets -- local runtimes are slower than cloud, big models slower
     # than small ones. Only the model call scales; LaTeX compile time is local and provider-independent.
@@ -134,8 +134,87 @@ def _task_timing(provider, model, effort, speed, create_cv, create_letter, is_re
     if create_cv: plan += ['compiling_cv','cv_compiled']
     if create_letter: plan += ['compiling_letter','letter_compiled']
     plan += ['saving']
-    # ponytail: first run uses conservative timings; persist samples only if estimates must survive server restarts.
-    return plan,defaults,(provider,model,effort,speed,create_cv,create_letter,is_revision)
+    key=(provider,model,effort,speed,create_cv,create_letter,is_revision)
+    learned,history=_learned_timing(key)
+    if learned:
+        defaults.update(learned)
+    else:
+        # TASK-303 AC2: no run of this model at all. Measured 2026-10-16, GPT-6.1-Sol took 357 s against
+        # the 83 s these constants (calibrated on GPT-5.6) gave, so an unmeasured model is padded.
+        defaults['generating']*=NO_HISTORY_FACTOR
+    return plan,defaults,key
+
+
+# TASK-303 AC2: estimates come from cv-benchmarks.jsonl -- every finished task already appends one
+# row -- grouped by route, provider, model, effort, speed and document mix, successful uncached runs
+# only, median of the most recent BENCHMARK_RUNS. Read from disk, so they survive restarts.
+_EFFORT_FACTOR={'low':.75,'medium':1,'high':1.3,'xhigh':1.6,'max':1.8,'ultra':2}
+BENCHMARK_RUNS=10
+NO_HISTORY_FACTOR=1.5
+_history_cache={'stamp':None,'rows':[]}
+
+
+def _benchmark_rows():
+    workspace=getattr(settings,'CODEX_CV_WORKSPACE','') or ''
+    path=Path(workspace)/'.dachapply-cache'/'cv-benchmarks.jsonl'
+    try:
+        stat=path.stat() if workspace else None
+    except OSError:
+        stat=None
+    stamp=(str(path),stat.st_mtime_ns,stat.st_size) if stat else None
+    if stamp != _history_cache['stamp']:
+        rows=[]
+        try:
+            lines=path.read_text(encoding='utf-8').splitlines() if stat else []
+        except OSError:
+            lines=[]
+        for line in lines:
+            try:
+                row=json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row,dict) and row.get('status') == 'ready' and not row.get('cache_hit') and isinstance(row.get('stage_seconds'),dict):
+                rows.append(row)
+        _history_cache.update(stamp=stamp,rows=rows)
+    return _history_cache['rows']
+
+
+def _learned_timing(key):
+    """({stage: seconds}, history) for a model task key. history is 'measured' (this exact group),
+    'other_effort' (same model, route, speed and mix at other efforts, scaled by effort) or 'none' --
+    never another model's runs."""
+    provider,model,effort,speed,create_cv,create_letter,is_revision=key
+    route='revision' if is_revision else 'generation'
+    wanted=(route,provider,model,speed,bool(create_cv),bool(create_letter))
+    group=[row for row in _benchmark_rows() if (row.get('route'),row.get('provider'),row.get('model'),row.get('speed'),bool(row.get('create_cv')),bool(row.get('create_letter'))) == wanted]
+    exact=[row for row in group if row.get('effort') == effort]
+    rows,history=(exact,'measured') if exact else (group,'other_effort') if group else ([],'none')
+    stages={}
+    for row in rows[-BENCHMARK_RUNS:]:
+        # Only the model call scales with effort; compile and save are local work.
+        scale=_EFFORT_FACTOR.get(effort,1)/_EFFORT_FACTOR.get(row.get('effort'),1) if history == 'other_effort' else 1
+        for stage,seconds in row['stage_seconds'].items():
+            if isinstance(seconds,(int,float)):
+                stages.setdefault(stage,[]).append(seconds*scale if stage == 'generating' else seconds)
+    return {stage:median(values) for stage,values in stages.items()},history
+
+
+def estimate_seconds(provider, model, effort, speed, create_cv=True, create_letter=True, is_revision=False):
+    """TASK-303 AC3: {'seconds', 'history'} a model picker shows for one choice of settings -- the
+    same numbers a task started with them begins its countdown from."""
+    plan,defaults,key=_task_timing(provider,model,effort,speed,create_cv,create_letter,is_revision)
+    return {'seconds':round(sum(max(.5,defaults.get(stage,1)) for stage in plan)),'history':_learned_timing(key)[1]}
+
+
+def with_expected_seconds(options):
+    """TASK-303 AC3: each option plus expected_seconds[route][documents]['effort|speed'] =
+    {'seconds', 'history'}, so a picker shows the duration of the exact settings chosen."""
+    mixes={'both':(True,True),'cv':(True,False),'letter':(False,True)}
+    return [{**option,'expected_seconds':{route:{mix:{f'{effort}|{speed}':estimate_seconds(option['provider'],option['key'],effort,speed,cv,letter,route == 'revision')
+                                                      for effort in option.get('efforts',[]) for speed in (('normal','fast') if option.get('fast_tier') else ('normal',))}
+                                                 for mix,(cv,letter) in mixes.items()}
+                                          for route in ('generation','revision')}}
+            for option in options]
 
 
 def _stage_seconds(task, stage):
@@ -148,7 +227,9 @@ def _record_stage(task, now):
     elapsed=now-task.get('_stage_started_at',now)
     if stage in task.get('_stage_plan',()):
         task.setdefault('_stage_times',{})[stage]=round(elapsed,2)
-    if stage in task.get('_stage_plan',()) and elapsed >= .5:
+    # TASK-303: model tasks learn from cv-benchmarks.jsonl (successful runs only); this in-memory
+    # history, which also counts the stage a failed run died in, stays for compile/literal routes.
+    if stage in task.get('_stage_plan',()) and elapsed >= .5 and len(task.get('_estimate_key') or ()) != 7:
         samples=_stage_history.setdefault((task['_estimate_key'],stage), [])
         samples.append(elapsed)
         del samples[:-10]
@@ -172,6 +253,9 @@ def _benchmark_row(task, now):
             'actual_seconds':round(max(0,now-task.get('_created_at',now)),2),
             'cache_hit':'cached' in (task.get('_stage_plan') or ()),
             'stage_seconds':task.get('_stage_times') or {},
+            # TASK-303 AC4: a failure's own reason, so a failed run can be diagnosed after the 1 h
+            # task record is gone (two GPT-6.1 revisions failed on 2026-10-15 with nothing left).
+            **({'error':str(task.get('error') or '')[:300]} if task.get('status') == 'failed' else {}),
             'recorded_at':round(time.time(),3)}
 
 
@@ -476,7 +560,11 @@ def _run_literal(task_id, job_id, user_id, source_cv, source_letter, instruction
     plan,defaults,estimate_key=_task_timing(fallback['provider'],fallback['model'],fallback['effort'],fallback['speed'],fallback['create_cv'],fallback['create_letter'],True)
     with _lock:
         if task_id in _tasks:
-            _tasks[task_id].update(_stage_plan=plan,_stage_defaults=defaults,_estimate_key=estimate_key)
+            task=_tasks[task_id]
+            task.update(_stage_plan=plan,_stage_defaults=defaults,_estimate_key=estimate_key,_estimate_history=_learned_timing(estimate_key)[1])
+            # TASK-303: the estimate was the literal route's (the 8.5 s in the failed rows of 2026-10-15);
+            # the run now ahead is a full optimization: time already spent plus that route's estimate.
+            task['_initial_eta']=time.monotonic()-task['_created_at']+sum(_stage_seconds(task,stage) for stage in plan)
     _run(task_id,job_id,user_id,cancel_event=cancel_event,route_reason=reason,**fallback)
 
 
@@ -583,6 +671,7 @@ def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, p
     with _lock:
         _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_tex_parts':{},'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_config':{'profile':profile,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'create_cv':create_cv,'provider':provider,'model':model,'effort':effort,'speed':speed,'generation_options':generation_options},'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'_stage_times':{},'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in plan)
+        _tasks[task_id]['_estimate_history']=_learned_timing(estimate_key)[1]
     # ponytail: one local CLI agent per task; add a concurrency cap if large batches exhaust the workstation.
     Thread(target=_run, args=(task_id,job_id,user_id,profile,cv_key,letter_key,create_letter,provider,model,effort,speed,source_cv,source_letter,revision_instructions,create_cv,correction_image,base_templates,replace_existing,cancel_event,auto_clipboard,'',generation_options,mark_ready,on_finish), name=f'cv-agent-{task_id[:8]}', daemon=True).start()
     return task_id
@@ -599,6 +688,8 @@ def get_cv_task(task_id, user_id):
         public={key:value for key,value in task.items() if key not in ('archive','user_id','updated_at') and not key.startswith('_')}
         step_completed,step_total,step_label=_step_progress(task)
         public.update(progress=_display_progress(task,now),elapsed_seconds=math.ceil(max(0,end-task['_created_at'])),estimated_seconds_remaining=math.ceil(_task_eta(task,now)),step_label=step_label,step_completed=step_completed,step_total=step_total)
+        if task.get('_estimate_history'):
+            public['estimate_history']=task['_estimate_history']  # TASK-303 AC2: 'none' = no timing for this model yet
         return public
 
 

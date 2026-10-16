@@ -11,6 +11,17 @@ export function modelSpeed(model:any){return model?.fast_tier?'fast':'normal'}
 const DRAFT_EFFORTS=['minimal','low','medium','high','xhigh']
 export function draftEffort(model:any){return (model?.efforts||[]).filter((e:string)=>DRAFT_EFFORTS.includes(e)).sort((a:string,b:string)=>DRAFT_EFFORTS.indexOf(b)-DRAFT_EFFORTS.indexOf(a))[0]||modelEffort(model)}
 
+// TASK-303 AC3: the duration the backend learned for these exact settings (expected_seconds, from
+// cv-benchmarks.jsonl). Pickers whose options carry none -- drafts, evaluation -- have no measurements.
+export type Timing={route?:'generation'|'revision';documents?:'both'|'cv'|'letter'}
+export function expectedDuration(model:any, effort:string, speed:string, timing:Timing={}){
+  const estimate=model?.expected_seconds?.[timing.route||'generation']?.[timing.documents||'both']?.[`${effort}|${speed}`]
+  if(!estimate||estimate.history==='none') return 'no timing yet'
+  const seconds=Number(estimate.seconds)
+  const text=seconds<90?`~${Math.max(5,Math.round(seconds/5)*5)} s`:`~${Math.round(seconds/60)} min`
+  return estimate.history==='other_effort'?`${text} (from other effort levels)`:text
+}
+
 // A model with no fast_tier (e.g. every Anthropic entry today) may only run at normal speed.
 export function comboValid(model:any, effort:string, speed:string){
   if(!model) return false

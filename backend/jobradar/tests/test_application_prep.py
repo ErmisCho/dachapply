@@ -159,8 +159,8 @@ def test_transition_into_to_apply_prepares_variants_as_drafts(client, owner, gen
     variants, payload = _state(client, job)
     assert set(variants) == {'cv-en', 'cv-de', 'letter-en', 'letter-de'}
     assert all(variant['status'] == 'ready' and Path(next(iter(variant['files'].values()))).is_file() for variant in variants.values())
-    # Default model: the newest Codex at xhigh (draft_chat.default_draft_choice), never the clipboard.
-    assert {(call['provider'], call['model'], call['effort']) for call in generator['calls']} == {('openai', 'gpt-6.1', 'xhigh')}
+    # TASK-303 AC1: cv_default_choice -- gpt-6.1-sol is not offered here, so the newest Codex at high, never xhigh.
+    assert {(call['provider'], call['model'], call['effort']) for call in generator['calls']} == {('openai', 'gpt-6.1', 'high')}
     # EN/DE variants of one job get distinguishable names; German letters use the Anschreiben template.
     assert {call['key']: call.get('name_suffix') for call in generator['calls']}['cv-de'] == 'DE'
     assert variants['letter-de']['letter_template'] == 'anschreiben' and variants['letter-en']['letter_template'] == 'motivation_letter'

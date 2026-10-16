@@ -48,7 +48,7 @@ from .services.draft_chat import ChatTurn, generate_followup_draft, profile_draf
 from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, rename_generated_artifact, reveal_artifact_folder, validate_model_capability
 from .services import cv_tasks
-from .services.cv_tasks import _clipboard_parts, _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, rename_task_paths, start_cv_compile_task, start_cv_literal_task, start_cv_noop_task, start_cv_revision, start_cv_task
+from .services.cv_tasks import _clipboard_parts, _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, rename_task_paths, start_cv_compile_task, start_cv_literal_task, start_cv_noop_task, start_cv_revision, start_cv_task, with_expected_seconds
 from .services.literal_edits import deterministic_edit_pairs, local_literal_model
 from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
 from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
@@ -2098,6 +2098,7 @@ def cv_generation_preview(request, job_id):
     if not job:
         return Response({'detail':'Job not found.'}, status=404)
     preview=generation_preview(job, request.user)
+    preview['models']=with_expected_seconds(preview.get('models') or [])  # TASK-303 AC3
     preview['clipboard_tex']=_clipboard_payload(preview['artifacts'],job.url)
     preview['clipboard_tex_parts']=_clipboard_parts(preview['artifacts'],job.url)
     return Response(preview)
