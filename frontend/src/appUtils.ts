@@ -739,3 +739,32 @@ export function splitInterviewRows<T extends {status:string}>(rows:T[],shown:boo
   if(!shown)return {interviews:[],main:rows}
   return {interviews:rows.filter(r=>r.status==='interview'),main:rows.filter(r=>r.status!=='interview')}
 }
+
+// TASK-302: the posting's sections, read from headings in the accepted text. Nothing stores a
+// structured copy: the TASK-260 headed extract only becomes the accepted text when a job had none,
+// so a job whose text was fetched or pasted first keeps the page text. Recognised: the TASK-260
+// headings plus common English/German posting headings, alone on a line or as "Heading: text".
+// ponytail: fixed heading list; a posting with unusual headings gets the "no structured version" note.
+const POSTING_SECTIONS:[string,RegExp][]=[
+  ['Overview',/^(overview|about (the )?(role|position|job|us|company)|the role|über uns|die stelle|job description|stellenbeschreibung)$/],
+  ['Responsibilities',/^(tasks ?(\/|and|&) ?responsibilities|(key )?responsibilities|your (tasks|responsibilities|role|mission|impact)|what you('ll| will) do|(ihre |deine )?aufgaben|(ihr |dein )?aufgabengebiet|das erwartet (dich|sie)|tätigkeiten)$/],
+  ['Requirements',/^(required experience|requirements|(required )?qualifications|must[- ]haves?|your (profile|skills)|what you (bring|need|have)|who you are|anforderungen|(ihr |dein )?profil|qualifikationen?|das (bringst du|bringen sie) mit|was (du|sie) mitbring(st|en))$/],
+  ['Nice to have',/^(preferred qualifications|nice[- ]to[- ]haves?|bonus( points)?|wünschenswert|von vorteil)$/],
+  ['Benefits',/^(benefits|perks|what we offer|we offer|our offer|why (join )?us|wir bieten( dir| ihnen)?|unser angebot|das bieten wir( dir| ihnen)?|was wir (dir |ihnen )?bieten)$/],
+  ['Pay',/^(pay ?\/ ?compensation|pay|salary|compensation|gehalt|vergütung)$/],
+  ['Location / work mode',/^(location ?\/ ?work mode|location|work mode|arbeitsort|standort)$/],
+  ['Other details',/^(other details( \(.*\))?|application process|how to apply|bewerbung(sprozess)?|kontakt|contact)$/],
+]
+export type PostingSection={title:string;lines:string[]}
+export function postingSections(text:string):PostingSection[]{
+  const sections:PostingSection[]=[];let current:PostingSection|null=null
+  for(const raw of (text||'').split(/\r?\n/)){
+    const line=raw.replace(/\*\*|__/g,'').replace(/^#+\s*/,'').trim();if(!line)continue
+    const colon=line.indexOf(':');const head=(colon<0?line:line.slice(0,colon)).trim().toLowerCase();const rest=colon<0?'':line.slice(colon+1).trim()
+    const title=head.length<=60?POSTING_SECTIONS.find(([,pattern])=>pattern.test(head))?.[0]:undefined
+    if(title){current=sections.find(s=>s.title===title)||null;if(!current)sections.push(current={title,lines:[]});if(rest)current.lines.push(rest);continue}
+    current?.lines.push(line.replace(/^[-*•·–]\s+/,''))
+  }
+  const filled=sections.filter(s=>s.lines.length)
+  return filled.length>=2?filled:[]
+}
