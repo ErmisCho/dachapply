@@ -15,7 +15,7 @@ from django.contrib.auth import get_user_model
 from django.db import close_old_connections
 
 from jobradar.models import ApplicationNote, JobLead, UserProfile
-from jobradar.services.cv_generator import GenerationCancelled, RecoverableGenerationError, _filename_label, _is_sent, _letter_label, _sent_paths, applicant_name, generate_cv_package, latest_generated_sources, preference_exclusion, preferred_names, read_revision_sources, recompile_generated_package, rename_generated_artifact
+from jobradar.services.cv_generator import GenerationCancelled, RecoverableGenerationError, _artifact_metadata_path, _filename_label, _is_sent, _letter_label, _sent_paths, applicant_name, generate_cv_package, latest_generated_sources, preference_exclusion, preferred_names, read_revision_sources, recompile_generated_package, rename_generated_artifact
 from jobradar.services.literal_edits import NotLiteral, gate_literal_edits, literal_report, translate_literal_edits
 from jobradar.services.posting_fetch import fetch_posting_text
 
@@ -268,6 +268,16 @@ def mark_ready_to_submit(job_id):
         return 0
 
 
+def has_prepared_drafts(job_id, user_id):
+    """TASK-280.3: a job with automatically prepared variants reaches Ready to submit only when the
+    owner selects its final package, so no generation, readjustment or recompile may promote it."""
+    path=_artifact_metadata_path(settings.CODEX_CV_WORKSPACE,job_id,user_id)
+    try:
+        return bool(json.loads(path.read_text(encoding='utf-8')).get('preparation',{}).get('variants'))
+    except (AttributeError,OSError,TypeError,ValueError):
+        return False
+
+
 def _clipboard_contents(artifacts):
     files=[Path(artifacts[key]) for key in ('cv_tex','letter_tex') if artifacts.get(key) and Path(artifacts[key]).is_file()]
     contents=[(path.name,path.read_text(encoding='utf-8')) for path in files]
@@ -391,7 +401,7 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         if 'base_templates' in artifacts:
             _record_base_templates(job,artifacts['base_templates'])
         # TASK-280.2: automatic To-apply drafts are not a chosen package, so they leave the status alone.
-        if mark_ready:
+        if mark_ready and not has_prepared_drafts(job.id,user_id):
             mark_ready_to_submit(job.id)
         report=artifacts.get('report')
         if revision_instructions and isinstance(report,dict):
@@ -427,7 +437,8 @@ def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, sou
         if cancel_event.is_set():
             raise GenerationCancelled
         clipboard_tex=_clipboard_payload(artifacts,job.url)
-        mark_ready_to_submit(job.id)
+        if not has_prepared_drafts(job.id,user_id):  # TASK-280.3
+            mark_ready_to_submit(job.id)
         _update(task_id,status='ready',progress=100,stage='Ready',archive=archive,filename=filename,artifacts=artifacts,report=task_report,clipboard_tex=clipboard_tex,clipboard_tex_parts=_clipboard_parts(artifacts,job.url),clipboard_copied=bool(clipboard_tex and _copy_to_clipboard(clipboard_tex)))
     except GenerationCancelled:
         _update(task_id,status='cancelled',stage='Cancelled',error='')
