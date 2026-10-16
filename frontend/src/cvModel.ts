@@ -16,10 +16,11 @@ export function draftEffort(model:any){return (model?.efforts||[]).filter((e:str
 export type Timing={route?:'generation'|'revision';documents?:'both'|'cv'|'letter'}
 export function expectedDuration(model:any, effort:string, speed:string, timing:Timing={}){
   const estimate=model?.expected_seconds?.[timing.route||'generation']?.[timing.documents||'both']?.[`${effort}|${speed}`]
-  if(!estimate||estimate.history==='none') return 'no timing yet'
+  if(!estimate||!Number(estimate.seconds)) return 'no timing yet'
   const seconds=Number(estimate.seconds)
   const text=seconds<90?`~${Math.max(5,Math.round(seconds/5)*5)} s`:`~${Math.round(seconds/60)} min`
-  return estimate.history==='other_effort'?`${text} (from other effort levels)`:text
+  // Owner 2026-10-16: a padded default is still useful without runs of this model; say how rough it is.
+  return estimate.history==='other_effort'?`${text} (from other effort levels)`:estimate.history==='none'?`${text} (rough guess: no runs of this model yet)`:text
 }
 
 // A model with no fast_tier (e.g. every Anthropic entry today) may only run at normal speed.
