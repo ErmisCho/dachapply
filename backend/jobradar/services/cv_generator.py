@@ -1912,13 +1912,24 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
             try:
                 cv_tex=generated.get('cv_tex','')
                 letter_tex=generated.get('letter_tex','')
-                def valid_tex(content):
+                # Each check names what failed: the reason goes into the repair prompt, and a bare
+                # "invalid" gave the model nothing to fix (three identical failures on 2026-10-15).
+                def tex_problem(label, content):
                     end='\\end{document}'
-                    return all(marker in content for marker in ('\\documentclass','\\begin{document}',end)) and not content.split(end,1)[1].strip()
-                if create_cv and not valid_tex(cv_tex) or create_letter and not valid_tex(letter_tex):
-                    raise ValueError
-                if not all(isinstance(generated.get(key), list) for key in ('changed_files','main_changes','unsupported_requirements_not_claimed')) or not isinstance(generated.get('confirmations'), dict):
-                    raise ValueError
+                    if not content.strip():
+                        return f'{label} is empty'
+                    missing=[marker for marker in ('\\documentclass','\\begin{document}',end) if marker not in content]
+                    if missing:
+                        return f'{label} ({len(content)} chars) is missing {", ".join(missing)}; it starts with {content[:120]!r}'
+                    if content.split(end,1)[1].strip():
+                        return f'{label} has text after \\end{{document}}: {content.split(end,1)[1].strip()[:200]!r}'
+                    return ''
+                problems=[problem for problem in (create_cv and tex_problem('cv_tex', cv_tex), create_letter and tex_problem('letter_tex', letter_tex)) if problem]
+                problems+=[f'{key} is not a list' for key in ('changed_files','main_changes','unsupported_requirements_not_claimed') if not isinstance(generated.get(key), list)]
+                if not isinstance(generated.get('confirmations'), dict):
+                    problems.append('confirmations is not an object')
+                if problems:
+                    raise ValueError('; '.join(problems))
             except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
                 raise RecoverableGenerationError('The selected model returned invalid application documents.', str(exc) or 'The structured response or LaTeX document was invalid.') from None
             if create_cv:

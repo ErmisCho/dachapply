@@ -1230,6 +1230,8 @@ def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings
     invalid_outputs.append(True)
     generate_cv_package(job, 'Factual profile 📌', 'de', '', False, 'openai', 'gpt-5.5', 'high', user_id=user.id)
     assert sum('AUTOMATIC REPAIR ATTEMPT' in prompt for prompt in prompts)==repairs+2
+    # The repair prompt names what was wrong instead of a bare "invalid".
+    assert any('cv_tex (6 chars) is missing' in prompt and 'changed_files is not a list' in prompt for prompt in prompts)
     generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'anthropic', 'sonnet', 'medium', 'normal', user_id=user.id)
     generate_cv_package(job, 'Factual profile 📌', 'de', 'motivationsschreiben', True, 'ollama', 'qwen', 'default', 'normal', user_id=user.id)
     cv_only_progress=[]
