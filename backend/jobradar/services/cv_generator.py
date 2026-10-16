@@ -2018,6 +2018,11 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
 
         def generate(model_prompt):
             nonlocal wrote_generated_tex
+            # Codex 0.162 on Windows rejects every shell command under --sandbox read-only ("blocked by
+            # policy", measured 2026-10-16), so the model could not read the copied files and returned
+            # empty cv_tex/letter_tex. The files go into the prompt instead; local providers already get them.
+            if provider not in ('lmstudio','ollama'):
+                model_prompt+=''.join(f'\n\nCONTENT OF {name} (read-only copy):\n<<<FILE\n{(output/name).read_text(encoding="utf-8")}\nFILE>>>' for name in generated_files if (output/name).is_file())
             generated=run_structured_model(model_prompt, schema, provider, model, effort, speed, workdir=output,
                                            cancelled=cancelled, read_tools=True, model_option=model_option,
                                            image_path=output/correction_image_name if correction_image_name else None,
