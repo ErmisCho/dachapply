@@ -1840,8 +1840,11 @@ def test_latest_generated_artifacts_is_empty_when_nothing_was_generated(tmp_path
     assert cv_generator.latest_generated_artifacts(job,'english')=={}
 
 
-def test_task_timing_estimate_varies_with_provider_and_model():
+def test_task_timing_estimate_varies_with_provider_and_model(settings, tmp_path):
     from jobradar.services import cv_tasks
+
+    # TASK-303: an empty workspace, so benchmark rows other tests wrote cannot replace the constants.
+    settings.CODEX_CV_WORKSPACE=str(tmp_path)
 
     def generation(provider, model):
         return cv_tasks._task_timing(provider, model, 'medium', 'normal', True, True, False)[1]['generating']

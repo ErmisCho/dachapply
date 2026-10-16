@@ -1,7 +1,7 @@
 import {describe,expect,it} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
 import {ModelTuning} from './App'
-import {draftEffort} from './cvModel'
+import {draftEffort,expectedDuration} from './cvModel'
 
 const noop=()=>{}
 const render=(model:any)=>renderToStaticMarkup(<ModelTuning model={model} effort="low" speed="normal" onEffort={noop} onSpeed={noop}/>)
@@ -32,5 +32,25 @@ describe('draft effort default (TASK-293)',()=>{
     expect(draftEffort({efforts:['low','medium','xhigh','max','ultra'],default_effort:'low'})).toBe('xhigh')
     expect(draftEffort({efforts:['low','high','max'],default_effort:'low'})).toBe('high')
     expect(draftEffort({efforts:['default'],default_effort:'default'})).toBe('default')
+  })
+})
+
+describe('expected duration in every model picker (TASK-303)',()=>{
+  const timed={key:'gpt-6.1-sol',efforts:['medium','high'],fast_tier:'priority',expected_seconds:{
+    generation:{both:{'high|fast':{seconds:118,history:'measured'},'medium|fast':{seconds:40,history:'other_effort'},'high|normal':{seconds:300,history:'none'}},cv:{'high|fast':{seconds:357,history:'measured'}}},
+    revision:{cv:{'high|fast':{seconds:62,history:'measured'}}}}}
+  it('shows the learned time for the exact effort, speed, route and documents',()=>{
+    expect(expectedDuration(timed,'high','fast')).toBe('~2 min')
+    expect(expectedDuration(timed,'high','fast',{documents:'cv'})).toBe('~6 min')
+    expect(expectedDuration(timed,'high','fast',{route:'revision',documents:'cv'})).toBe('~60 s')
+    expect(expectedDuration(timed,'medium','fast')).toBe('~40 s (from other effort levels)')
+  })
+  it('says there is no timing instead of borrowing one',()=>{
+    expect(expectedDuration(timed,'high','normal')).toBe('no timing yet')
+    expect(expectedDuration({key:'draft-only',efforts:['low']},'low','normal')).toBe('no timing yet')
+  })
+  it('renders inside ModelTuning, also for a model with no effort choice',()=>{
+    expect(renderToStaticMarkup(<ModelTuning model={timed} effort="high" speed="fast" onEffort={noop} onSpeed={noop}/>)).toContain('Expected duration: ~2 min')
+    expect(render({key:'qwen',efforts:['default'],fast_tier:''})).toContain('Expected duration: no timing yet')
   })
 })

@@ -196,6 +196,14 @@ def test_model_saying_not_literal_falls_back(env):
     _assert_fell_back(env,env.revise('Make the summary more concise.'))
 
 
+def test_fallback_re_estimates_for_the_full_optimization_it_now_runs(env):
+    # TASK-303: the literal route's 8.5 s stayed the task's estimate (and benchmark row) after it fell
+    # back to a full model readjustment, which the 2026-10-15 GPT-6.1 rows recorded against 30 s.
+    env.use_model({'literal':False,'edits':[]})
+    task=env.revise('Make the summary more concise.')
+    assert cv_tasks._tasks[task['id']]['_initial_eta'] > 50
+
+
 def test_model_error_falls_back(env):
     env.use_model(cv_generator.RecoverableGenerationError('The selected model could not complete the request.','connection refused'))
     _assert_fell_back(env,env.revise('swap Docker for Podman'))
