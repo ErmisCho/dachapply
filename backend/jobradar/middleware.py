@@ -1,5 +1,5 @@
 import logging
-from threading import Thread
+from concurrent.futures import ThreadPoolExecutor
 
 from django.conf import settings
 from django.db import connection
@@ -11,6 +11,11 @@ from .services.analytics import VISITOR_COOKIE_MAX_AGE, VISITOR_COOKIE_NAME, cle
 from .services.demo_data import DEMO_USERNAME
 
 logger = logging.getLogger(__name__)
+
+# 2026-10-17: one Thread per request let usage writes pile up whenever Neon was slow (a local device
+# polls / every 2 s), taking all 8 pool connections ("couldn't get a connection after 10.00 sec").
+# One worker means usage recording holds at most one connection; a backlog only delays counters.
+_usage_writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix='usage-record')
 
 
 class UserUsageMiddleware:
@@ -68,7 +73,7 @@ class UserUsageMiddleware:
         # TASK-281: against remote Neon these ~8-10 round trips cost ~400 ms per request, so with
         # USAGE_RECORD_ASYNC (on when the DB pool is) they run after the response, off the request.
         if settings.USAGE_RECORD_ASYNC:
-            Thread(target=self.record_usage_in_background, args=(now, date, visitor_id, real_user_id), daemon=True).start()
+            _usage_writer.submit(self.record_usage_in_background, now, date, visitor_id, real_user_id)
         else:
             self.record_usage_values(now, date, visitor_id, real_user_id)
 
