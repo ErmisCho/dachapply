@@ -6,6 +6,7 @@ no pool object, nothing leaves the process. The latency criterion (AC1) and the 
 need the real Neon database and are measured there, not simulated here.
 """
 import threading
+import time
 from datetime import date as dt_date, datetime
 
 import dj_database_url
@@ -84,6 +85,28 @@ def test_usage_is_recorded_after_the_response_from_plain_values(db, settings, mo
     [(now, date, visitor_id, user_id)] = received
     assert isinstance(now, datetime) and isinstance(date, dt_date)
     assert (visitor_id, user_id) == (clean_visitor_id('a' * 32), user.pk)
+
+
+def test_background_usage_recording_holds_at_most_one_connection(db, settings, monkeypatch):
+    """2026-10-17: a Thread per request let slow usage writes take all 8 pool connections."""
+    settings.USAGE_RECORD_ASYNC = True
+    lock, running, peak, done = threading.Lock(), [0], [0], threading.Semaphore(0)
+
+    def slow_recorder(self, *args):
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        time.sleep(0.05)
+        with lock:
+            running[0] -= 1
+        done.release()
+
+    monkeypatch.setattr(UserUsageMiddleware, 'record_usage_values', slow_recorder)
+    client = APIClient()
+    for _ in range(6):
+        client.get('/api/auth/me/')
+    assert all(done.acquire(timeout=5) for _ in range(6))
+    assert peak[0] == 1
 
 
 def test_a_failing_background_recorder_is_swallowed(monkeypatch):
