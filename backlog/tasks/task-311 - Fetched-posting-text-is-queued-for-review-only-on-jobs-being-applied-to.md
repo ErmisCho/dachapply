@@ -1,10 +1,10 @@
 ---
 id: TASK-311
 title: Fetched posting text is queued for review only on jobs being applied to
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-18 22:36'
-updated_date: '2026-10-18 23:02'
+updated_date: '2026-10-18 23:18'
 labels: []
 dependencies: []
 ordinal: 312000
@@ -24,3 +24,9 @@ Owner (2026-10-19): 26 of 35 open jobs showed 'fetched text waiting'. The daily 
 - [x] #4 A manual fetch (POST job_source_text_live) still stages a differing copy on any status
 - [x] #5 Tests cover each branch and each fails when its logic is removed; backend suite passes
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-19: #294. Auto refresh limited to unapplied jobs; New/Reviewed never staged. Suite green in CI.
+<!-- SECTION:NOTES:END -->
