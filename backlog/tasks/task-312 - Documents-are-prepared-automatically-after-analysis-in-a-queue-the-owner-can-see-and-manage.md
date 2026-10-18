@@ -3,10 +3,10 @@ id: TASK-312
 title: >-
   Documents are prepared automatically after analysis, in a queue the owner can
   see and manage
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-18 22:36'
-updated_date: '2026-10-18 23:08'
+updated_date: '2026-10-18 23:18'
 labels: []
 dependencies: []
 ordinal: 311000
@@ -30,3 +30,9 @@ Owner (2026-10-19): 'as soon as I add jobs and analyze them, the relevant docume
 - [ ] #8 Tests cover the trigger (apply/maybe vs skip), the concurrency limit, restart re-queue and each queue action, each failing when its logic is removed; vitest, tsc and backend suite pass
 - [ ] #9 Verified on localhost: importing an evaluation for a job puts its documents in the queue page, they run one at a time, and finished items show their files
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-10-19: #295 merged; queue page live on localhost (PORR's ready CV listed with files + Review). AC9 open: a live import-to-queue run on a real job needs the owner's OK (real-data write).
+<!-- SECTION:NOTES:END -->
