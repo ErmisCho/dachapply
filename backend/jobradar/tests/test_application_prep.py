@@ -307,6 +307,48 @@ def test_endpoints_are_owner_only(owner, generator):
     assert api.post(f'/api/jobs/{job.id}/application-prep/retry/').status_code == 404
 
 
+CHOOSE = 'Choose which job text to use'
+
+
+def _resolve(client, job, text, django_capture_on_commit_callbacks):
+    with django_capture_on_commit_callbacks(execute=True):
+        assert client.patch(f'/api/jobs/{job.id}/source-text/', {'original_source_text': text}, format='json').status_code == 200
+
+
+@pytest.mark.parametrize('choice', ['current', 'fetched'])
+def test_choosing_the_job_text_on_a_to_apply_job_starts_preparation(client, owner, generator, django_capture_on_commit_callbacks, choice):
+    # TASK-306: PORR stayed on the stale choose-text reason after Use fetched.
+    job = _job(owner, requirements=_req('de'))
+    fetched = POSTING + ' Fetched again.'
+    JobLead.objects.filter(pk=job.pk).update(pending_source_text=fetched)
+    _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
+    assert generator['calls'] == [] and CHOOSE in _state(client, job)[1]['reason']
+    _resolve(client, job, POSTING if choice == 'current' else fetched, django_capture_on_commit_callbacks)
+    variants, payload = _state(client, job)
+    assert [call['key'] for call in generator['calls']] == ['cv-de'] and set(variants) == {'cv-de'}
+    assert CHOOSE not in (payload.get('reason') or '')
+
+
+@pytest.mark.parametrize('status', ['new', 'reviewed'])
+def test_choosing_the_job_text_outside_to_apply_starts_nothing(client, owner, generator, django_capture_on_commit_callbacks, status):
+    job = _job(owner, status, requirements=_req('de'))
+    JobLead.objects.filter(pk=job.pk).update(pending_source_text=POSTING + ' Fetched again.')
+    _resolve(client, job, POSTING, django_capture_on_commit_callbacks)
+    assert generator['calls'] == []
+
+
+def test_a_preparation_failure_never_fails_the_text_choice(client, owner, monkeypatch, django_capture_on_commit_callbacks):
+    job = _job(owner, 'to_apply', requirements=_req('de'))
+    called = []
+    def boom(*args, **kwargs):
+        called.append(args)
+        raise RuntimeError('boom')
+    monkeypatch.setattr(application_prep, 'prepare', boom)
+    _resolve(client, job, POSTING, django_capture_on_commit_callbacks)
+    job.refresh_from_db()
+    assert called and job.original_source_text == POSTING and job.pending_source_text == ''
+
+
 # --- the real generator: names, prompt, no overwrite --------------------------------------------
 
 def test_short_message_and_language_suffix_reach_the_real_generator_without_overwriting(db, workspace, monkeypatch, cv_assets):
