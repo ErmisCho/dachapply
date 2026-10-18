@@ -12,6 +12,8 @@ and every private peer the container can see.
 import gzip
 import io
 import ipaddress
+import json
+import re
 import socket
 import zlib
 from html.parser import HTMLParser
@@ -126,7 +128,7 @@ def fetch_posting_text(url):
         body = raw.decode(charset, errors='replace')
     except LookupError:
         body = raw.decode('utf-8', errors='replace')
-    text = extract_text(body)
+    text = posting_text(body)
     if not text:
         return _failed('The page returned no readable text — it may require JavaScript.')
     return {'ok': True, 'text': text, 'error': '', 'final_url': final_url}
@@ -136,30 +138,43 @@ class _TextParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.parts = []
+        self.json_ld = []
         self._skipping = 0
+        self._in_json_ld = False
 
     def handle_starttag(self, tag, attrs):
+        if tag == 'script' and (dict(attrs).get('type') or '').strip().lower() == 'application/ld+json':
+            self._in_json_ld = True
+            self.json_ld.append('')
         if tag in _SKIP_TAGS:
             self._skipping += 1
         elif tag in _BLOCK_TAGS:
             self.parts.append('\n')
 
     def handle_endtag(self, tag):
+        if tag == 'script':
+            self._in_json_ld = False
         if tag in _SKIP_TAGS:
             self._skipping = max(0, self._skipping - 1)
         elif tag in _BLOCK_TAGS:
             self.parts.append('\n')
 
     def handle_data(self, data):
-        if not self._skipping:
+        if self._in_json_ld:
+            self.json_ld[-1] += data
+        elif not self._skipping:
             self.parts.append(data)
 
 
-def extract_text(html):
+def _parse(html):
     parser = _TextParser()
     parser.feed(html)
     parser.close()
-    lines = [' '.join(line.split()) for line in ''.join(parser.parts).splitlines()]
+    return parser
+
+
+def _tidy(raw):
+    lines = [' '.join(line.split()) for line in raw.splitlines()]
     # One blank line between blocks, never a run of them: the dump has to stay readable enough that
     # a human can compare it against the stored text at a glance.
     kept = []
@@ -167,6 +182,99 @@ def extract_text(html):
         if line or (kept and kept[-1]):
             kept.append(line)
     return '\n'.join(kept).strip()
+
+
+def extract_text(html):
+    return _tidy(''.join(_parse(html).parts))
+
+
+def _job_postings(node):
+    """Every schema.org JobPosting in a JSON-LD value: a bare object, an array, or an @graph."""
+    if isinstance(node, list):
+        for item in node:
+            yield from _job_postings(item)
+    elif isinstance(node, dict):
+        kind = node.get('@type')
+        if kind == 'JobPosting' or (isinstance(kind, list) and 'JobPosting' in kind):
+            yield node
+        yield from _job_postings(node.get('@graph'))
+
+
+_UNITS = {'HOUR': 'Stunde', 'DAY': 'Tag', 'WEEK': 'Woche', 'MONTH': 'Monat', 'YEAR': 'Jahr'}
+
+
+def _salary_line(salary):
+    if not isinstance(salary, dict):
+        return ''
+    value = salary.get('value')
+    if not isinstance(value, dict):
+        value = {'value': value}
+    low, high, exact = value.get('minValue'), value.get('maxValue'), value.get('value')
+    if low not in (None, '') and high not in (None, ''):
+        amount = f'{low} - {high}'
+    elif low not in (None, ''):
+        amount = f'ab {low}'
+    elif high not in (None, ''):
+        amount = f'bis {high}'
+    elif exact not in (None, ''):
+        amount = str(exact)
+    else:
+        return ''
+    line = f"Gehalt: {amount} {salary.get('currency') or ''}".rstrip()
+    unit = str(value.get('unitText') or '').upper()
+    return f'{line} / {_UNITS.get(unit, unit.lower())}' if unit else line
+
+
+def _location_line(location):
+    places = location if isinstance(location, list) else [location]
+    names = []
+    for place in places:
+        address = place.get('address') if isinstance(place, dict) else None
+        if isinstance(address, dict):
+            country = address.get('addressCountry')
+            if isinstance(country, dict):
+                country = country.get('name')
+            town = ' '.join(str(address.get(k) or '') for k in ('postalCode', 'addressLocality')).strip()
+            name = ', '.join(str(p) for p in (address.get('streetAddress'), town, country) if p)
+        elif isinstance(address, str):
+            name = address
+        else:
+            name = place.get('name', '') if isinstance(place, dict) else ''
+        if name and name not in names:
+            names.append(name)
+    return f"Ort: {'; '.join(names)}" if names else ''
+
+
+def posting_text(html):
+    """TASK-305: the job ad, not the careers page around it.
+
+    A page carrying a schema.org JobPosting is read from that block -- title, the posting's own
+    description, pay and location -- so site menus and share buttons never reach the text. Any
+    page without one (or with JSON-LD that does not parse) keeps the whole-page dump.
+    """
+    parser = _parse(html)
+    for block in parser.json_ld:
+        try:
+            data = json.loads(block)
+        except ValueError:
+            continue
+        for posting in _job_postings(data):
+            description = posting.get('description')
+            if not isinstance(description, str):
+                continue
+            if '<' not in description:
+                # A tag-less description is a stripped list: PORR serves 'Tiefe.Setup, Betrieb ...'
+                # and 'aussieht.Dein Profil'. Break where a sentence ends hard against a capital.
+                # ponytail: heuristic -- also splits a rare 'Ing.Max'; drop it if that shows up.
+                description = re.sub(r'(?<=[a-zäöüß)][.!?:])(?=[A-ZÄÖÜ])', '<br>', description)
+            body = extract_text(description)
+            if not body:
+                continue
+            title = posting.get('title')
+            lines = [title.strip() if isinstance(title, str) else '', body,
+                     _salary_line(posting.get('baseSalary')), _location_line(posting.get('jobLocation'))]
+            return '\n\n'.join(line for line in lines if line)
+    return _tidy(''.join(parser.parts))
 
 
 def normalized(text):

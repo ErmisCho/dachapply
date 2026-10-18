@@ -8,6 +8,7 @@ accident, and the security tests can assert that a refused URL was never dialled
 import email.message
 import gzip
 import io
+import json
 import socket
 import urllib.request
 from types import SimpleNamespace
@@ -285,6 +286,70 @@ def test_script_and_style_content_never_reaches_the_text():
     assert 'dataLayer' not in text
     assert text.startswith('Senior Backend Engineer (m/w/d)')
     assert 'At least five years of professional Python.' in text
+
+
+# TASK-305: shaped like https://karriere.porr.at/jobboerse/job/8107 -- the posting sits between a
+# site menu and share buttons, and the real ad is in a schema.org JobPosting block (inside @graph,
+# description tag-less with &#13; between sections, exactly as PORR serves it).
+PORR_LD = {
+    '@context': 'https://schema.org/',
+    '@graph': [
+        {'@type': 'WebPage', 'breadcrumb': {'@type': 'BreadcrumbList', 'itemListElement': {'@type': 'ListItem', 'name': 'Jobbörse', 'position': '1'}}},
+        {
+            '@type': 'JobPosting',
+            'title': '(Senior) System Engineer Application Specialist*in',
+            'description': 'Deine Aufgaben&#13;Ownership: Du verantwortest Applikationen.Setup, Betrieb &amp; Troubleshooting: Du betreibst Applikationen.Dein Profil&#13;Ausbildung: HTL/FH/Uni im Bereich IT (z. B. Informatik).',
+            'baseSalary': {'@type': 'MonetaryAmount', 'currency': 'EUR', 'value': {'@type': 'QuantitativeValue', 'minValue': '4642', 'unitText': 'MONTH'}},
+            'jobLocation': {'@type': 'Place', 'name': 'Wien', 'address': {'@type': 'PostalAddress', 'addressCountry': 'AT', 'addressLocality': 'Wien', 'postalCode': '1100', 'streetAddress': 'Absberggasse 47'}},
+        },
+    ],
+}
+
+
+def _porr_page(ld):
+    return ('<html><head><script type="application/ld+json">' + json.dumps(ld) + '</script></head><body>'
+            '<nav><ul><li>Jobbörse</li><li>Initiativbewerbung</li><li>Lehre</li></ul>'
+            '<select><option>Österreich</option><option>Deutschland</option></select></nav>'
+            '<h1>(Senior) System Engineer Application Specialist*in</h1><p>Deine Aufgaben</p><p>Du betreibst Applikationen.</p>'
+            '<div><a>Teilen auf LinkedIn</a><a>Teilen auf XING</a><a>Teilen auf WhatsApp</a><a>Link kopieren</a></div>'
+            '</body></html>')
+
+
+def test_job_posting_json_ld_replaces_the_careers_page_clutter():
+    text = posting_fetch.posting_text(_porr_page(PORR_LD))
+    for clutter in ('Teilen auf', 'Jobbörse', 'Initiativbewerbung', 'Link kopieren', 'Deutschland'):
+        assert clutter not in text
+    lines = text.splitlines()
+    assert lines[0] == '(Senior) System Engineer Application Specialist*in'
+    assert 'Deine Aufgaben' in lines and 'Dein Profil' in lines
+    assert 'Setup, Betrieb & Troubleshooting: Du betreibst Applikationen.' in lines
+    assert 'Ausbildung: HTL/FH/Uni im Bereich IT (z. B. Informatik).' in lines
+    assert 'Gehalt: ab 4642 EUR / Monat' in lines
+    assert 'Ort: Absberggasse 47, 1100 Wien, AT' in lines
+
+
+def test_job_posting_found_as_bare_object_or_inside_an_array():
+    posting = dict(PORR_LD['@graph'][1], baseSalary=None, jobLocation=None)
+    for ld in (posting, [{'@type': 'Organization', 'name': 'PORR AG'}, posting]):
+        text = posting_fetch.posting_text(_porr_page(ld))
+        assert 'Dein Profil' in text and 'Teilen auf' not in text
+        assert 'Gehalt' not in text and 'Ort:' not in text
+
+
+def test_pages_without_a_usable_job_posting_keep_the_whole_page_text():
+    assert posting_fetch.posting_text(POSTING_HTML) == posting_fetch.extract_text(POSTING_HTML)
+    broken = _porr_page(PORR_LD).replace('"@context"', '"@context" oops', 1)
+    empty = _porr_page({'@type': 'JobPosting', 'title': 'X', 'description': ' '})
+    for page in (broken, empty):
+        assert posting_fetch.posting_text(page) == posting_fetch.extract_text(page)
+        assert 'Teilen auf LinkedIn' in posting_fetch.posting_text(page)
+
+
+def test_fetch_uses_the_job_posting_block(client, job, net):
+    net.host('jobs.acme.test', PUBLIC_IP)
+    net.page(JOB_URL, _porr_page(PORR_LD))
+    result = posting_fetch.fetch_posting_text(JOB_URL)
+    assert result['ok'] and 'Dein Profil' in result['text'] and 'Teilen auf' not in result['text']
 
 
 def test_post_stages_a_candidate_without_overwriting_active_text(client, job, live_posting):
