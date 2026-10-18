@@ -149,6 +149,9 @@ DEBUG = env_bool('DEBUG', True)
 DACHAPPLY_ENV = os.getenv('DACHAPPLY_ENV', 'local' if DEBUG else 'production')
 CODEX_CV_ENABLED = env_bool('CODEX_CV_ENABLED', DEBUG)
 CODEX_CV_OWNER_EMAIL = os.getenv('CODEX_CV_OWNER_EMAIL', 'ermis.chorinopoulos@gmail.com')
+# TASK-312: how many automatically prepared documents (services/application_prep's queue) generate at
+# once across all jobs. Each is one local model CLI run; manual Generate is not queued and not counted.
+PREP_QUEUE_CONCURRENCY = max(1, int(os.getenv('PREP_QUEUE_CONCURRENCY', '1')))
 # Where the in-app feedback link points. Any URL works (a form, an issue tracker); it defaults to a
 # mailto for the owner so the link is never dead. A mailto opens the user's own mail client with an
 # empty body, so nothing about their jobs is transmitted unless they type it themselves.

@@ -134,6 +134,9 @@ def generator(monkeypatch, workspace):
         {'provider': 'anthropic', 'key': 'sonnet', 'efforts': ['medium']},
         {'provider': 'openai', 'key': 'gpt-6.1', 'efforts': ['medium', 'high', 'xhigh'], 'default_effort': 'medium'}])
     monkeypatch.setattr(application_prep, 'validate_model_capability', lambda *a, **k: None)
+    # TASK-312: the queue is process state; each test starts with an empty one and every slot free.
+    monkeypatch.setattr(application_prep, '_queue', [])
+    monkeypatch.setattr(application_prep, '_running', 0)
     # TASK-308: missing requirements are analysed in-thread here; no model unless a test gives one.
     monkeypatch.setattr(application_prep, 'Thread', SyncThread)
 
@@ -184,12 +187,19 @@ def test_only_a_transition_into_to_apply_generates(client, owner, generator, dja
     assert _state(client, job)[0] == {}
 
 
-@pytest.mark.parametrize('status', ['new', 'reviewed', 'applied', 'interview', 'rejected', 'archived'])
-def test_prepare_refuses_jobs_outside_to_apply(owner, generator, status):
+@pytest.mark.parametrize('status', ['applied', 'interview', 'rejected', 'archived'])
+def test_prepare_refuses_jobs_outside_new_reviewed_and_to_apply(owner, generator, status):
     job = _job(owner, status)
     application_prep.prepare(job.id, owner)
     application_prep.prepare(job.id, owner, retry=True)
     assert generator['calls'] == []
+
+
+@pytest.mark.parametrize('status', ['new', 'reviewed'])
+def test_prepare_accepts_new_and_reviewed_jobs(owner, generator, status):
+    # TASK-312 AC1: an apply/maybe evaluation prepares a job before it reaches To apply.
+    application_prep.prepare(_job(owner, status, requirements=_req('de')).id, owner)
+    assert [call['key'] for call in generator['calls']] == ['cv-de']
 
 
 @pytest.mark.parametrize('text,requirements,needle', [
@@ -233,7 +243,8 @@ def test_double_transition_generates_each_variant_once(client, owner, generator,
 
 
 @pytest.mark.django_db(transaction=True)  # the racing threads need their own connections
-def test_concurrent_prepare_calls_start_each_variant_once(owner, workspace, monkeypatch, generator):
+def test_concurrent_prepare_calls_start_each_variant_once(owner, workspace, monkeypatch, generator, settings):
+    settings.PREP_QUEUE_CONCURRENCY = 4  # TASK-312: room for all four, so the count measures double starts
     job = _job(owner, 'to_apply')
     started = []
 

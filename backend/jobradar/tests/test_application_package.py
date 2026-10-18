@@ -239,10 +239,12 @@ def test_review_endpoints_are_owner_only(prepared):
 
 # --- TASK-299: the board's progress overlay -----------------------------------------------------
 
-def test_active_endpoint_summarises_only_prepared_to_apply_jobs(client, owner, prepared, monkeypatch):
+def test_active_endpoint_summarises_only_prepared_unapplied_jobs(client, owner, prepared, monkeypatch):
     other = _job(owner, 'to_apply')            # no preparation record: absent
-    reviewed = _job(owner, 'reviewed')
-    application_prep._save(reviewed, owner.pk, lambda prep: prep.update(variants={'cv-de': {'document': 'cv', 'language': 'de', 'status': 'ready', 'task_id': '', 'files': {}}}))
+    ready = {'cv-de': {'document': 'cv', 'language': 'de', 'status': 'ready', 'task_id': '', 'files': {}}}
+    reviewed, applied = _job(owner, 'reviewed'), _job(owner, 'applied')
+    for job in (reviewed, applied):
+        application_prep._save(job, owner.pk, lambda prep: prep.update(variants=ready))
     application_prep._save(prepared, owner.pk, lambda prep: (prep['variants']['letter-de'].update(status='running', task_id='live-1'),
                                                              prep['variants']['cv-en'].update(status='running', task_id='live-2'),
                                                              prep['variants']['letter-en'].update(status='running', task_id='gone')))
@@ -253,8 +255,10 @@ def test_active_endpoint_summarises_only_prepared_to_apply_jobs(client, owner, p
     response = client.get('/api/jobs/application-prep/active/')
     assert response.status_code == 200
     # Mean progress of the running two; time left is the slowest one's; the restart-interrupted one is failed.
-    assert response.json() == {str(prepared.id): {'running': 2, 'done': 1, 'failed': 1, 'progress': 30, 'eta': 300}}
-    assert str(other.id) not in response.json() and str(reviewed.id) not in response.json()
+    # TASK-312 AC7: a Reviewed (or New) job's preparation is badged too; Applied or later never.
+    assert response.json() == {str(prepared.id): {'running': 2, 'done': 1, 'failed': 1, 'progress': 30, 'eta': 300},
+                               str(reviewed.id): {'running': 0, 'done': 1, 'failed': 0, 'progress': 100, 'eta': 0}}
+    assert str(other.id) not in response.json() and str(applied.id) not in response.json()
 
 
 def test_active_endpoint_is_owner_only(prepared):

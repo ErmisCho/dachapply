@@ -1,6 +1,6 @@
 // TASK-280.2: labels and actions for the documents prepared automatically when a job moves into To apply.
 // TASK-280.3: the owner's review of them (keep / discard / final package). TASK-299: the board badge.
-export type PrepVariant={key:string;document:'cv'|'letter'|'message';language:string;letter_template?:string;status:'queued'|'running'|'ready'|'failed';error?:string;files?:Record<string,string>;missing?:boolean;progress?:number;step_label?:string;estimated_seconds_remaining?:number;review?:''|'keep'|'discard';selected?:boolean;adjusting?:boolean;adjust_error?:string}
+export type PrepVariant={key:string;document:'cv'|'letter'|'message';language:string;letter_template?:string;status:'queued'|'running'|'ready'|'failed'|'cancelled';error?:string;files?:Record<string,string>;missing?:boolean;progress?:number;step_label?:string;estimated_seconds_remaining?:number;review?:''|'keep'|'discard';selected?:boolean;adjusting?:boolean;adjust_error?:string}
 export type PrepState={reason:string;rule:string;model:{provider?:string;model?:string;effort?:string};variants:PrepVariant[];selection?:string[];invalidated?:string}
 export type PrepSummary={running:number;done:number;failed:number;progress:number;eta:number}
 
@@ -9,13 +9,16 @@ const LANGUAGES:Record<string,string>={en:'English',de:'German'}
 
 export function variantLabel(v:PrepVariant){return `${DOCUMENTS[v.document]||v.document} · ${LANGUAGES[v.language]||v.language.toUpperCase()}`}
 
-const minutes=(seconds?:number)=>seconds?` · about ${Math.max(1,Math.round(seconds/60))} min left`:''
+// TASK-312: also the queue page's time-left wording.
+export const timeLeft=(seconds?:number|null)=>seconds?`about ${Math.max(1,Math.round(seconds/60))} min left`:''
+const minutes=(seconds?:number)=>seconds?` · ${timeLeft(seconds)}`:''
 
 export function variantStatusText(v:PrepVariant){
   if(v.adjusting)return `Adjusting${typeof v.progress==='number'?` · ${Math.round(v.progress)}%`:''}${minutes(v.estimated_seconds_remaining)}`
   if(v.status==='ready')return v.missing?'Ready, but the file is no longer on disk':'Ready'
   if(v.status==='failed')return `Failed: ${v.error||'unknown error'}`
   if(v.status==='queued')return 'Queued'
+  if(v.status==='cancelled')return 'Cancelled' // TASK-312: cancelled from the queue page
   return `${v.step_label||'Generating'}${typeof v.progress==='number'?` · ${Math.round(v.progress)}%`:''}${minutes(v.estimated_seconds_remaining)}`
 }
 
@@ -24,10 +27,10 @@ export function isPreparing(state?:PrepState|null){return !!state?.variants.some
 
 // The one button: retry only what failed, or start when nothing was prepared (e.g. after a skip).
 export function prepAction(state:PrepState|null|undefined,jobStatus:string):string{
-  // The server prepares only for these statuses (never New/Reviewed or Applied and later).
-  if(!state||!['to_apply','ready_to_submit'].includes(jobStatus))return ''
+  // The server prepares only for these statuses (TASK-312: also New/Reviewed; never Applied and later).
+  if(!state||!['new','reviewed','to_apply','ready_to_submit'].includes(jobStatus))return ''
   // TASK-280.3: a failed variant the owner discarded is not retried.
-  if(state.variants.some(v=>v.status==='failed'&&v.review!=='discard'))return 'Retry failed'
+  if(state.variants.some(v=>(v.status==='failed'||v.status==='cancelled')&&v.review!=='discard'))return 'Retry failed'
   return state.variants.length?'':'Prepare now'
 }
 

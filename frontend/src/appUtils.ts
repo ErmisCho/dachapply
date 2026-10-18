@@ -536,7 +536,7 @@ export function mailboxIndicatorState(hasPendingSuggestion:boolean,hasMailboxHis
   return hasPendingSuggestion?'pending':hasMailboxHistory?'history':null
 }
 
-const routeTitles:Record<string,string>={'/':'Board','/add':'Add job','/public-submit':submitDe.title,'/prompts':'Prompts','/import':'Import','/followups':'Follow-ups','/export':'Export','/bookmarklet':'Bookmarklet','/practice':'Practice','/mailbox':'Mailbox','/stats':'Stats','/login':'Sign in','/onboarding':'Setup','/privacy':'Privacy','/terms':'Terms','/settings/profile':'Profile settings','/settings/account':'Account settings'};
+const routeTitles:Record<string,string>={'/':'Board','/add':'Add job','/public-submit':submitDe.title,'/prompts':'Prompts','/import':'Import','/followups':'Follow-ups','/export':'Export','/bookmarklet':'Bookmarklet','/practice':'Practice','/mailbox':'Mailbox','/stats':'Stats','/queue':'Queue','/login':'Sign in','/onboarding':'Setup','/privacy':'Privacy','/terms':'Terms','/settings/profile':'Profile settings','/settings/account':'Account settings'};
 export function pathTitle(pathname:string){return routeTitles[pathname]||(pathname.startsWith('/jobs/')?'Job':pathname.startsWith('/reset-password/')?'Reset password':pathname.startsWith('/verify-email/')?'Confirm email':'')}
 
 // TASK-143 AC1 (frontend mirror). JobLead.STATUSES (backend) splits into "still worth acting on"
