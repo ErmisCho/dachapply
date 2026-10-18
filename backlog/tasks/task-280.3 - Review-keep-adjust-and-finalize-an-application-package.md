@@ -1,10 +1,10 @@
 ---
 id: TASK-280.3
 title: 'Review, keep, adjust, and finalize an application package'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-12 15:03'
-updated_date: '2026-10-16 07:50'
+updated_date: '2026-10-18 09:00'
 labels: []
 dependencies:
   - TASK-280.2
@@ -36,4 +36,6 @@ Turn generated variants into an owner-controlled final package. Drafts must be e
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-16: #272. Tests (31) falsified; browser check of keep/discard/select waits for the next job prepared in To apply.
+
+Verified 2026-10-18 on PORR 1544: review panel shows the prepared German CV with Preview PDF, Download, Copy TeX, Keep, Discard, Adjust and 'Select as final package'.
 <!-- SECTION:NOTES:END -->
