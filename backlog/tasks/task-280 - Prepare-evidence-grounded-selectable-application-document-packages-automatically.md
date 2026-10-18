@@ -3,9 +3,10 @@ id: TASK-280
 title: >-
   Prepare evidence-grounded, selectable application document packages
   automatically
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-12 15:03'
+updated_date: '2026-10-18 09:00'
 labels: []
 dependencies: []
 priority: high
@@ -27,3 +28,9 @@ Reduce the time from choosing a job to submitting its application. During the ex
 - [ ] #4 Ready to submit distinguishes a user-selected final package from merely generated drafts; Applied and later/closed statuses are never downgraded.
 - [ ] #5 Failures are isolated to the affected variant, existing manual generation remains usable, and automated tests cover clear, absent, contradictory, mixed, and unclear posting instructions.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+All subtasks done; end-to-end verified on PORR 1544 (2026-10-18).
+<!-- SECTION:NOTES:END -->
