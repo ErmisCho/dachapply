@@ -14,6 +14,12 @@ TASK-280.3 adds the owner's review beside it, in the same sidecar: per variant "
 "discard"; absent = an unreviewed draft) and "adjust_task_id"/"adjust_error"; per preparation
 "selection" {"keys": [...], "files": [...]} (the final package) and "invalidated" (why a selection
 was cleared). Ready to submit follows the selection, never generation.
+
+TASK-312: preparation also starts when an apply/maybe evaluation is imported for a New, Reviewed or
+To apply job (json_importer.create_evaluation), and variants no longer all start at once: they wait in
+one FIFO queue across all jobs (_queue, in memory) and at most settings.PREP_QUEUE_CONCURRENCY run.
+Each variant also records "queued_at"/"started_at"/"finished_at" (ISO) and may be "cancelled"; the
+sidecar stays the durable copy, so resume_queue rebuilds the queue from it after a restart.
 """
 import io
 import logging
@@ -21,14 +27,17 @@ import re
 import tempfile
 import zipfile
 from pathlib import Path
-from threading import Lock, Thread
+from threading import RLock, Thread
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import close_old_connections
+from django.db.models import Q
+from django.utils import timezone
 
 from jobradar.models import JobLead
 from jobradar.services import cv_tasks
+from jobradar.services.access import accessible_jobs
 from jobradar.services.application_requirements import DOCUMENT_STATUSES, DOCUMENT_TYPES, POSTING_LANGUAGES, normalize_application_requirements
 from jobradar.services.cv_generator import _edit_sidecar, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
 from jobradar.services.prompt_builder import APPLICATION_REQUIREMENTS_RULES, APPLICATION_REQUIREMENTS_SCHEMA_FIELD, build_candidate_profile_text, user_profile_settings
@@ -45,9 +54,19 @@ INTERRUPTED = 'Stopped before it finished (the server restarted). Retry to prepa
 NOT_ANALYSED = 'Application requirements are not analysed yet. Analyse the job, then move it to To apply again or press Prepare.'
 ANALYSING = 'Analysing application requirements…'
 ANALYSIS_INTERRUPTED = 'Requirements analysis stopped before it finished (the server restarted). Press Prepare to retry.'
+CANCELLED = 'Cancelled from the queue. Retry to prepare it again.'
+PREPARE_STATUSES = ('new', 'reviewed', 'to_apply')  # TASK-312 AC1; a retry also Ready to submit
+FINISHED_LIMIT = 50  # TASK-312: finished items the queue lists, newest first
 
-_lock = Lock()  # ponytail: one process serves generation (threaded runserver); a DB claim if that changes
+# ponytail: one process serves generation (threaded runserver); a DB claim if that changes. Re-entrant
+# because a task's on_finish can run in the thread that started it (a task that fails at once, tests).
+_lock = RLock()
 _analysing = set()  # TASK-308: job ids whose requirements analysis is running; guarded by _lock
+# TASK-312: (job_id, user_id, key) waiting for a slot, front first, and the number of prepared tasks
+# started and not yet finished. Guarded by _lock; the sidecar is the durable copy (resume_queue).
+# ponytail: "Move to front" lives only here, so after a restart the queue is back in queued_at order.
+_queue = []
+_running = 0
 
 _STRING = {'type': 'string'}
 # TASK-308: the strict JSON-schema form of APPLICATION_REQUIREMENTS_SCHEMA_FIELD, so structured output
@@ -152,52 +171,84 @@ def _gate(job, user):
     return '', variants, context, choice
 
 
-def _start(job, user, variants, context, choice, suffix):
-    """Start one background task per variant. Caller holds _lock and has saved them as queued."""
-    for variant in variants:
-        key, document = variant['key'], variant['document']
-        options = {'short_message': True} if document == 'message' else {}
-        if suffix:
-            options['name_suffix'] = variant['language'].upper()
+def _now():
+    return timezone.now().isoformat()
 
-        def finished(task_id, key=key):
-            _finish(job.id, user.pk, key, task_id)
-        try:
-            task_id = cv_tasks.start_cv_task(
-                job.id, user.pk, context, variant['language'], variant.get('letter_template', ''), document != 'cv',
-                choice['provider'], choice['model'], choice['effort'], choice['speed'], create_cv=document == 'cv',
-                auto_clipboard=False, generation_options=options, mark_ready=False, on_finish=finished)
-        except Exception as exc:  # one variant that cannot start must not stop the others (AC5)
-            _save(job, user.pk, lambda prep, key=key, error=str(exc)[:500]: prep['variants'][key].update(status='failed', error=error))
-            continue
 
-        def running(prep, key=key, task_id=task_id):
-            # A fast task can finish before this runs; its recorded outcome wins.
-            if prep['variants'][key]['status'] == 'queued':
-                prep['variants'][key].update(status='running', task_id=task_id)
-        _save(job, user.pk, running)
+def _pump():
+    """TASK-312 AC2: start queued variants, front first, while a slot is free. Caller holds _lock."""
+    while _queue and _running < settings.PREP_QUEUE_CONCURRENCY:
+        _start(*_queue.pop(0))
+
+
+def _start(job_id, user_id, key):
+    """Start one queued variant's background task. Caller holds _lock. The slot it takes is given back
+    by _finish however the task ends -- cv_tasks._run calls on_finish from its finally, so ready, failed
+    and cancelled alike -- or right here when the task cannot start at all."""
+    global _running
+    job = JobLead.objects.filter(pk=job_id).first()
+    user = get_user_model().objects.filter(pk=user_id).first()
+    prep = _state(job, user) if job and user else {}
+    variants = prep.get('variants') or {}
+    variant = variants.get(key)
+    if not variant or variant.get('status') != 'queued':
+        return  # cancelled, re-prepared or its job deleted while it waited
+    document, choice = variant['document'], prep.get('model') or {}
+    options = {'short_message': True} if document == 'message' else {}
+    if len({item['language'] for item in variants.values()}) > 1:
+        options['name_suffix'] = variant['language'].upper()
+
+    def finished(task_id):
+        _finish(job_id, user_id, key, task_id)
+    _save(job, user_id, lambda prep: prep['variants'][key].update(status='running', task_id='', started_at=_now()))
+    _running += 1
+    try:
+        # Read when it starts, not when it was queued, so a variant that waited uses the current profile.
+        profile = user_profile_settings(user)
+        context = load_candidate_evidence(build_candidate_profile_text(user), profile.learned_application_preferences, profile.candidate_evidence)
+        task_id = cv_tasks.start_cv_task(
+            job_id, user_id, context, variant['language'], variant.get('letter_template', ''), document != 'cv',
+            choice['provider'], choice['model'], choice['effort'], choice['speed'], create_cv=document == 'cv',
+            auto_clipboard=False, generation_options=options, mark_ready=False, on_finish=finished)
+    except Exception as exc:  # one variant that cannot start must not stop the others (AC5)
+        _running -= 1
+        _save(job, user_id, lambda prep, error=str(exc)[:500]: prep['variants'][key].update(status='failed', error=error, finished_at=_now()))
+        return
+
+    def running(prep):
+        # A fast task can finish before this runs; its recorded outcome wins.
+        if prep['variants'][key]['status'] == 'running' and not prep['variants'][key].get('task_id'):
+            prep['variants'][key]['task_id'] = task_id
+    _save(job, user_id, running)
 
 
 def _finish(job_id, user_id, key, task_id):
-    job = JobLead.objects.filter(pk=job_id).first()
-    task = cv_tasks.get_cv_task(task_id, user_id) or {}
-    if not job:
-        return
-    artifacts = task.get('artifacts') or {}
-    files = {name: artifacts[name] for name in ('cv_tex', 'cv_pdf', 'letter_tex', 'letter_pdf') if artifacts.get(name)}
-    ready = task.get('status') == 'ready'
+    """A prepared variant's on_finish: record its outcome, give back its slot, start the next."""
+    global _running
+    with _lock:
+        try:
+            job = JobLead.objects.filter(pk=job_id).first()
+            task = cv_tasks.get_cv_task(task_id, user_id) or {}
+            artifacts = task.get('artifacts') or {}
+            files = {name: artifacts[name] for name in ('cv_tex', 'cv_pdf', 'letter_tex', 'letter_pdf') if artifacts.get(name)}
+            status = task.get('status') if task.get('status') in ('ready', 'cancelled') else 'failed'
 
-    def record(prep):
-        variant = prep.get('variants', {}).get(key)
-        if variant is None or variant.get('task_id') not in ('', None, task_id):
-            return  # a newer retry owns this variant
-        variant.update(task_id=task_id, status='ready' if ready else 'failed', files=files if ready else {},
-                       error='' if ready else task.get('error') or 'Stopped before it finished.')
-    _save(job, user_id, record)
+            def record(prep):
+                variant = prep.get('variants', {}).get(key)
+                if variant is None or variant.get('status') not in ('running', 'cancelled') or variant.get('task_id') not in ('', None, task_id):
+                    return  # re-queued (retry, restart) meanwhile, or a newer run owns this variant
+                error = '' if status == 'ready' else CANCELLED if status == 'cancelled' else task.get('error') or 'Stopped before it finished.'
+                variant.update(task_id=task_id, status=status, files=files if status == 'ready' else {}, error=error, finished_at=_now())
+            if job:
+                _save(job, user_id, record)
+        finally:
+            _running -= 1
+            _pump()
 
 
 def prepare(job_id, user, retry=False):
-    """Start preparation for a To-apply job, or with retry, re-run only its failed variants.
+    """Queue preparation for a New, Reviewed or To-apply job, or with retry, re-queue only its failed
+    (or cancelled) variants. TASK-312: variants join the back of the shared queue rather than starting.
 
     Returns the public state, or None when this account/server cannot generate at all. Concurrency
     safe: a second call (a double transition) finds the variants already recorded and starts nothing.
@@ -210,13 +261,13 @@ def prepare(job_id, user, retry=False):
     analyse = False
     with _lock:
         state = public_state(job, user)
-        # AC1: only To apply (and, for a retry, the Ready to submit it may have moved to). New/Reviewed
-        # and Applied or later are never generated for.
-        allowed = ('to_apply', 'ready_to_submit') if retry else ('to_apply',)
+        # AC1: TASK-312 widened it from To apply to New/Reviewed/To apply (an apply/maybe evaluation
+        # queues those); a retry also the Ready to submit it may have moved to. Applied or later never.
+        allowed = (*PREPARE_STATUSES, 'ready_to_submit') if retry else PREPARE_STATUSES
         if job.status not in allowed:
             return state
         # TASK-280.3: a failed variant the owner discarded is not wanted, so Retry leaves it alone.
-        failed = [variant for variant in state['variants'] if variant['status'] == 'failed' and variant.get('review') != 'discard']
+        failed = [variant for variant in state['variants'] if variant['status'] in ('failed', 'cancelled') and variant.get('review') != 'discard']
         if state['variants'] and not (retry and failed):
             return state
         reason, variants, context, choice = _gate(job, user)
@@ -236,12 +287,10 @@ def prepare(job_id, user, retry=False):
         else:
             if state['variants']:
                 # AC5: retry targets only failed variants; ready and running ones are left alone.
-                wanted = {variant['key'] for variant in failed}
+                wanted = [variant['key'] for variant in failed]
                 stored = _state(job, user)['variants']
                 variants = [{**stored[key], 'key': key, 'letter_type': ''} for key in wanted]
-                suffix = len({variant['language'] for variant in stored.values()}) > 1
-            else:
-                suffix = len({variant['language'] for variant in variants}) > 1
+            queued_at = _now()
 
             def queue(prep):
                 prep.update(reason='', model=choice)
@@ -249,9 +298,11 @@ def prepare(job_id, user, retry=False):
                 for variant in variants:
                     prep['variants'][variant['key']] = {'document': variant['document'], 'language': variant['language'],
                                                         'letter_template': variant.get('letter_template', ''),
-                                                        'status': 'queued', 'task_id': '', 'error': '', 'files': {}}
+                                                        'status': 'queued', 'task_id': '', 'error': '', 'files': {},
+                                                        'queued_at': queued_at, 'started_at': None, 'finished_at': None}
             _save(job, user.pk, queue)
-            _start(job, user, variants, context, choice, suffix)
+            _queue.extend((job.id, user.pk, variant['key']) for variant in variants)
+            _pump()
     if analyse:
         Thread(target=_analyse_then_prepare, args=(job.id, user.pk, retry), daemon=True).start()
     return public_state(job, user)
@@ -303,7 +354,8 @@ def _analyse_then_prepare(job_id, user_id, retry):
 
 
 def prepare_on_to_apply(job_id, user_id):
-    """The status-transition hook: never raises, so a generation problem cannot fail the status save."""
+    """The status-transition (and TASK-312 evaluation-import) hook: never raises, so a generation
+    problem cannot fail the status save or the import."""
     try:
         user = get_user_model().objects.filter(pk=user_id).first()
         if user:
@@ -607,3 +659,130 @@ def board_summary(job, user):
     if not running + done + failed:
         return None
     return {'running': running, 'done': done, 'failed': failed, 'progress': round(sum(progress) / len(progress)) if progress else 100, 'eta': eta}
+
+
+# --- TASK-312: the queue page, its actions, and resuming after a restart ------------------------
+
+def _live(variant, user):
+    """(status, error, live task) as the queue shows a stored variant: queued or running with a task
+    that is gone was interrupted by a restart, so it shows failed, as public_state reports it."""
+    status, task_id = variant.get('status'), variant.get('task_id')
+    if status not in ('queued', 'running') or not task_id:
+        return status, variant.get('error', ''), None
+    live = cv_tasks.get_cv_task(task_id, user.pk)
+    return (status, variant.get('error', ''), live) if live else ('failed', INTERRUPTED, None)
+
+
+def queue_state(user):
+    """AC4: every prepared variant of the owner's unapplied jobs except discarded ones -- running, then
+    queued by position, then the newest FINISHED_LIMIT finished ones. Read-only, like board_summary.
+
+    ponytail: one sidecar read per unapplied job per poll, as application_prep_active does; an index
+    of jobs with a preparation if the board grows into thousands of open jobs.
+    """
+    with _lock:
+        positions = {entry: index for index, entry in enumerate(_queue, 1)}
+    items = []
+    for job in accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES).only('id', 'company', 'title', 'status'):
+        for key, variant in (_state(job, user).get('variants') or {}).items():
+            if variant.get('review') == 'discard':
+                continue
+            status, error, live = _live(variant, user)
+            items.append({'job_id': job.id, 'company': job.company, 'title': job.title, 'job_status': job.status, 'key': key,
+                          'label': _label(variant), 'document': variant.get('document'), 'language': variant.get('language'),
+                          'status': status, 'position': positions.get((job.id, user.pk, key)) if status == 'queued' else None,
+                          'progress': 100 if status == 'ready' else round(live['progress']) if live else 0,
+                          'eta_seconds': live['estimated_seconds_remaining'] if live else None, 'error': error,
+                          'files': [Path(path).name for path in (variant.get('files') or {}).values()],
+                          'queued_at': variant.get('queued_at'), 'started_at': variant.get('started_at'), 'finished_at': variant.get('finished_at')})
+    running = sorted((item for item in items if item['status'] == 'running'), key=lambda item: item['started_at'] or '')
+    queued = sorted((item for item in items if item['status'] == 'queued'), key=lambda item: (item['position'] is None, item['position'] or 0, item['queued_at'] or ''))
+    finished = sorted((item for item in items if item['status'] not in ('running', 'queued')), key=lambda item: item['finished_at'] or '', reverse=True)
+    return {'concurrency': settings.PREP_QUEUE_CONCURRENCY, 'items': running + queued + finished[:FINISHED_LIMIT]}
+
+
+def queue_action(user, job_id, key, action):
+    """AC5: cancel (queued or running; a running one's task is stopped), retry (failed or cancelled, to
+    the back of the queue) or first (queued, to the front). Raises ValueError; returns queue_state."""
+    if action not in ('cancel', 'retry', 'first'):
+        raise ValueError('Unknown action.')
+    try:
+        job = accessible_jobs(user).filter(pk=int(job_id), status__in=JobLead.UNAPPLIED_STATUSES).first()
+    except (TypeError, ValueError):
+        job = None
+    with _lock:
+        variant = (_state(job, user).get('variants') or {}).get(key) if job else None
+        if not variant or variant.get('review') == 'discard':
+            raise ValueError('That document is not in the queue.')
+        status, entry = _live(variant, user)[0], (job.id, user.pk, key)
+        if action == 'cancel':
+            if status not in ('queued', 'running'):
+                raise ValueError(f'{_label(variant)} is {status}; only a queued or running document can be cancelled.')
+            if entry in _queue:
+                _queue.remove(entry)
+            _save(job, user.pk, lambda prep: prep['variants'][key].update(status='cancelled', error=CANCELLED, finished_at=_now()))
+            if status == 'running' and variant.get('task_id'):
+                # Its slot is given back when the task's thread actually stops (_finish), not now.
+                cv_tasks.cancel_cv_task(variant['task_id'], user.pk)
+        elif action == 'retry':
+            if status not in ('failed', 'cancelled'):
+                raise ValueError(f'{_label(variant)} is {status}; only a failed or cancelled document can be retried.')
+            _save(job, user.pk, lambda prep: prep['variants'][key].update(status='queued', task_id='', error='', files={},
+                                                                          queued_at=_now(), started_at=None, finished_at=None))
+            _queue.append(entry)
+            _pump()
+        else:
+            if status != 'queued':
+                raise ValueError(f'{_label(variant)} is {status}; only a queued document can be moved to the front.')
+            if entry in _queue:
+                _queue.remove(entry)
+            _queue.insert(0, entry)
+            _pump()
+    return queue_state(user)
+
+
+def resume_queue():
+    """AC3: re-queue, in queued_at order, every variant a restart left queued, or running with no live
+    task. The sidecar path is a hash of user and job, so the owners' unapplied jobs come from the
+    database rather than a directory listing. A re-queued variant is plain queued again (task_id
+    cleared), so public_state and board_summary stop reporting it as interrupted."""
+    owner = (settings.CODEX_CV_OWNER_EMAIL or '').strip()
+    match = Q(jobradar_profile__can_generate_cv=True)
+    if owner:
+        match |= Q(email__iexact=owner) | Q(username__iexact=owner)
+    with _lock:
+        found = []
+        for user in get_user_model().objects.filter(match).distinct():
+            if not is_cv_owner(user):
+                continue
+            for job in accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES).only('id'):
+                for key, variant in (_state(job, user).get('variants') or {}).items():
+                    task_id = variant.get('task_id')
+                    left = variant.get('status') == 'queued' or (variant.get('status') == 'running' and not (task_id and cv_tasks.get_cv_task(task_id, user.pk)))
+                    if left and (job.id, user.pk, key) not in _queue:
+                        found.append((variant.get('queued_at') or '', job, user, key))
+        for _, job, user, key in sorted(found, key=lambda item: item[0]):
+            _save(job, user.pk, lambda prep, key=key: prep['variants'][key].update(status='queued', task_id='', started_at=None))
+            _queue.append((job.id, user.pk, key))
+        _pump()
+    return len(found)
+
+
+def _resume_worker():
+    close_old_connections()
+    try:
+        resume_queue()
+    except Exception:
+        logger.exception('Resuming the document preparation queue failed')
+    finally:
+        close_old_connections()
+
+
+def start_queue_resume():
+    """AC3, from AppConfig.ready: only in the serving process (the local mailbox loop's guard; disable
+    with DACHAPPLY_PREP_QUEUE_RESUME=0), and off the startup thread, which must not query the database."""
+    from jobradar.services.demo_scheduler import should_start_local_loop  # pulls in the digest mailer
+    if not should_start_local_loop('DACHAPPLY_PREP_QUEUE_RESUME'):
+        return False
+    Thread(target=_resume_worker, name='dachapply-prep-queue-resume', daemon=True).start()
+    return True

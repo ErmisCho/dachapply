@@ -34,7 +34,9 @@ describe('prepared documents panel',()=>{
 
   it('offers no action while everything is ready or running',()=>{
     expect(prepAction(state([v({}),v({key:'cv-en',language:'en',status:'running'})]),'to_apply')).toBe('')
-    expect(prepAction(state([v({status:'failed'})]),'reviewed')).toBe('')   // retry is refused outside To apply
+    expect(prepAction(state([v({status:'failed'})]),'reviewed')).toBe('Retry failed')   // TASK-312: New/Reviewed are prepared too
+    expect(prepAction(state([v({status:'cancelled'})]),'to_apply')).toBe('Retry failed')   // TASK-312: a cancelled variant can be re-queued
+    expect(prepAction(state([v({status:'failed'})]),'applied')).toBe('')   // never Applied and later
     expect(isPreparing(state([v({status:'queued'})]))).toBe(true)
     expect(isPreparing(state([v({})]))).toBe(false)
     expect(isPreparing({...state([]),reason:'Analysing application requirements…'})).toBe(true)

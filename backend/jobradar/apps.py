@@ -11,3 +11,5 @@ class JobradarConfig(AppConfig):
         start_demo_seed_scheduler()
         from jobradar.services.mailbox_loop import start_local_mailbox_loop
         start_local_mailbox_loop()
+        from jobradar.services.application_prep import start_queue_resume
+        start_queue_resume()  # TASK-312 AC3

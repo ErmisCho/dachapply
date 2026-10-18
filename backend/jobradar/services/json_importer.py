@@ -110,12 +110,18 @@ def validate_eval(ev, i, require_job_id=True):
     return errors
 
 
-def create_evaluation(job, ev):
-    return JobEvaluation.objects.create(
+def create_evaluation(job, ev, user=None):
+    evaluation=JobEvaluation.objects.create(
         job=job, fit_score=ev['fit_score'], priority=ev['priority'], recommendation=ev['recommendation'], summary=ev.get('summary',''),
         main_match_reasons=ev.get('main_match_reasons',[]), main_gaps=ev.get('main_gaps',[]), required_skills=ev.get('required_skills',[]), nice_to_have_skills=ev.get('nice_to_have_skills',[]),
         matched_skills=ev.get('matched_skills',[]), missing_skills=ev.get('missing_skills',[]), cv_adjustment_notes=ev.get('cv_adjustment_notes',''), interview_prep_notes=ev.get('interview_prep_notes',''),
         risk_notes=ev.get('risk_notes',''), next_action=ev.get('next_action',''), structured_json_raw=ev)
+    # TASK-312 AC1: an apply/maybe evaluation queues the job's documents once the import commits, as the
+    # importing user; prepare() itself keeps to New/Reviewed/To apply jobs and CV owners.
+    if user is not None and ev['recommendation'] in ('apply','maybe'):
+        from jobradar.services.application_prep import prepare_on_to_apply  # cv_generator imports this module
+        transaction.on_commit(lambda: prepare_on_to_apply(job.id, user.pk), robust=True)
+    return evaluation
 
 
 def duplicate_title(title, queryset=None):
@@ -261,7 +267,7 @@ def import_jobs_data(data, user=None):
                 if ev_action == 'skip': pass
                 else:
                     if ev_action == 'override': JobEvaluation.objects.filter(job=job).delete()
-                    eval_ids.append(create_evaluation(job, rec['evaluation']).id)
+                    eval_ids.append(create_evaluation(job, rec['evaluation'], user).id)
             results.append({'job_id':job.id,'company':job.company,'title':job.title,'action':action,'updated_fields':sorted(changed)})
     imported_jobs=[r for r in results if r.get('job_id')]
     return {'ok':True,'type':'jobs','jobs':results,'imported_jobs':imported_jobs,'evaluation_ids':eval_ids,'count':len(results),'jobs_found':len(imported_jobs)}
@@ -326,5 +332,5 @@ def import_evaluations(pasted, user=None):
     if errors: return {'ok':False,'errors':errors}
     with transaction.atomic():
         for ev in data['evaluations']:
-            job=owned_qs.get(id=ev['job_id']); created.append(create_evaluation(job, ev).id)
+            job=owned_qs.get(id=ev['job_id']); created.append(create_evaluation(job, ev, user).id)
     return {'ok':True,'created_ids':created,'count':len(created)}
