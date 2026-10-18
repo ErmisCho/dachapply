@@ -977,6 +977,10 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         JobLead.objects.filter(pk=job.pk).update(
             company=company, original_source_text=text, pending_source_text='',
             pending_source_fetched_at=None, source_fetch_error='', **dismissed)
+        if job.status == 'to_apply':
+            # TASK-306: the choice may have been all that held preparation back; retry as the transition does.
+            from .services.application_prep import prepare_on_to_apply
+            transaction.on_commit(lambda: prepare_on_to_apply(job.pk, request.user.pk), robust=True)
         return Response({'company':company,'original_source_text':text})
     def destroy(self, request, pk=None):
         qs=accessible_jobs(request.user)
