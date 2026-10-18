@@ -433,8 +433,10 @@ if LAN_ACCESS:
         ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS, lan_hosts(env_list('DACHAPPLY_LAN_HOSTS')))
 
 INSTALLED_APPS = [
- 'django.contrib.admin','django.contrib.auth','django.contrib.contenttypes','django.contrib.sessions','django.contrib.messages','django.contrib.staticfiles',
- 'rest_framework','corsheaders','jobradar.apps.JobradarConfig'
+ # jobradar before staticfiles: its runserver (startup survives a slow database) must win, and Django
+ # gives a management command to the earliest app that defines it. jobradar has no static/ or templates/.
+ 'django.contrib.admin','django.contrib.auth','django.contrib.contenttypes','django.contrib.sessions','django.contrib.messages',
+ 'jobradar.apps.JobradarConfig','django.contrib.staticfiles','rest_framework','corsheaders'
 ]
 # TASK-188: GZipMiddleware is FIRST, per Django's own rule -- the response phase runs bottom-to-top,
 # so the first entry compresses last and therefore compresses the finished body. It was measured, not
@@ -779,5 +781,7 @@ LOGGING = {
         # Application logger.exception() sites are the silent-breakage class this task exists for:
         # a password-reset mail that fails to send returns 200 to the user and 500s nothing.
         'jobradar': {'handlers': ['console', 'mail_admins'], 'level': 'INFO'},
+        # The pool logs why it could not open a connection only here; a getconn timeout says nothing.
+        'psycopg.pool': {'handlers': ['console'], 'level': 'WARNING'},
     },
 }
