@@ -54,6 +54,14 @@ describe('CV popup prefetch (TASK-307)',()=>{
     expect(cachedCvGeneration(216).generated_files).toEqual([{name:'new.pdf'}])
   })
 
+  it('keeps the cache through the board poll and through writes to other jobs',async()=>{
+    prefetchCvGeneration(216);await settle()
+    await api('/jobs/source-text/refresh-due/',{method:'POST',body:{}})
+    await api('/jobs/999/',{method:'PATCH',body:{status:'reviewed'}})
+    expect(cachedCvGeneration(216)).toBeDefined()
+    expect(popup()).not.toContain('Loading generator options…')
+  })
+
   it('is wired to the job page load, the board button, and task completion',()=>{
     expect(appSource).toContain("if(storedUser()?.can_generate_cv)prefetchCvGeneration(Number(id));")
     expect(appSource).toContain('onPointerEnter={()=>prefetchCvGeneration(selected[0])} onFocus={()=>prefetchCvGeneration(selected[0])}')
