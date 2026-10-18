@@ -467,7 +467,7 @@ def review(job, user, action, key='', keys=None):
             variants[key]['review'] = 'keep'
     _save(job, user.pk, change)
     if action == 'select':
-        cv_tasks.mark_ready_to_submit(job.id)
+        cv_tasks.mark_ready_to_submit(job.id, respect_skip=False)  # TASK-310: the owner's explicit choice wins over 'skip'
     elif action == 'clear':
         _unready(job.id)
     return public_state(job, user)
