@@ -347,7 +347,8 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
      scroll. It is also the same viewport budget the feedback popup already uses for its max-height.
      Media-scoped so the mobile card list, which shares this wrapper below 1024px, keeps scrolling
      with the page instead of growing a scrollbar of its own. */
-  .job-table-scroll{max-height:calc(100vh - 7rem);overflow-y:auto}
+  /* TASK-309: minus the sticky selection bar (0 when nothing is selected), measured in App.tsx. */
+  .job-table-scroll{max-height:calc(100vh - 7rem - var(--selection-bar-h, 0px));overflow-y:auto}
   .job-table{min-width:1280px;table-layout:auto!important}
   .job-table th,.job-table td{max-width:none}
   .job-table th:nth-child(1),.job-table td:nth-child(1){width:2.25rem}
