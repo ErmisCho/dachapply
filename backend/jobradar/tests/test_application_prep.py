@@ -134,6 +134,12 @@ def generator(monkeypatch, workspace):
         {'provider': 'anthropic', 'key': 'sonnet', 'efforts': ['medium']},
         {'provider': 'openai', 'key': 'gpt-6.1', 'efforts': ['medium', 'high', 'xhigh'], 'default_effort': 'medium'}])
     monkeypatch.setattr(application_prep, 'validate_model_capability', lambda *a, **k: None)
+    # TASK-308: missing requirements are analysed in-thread here; no model unless a test gives one.
+    monkeypatch.setattr(application_prep, 'Thread', SyncThread)
+
+    def no_model(*args, **kwargs):
+        raise cv_generator.RecoverableGenerationError('no model in tests')
+    monkeypatch.setattr(application_prep, 'run_structured_model', no_model)
     return state
 
 
@@ -189,7 +195,7 @@ def test_prepare_refuses_jobs_outside_to_apply(owner, generator, status):
 @pytest.mark.parametrize('text,requirements,needle', [
     ('', None, 'no usable posting text'),
     ('https://example.test/job', None, 'no usable posting text'),
-    (POSTING, {}, 'not analysed'),
+    (POSTING, {}, 'Requirements analysis failed: no model in tests. Press Prepare to retry.'),
 ])
 def test_missing_text_or_analysis_starts_nothing_and_says_why(client, owner, generator, django_capture_on_commit_callbacks, text, requirements, needle):
     job = _job(owner, requirements=requirements, text=text)
@@ -371,3 +377,76 @@ def test_short_message_and_language_suffix_reach_the_real_generator_without_over
     before = Path(message['letter_tex']).read_bytes()
     _, _, again = cv_generator.generate_cv_package(job, 'profile', 'de', 'anschreiben', True, 'openai', 'gpt-5.5', 'medium', create_cv=False, user_id=user.id, short_message=True, name_suffix='DE')
     assert again['letter_tex'] != message['letter_tex'] and Path(message['letter_tex']).read_bytes() == before
+
+
+# --- TASK-308: preparation analyses missing requirements itself --------------------------------
+
+ANALYSED = {'application_requirements': {'posting_language': 'en', 'application_language': '', 'application_language_quote': '', 'documents': [
+    {'type': 'cover_letter', 'name': '', 'status': 'required', 'quote': 'Please send your CV and a cover letter.'}]}}
+
+
+def _model(monkeypatch, answer=ANALYSED, during=None):
+    calls = []
+
+    def run(prompt, schema, provider, model, effort, speed, **kwargs):
+        calls.append((prompt, provider, model, effort))
+        if during:
+            during()
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    monkeypatch.setattr(application_prep, 'run_structured_model', run)
+    return calls
+
+
+def test_missing_requirements_are_analysed_then_variants_prepared(client, owner, generator, monkeypatch, django_capture_on_commit_callbacks):
+    job = _job(owner, requirements={})
+    seen = []
+    calls = _model(monkeypatch, during=lambda: seen.append(_state(client, job)[1]['reason']))
+    _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
+    # AC2: while the model runs the panel says so; AC1: the CV default model, on the stored posting.
+    assert seen == [application_prep.ANALYSING]
+    prompt, *model = calls[0]
+    assert model == ['openai', 'gpt-6.1', 'high'] and POSTING in prompt and 'application_requirements rules' in prompt
+    job.refresh_from_db()
+    assert job.application_requirements['source'] == 'analysis' and job.application_requirements['documents'][0]['status'] == 'required'
+    variants, payload = _state(client, job)
+    assert set(variants) == {'cv-en', 'letter-en'} and payload['reason'] == ''
+
+
+def test_a_second_prepare_during_analysis_does_not_analyse_again(client, owner, generator, monkeypatch, django_capture_on_commit_callbacks):
+    job = _job(owner, 'to_apply', requirements={})
+    calls = _model(monkeypatch, during=lambda: application_prep.prepare(job.id, owner, retry=True))
+    application_prep.prepare(job.id, owner)
+    assert len(calls) == 1 and sorted(call['key'] for call in generator['calls']) == ['cv-en', 'letter-en']
+
+
+def test_a_failed_analysis_says_why_and_prepare_retries_it(client, owner, generator, monkeypatch, django_capture_on_commit_callbacks):
+    job = _job(owner, requirements={})
+    _model(monkeypatch, cv_generator.RecoverableGenerationError('Quota exceeded.'))
+    _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
+    variants, payload = _state(client, job)
+    assert variants == {} and payload['reason'] == 'Requirements analysis failed: Quota exceeded. Press Prepare to retry.'
+    _model(monkeypatch)
+    assert client.post(f'/api/jobs/{job.id}/application-prep/retry/').status_code == 200
+    assert set(_state(client, job)[0]) == {'cv-en', 'letter-en'}
+
+
+def test_analysis_never_overwrites_owner_requirements(client, owner, generator, monkeypatch, django_capture_on_commit_callbacks):
+    # Requirements present: no analysis at all, preparation as before.
+    job = _job(owner, requirements=_req('de'))
+    calls = _model(monkeypatch)
+    _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
+    assert calls == [] and set(_state(client, job)[0]) == {'cv-de'}
+    # An owner edit that lands while the model runs wins over the analysis.
+    job = _job(owner, requirements={})
+    _model(monkeypatch, during=lambda: JobLead.objects.filter(pk=job.pk).update(application_requirements=_req('de')))
+    _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
+    job.refresh_from_db()
+    assert job.application_requirements == _req('de') and set(_state(client, job)[0]) == {'cv-de'}
+
+
+def test_an_analysis_interrupted_by_a_restart_says_so(client, owner, generator):
+    job = _job(owner, 'to_apply', requirements={})
+    application_prep._save(job, owner.pk, lambda prep: prep.update(reason=application_prep.ANALYSING, variants={}))
+    assert _state(client, job)[1]['reason'] == application_prep.ANALYSIS_INTERRUPTED

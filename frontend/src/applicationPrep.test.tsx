@@ -37,6 +37,7 @@ describe('prepared documents panel',()=>{
     expect(prepAction(state([v({status:'failed'})]),'reviewed')).toBe('')   // retry is refused outside To apply
     expect(isPreparing(state([v({status:'queued'})]))).toBe(true)
     expect(isPreparing(state([v({})]))).toBe(false)
+    expect(isPreparing({...state([]),reason:'Analysing application requirements…'})).toBe(true)
   })
 
   it('flags a ready variant whose file is gone',()=>{

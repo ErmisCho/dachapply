@@ -18,17 +18,20 @@ was cleared). Ready to submit follows the selection, never generation.
 import io
 import logging
 import re
+import tempfile
 import zipfile
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import close_old_connections
 
 from jobradar.models import JobLead
 from jobradar.services import cv_tasks
-from jobradar.services.cv_generator import _edit_sidecar, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, user_templates, validate_model_capability
-from jobradar.services.prompt_builder import build_candidate_profile_text, user_profile_settings
+from jobradar.services.application_requirements import DOCUMENT_STATUSES, DOCUMENT_TYPES, POSTING_LANGUAGES, normalize_application_requirements
+from jobradar.services.cv_generator import _edit_sidecar, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
+from jobradar.services.prompt_builder import APPLICATION_REQUIREMENTS_RULES, APPLICATION_REQUIREMENTS_SCHEMA_FIELD, build_candidate_profile_text, user_profile_settings
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +42,28 @@ DOCUMENT_NAMES = {'cv': 'CV', 'letter': 'Full letter', 'message': 'Short message
 WANT = ('required', 'preferred')
 FULL_LETTER_TYPES = ('cover_letter', 'motivation_letter')
 INTERRUPTED = 'Stopped before it finished (the server restarted). Retry to prepare it again.'
+NOT_ANALYSED = 'Application requirements are not analysed yet. Analyse the job, then move it to To apply again or press Prepare.'
+ANALYSING = 'Analysing application requirements…'
+ANALYSIS_INTERRUPTED = 'Requirements analysis stopped before it finished (the server restarted). Press Prepare to retry.'
 
 _lock = Lock()  # ponytail: one process serves generation (threaded runserver); a DB claim if that changes
+_analysing = set()  # TASK-308: job ids whose requirements analysis is running; guarded by _lock
+
+_STRING = {'type': 'string'}
+# TASK-308: the strict JSON-schema form of APPLICATION_REQUIREMENTS_SCHEMA_FIELD, so structured output
+# returns exactly the shape normalize_application_requirements reads.
+REQUIREMENTS_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['application_requirements'], 'properties': {
+    'application_requirements': {
+        'type': 'object', 'additionalProperties': False,
+        'required': ['posting_language', 'application_language', 'application_language_quote', 'documents'],
+        'properties': {
+            'posting_language': {'type': 'string', 'enum': list(POSTING_LANGUAGES)},
+            'application_language': {'type': 'string', 'enum': ['en', 'de', '']},
+            'application_language_quote': _STRING,
+            'documents': {'type': 'array', 'items': {
+                'type': 'object', 'additionalProperties': False, 'required': ['type', 'name', 'status', 'quote'],
+                'properties': {'type': {'type': 'string', 'enum': list(DOCUMENT_TYPES)}, 'name': _STRING,
+                               'status': {'type': 'string', 'enum': list(DOCUMENT_STATUSES)}, 'quote': _STRING}}}}}}}
 
 
 def _kind_status(documents, types):
@@ -62,7 +85,7 @@ def plan_variants(requirements):
     not mentioned / optional / absent follow LETTER_RULE (none).
     """
     if not requirements:
-        return [], 'Application requirements are not analysed yet. Analyse the job, then move it to To apply again or press Prepare.'
+        return [], NOT_ANALYSED
     posting = requirements.get('posting_language')
     language = requirements.get('application_language') or (posting if posting in LANGUAGE_NAMES else '')
     languages = [language] if language else ['en', 'de']
@@ -184,6 +207,7 @@ def prepare(job_id, user, retry=False):
     job = JobLead.objects.filter(pk=job_id).first()
     if not job:
         return None
+    analyse = False
     with _lock:
         state = public_state(job, user)
         # AC1: only To apply (and, for a retry, the Ready to submit it may have moved to). New/Reviewed
@@ -196,32 +220,86 @@ def prepare(job_id, user, retry=False):
         if state['variants'] and not (retry and failed):
             return state
         reason, variants, context, choice = _gate(job, user)
-        if not reason and not state['variants'] and any(latest_generated_sources(job, user)):
+        if reason in ('', NOT_ANALYSED) and not state['variants'] and any(latest_generated_sources(job, user)):
             # AC5: files the owner already generated are theirs; automatic drafts never join or replace them.
             reason ='Generated files already exist for this job, so nothing was prepared automatically. Generate more from the CV section.'
-        if reason:
+        if reason == NOT_ANALYSED and not state['variants']:
+            # TASK-308: analyse the posting ourselves, off this (request) thread; the worker prepares after.
+            analyse = job.id not in _analysing
+            if analyse:
+                _analysing.add(job.id)
+                _save(job, user.pk, lambda prep: prep.update(reason=ANALYSING, variants={}))
+        elif reason:
             if not state['variants']:
                 _save(job, user.pk, lambda prep: prep.update(reason=reason, variants={}))
             return public_state(job, user, reason_override=reason if state['variants'] else None)
-        if state['variants']:
-            # AC5: retry targets only failed variants; ready and running ones are left alone.
-            wanted = {variant['key'] for variant in failed}
-            stored = _state(job, user)['variants']
-            variants = [{**stored[key], 'key': key, 'letter_type': ''} for key in wanted]
-            suffix = len({variant['language'] for variant in stored.values()}) > 1
         else:
-            suffix = len({variant['language'] for variant in variants}) > 1
+            if state['variants']:
+                # AC5: retry targets only failed variants; ready and running ones are left alone.
+                wanted = {variant['key'] for variant in failed}
+                stored = _state(job, user)['variants']
+                variants = [{**stored[key], 'key': key, 'letter_type': ''} for key in wanted]
+                suffix = len({variant['language'] for variant in stored.values()}) > 1
+            else:
+                suffix = len({variant['language'] for variant in variants}) > 1
 
-        def queue(prep):
-            prep.update(reason='', model=choice)
-            prep.setdefault('variants', {})
-            for variant in variants:
-                prep['variants'][variant['key']] = {'document': variant['document'], 'language': variant['language'],
-                                                    'letter_template': variant.get('letter_template', ''),
-                                                    'status': 'queued', 'task_id': '', 'error': '', 'files': {}}
-        _save(job, user.pk, queue)
-        _start(job, user, variants, context, choice, suffix)
+            def queue(prep):
+                prep.update(reason='', model=choice)
+                prep.setdefault('variants', {})
+                for variant in variants:
+                    prep['variants'][variant['key']] = {'document': variant['document'], 'language': variant['language'],
+                                                        'letter_template': variant.get('letter_template', ''),
+                                                        'status': 'queued', 'task_id': '', 'error': '', 'files': {}}
+            _save(job, user.pk, queue)
+            _start(job, user, variants, context, choice, suffix)
+    if analyse:
+        Thread(target=_analyse_then_prepare, args=(job.id, user.pk, retry), daemon=True).start()
     return public_state(job, user)
+
+
+def _analyse(job):
+    """TASK-308: the posting's application requirements from the CV default model, normalised as analysis."""
+    option, effort = cv_default_choice(available_model_options())
+    if not option:
+        raise RuntimeError('No document model is available on this machine')
+    provider, model = option['provider'], option['key']
+    model_option = validate_model_capability(provider, model, effort, 'normal')
+    prompt = ('Read the job posting below and classify how to apply to it. The posting below is the original_source_text; '
+              'quote from it.\n\n' + APPLICATION_REQUIREMENTS_RULES
+              + '\n\nReturn only a JSON object: {' + APPLICATION_REQUIREMENTS_SCHEMA_FIELD + '}\n\nJob posting:\n' + job.source_text)
+    with tempfile.TemporaryDirectory(prefix='dachapply-requirements-') as workdir:
+        data = run_structured_model(prompt, REQUIREMENTS_SCHEMA, provider, model, effort, 'normal', workdir=workdir, model_option=model_option)
+    requirements = normalize_application_requirements((data or {}).get('application_requirements'), job, source='analysis')
+    if not requirements:
+        raise RuntimeError('the model returned no application requirements')
+    return requirements
+
+
+def _analyse_then_prepare(job_id, user_id, retry):
+    """TASK-308 worker: analyse, store, then prepare as usual. A failure becomes the panel's reason."""
+    close_old_connections()
+    try:
+        job = JobLead.objects.filter(pk=job_id).first()
+        user = get_user_model().objects.filter(pk=user_id).first()
+        if not job or not user:
+            return
+        try:
+            requirements = _analyse(job)
+        except Exception as exc:  # AC2: the page says why, never a silent stop
+            error = str(getattr(exc, 'summary', '') or exc)[:300].rstrip('.')
+            _save(job, user_id, lambda prep: prep.update(reason=f'Requirements analysis failed: {error}. Press Prepare to retry.'))
+            return
+        job.refresh_from_db()
+        if not job.application_requirements:  # AC3: requirements stored meanwhile (an owner edit) win
+            job.application_requirements = requirements
+            job.save(update_fields=['application_requirements', 'updated_at'])
+        prepare(job_id, user, retry)
+    except Exception:
+        logger.exception('Analysing application requirements for job %s failed', job_id)
+    finally:
+        with _lock:
+            _analysing.discard(job_id)
+        close_old_connections()
 
 
 def prepare_on_to_apply(job_id, user_id):
@@ -241,6 +319,8 @@ def public_state(job, user, reason_override=None):
     package is cleared here so the page says why rather than offering files that are gone.
     """
     state = _state(job, user)
+    if state.get('reason') == ANALYSING and job.id not in _analysing:
+        state['reason'] = ANALYSIS_INTERRUPTED
     if _stale_reason(state):
         _invalidate(job, user)
         state = _state(job, user)
