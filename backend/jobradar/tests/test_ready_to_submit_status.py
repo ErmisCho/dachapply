@@ -11,9 +11,10 @@ from threading import Event
 import pytest
 from django.contrib.auth.models import User
 from django.core.management import call_command
+from django.utils import timezone
 
 from jobradar.management.commands import mark_ready_to_submit as command
-from jobradar.models import JobLead
+from jobradar.models import JobEvaluation, JobLead
 from jobradar.services import cv_tasks
 
 
@@ -118,3 +119,57 @@ def test_command_dry_run_writes_nothing_and_apply_writes(owner, files, monkeypat
     for job, expected in ((with_files, 'ready_to_submit'), (without_files, 'new'), (applied, 'applied')):
         job.refresh_from_db()
         assert job.status == expected
+
+
+def _evaluate(job, *recommendations):
+    # The last one is the latest (Meta ordering -created_at); explicit times, not clock resolution.
+    for minutes, recommendation in enumerate(recommendations):
+        evaluation = JobEvaluation.objects.create(job=job, fit_score=50, priority='medium', recommendation=recommendation)
+        JobEvaluation.objects.filter(pk=evaluation.pk).update(created_at=timezone.now() + timezone.timedelta(minutes=minutes))
+
+
+@pytest.mark.parametrize('history, promoted', [
+    ((), True), (('apply',), True), (('maybe',), True), (('skip',), False),
+    (('skip', 'apply'), True),   # re-evaluated as worth applying to
+    (('apply', 'skip'), False),  # the latest verdict wins, as on the board
+])
+def test_generation_promotes_only_when_the_latest_evaluation_is_not_skip(owner, files, monkeypatch, history, promoted):
+    """TASK-310 AC1."""
+    job = _job(owner, 'to_apply')
+    _evaluate(job, *history)
+    _run(job, monkeypatch, files)
+    job.refresh_from_db()
+    assert job.status == ('ready_to_submit' if promoted else 'to_apply')
+
+
+def test_command_leaves_a_skip_recommended_job_out(owner, files, monkeypatch):
+    """TASK-310 AC1: the dry run does not list it and --apply does not move it."""
+    skip = _job(owner, 'to_apply')
+    _evaluate(skip, 'skip')
+    monkeypatch.setattr(command, 'latest_generated_sources', lambda job, user, letter_key='': (files['cv_tex'], None))
+    out = StringIO()
+    call_command('mark_ready_to_submit', stdout=out)
+    assert f'job {skip.id} ' not in out.getvalue() and 'Dry run: 0 job(s)' in out.getvalue()
+    call_command('mark_ready_to_submit', '--apply', stdout=StringIO())
+    skip.refresh_from_db()
+    assert skip.status == 'to_apply'
+
+
+def test_skip_never_demotes_a_job_already_ready_to_submit(owner, files, monkeypatch):
+    """TASK-310 AC2."""
+    job = _job(owner, 'ready_to_submit')
+    _evaluate(job, 'skip')
+    _run(job, monkeypatch, files)
+    job.refresh_from_db()
+    assert job.status == 'ready_to_submit'
+
+
+def test_an_explicit_final_package_choice_promotes_even_a_skip_job(owner):
+    """TASK-310: selecting a final package (application_prep.review 'select') is the owner's own
+    decision, so it passes respect_skip=False and wins over a 'skip' recommendation."""
+    job = _job(owner, 'to_apply')
+    _evaluate(job, 'skip')
+    assert cv_tasks.mark_ready_to_submit(job.id) == 0
+    assert cv_tasks.mark_ready_to_submit(job.id, respect_skip=False) == 1
+    job.refresh_from_db()
+    assert job.status == 'ready_to_submit'

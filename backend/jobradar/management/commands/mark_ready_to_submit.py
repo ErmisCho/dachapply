@@ -2,9 +2,8 @@ import sys
 
 from django.core.management.base import BaseCommand
 
-from jobradar.models import JobLead
 from jobradar.services.cv_generator import latest_generated_sources
-from jobradar.services.cv_tasks import READY_TO_SUBMIT_FROM, has_prepared_drafts, mark_ready_to_submit
+from jobradar.services.cv_tasks import has_prepared_drafts, mark_ready_to_submit, promotable_jobs
 
 
 def _console_safe(text):
@@ -16,8 +15,9 @@ def _console_safe(text):
 class Command(BaseCommand):
     help = (
         "TASK-265 AC3: move unapplied jobs (new/reviewed/to_apply) that already have a generated CV "
-        "and/or letter on disk to 'ready_to_submit'. Files are looked up read-only per the job's "
-        "submitted_for user, then its created_by user. Dry run by default; --apply writes."
+        "and/or letter on disk to 'ready_to_submit', unless their latest evaluation recommends 'skip' "
+        "(TASK-310). Files are looked up read-only per the job's submitted_for user, then its "
+        "created_by user. Dry run by default; --apply writes."
     )
 
     def add_arguments(self, parser):
@@ -25,7 +25,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **opts):
         found = []
-        jobs = JobLead.objects.filter(status__in=READY_TO_SUBMIT_FROM).select_related('submitted_for', 'created_by').order_by('id')
+        # TASK-310: the same queryset mark_ready_to_submit updates, so the dry run lists no 'skip' job.
+        jobs = promotable_jobs().select_related('submitted_for', 'created_by').order_by('id')
         for job in jobs:
             for user in dict.fromkeys(u for u in (job.submitted_for, job.created_by) if u):
                 cv, letter = latest_generated_sources(job, user)

@@ -13,8 +13,9 @@ from threading import Event, Lock, Thread
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import close_old_connections
+from django.db.models import OuterRef, Q, Subquery
 
-from jobradar.models import ApplicationNote, JobLead, UserProfile
+from jobradar.models import ApplicationNote, JobEvaluation, JobLead, UserProfile
 from jobradar.services.cv_generator import GenerationCancelled, RecoverableGenerationError, _artifact_metadata_path, _filename_label, _is_sent, _letter_label, _sent_paths, applicant_name, generate_cv_package, latest_generated_sources, preference_exclusion, preferred_names, read_revision_sources, recompile_generated_package, rename_generated_artifact
 from jobradar.services.literal_edits import NotLiteral, gate_literal_edits, literal_report, translate_literal_edits
 from jobradar.services.posting_fetch import fetch_posting_text
@@ -332,20 +333,35 @@ def copy_text_to_clipboard(text):
 READY_TO_SUBMIT_FROM=[status for status in JobLead.UNAPPLIED_STATUSES if status != 'ready_to_submit']
 
 
-def mark_ready_to_submit(job_id):
+def promotable_jobs(respect_skip=True):
+    """TASK-310: jobs mark_ready_to_submit may move -- unapplied, and not recommended 'skip' by their
+    latest evaluation, the one the board shows (evaluations.first(), Meta ordering -created_at). A job
+    without an evaluation is promoted as before. respect_skip=False is the owner's explicit final-package
+    choice, which wins over the recommendation."""
+    if not respect_skip:
+        return JobLead.objects.filter(status__in=READY_TO_SUBMIT_FROM)
+    latest=JobEvaluation.objects.filter(job=OuterRef('pk')).order_by('-created_at').values('recommendation')[:1]
+    # The isnull arm is load-bearing: a negated lookup on an annotation gets no NULL handling, so
+    # ~Q alone would also drop every job that has no evaluation.
+    return JobLead.objects.filter(status__in=READY_TO_SUBMIT_FROM).alias(latest_recommendation=Subquery(latest)).filter(
+        Q(latest_recommendation__isnull=True)|~Q(latest_recommendation='skip'))
+
+
+def mark_ready_to_submit(job_id, respect_skip=True):
     """TASK-265: move an unapplied job to 'ready_to_submit' once documents exist for it.
 
     One conditional UPDATE, so a status the owner changed while generation ran (e.g. to applied)
-    is never clobbered. ready_to_submit is outside DATED_STATUSES, so -- as JobLeadSerializer.update
-    does for any move to a non-dated status -- status_date/feedback_due_date/last_update_date are
-    cleared. Returns the number of rows changed (0 or 1).
+    is never clobbered, and a job whose latest evaluation says 'skip' stays put (TASK-310).
+    ready_to_submit is outside DATED_STATUSES, so -- as JobLeadSerializer.update does for any move
+    to a non-dated status -- status_date/feedback_due_date/last_update_date are cleared. Returns the
+    number of rows changed (0 or 1).
 
     Never raises: it runs after the documents already exist, and a failed status bump must not turn
     a finished generation into a failed task (the owner can still set the status by hand, and the
     mark_ready_to_submit command catches anything missed).
     """
     try:
-        return JobLead.objects.filter(pk=job_id,status__in=READY_TO_SUBMIT_FROM).update(
+        return promotable_jobs(respect_skip).filter(pk=job_id).update(
             status='ready_to_submit',status_date=None,feedback_due_date=None,last_update_date=None)
     except Exception:
         logger.exception('Could not mark job %s ready_to_submit', job_id)

@@ -972,11 +972,7 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         company=company.strip() or 'Unknown company'
         # One update keeps the popup's generation identity and source text from being half-saved.
         # Saving either reviewed version resolves the pending comparison atomically.
-        # TASK-269: remember the copy being resolved so the automatic refresh does not re-stage it.
-        dismissed={'dismissed_source_hash':_source_hash(job.pending_source_text)} if job.pending_source_text else {}
-        JobLead.objects.filter(pk=job.pk).update(
-            company=company, original_source_text=text, pending_source_text='',
-            pending_source_fetched_at=None, source_fetch_error='', **dismissed)
+        JobLead.objects.filter(pk=job.pk).update(company=company, **_accepted_source(job, text))
         if job.status == 'to_apply':
             # TASK-306: the choice may have been all that held preparation back; retry as the transition does.
             from .services.application_prep import prepare_on_to_apply
@@ -2112,11 +2108,20 @@ def _source_hash(text):
     return hashlib.sha256(normalized(text).encode('utf-8')).hexdigest()
 
 
-def _stage_source_fetch(job, result, checked_at=None, skip_dismissed=False):
-    """Persist only review state. Accepted source text is deliberately never touched here.
+def _accepted_source(job, text):
+    """The one write that makes text the job's accepted posting text and resolves its pending copy.
+    TASK-269: the copy being resolved is remembered so the automatic refresh does not re-stage it."""
+    dismissed={'dismissed_source_hash':_source_hash(job.pending_source_text)} if job.pending_source_text else {}
+    return {'original_source_text':text,'pending_source_text':'','pending_source_fetched_at':None,'source_fetch_error':'',**dismissed}
+
+
+def _stage_source_fetch(job, result, checked_at=None, skip_dismissed=False, stage_only_applying=False):
+    """Persist review state. Accepted source text is only ever replaced when it is no usable posting.
 
     skip_dismissed (TASK-269): the automatic refresh does not re-stage a copy the owner already
-    resolved; a manual fetch is an explicit request and always stages a differing copy."""
+    resolved; a manual fetch is an explicit request and always stages a differing copy.
+    stage_only_applying (TASK-311, automatic refresh): a New or Reviewed job gets nothing to review --
+    its link-only text is replaced by the fetched one, a usable text is kept and an earlier copy dropped."""
     checked_at=checked_at or timezone.now()
     values={'source_checked_at':checked_at}
     state='failed'
@@ -2125,6 +2130,13 @@ def _stage_source_fetch(job, result, checked_at=None, skip_dismissed=False):
         if normalized(result['text']) == normalized(job.source_text):
             values.update(pending_source_text='',pending_source_fetched_at=None)
             state='identical'
+        elif stage_only_applying and job.status in ('new','reviewed'):
+            if not JobLead.is_meaningful_source(job.source_text) and JobLead.is_meaningful_source(result['text']):
+                values.update(_accepted_source(job,result['text']))
+                state='saved'
+            else:
+                values.update(pending_source_text='',pending_source_fetched_at=None)
+                state='kept'
         elif skip_dismissed and _source_hash(result['text']) == job.dismissed_source_hash:
             state='dismissed'
         else:
@@ -2143,7 +2155,7 @@ def _refresh_job_sources(jobs):
     # Network work is independent; database writes stay in this request thread.
     with ThreadPoolExecutor(max_workers=min(4,len(jobs))) as pool:
         results=list(pool.map(fetch_posting_text,[job.url for job in jobs]))
-    return [(job,result,_stage_source_fetch(job,result,skip_dismissed=True)) for job,result in zip(jobs,results)]
+    return [(job,result,_stage_source_fetch(job,result,skip_dismissed=True,stage_only_applying=True)) for job,result in zip(jobs,results)]
 
 
 def _live_source_response(job, result, staged=False):
@@ -2186,12 +2198,12 @@ def refresh_due_job_sources(request):
         return Response({'disabled':True,'checked':0,'staged':0,'failed':0,'remaining':0})
     now=timezone.now()
     cutoff=now-timezone.timedelta(days=7 if cadence=='weekly' else 1)
-    due=accessible_jobs(request.user).exclude(url='').filter(
+    # TASK-311: Applied and later are never re-fetched automatically. due.count() re-runs the query,
+    # so remaining sees the source_checked_at just written.
+    due=accessible_jobs(request.user).exclude(url='').filter(status__in=JobLead.UNAPPLIED_STATUSES).filter(
         Q(source_checked_at__isnull=True)|Q(source_checked_at__lt=cutoff)).order_by('source_checked_at','id')
-    jobs=list(due[:4])
-    outcomes=_refresh_job_sources(jobs)
-    remaining=accessible_jobs(request.user).exclude(url='').filter(
-        Q(source_checked_at__isnull=True)|Q(source_checked_at__lt=cutoff)).count()
+    outcomes=_refresh_job_sources(list(due[:4]))
+    remaining=due.count()
     return Response({
         'disabled':False,'checked':len(outcomes),
         'staged':sum(state=='staged' for _,_,state in outcomes),

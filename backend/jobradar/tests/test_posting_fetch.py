@@ -128,6 +128,12 @@ def job(db, owner):
 
 
 @pytest.fixture
+def applying(job):
+    """TASK-311: the automatic refresh stages a differing copy only on a job being applied to."""
+    JobLead.objects.filter(pk=job.pk).update(status='to_apply')
+
+
+@pytest.fixture
 def live_posting(net):
     net.host('jobs.acme.test', PUBLIC_IP)
     net.page(JOB_URL, POSTING_HTML)
@@ -411,7 +417,7 @@ def _make_due(job):
     JobLead.objects.filter(pk=job.pk).update(source_checked_at=None)
 
 
-def test_kept_current_copy_is_not_restaged_by_the_automatic_refresh(client, job, live_posting):
+def test_kept_current_copy_is_not_restaged_by_the_automatic_refresh(client, job, applying, live_posting):
     """TASK-269 AC3: same website text after Keep current -> nothing staged; changed text -> staged."""
     assert client.post('/api/jobs/source-text/refresh-due/').data['staged'] == 1
     assert _keep_current(client, job).status_code == 200
@@ -434,7 +440,7 @@ def test_kept_current_copy_is_not_restaged_by_the_automatic_refresh(client, job,
     assert job.original_source_text == SUMMARY
 
 
-def test_use_fetched_still_adopts_the_candidate_after_an_earlier_dismissal(client, job, live_posting):
+def test_use_fetched_still_adopts_the_candidate_after_an_earlier_dismissal(client, job, applying, live_posting):
     """TASK-269 AC4: Use fetched saves the candidate as the accepted text, and a refresh then finds it identical."""
     client.post('/api/jobs/source-text/refresh-due/')
     _keep_current(client, job)
@@ -451,7 +457,7 @@ def test_use_fetched_still_adopts_the_candidate_after_an_earlier_dismissal(clien
     assert client.post('/api/jobs/source-text/refresh-due/').data['staged'] == 0
 
 
-def test_manual_fetch_stages_even_a_dismissed_copy(client, job, live_posting):
+def test_manual_fetch_stages_even_a_dismissed_copy(client, job, applying, live_posting):
     """TASK-269 decision: a manual Fetch/Refetch is an explicit request, so it is not suppressed."""
     client.post('/api/jobs/source-text/refresh-due/')
     _keep_current(client, job)
@@ -482,7 +488,7 @@ def test_generation_preview_carries_the_persisted_candidate(client, job):
     assert data['source_fetch_error'] == 'Most recent retry failed.'
 
 
-def test_due_refresh_respects_off_daily_and_weekly_cadence(client, job, live_posting):
+def test_due_refresh_respects_off_daily_and_weekly_cadence(client, job, applying, live_posting):
     profile = UserProfile.objects.get(user=client.user)
     profile.posting_refresh_cadence = 'off'
     profile.save(update_fields=['posting_refresh_cadence'])
@@ -538,3 +544,57 @@ def test_due_refresh_clears_an_identical_candidate_but_preserves_one_on_failure(
     assert job.original_source_text == SUMMARY
     assert job.pending_source_text == 'Last readable candidate'
     assert job.source_fetch_error == 'The site answered 403 Forbidden.'
+
+
+def _refresh(job, status, saved=SUMMARY, pending=''):
+    JobLead.objects.filter(pk=job.pk).update(status=status, original_source_text=saved, pending_source_text=pending, source_checked_at=None)
+
+
+@pytest.mark.parametrize('status', ['applied', 'interview', 'offer', 'accepted', 'rejected', 'withdrawn', 'skipped', 'archived'])
+def test_due_refresh_never_fetches_applied_or_later_jobs(client, job, live_posting, status):
+    """TASK-311 AC1: neither the batch nor the remaining count includes a job past Ready to submit."""
+    _refresh(job, status)
+    assert client.post('/api/jobs/source-text/refresh-due/').data == {'disabled':False,'checked':0,'staged':0,'failed':0,'remaining':0}
+    assert live_posting.handler.dialled == []
+
+
+@pytest.mark.parametrize('status', ['to_apply', 'ready_to_submit'])
+def test_due_refresh_stages_a_differing_copy_on_a_job_being_applied_to(client, job, live_posting, status):
+    """TASK-311 AC2."""
+    _refresh(job, status)
+    assert client.post('/api/jobs/source-text/refresh-due/').data['staged'] == 1
+    job.refresh_from_db()
+    assert 'Own the Postgres schema' in job.pending_source_text
+    assert job.original_source_text == SUMMARY
+
+
+@pytest.mark.parametrize('status', ['new', 'reviewed'])
+def test_due_refresh_saves_the_fetched_text_over_a_link_only_text(client, job, live_posting, status):
+    """TASK-311 AC3: a saved text that is no usable posting is replaced, with nothing left to review."""
+    _refresh(job, status, saved=JOB_URL, pending='Earlier candidate')
+    assert client.post('/api/jobs/source-text/refresh-due/').data['staged'] == 0
+    job.refresh_from_db()
+    assert 'Own the Postgres schema' in job.original_source_text
+    assert job.pending_source_text == '' and job.pending_source_fetched_at is None
+    assert job.status == status
+
+
+@pytest.mark.parametrize('status', ['new', 'reviewed'])
+def test_due_refresh_keeps_a_usable_text_and_drops_an_earlier_copy(client, job, live_posting, status):
+    """TASK-311 AC3: a usable saved text stays, nothing is staged, and a copy staged earlier is cleared."""
+    _refresh(job, status, pending='Earlier candidate')
+    JobLead.objects.filter(pk=job.pk).update(pending_source_fetched_at=timezone.now())
+    assert client.post('/api/jobs/source-text/refresh-due/').data['staged'] == 0
+    job.refresh_from_db()
+    assert job.original_source_text == SUMMARY
+    assert job.pending_source_text == '' and job.pending_source_fetched_at is None
+
+
+@pytest.mark.parametrize('status', ['new', 'reviewed', 'to_apply', 'applied', 'rejected'])
+def test_manual_fetch_stages_a_differing_copy_on_any_status(client, job, live_posting, status):
+    """TASK-311 AC4: the quieter rules are the automatic refresh's only."""
+    _refresh(job, status)
+    assert client.post(f'/api/jobs/{job.id}/source-text/live/').data['staged'] is True
+    job.refresh_from_db()
+    assert 'Own the Postgres schema' in job.pending_source_text
+    assert job.original_source_text == SUMMARY
