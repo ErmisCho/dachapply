@@ -19,7 +19,8 @@ export function variantStatusText(v:PrepVariant){
   return `${v.step_label||'Generating'}${typeof v.progress==='number'?` · ${Math.round(v.progress)}%`:''}${minutes(v.estimated_seconds_remaining)}`
 }
 
-export function isPreparing(state?:PrepState|null){return !!state?.variants.some(v=>v.status==='queued'||v.status==='running'||v.adjusting)}
+// TASK-308: the server's requirements analysis runs before any variant exists; keep polling through it.
+export function isPreparing(state?:PrepState|null){return !!state?.variants.some(v=>v.status==='queued'||v.status==='running'||v.adjusting)||(state?.reason||'').startsWith('Analysing application requirements')}
 
 // The one button: retry only what failed, or start when nothing was prepared (e.g. after a skip).
 export function prepAction(state:PrepState|null|undefined,jobStatus:string):string{
