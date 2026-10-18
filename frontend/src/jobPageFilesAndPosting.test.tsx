@@ -32,7 +32,7 @@ describe('Generated files table (TASK-301)',()=>{
   it('is fed from the preview on the job page and refreshed after a run and a rename',()=>{
     expect(appSource).toContain('{!compact&&<ArtifactPaths artifacts={selectedArtifacts} files={preview?.generated_files}')
     expect(appSource).toContain('generated_files:p.generated_files,clipboard_tex:p.clipboard_tex')
-    expect(appSource).toContain("if(current.status==='ready'){api(`/jobs/${job.id}/cv-generation/`).then((p:any)=>setPreview((c:any)=>({...c,generated_files:p.generated_files})))")
+    expect(appSource).toContain("if(current.status==='ready'){fetchCvGeneration(job.id).then((p:any)=>setPreview((c:any)=>({...c,generated_files:p.generated_files})))")
   })
 })
 
