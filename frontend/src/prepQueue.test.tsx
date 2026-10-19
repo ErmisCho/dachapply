@@ -161,6 +161,26 @@ describe('blocked jobs',()=>{
   })
 })
 
+// TASK-322: a job held because its posting lacks tasks, requirements, salary or a company description.
+describe('incomplete postings (TASK-322)',()=>{
+  const held=item({...blocked,job_id:22,company:'Eta',incomplete:true,error:'Posting incomplete: missing salary, company description. Paste the full posting on the job page, or Continue anyway.'})
+  it('offers Continue anyway beside Retry only for an incomplete blocked item',()=>{
+    const d=withBlocked();d.items.push(held)
+    const listed=section(view({data:d}),'Blocked')
+    expect(listed.match(/>Retry</g)?.length).toBe(2)
+    expect(listed.match(/>Continue anyway</g)?.length).toBe(1)
+    expect(listed).toMatch(/Eta — Ops Engineer.*>Retry<\/button><button[^>]*>Continue anyway</)
+    expect(view({data:fixture()})).not.toContain('Continue anyway')
+  })
+  it('posts continue with an empty key and renders the returned list',async()=>{
+    const after:QueueData={concurrency:2,items:[item({job_id:22,company:'Eta',status:'queued',position:1})]}
+    reply=()=>({status:200,body:after})
+    await queueAction({...held,key:'cv-de'},'continue')
+    expect(calls).toEqual([{method:'POST',url:'/api/jobs/application-prep/queue/action/',body:{job_id:22,key:'',action:'continue'}}])
+    expect(queueSnapshot().data).toEqual(after)
+  })
+})
+
 describe('queue polling',()=>{
   const gets=()=>calls.filter(c=>c.method==='GET').length
   it('polls every 3 s while something is queued or running, 30 s otherwise, and stops on unmount',async()=>{

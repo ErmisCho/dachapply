@@ -46,7 +46,7 @@ from jobradar.services import cv_tasks, job_evaluator
 from jobradar.services.access import accessible_jobs
 from jobradar.services.application_requirements import DOCUMENT_STATUSES, DOCUMENT_TYPES, POSTING_LANGUAGES, normalize_application_requirements
 from jobradar.services.cv_generator import _edit_sidecar, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
-from jobradar.services.posting_fetch import fetch_missing_sources
+from jobradar.services.posting_fetch import PART_NAMES, fetch_missing_sources, posting_missing
 from jobradar.services.prompt_builder import APPLICATION_REQUIREMENTS_RULES, APPLICATION_REQUIREMENTS_SCHEMA_FIELD, build_candidate_profile_text, user_profile_settings
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,7 @@ PREPARE_STATUSES = ('new', 'reviewed', 'to_apply')  # TASK-312 AC1; a retry also
 FINISHED_LIMIT = 50  # TASK-312: finished items the queue lists, newest first
 AUTO_RETRIES = 3  # TASK-317: automatic retries of one usage-limited item
 REANALYSIS_FAILED = 'Re-analysis failed'  # TASK-319: the prefix of a failed late-text re-analysis's reason
+INCOMPLETE = 'Posting incomplete'  # TASK-322: the prefix of _gate's reason for a posting lacking a required part
 
 # ponytail: one process serves generation (threaded runserver); a DB claim if that changes. Re-entrant
 # because a task's on_finish can run in the thread that started it (a task that fails at once, tests).
@@ -157,6 +158,11 @@ def _gate(job, user):
         return 'Choose which job text to use (Keep current or Use fetched) before documents are prepared.', [], '', None
     if not job.is_meaningful_source(job.source_text):
         return 'The job has no usable posting text yet.', [], '', None
+    prep, missing = _state(job, user), posting_missing(job)
+    if missing and not (prep.get('continue_incomplete') or prep.get('variants')):
+        # TASK-322: a posting lacking a required part holds documents until the owner pastes it or continues;
+        # a job with documents already prepared (a retry) is past that hold.
+        return f"{INCOMPLETE}: missing {', '.join(PART_NAMES[part] for part in missing)}. Paste the full posting on the job page, or Continue anyway.", [], '', None
     variants, reason = plan_variants(job.application_requirements)
     if reason:
         return reason, [], '', None
@@ -285,7 +291,7 @@ def prepare(job_id, user, retry=False):
         if state['variants'] and not (retry and failed):
             return state
         reason, variants, context, choice = _gate(job, user)
-        if reason in ('', NOT_ANALYSED) and not state['variants'] and any(latest_generated_sources(job, user)):
+        if (reason in ('', NOT_ANALYSED) or reason.startswith(INCOMPLETE)) and not state['variants'] and any(latest_generated_sources(job, user)):
             # AC5: files the owner already generated are theirs; automatic drafts never join or replace them.
             reason = FILES_EXIST
         if reason == NOT_ANALYSED and not state['variants']:
@@ -755,7 +761,8 @@ def queue_state(user):
             blocked.append({'job_id': job.id, 'company': job.company, 'title': job.title, 'job_status': job.status, 'key': '',
                             'label': 'Documents', 'document': None, 'language': None, 'status': 'blocked', 'position': None,
                             'progress': 0, 'eta_seconds': None, 'error': error, 'files': [],
-                            'queued_at': None, 'started_at': None, 'finished_at': None, 'retry_at': prep.get('retry_at')})
+                            'queued_at': None, 'started_at': None, 'finished_at': None, 'retry_at': prep.get('retry_at'),
+                            'incomplete': prep['reason'].startswith(INCOMPLETE)})  # TASK-322: offers Continue anyway
         for key, variant in (prep.get('variants') or {}).items():
             if variant.get('review') == 'discard':
                 continue
@@ -767,7 +774,7 @@ def queue_state(user):
                           'eta_seconds': live['estimated_seconds_remaining'] if live else None, 'error': error,
                           'files': [Path(path).name for path in (variant.get('files') or {}).values()],
                           'queued_at': variant.get('queued_at'), 'started_at': variant.get('started_at'), 'finished_at': variant.get('finished_at'),
-                          'retry_at': variant.get('retry_at') if variant.get('status') == 'failed' else None})
+                          'retry_at': variant.get('retry_at') if variant.get('status') == 'failed' else None, 'incomplete': False})
     running = sorted((item for item in items if item['status'] == 'running'), key=lambda item: item['started_at'] or '')
     queued = sorted((item for item in items if item['status'] == 'queued'), key=lambda item: (item['position'] is None, item['position'] or 0, item['queued_at'] or ''))
     finished = sorted((item for item in items if item['status'] not in ('running', 'queued')), key=lambda item: item['finished_at'] or '', reverse=True)
@@ -776,14 +783,22 @@ def queue_state(user):
 
 def queue_action(user, job_id, key, action):
     """AC5: cancel (queued or running; a running one's task is stopped), retry (failed or cancelled, to
-    the back of the queue) or first (queued, to the front). Raises ValueError; returns queue_state."""
-    if action not in ('cancel', 'retry', 'first'):
+    the back of the queue) or first (queued, to the front). TASK-322: continue (key '', a job blocked as
+    Posting incomplete) prepares despite the gaps and remembers that for the job. Raises ValueError;
+    returns queue_state."""
+    if action not in ('cancel', 'retry', 'first', 'continue'):
         raise ValueError('Unknown action.')
     try:
         job = accessible_jobs(user).filter(pk=int(job_id), status__in=JobLead.UNAPPLIED_STATUSES).first()
     except (TypeError, ValueError):
         job = None
-    prep = _state(job, user) if job and key == '' and action == 'retry' else {}
+    prep = _state(job, user) if job and key == '' and action in ('retry', 'continue') else {}
+    if action == 'continue':
+        if prep.get('variants') or not (prep.get('reason') or '').startswith(INCOMPLETE):
+            raise ValueError('Only a job held as Posting incomplete can be continued.')
+        _save(job, user.pk, lambda prep: prep.update(continue_incomplete=True))
+        prepare(job.id, user)
+        return queue_state(user)
     if prep.get('reason') and not prep.get('variants'):
         # TASK-313 AC3: a blocked job -- read its posting (network, so outside _lock), then gate again.
         # TASK-319: a posting that just replaced its link (or a failed or running re-analysis) is analysed

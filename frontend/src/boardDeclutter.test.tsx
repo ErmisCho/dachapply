@@ -2,7 +2,7 @@
 import {afterEach,describe,expect,it,vi} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
 import {MemoryRouter} from 'react-router-dom'
-import {ApplicationPace,FunnelPanel,TileJobs,storedHiddenPanels,storedPanelOrder} from './App'
+import {ApplicationPace,FunnelPanel,PostingIncomplete,TileJobs,storedHiddenPanels,storedPanelOrder} from './App'
 
 afterEach(()=>vi.unstubAllGlobals())
 const counts={applications:4,interviews:1,offers:0,applied_to_interview_rate:25,interview_to_offer_rate:0}
@@ -42,5 +42,17 @@ describe('saved panel state naming removed panels (TASK-286 AC6)',()=>{
     expect(order).not.toContain('stall');expect(order).not.toContain('source_effectiveness')
     expect(order.slice(-2)).toEqual(['funnel','total'])
     expect(storedHiddenPanels()).toEqual(['total'])
+  })
+})
+
+describe('incomplete posting badge (TASK-322)',()=>{
+  it('names the missing parts in its tooltip',()=>{
+    const html=renderToStaticMarkup(<PostingIncomplete job={{posting_missing:['tasks','requirements','salary','company']}}/>)
+    expect(html).toContain('>Posting incomplete<');expect(html).toContain('app-badge-yellow')
+    expect(html).toContain('title="Missing: tasks, requirements, salary, company description"')
+  })
+  it('renders nothing for a complete posting or an older payload without the field',()=>{
+    expect(renderToStaticMarkup(<PostingIncomplete job={{posting_missing:[]}}/>)).toBe('')
+    expect(renderToStaticMarkup(<PostingIncomplete job={{}}/>)).toBe('')
   })
 })

@@ -19,6 +19,7 @@ from jobradar.models import JobEvaluation
 from jobradar.services.access import accessible_jobs
 from jobradar.services.cv_generator import RecoverableGenerationError, run_structured_model, validate_model_capability
 from jobradar.services.json_importer import REQ, LIST_FIELDS, import_evaluations, validate_eval
+from jobradar.services.posting_fetch import POSTING_PARTS
 from jobradar.services.prompt_builder import build_candidate_profile_text, build_prompt, user_profile_settings
 
 # Derived from the importer's own REQ set rather than typed out again, so a field added to the
@@ -40,8 +41,12 @@ EVALUATION_SCHEMA = {
                     'recommendation': {'type': 'string', 'enum': ['apply', 'maybe', 'skip']},
                     **{field: {'type': 'string'} for field in _STRING_FIELDS},
                     **{field: {'type': 'array', 'items': {'type': 'string'}} for field in LIST_FIELDS},
+                    # TASK-322: what the posting lacks. Required here only because strict structured output
+                    # (Codex --output-schema, LM Studio strict) demands every property be; validate_eval never
+                    # requires it, so pasted JSON without it still imports.
+                    'missing_parts': {'type': 'array', 'items': {'type': 'string', 'enum': list(POSTING_PARTS)}},
                 },
-                'required': sorted(REQ),
+                'required': sorted(REQ | {'missing_parts'}),
                 'additionalProperties': False,
             },
         },

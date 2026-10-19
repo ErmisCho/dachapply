@@ -273,7 +273,7 @@ def test_the_queue_lists_running_then_queued_by_position_then_finished_newest_fi
     assert (ready['progress'], ready['eta_seconds'], ready['files'], ready['document'], ready['language']) == (100, None, ['Old-CV.tex', 'Old-CV.pdf'], 'cv', 'de')
     assert items[4]['error'] == 'quota' and client.get(QUEUE).json()['concurrency'] == 2
     assert set(running) == {'job_id', 'company', 'title', 'job_status', 'key', 'label', 'document', 'language', 'status', 'position',
-                            'progress', 'eta_seconds', 'error', 'files', 'queued_at', 'started_at', 'finished_at', 'retry_at'}
+                            'progress', 'eta_seconds', 'error', 'files', 'queued_at', 'started_at', 'finished_at', 'retry_at', 'incomplete'}
 
 
 # --- TASK-317: a usage limit is retried automatically once it resets ----------------------------

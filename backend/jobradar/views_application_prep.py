@@ -122,7 +122,7 @@ def application_prep_queue(request):
 
 @api_view(['POST'])
 def application_prep_queue_action(request):
-    """TASK-312 AC5: {job_id, key, action: cancel|retry|first}; answers the queue as GET does."""
+    """TASK-312 AC5: {job_id, key, action: cancel|retry|first|continue (TASK-322)}; answers the queue as GET does."""
     if not is_cv_owner(request.user):
         return _not_found()
     try:

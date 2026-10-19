@@ -1,3 +1,4 @@
+import json
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -225,6 +226,7 @@ class FollowUpSerializer(serializers.ModelSerializer):
 class JobLeadSerializer(serializers.ModelSerializer):
     latest_evaluation=serializers.SerializerMethodField()
     has_pending_source=serializers.SerializerMethodField()
+    posting_missing=serializers.SerializerMethodField()  # TASK-322: posting_fetch.POSTING_PARTS keys the posting lacks
     created_by_username=serializers.SerializerMethodField()
     created_by_email=serializers.SerializerMethodField()
     submitted_for_username=serializers.SerializerMethodField()
@@ -329,6 +331,16 @@ class JobLeadSerializer(serializers.ModelSerializer):
         # TASK-283: the board list annotates the flag instead of loading the whole pending posting.
         flag=getattr(obj, 'has_pending_source_flag', None)
         return bool(obj.pending_source_text) if flag is None else flag
+    def get_posting_missing(self, obj):
+        from .services.posting_fetch import checked_parts, posting_missing  # posting_fetch -> json_importer imports this module
+        if not hasattr(obj, 'posting_check_text'):
+            return posting_missing(obj)
+        # The board list (JobLeadViewSet.get_queryset's TASK-322 annotations): the JSON key arrives as text,
+        # and no text loaded without a current verdict means a job no longer worked on -- no flag.
+        ai = json.loads(obj.posting_ai) if (obj.posting_ai or '').startswith('[') else None
+        if obj.posting_check_text is None and not (ai is not None and obj.posting_ai_chars == obj.posting_chars):
+            return []
+        return checked_parts(obj.posting_check_text, ai, obj.posting_ai_chars, obj.posting_chars)
     def get_created_by_username(self, obj): return obj.created_by.username if obj.created_by else ''
     def get_created_by_email(self, obj): return (obj.created_by.email or obj.created_by.username) if obj.created_by else ''
     def get_submitted_for_username(self, obj): return obj.submitted_for.username if obj.submitted_for else ''

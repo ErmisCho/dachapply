@@ -157,7 +157,14 @@ def fetch_posting_text(url):
         return _failed(f'The site could not be reached: {exc.reason}.')
     final_url = final_url or url
     text, company = _cornerstone_text(final_url, body)
-    text = text or posting_text(body) or _rendered_text(final_url)
+    text = text or posting_text(body)
+    if not text or missing_parts(text):
+        # TASK-322: a page lacking a required part is read once more headless, and the more complete
+        # text is kept (a tie keeps the plain one). Measured: a Workday link rendered to its career-site
+        # search page, so a rendered text is not assumed to be the better one.
+        rendered = _rendered_text(final_url)
+        if rendered and (not text or len(missing_parts(rendered)) < len(missing_parts(text))):
+            text = rendered
     if not text:
         return _failed(NEEDS_JAVASCRIPT)
     return {'ok': True, 'text': text, 'error': '', 'final_url': final_url, **({'company': company} if company else {})}
@@ -402,6 +409,46 @@ def posting_text(html):
                      _salary_line(posting.get('baseSalary')), _location_line(posting.get('jobLocation'))]
             return '\n\n'.join(line for line in lines if line)
     return _tidy(''.join(parser.parts))
+
+
+# TASK-322: the parts every posting should carry, each a case-insensitive pattern (German + English) run
+# over the text folded by _folded -- so the patterns are written with ae/oe/ue/ss, and 'ue?' also takes
+# an umlaut typed without its e. ponytail: a keyword rule, it says a heading or word is there, not that
+# the section says anything; the evaluation's missing_parts (posting_missing) overrides it.
+POSTING_PARTS = {
+    'tasks': re.compile(r"aufgaben|tae?tigkeit|\b(?:dein|ihr) job\b|(?:deine|ihre) rolle|was (?:dich|sie) erwartet|responsibilit|what you(?:'ll| will) do|your (?:role|tasks|mission)|\bduties\b"),
+    'requirements': re.compile(r"anforderung|profil|qualifikation|mitbring|bringst du mit|bringen sie mit|requirements|qualifications|what you bring|skills|who you are"),
+    'salary': re.compile(r"gehalt|brutto|kollektivvertrag|\bkv\b|ue?berzahlung|vergue?tung|salary|compensation|pay range|per (?:year|annum)|(?:€|\beur|\bchf|\$)\s?\d|\d\s?(?:€|eur\b|chf\b|usd\b)"),
+    'company': re.compile(r"ue?ber uns|wir sind|unternehmen|about us|who we are|our company|\bwe are\b|wir bieten|what we offer"),
+}
+PART_NAMES = {'tasks': 'tasks', 'requirements': 'requirements', 'salary': 'salary', 'company': 'company description'}
+_FOLD = str.maketrans({'ä': 'ae', 'ö': 'oe', 'ü': 'ue', '’': "'"})
+
+
+def _folded(text):
+    return (text or '').casefold().translate(_FOLD)  # casefold already turns ß into ss
+
+
+def missing_parts(text):
+    """TASK-322: the POSTING_PARTS keys text lacks, in table order ([] when all are there)."""
+    folded = _folded(text)
+    return [part for part, pattern in POSTING_PARTS.items() if not pattern.search(folded)]
+
+
+def checked_parts(text, ai, ai_chars, chars=None):
+    """TASK-322: the evaluation's missing_parts when it judged a text of this length (chars, else len(text)),
+    else the keyword rule on text. ponytail: length is the change marker because the board can compute it in
+    SQL without loading the posting; a same-length edit keeps the old verdict until the job is re-analysed."""
+    if isinstance(ai, list) and ai_chars == (len(text or '') if chars is None else chars):
+        return [part for part in POSTING_PARTS if part in ai]
+    return missing_parts(text)
+
+
+def posting_missing(job):
+    """TASK-322: what job's posting lacks -- the latest evaluation's verdict while the text it judged is
+    unchanged (json_importer.create_evaluation stamps posting_chars), else the keyword rule."""
+    raw = getattr(job.evaluations.first(), 'structured_json_raw', None) or {}
+    return checked_parts(job.source_text, raw.get('missing_parts'), raw.get('posting_chars'))
 
 
 def normalized(text):

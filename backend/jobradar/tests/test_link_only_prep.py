@@ -107,7 +107,7 @@ def test_a_failed_fetch_is_recorded_and_the_analysis_still_runs(owner, client, f
 def _blocked(job, error):
     return {'job_id': job.id, 'company': 'ACME', 'title': 'Python Engineer', 'job_status': job.status, 'key': '', 'label': 'Documents',
             'document': None, 'language': None, 'status': 'blocked', 'position': None, 'progress': 0, 'eta_seconds': None,
-            'error': error, 'files': [], 'queued_at': None, 'started_at': None, 'finished_at': None, 'retry_at': None}
+            'error': error, 'files': [], 'queued_at': None, 'started_at': None, 'finished_at': None, 'retry_at': None, 'incomplete': False}
 
 
 def test_a_refused_job_is_listed_as_blocked_but_an_analysis_in_progress_is_not(owner, client, tasks):
