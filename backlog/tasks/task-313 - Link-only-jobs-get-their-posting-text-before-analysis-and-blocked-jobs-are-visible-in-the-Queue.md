@@ -6,6 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-19 14:37'
+updated_date: '2026-10-19 16:22'
 labels:
   - backend
   - frontend
@@ -29,4 +30,5 @@ Live run 2026-10-19 (TASK-312 AC9): 5 new link-only jobs were analysed via evalu
 - [ ] #5 Retry on a blocked item first fetches the posting when the job is link-only, then re-runs preparation; the job's documents join the queue when the gate now passes, otherwise the item stays blocked with the current reason
 - [ ] #6 Tests cover the fetch-before-analysis, the blocked listing and the blocked retry; full backend and frontend suites pass
 - [ ] #7 Verified on localhost: Retry on the 3 blocked jobs from the live run (1875, 1847, 1845) fetches their text and queues documents, or shows why not
+- [ ] #8 Owner rule 2026-10-19: when a job's text is link-only or thin (under 300 non-link characters), a longer fetched posting replaces it directly on every fetch path and status, with nothing staged for review; substantial text keeps the review step
 <!-- AC:END -->
