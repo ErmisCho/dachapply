@@ -110,12 +110,25 @@ def validate_eval(ev, i, require_job_id=True):
     return errors
 
 
+def is_placeholder_label(field, value):
+    text=str(value or '').strip().casefold()
+    return not text or (text == 'unknown company' if field == 'company' else text.startswith('untitled role'))
+
+
 def create_evaluation(job, ev, user=None):
     evaluation=JobEvaluation.objects.create(
         job=job, fit_score=ev['fit_score'], priority=ev['priority'], recommendation=ev['recommendation'], summary=ev.get('summary',''),
         main_match_reasons=ev.get('main_match_reasons',[]), main_gaps=ev.get('main_gaps',[]), required_skills=ev.get('required_skills',[]), nice_to_have_skills=ev.get('nice_to_have_skills',[]),
         matched_skills=ev.get('matched_skills',[]), missing_skills=ev.get('missing_skills',[]), cv_adjustment_notes=ev.get('cv_adjustment_notes',''), interview_prep_notes=ev.get('interview_prep_notes',''),
         risk_notes=ev.get('risk_notes',''), next_action=ev.get('next_action',''), structured_json_raw=ev)
+    # TASK-314: a link-only job keeps 'Unknown company' / 'Untitled role N' until analysis names it. Only those
+    # placeholders are filled, before the prep hook below so its CV filename uses the real names.
+    named=[]
+    for field, clean in (('company', clean_label_text), ('title', clean_job_title)):
+        value='' if value_is_valid_url(ev.get(field)) else clean(ev.get(field))
+        if is_placeholder_label(field, getattr(job, field)) and not is_placeholder_label(field, value) and len(value) <= LENGTH_LIMITED_JOB_FIELDS[field]:
+            setattr(job, field, value); named.append(field)
+    if named: job.save(update_fields=named+['updated_at'])
     # TASK-312 AC1: an apply/maybe evaluation queues the job's documents once the import commits, as the
     # importing user; prepare() itself keeps to New/Reviewed/To apply jobs and CV owners.
     if user is not None and ev['recommendation'] in ('apply','maybe'):

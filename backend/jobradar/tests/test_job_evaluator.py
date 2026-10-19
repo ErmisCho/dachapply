@@ -13,6 +13,7 @@ from rest_framework.test import APIClient
 from jobradar.models import JobLead, JobEvaluation, UserProfile
 from jobradar.services.cv_generator import RecoverableGenerationError
 from jobradar.services.job_evaluator import evaluate_jobs
+from jobradar.services.json_importer import create_evaluation
 
 User = get_user_model()
 
@@ -217,3 +218,44 @@ def test_endpoint_reports_a_provider_failure_as_a_400_with_the_detail(owner, job
     assert r.status_code == 400
     assert r.data['ok'] is False and 'exit status 1' in r.data['detail']
     assert not JobEvaluation.objects.exists()
+
+
+# TASK-314: a link-only job is named by its analysis, so its CV filename stops reading Unknown-Company-Untitled-Role-2.
+def link_only_job(owner, **fields):
+    return JobLead.objects.create(url='https://jobs.example/314', title=fields.pop('title', 'Untitled role 2'), created_by=owner, **fields)
+
+
+def test_evaluation_names_a_link_only_job(owner):
+    job = link_only_job(owner)
+
+    create_evaluation(job, evaluation_for(job, company=' ACME GmbH ', title='Backend Engineer (m/w/d)'))
+
+    job.refresh_from_db()
+    assert (job.company, job.title) == ('ACME GmbH', 'Backend Engineer')
+
+
+def test_evaluation_keeps_names_the_owner_set(owner, job):
+    create_evaluation(job, evaluation_for(job, company='Other Corp', title='Other Role'))
+
+    job.refresh_from_db()
+    assert (job.company, job.title) == ('ACME', 'Python Engineer')
+
+
+def test_evaluation_never_writes_a_placeholder_or_url_name(owner):
+    job = link_only_job(owner, company='')
+
+    create_evaluation(job, evaluation_for(job, company='www.acme.example', title='untitled role'))
+
+    job.refresh_from_db()
+    assert (job.company, job.title) == ('', 'Untitled role 2')
+
+
+def test_committed_model_evaluation_names_a_link_only_job(owner):
+    job = link_only_job(owner)
+
+    result, _ = run_with({'evaluations': [evaluation_for(job, company='ACME GmbH', title='Backend Engineer')]},
+                         job_ids=[job.id], user=owner, commit=True)
+
+    assert result['ok'] is True
+    job.refresh_from_db()
+    assert (job.company, job.title) == ('ACME GmbH', 'Backend Engineer')
