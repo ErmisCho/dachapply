@@ -30,7 +30,9 @@ from jobradar.services.cv_generator import _prompt
 # not to be thin (JobLead.THIN_SOURCE_CHARS), so a fetch still stages it for review here.
 SUMMARY = ('Backend engineer at ACME Logistics in Berlin. Python and Django, some Kubernetes. Remote possible. '
            'The team runs the shipment tracking platform and its public API, with a focus on reliability. '
-           'Candidates should know Postgres and CI pipelines, and be comfortable with on-call duty. German is a plus. Salary not stated.')
+           'Candidates should know Postgres and CI pipelines, and be comfortable with on-call duty. German is a plus. Salary not stated.'
+           # TASK-323: all four required parts, so a differing fetched copy still goes to review rather than replacing it.
+           ' Your tasks: on-call. Requirements: Postgres. Salary: EUR 60.000 brutto. About us: ACME Logistics.')
 
 POSTING_HTML = """<html><head><title>ACME Logistics careers</title>
 <style>.hero{color:red}</style></head>
@@ -733,3 +735,26 @@ def test_manual_fetch_stages_a_differing_copy_on_any_status(client, job, live_po
     job.refresh_from_db()
     assert 'Own the Postgres schema' in job.pending_source_text
     assert job.original_source_text == SUMMARY
+
+
+INCOMPLETE_AD = 'AI Engineer (m/w/x)\n\nDein Job, du entwickelst Agentenlösungen und bindest Agenten über APIs an die Systeme an. ' * 3
+FULL_AD = INCOMPLETE_AD + '\n\nDein Profil: Python, Azure.\n\nGehalt: ab EUR 4.000 brutto pro Monat.\n\nÜber uns: Die ÖBB sind ein großer Arbeitgeber.'
+
+
+@pytest.mark.parametrize('fetched,replaced', [(FULL_AD, True), (INCOMPLETE_AD + ' Mehr Text ohne neue Teile.', False)])
+def test_task323_a_fuller_posting_replaces_an_incomplete_stored_text_without_review(client, owner, monkeypatch, fetched, replaced):
+    """TASK-323: an incomplete stored text is replaced by a fetched one that lacks fewer parts; no fewer, no replace."""
+    monkeypatch.setattr(views, 'fetch_posting_text', lambda url: {'ok': True, 'text': fetched, 'error': '', 'final_url': CSOD_URL})
+    job = JobLead.objects.create(company='ÖBB', title='AI Engineer', url=CSOD_URL, original_source_text=INCOMPLETE_AD, created_by=owner)
+    assert client.post(f'/api/jobs/{job.id}/source-text/live/').status_code == 200
+    job.refresh_from_db()
+    assert (job.original_source_text == fetched, job.pending_source_text == '') == (replaced, replaced)
+
+
+def test_task323_an_incomplete_job_is_re_read_before_analysis(owner, monkeypatch):
+    """TASK-323: fetch_missing_sources also re-reads a substantial but incomplete text (Retry on 'Posting incomplete')."""
+    monkeypatch.setattr(posting_fetch, 'fetch_posting_text', lambda url: {'ok': True, 'text': FULL_AD, 'error': '', 'final_url': CSOD_URL})
+    job = JobLead.objects.create(company='ÖBB', title='AI Engineer', url=CSOD_URL, original_source_text=INCOMPLETE_AD, created_by=owner)
+    posting_fetch.fetch_missing_sources([job])
+    job.refresh_from_db()
+    assert job.original_source_text == FULL_AD

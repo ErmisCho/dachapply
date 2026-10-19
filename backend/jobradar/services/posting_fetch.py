@@ -473,9 +473,20 @@ def _accepted_source(job, text, company=''):
 
 def replaces_thin_source(job, text):
     """TASK-313: a fetched text is used without asking when the job has only a link or very little
-    text (JobLead.is_thin_source) and the page says more -- the owner's own few lines are overwritten."""
-    return (JobLead.is_thin_source(job.source_text) and JobLead.is_meaningful_source(text)
-            and len(normalized(text)) > len(normalized(job.source_text)))
+    text (JobLead.is_thin_source) and the page says more -- the owner's own few lines are overwritten.
+    TASK-323: likewise when the stored text lacks a required part and the fetched one lacks fewer; a text
+    with all four parts keeps the review step."""
+    if not JobLead.is_meaningful_source(text):
+        return False
+    if JobLead.is_thin_source(job.source_text):
+        return len(normalized(text)) > len(normalized(job.source_text))
+    stored=missing_parts(job.source_text)
+    return bool(stored) and len(missing_parts(text)) < len(stored)
+
+
+def _worth_fetching(job):
+    """TASK-313/323: a job with a URL whose text is thin or lacks a required part."""
+    return bool((job.url or '').strip()) and (JobLead.is_thin_source(job.source_text) or bool(missing_parts(job.source_text)))
 
 
 def fetch_missing_sources(jobs):
@@ -484,7 +495,9 @@ def fetch_missing_sources(jobs):
     Only jobs with a URL and a thin text are fetched; a page that replaces_thin_source becomes the
     accepted text, a failure is kept in source_fetch_error. Never raises: a fetch must not fail the analysis.
     """
-    jobs=[job for job in jobs if (job.url or '').strip() and JobLead.is_thin_source(job.source_text)]
+    # ponytail: an incomplete job is re-read before every analysis (render up to RENDER_SECONDS each, one at
+    # a time); remember a failed re-read per job if batch analyses of many incomplete jobs get slow.
+    jobs=[job for job in jobs if _worth_fetching(job)]
     if not jobs: return
     try:
         # Network work is independent; database writes stay in the caller's thread.
