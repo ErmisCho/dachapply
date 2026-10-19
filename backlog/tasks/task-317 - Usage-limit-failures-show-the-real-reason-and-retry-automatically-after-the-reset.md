@@ -6,6 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-19 17:19'
+updated_date: '2026-10-19 17:51'
 labels:
   - backend
   - frontend
@@ -22,9 +23,15 @@ Live 2026-10-19: Codex usage limit hit; Queue showed only 'The selected model co
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 When a provider reports a usage/rate limit, the error summary says so in plain words including the reset time when given (e.g. 'Usage limit reached; resets at 18:51'), instead of the generic text; other failures are unchanged
-- [ ] #2 Queue variants and requirements analyses that failed on a usage limit are re-queued automatically shortly after the reset time (or after a fixed back-off when no time is given), at most a bounded number of times; the Queue page shows when it will retry
-- [ ] #3 Automatic retries survive a server restart (same serving-process guard as the queue resume) and never retry other kinds of failure
-- [ ] #4 Tests cover parsing the reset time, the plain-words summary, scheduling and the bounded retry, each failing when its logic is removed; targeted backend tests, vitest and tsc pass; CI green
+- [x] #1 When a provider reports a usage/rate limit, the error summary says so in plain words including the reset time when given (e.g. 'Usage limit reached; resets at 18:51'), instead of the generic text; other failures are unchanged
+- [x] #2 Queue variants and requirements analyses that failed on a usage limit are re-queued automatically shortly after the reset time (or after a fixed back-off when no time is given), at most a bounded number of times; the Queue page shows when it will retry
+- [x] #3 Automatic retries survive a server restart (same serving-process guard as the queue resume) and never retry other kinds of failure
+- [x] #4 Tests cover parsing the reset time, the plain-words summary, scheduling and the bounded retry, each failing when its logic is removed; targeted backend tests, vitest and tsc pass; CI green
 - [ ] #5 Verified on localhost: a usage-limit failure shows the reason and retry time on the Queue page
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Merged in PR #305 and live on localhost 2026-10-19 (queue items carry retry_at). AC5 waits for the next real usage limit: one cannot be triggered on demand.
+<!-- SECTION:NOTES:END -->
