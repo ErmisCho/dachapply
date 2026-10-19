@@ -20,6 +20,7 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from jobradar import views
 from jobradar.models import JobLead, UserProfile
 from jobradar.services import posting_fetch
 from jobradar.services.cv_generator import _prompt
@@ -337,8 +338,47 @@ def test_cornerstone_requisition_is_read_from_its_job_details_api(net):
     net.page(CSOD_API, json.dumps({'status': 0, 'data': {'displayTitle': 'AI Engineer (m/w/x)', 'externalDescription': '<p><strong>Dein Job</strong></p><ul><li>baust die Plattform auf Azure</li></ul>'}}),
              content_type='application/json; charset=utf-8')
     result = posting_fetch.fetch_posting_text(CSOD_URL)
-    assert result == {'ok': True, 'text': 'AI Engineer (m/w/x)\n\nDein Job\n\nbaust die Plattform auf Azure', 'error': '', 'final_url': CSOD_URL}
+    # TASK-320: jobDetails names no employer; the corp 'oebb' is ÖBB.
+    assert result == {'ok': True, 'text': 'AI Engineer (m/w/x)\n\nDein Job\n\nbaust die Plattform auf Azure', 'error': '', 'final_url': CSOD_URL, 'company': 'ÖBB'}
     assert net.handler.dialled == [CSOD_URL, CSOD_API] and net.handler.requests[-1].get_header('Authorization') == 'Bearer anon.jwt'
+
+
+@pytest.mark.parametrize('context,company', [('{"corp":"OEBB","cultureID":4,"token":"t"}', 'ÖBB'),
+                                             ('{"corp":"wienerlinien","cultureID":4,"token":"t"}', 'Wienerlinien'),
+                                             ('{"cultureID":4,"token":"t"}', 'Acme')])
+def test_task320_the_cornerstone_corp_is_the_company(live_posting, context, company):
+    """TASK-320: a known corp is its CSOD_COMPANIES name, any other title-cased, the subdomain when
+    csod.context names none; a page that is not Cornerstone carries no company."""
+    url, api = CSOD_URL.replace('oebb', 'acme'), CSOD_API.replace('oebb', 'acme')
+    live_posting.host('acme.csod.com', PUBLIC_IP)
+    live_posting.page(url, f'<script>csod.context={context};</script>')
+    live_posting.page(api, json.dumps({'data': {'displayTitle': 'Engineer', 'externalDescription': '<p>Baut Dinge.</p>'}}), content_type='application/json')
+    assert posting_fetch.fetch_posting_text(url)['company'] == company
+    assert 'company' not in posting_fetch.fetch_posting_text(JOB_URL)
+
+
+@pytest.mark.parametrize('stored,expected', [('Unknown company', 'ÖBB'), ('', 'ÖBB'), ('Owner GmbH', 'Owner GmbH')])
+def test_task320_an_accepted_posting_fills_only_a_placeholder_company(client, owner, monkeypatch, stored, expected):
+    """TASK-320: on the accept paths -- before analysis and the job page's fetch -- never over a real name."""
+    fetched = {'ok': True, 'text': 'AI Engineer (m/w/x)\n\n' + 'Dein Job: baust die Plattform auf Azure. ' * 4, 'error': '', 'final_url': CSOD_URL, 'company': 'ÖBB'}
+    monkeypatch.setattr(posting_fetch, 'fetch_posting_text', lambda url: fetched)
+    monkeypatch.setattr(views, 'fetch_posting_text', lambda url: fetched)
+    before, manual = (JobLead.objects.create(company=stored, title='AI Engineer', url=CSOD_URL, original_source_text=CSOD_URL, created_by=owner) for _ in range(2))
+    posting_fetch.fetch_missing_sources([before])
+    assert client.post(f'/api/jobs/{manual.id}/source-text/live/').status_code == 200
+    for job in (before, manual):
+        job.refresh_from_db()
+        assert (job.company, job.original_source_text) == (expected, fetched['text'])
+
+
+def test_task320_a_job_that_already_has_its_posting_still_gets_the_site_company(client, owner, monkeypatch):
+    """TASK-320: the ÖBB jobs already held their text, so a fetch that keeps the text still names the employer."""
+    fetched = {'ok': True, 'text': 'AI Engineer (m/w/x)\n\n' + 'Dein Job: baust die Plattform auf Azure. ' * 10, 'error': '', 'final_url': CSOD_URL, 'company': 'ÖBB'}
+    monkeypatch.setattr(views, 'fetch_posting_text', lambda url: fetched)
+    job = JobLead.objects.create(company='Unknown company', title='AI Engineer', url=CSOD_URL, original_source_text=fetched['text'], created_by=owner)
+    assert client.post(f'/api/jobs/{job.id}/source-text/live/').status_code == 200
+    job.refresh_from_db()
+    assert job.company == 'ÖBB'
 
 
 def test_url_resolving_to_a_private_address_is_refused_without_dialling(client, owner, net):

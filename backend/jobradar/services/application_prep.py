@@ -41,8 +41,8 @@ from django.db import close_old_connections
 from django.db.models import Q
 from django.utils import timezone
 
-from jobradar.models import JobLead
-from jobradar.services import cv_tasks
+from jobradar.models import JobEvaluation, JobLead
+from jobradar.services import cv_tasks, job_evaluator
 from jobradar.services.access import accessible_jobs
 from jobradar.services.application_requirements import DOCUMENT_STATUSES, DOCUMENT_TYPES, POSTING_LANGUAGES, normalize_application_requirements
 from jobradar.services.cv_generator import _edit_sidecar, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
@@ -66,11 +66,13 @@ FILES_EXIST = 'Generated files already exist for this job, so nothing was prepar
 PREPARE_STATUSES = ('new', 'reviewed', 'to_apply')  # TASK-312 AC1; a retry also Ready to submit
 FINISHED_LIMIT = 50  # TASK-312: finished items the queue lists, newest first
 AUTO_RETRIES = 3  # TASK-317: automatic retries of one usage-limited item
+REANALYSIS_FAILED = 'Re-analysis failed'  # TASK-319: the prefix of a failed late-text re-analysis's reason
 
 # ponytail: one process serves generation (threaded runserver); a DB claim if that changes. Re-entrant
 # because a task's on_finish can run in the thread that started it (a task that fails at once, tests).
 _lock = RLock()
 _analysing = set()  # TASK-308: job ids whose requirements analysis is running; guarded by _lock
+_reanalysing = set()  # TASK-319: job ids whose late-text re-analysis is running; guarded by _lock
 # TASK-312: (job_id, user_id, key) waiting for a slot, front first, and the number of prepared tasks
 # started and not yet finished. Guarded by _lock; the sidecar is the durable copy (resume_queue).
 # ponytail: "Move to front" lives only here, so after a restart the queue is back in queued_at order.
@@ -376,6 +378,52 @@ def prepare_on_to_apply(job_id, user_id):
             prepare(job_id, user)
     except Exception:
         logger.exception('Preparing application documents for job %s failed', job_id)
+
+
+def reanalyse_late_text(job, user):
+    """TASK-319: a job analysed from its link alone is evaluated again once its posting text arrived,
+    off the request thread, so documents follow the real ad and not the blind verdict -- the committed
+    evaluation queues them for apply/maybe itself (json_importer.create_evaluation's TASK-312 hook).
+    True when that took over from preparing at once; False (REANALYSE_LATE_TEXT off, no earlier
+    evaluation, an account that cannot generate) leaves the caller's own path as it was."""
+    if not settings.REANALYSE_LATE_TEXT or not is_cv_owner(user) or not JobEvaluation.objects.filter(job_id=job.id).exists():
+        return False
+    with _lock:
+        if job.id in _reanalysing:
+            return True  # already running for this text; a second model run would only repeat it
+        _reanalysing.add(job.id)
+    Thread(target=_reanalyse, args=(job.id, user.pk), name='dachapply-reanalyse', daemon=True).start()
+    return True
+
+
+def _reanalyse(job_id, user_id):
+    """TASK-319 worker, with the model the automatic paths use (cv_default_choice, as _analyse). A failure
+    becomes the blocked reason the Queue retries; a usage limit is retried after its reset (TASK-317)."""
+    close_old_connections()
+    try:
+        job = JobLead.objects.filter(pk=job_id).first()
+        user = get_user_model().objects.filter(pk=user_id).first()
+        if not job or not user:
+            return
+        option, effort = cv_default_choice(available_model_options())
+        result = (job_evaluator.evaluate_jobs([job.id], user, option['provider'], option['key'], effort, 'normal', commit=True) if option
+                  else {'ok': False, 'errors': ['No document model is available on this machine']})
+        with _lock:
+            if not result['ok']:
+                error = '; '.join(result['errors'])[:300].rstrip('.')
+                _save(job, user_id, lambda prep: prep.update(reason=f'{REANALYSIS_FAILED}: {error}. Press Retry.',
+                                                             retry_at=_retry_at(result.get('usage_limit'), result.get('reset_at'), prep)))
+            elif result['preview'][0]['recommendation'] == 'skip':
+                prep = _state(job, user)
+                if prep.get('reason') and not prep.get('variants'):
+                    # Nothing is prepared for a skip, so the reason the job was blocked for no longer stands.
+                    _save(job, user_id, lambda prep: prep.update(reason='', retry_at=None))
+    except Exception:
+        logger.exception('Re-analysing job %s after its posting was fetched failed', job_id)
+    finally:
+        with _lock:
+            _reanalysing.discard(job_id)
+        close_old_connections()
 
 
 def public_state(job, user, reason_override=None):
@@ -738,8 +786,13 @@ def queue_action(user, job_id, key, action):
     prep = _state(job, user) if job and key == '' and action == 'retry' else {}
     if prep.get('reason') and not prep.get('variants'):
         # TASK-313 AC3: a blocked job -- read its posting (network, so outside _lock), then gate again.
+        # TASK-319: a posting that just replaced its link (or a failed or running re-analysis) is analysed
+        # again first; the re-analysis prepares, not this.
+        before = job.source_text
         fetch_missing_sources([job])
-        prepare(job.id, user)
+        late = job.source_text != before or prep['reason'].startswith(REANALYSIS_FAILED) or job.id in _reanalysing
+        if not (late and reanalyse_late_text(job, user)):
+            prepare(job.id, user)
         return queue_state(user)
     with _lock:
         variant = (_state(job, user).get('variants') or {}).get(key) if job else None

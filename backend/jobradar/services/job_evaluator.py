@@ -104,7 +104,9 @@ def evaluate_jobs(job_ids, user, provider, model, effort='default', speed='norma
     except RecoverableGenerationError as exc:
         # The provider's own words, not a generic failure: a missing ollama model and an out-of-quota
         # API key are different problems and the owner can only act on the difference.
-        return {'ok': False, 'errors': [exc.summary], 'detail': exc.diagnostics}
+        # TASK-319: a usage limit says so too, so the late-text re-analysis can retry after the reset (TASK-317).
+        limit = {'usage_limit': True, 'reset_at': exc.reset_at} if exc.usage_limit else {}
+        return {'ok': False, 'errors': [exc.summary], 'detail': exc.diagnostics, **limit}
 
     if not isinstance(data, dict) or not isinstance(data.get('evaluations'), list):
         return {'ok': False, 'errors': ['Root must contain evaluations list'], 'detail': ''}
