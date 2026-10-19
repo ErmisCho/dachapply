@@ -10,8 +10,9 @@ import gzip
 import io
 import json
 import socket
+import sys
 import urllib.request
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -72,10 +73,11 @@ class _FakeHTTPHandler(urllib.request.HTTPHandler):
     def __init__(self, pages):
         super().__init__()
         self.pages = pages
-        self.dialled = []
+        self.dialled, self.requests = [], []
 
     def http_open(self, req):
         self.dialled.append(req.full_url)
+        self.requests.append(req)
         entry = self.pages[req.full_url]
         if isinstance(entry, Exception):
             raise entry
@@ -95,6 +97,8 @@ def net(monkeypatch):
     handler = _FakeHTTPHandler(pages)
     # ProxyHandler({}) pins proxies off: otherwise build_opener reads the developer's HTTP_PROXY.
     monkeypatch.setattr(posting_fetch, 'build_opener', lambda *handlers: urllib.request.build_opener(*handlers, urllib.request.ProxyHandler({}), handler))
+    # TASK-318: this machine really has Playwright and Chrome; a JS-only page must not launch them here.
+    monkeypatch.setitem(sys.modules, 'playwright.sync_api', None)
 
     def page(url, body='', **kwargs):
         data = body if isinstance(body, bytes) else body.encode('utf-8')
@@ -244,10 +248,97 @@ def test_non_html_content_type_is_refused_by_name(client, job, net):
     assert client.get(f'/api/jobs/{job.id}/source-text/live/').data['error'] == 'The link returned application/pdf, not a readable web page.'
 
 
-def test_javascript_only_page_says_so(client, job, net):
+JS_SHELL = '<html><body><div id="root"></div><script>render()</script></body></html>'
+PASTE_HINT = 'The page needs JavaScript and could not be read automatically. Paste the posting text on the job page.'
+
+
+def _fake_playwright(monkeypatch, html='', fail_launch=False):
+    """TASK-318: a stand-in playwright.sync_api that records what the renderer asked of it."""
+    calls = SimpleNamespace(launches=[], routes=[], goto=[], closed=False)
+    page = SimpleNamespace(route=lambda pattern, handler: calls.routes.append((pattern, handler)),
+                           goto=lambda url, **kwargs: calls.goto.append(url), content=lambda: html)
+
+    def launch(**kwargs):
+        calls.launches.append(kwargs)
+        if fail_launch:
+            raise RuntimeError('Executable does not exist')
+        return SimpleNamespace(new_context=lambda **kwargs: SimpleNamespace(new_page=lambda: page), close=lambda: setattr(calls, 'closed', True))
+
+    class Session:
+        def __enter__(self):
+            return SimpleNamespace(chromium=SimpleNamespace(launch=launch))
+
+        def __exit__(self, *exc):
+            return False
+    module = ModuleType('playwright.sync_api')
+    module.Error, module.sync_playwright = RuntimeError, Session
+    monkeypatch.setitem(sys.modules, 'playwright.sync_api', module)
+    return calls
+
+
+def test_javascript_only_page_without_a_browser_asks_for_a_paste(client, job, net, monkeypatch):
+    """TASK-318: no Playwright (the net fixture), then Playwright with no browser to launch -- both
+    end in the paste hint instead of the old 'may require JavaScript', and nothing raises."""
     net.host('jobs.acme.test', PUBLIC_IP)
-    net.page(JOB_URL, '<html><body><div id="root"></div><script>render()</script></body></html>')
-    assert client.get(f'/api/jobs/{job.id}/source-text/live/').data['error'] == 'The page returned no readable text — it may require JavaScript.'
+    net.page(JOB_URL, JS_SHELL)
+    assert client.get(f'/api/jobs/{job.id}/source-text/live/').data['error'] == PASTE_HINT
+    calls = _fake_playwright(monkeypatch, fail_launch=True)
+    assert client.get(f'/api/jobs/{job.id}/source-text/live/').data['error'] == PASTE_HINT
+    assert [launch.get('channel') for launch in calls.launches] == ['chrome', None]
+
+
+def test_javascript_only_page_is_rendered_headless_and_read(net, monkeypatch):
+    """TASK-318: the installed Chrome renders the shell, behind the route guard, and is always closed."""
+    net.host('jobs.acme.test', PUBLIC_IP)
+    net.page(JOB_URL, JS_SHELL)
+    calls = _fake_playwright(monkeypatch, html=POSTING_HTML)
+    result = posting_fetch.fetch_posting_text(JOB_URL)
+    assert result['ok'] is True and 'Own the Postgres schema, migrations and the nightly reconciliation job.' in result['text']
+    assert calls.launches == [{'headless': True, 'channel': 'chrome'}] and calls.goto == [JOB_URL]
+    assert calls.routes == [('**/*', posting_fetch._guard_route)] and calls.closed is True
+
+
+def _route(url, resource_type='document', answers=()):
+    answers = list(answers)
+    route = SimpleNamespace(request=SimpleNamespace(url=url, resource_type=resource_type), fetched=[], outcome=None)
+    route.fetch = lambda url, **kwargs: route.fetched.append(url) or answers.pop(0)
+    route.fulfill = lambda response: setattr(route, 'outcome', response)
+    route.abort = lambda: setattr(route, 'outcome', 'aborted')
+    return route
+
+
+def test_rendered_page_requests_pass_the_private_address_guard(net):
+    """TASK-318 security floor for the headless browser: a request to a private host, a redirect hop
+    into one (page.route never sees hops itself) and an image are aborted; a public page is served."""
+    net.host('jobs.acme.test', PUBLIC_IP)
+    net.host('metadata.acme.test', '169.254.169.254')
+    private = _route('http://metadata.acme.test/latest/meta-data/')
+    hop = _route(JOB_URL, answers=[SimpleNamespace(status=302, headers={'location': 'http://metadata.acme.test/'})])
+    image = _route(f'{JOB_URL}.png', 'image')
+    page = SimpleNamespace(status=200, headers={})
+    public = _route(JOB_URL, answers=[page])
+    for route in (private, hop, image, public):
+        posting_fetch._guard_route(route)
+    assert (private.outcome, private.fetched) == ('aborted', [])
+    assert (hop.outcome, hop.fetched) == ('aborted', [JOB_URL])
+    assert (image.outcome, image.fetched) == ('aborted', [])
+    assert public.outcome is page
+
+
+CSOD_URL = 'http://oebb.csod.com/ux/ats/careersite/4/home/requisition/26278?c=oebb'
+CSOD_API = 'http://oebb.csod.com/services/x/job-requisition/v2/requisitions/26278/jobDetails?cultureId=4'
+
+
+def test_cornerstone_requisition_is_read_from_its_job_details_api(net):
+    """TASK-318, measured on oebb.csod.com: the page is a JS shell whose csod.context carries an
+    anonymous token, and jobDetails answers with the posting."""
+    net.host('oebb.csod.com', PUBLIC_IP)
+    net.page(CSOD_URL, '<html><head><script>if (!csod.context || !csod.context.token) csod.context={"corp":"oebb","cultureID":4,"token":"anon.jwt"};</script></head><body><div id="app"></div></body></html>')
+    net.page(CSOD_API, json.dumps({'status': 0, 'data': {'displayTitle': 'AI Engineer (m/w/x)', 'externalDescription': '<p><strong>Dein Job</strong></p><ul><li>baust die Plattform auf Azure</li></ul>'}}),
+             content_type='application/json; charset=utf-8')
+    result = posting_fetch.fetch_posting_text(CSOD_URL)
+    assert result == {'ok': True, 'text': 'AI Engineer (m/w/x)\n\nDein Job\n\nbaust die Plattform auf Azure', 'error': '', 'final_url': CSOD_URL}
+    assert net.handler.dialled == [CSOD_URL, CSOD_API] and net.handler.requests[-1].get_header('Authorization') == 'Bearer anon.jwt'
 
 
 def test_url_resolving_to_a_private_address_is_refused_without_dialling(client, owner, net):
