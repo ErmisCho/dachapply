@@ -241,18 +241,19 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
 .dark .status-message-info{border-color:rgba(96,165,250,.3);color:#bfdbfe;background:#0f172a}
 
 /* Dashboard column visibility. Column 1 is the row-selection checkbox (TASK-80) and is never
-   hideable, so every data column sits one index further right than its name suggests. */
-.hide-col-prio th:nth-child(2),.hide-col-prio td:nth-child(2),
-.hide-col-fit th:nth-child(3),.hide-col-fit td:nth-child(3),
-.hide-col-position th:nth-child(4),.hide-col-position td:nth-child(4),
-.hide-col-loc th:nth-child(5),.hide-col-loc td:nth-child(5),
-.hide-col-status th:nth-child(6),.hide-col-status td:nth-child(6),
-.hide-col-application th:nth-child(7),.hide-col-application td:nth-child(7),
-.hide-col-lastupdate th:nth-child(8),.hide-col-lastupdate td:nth-child(8),
-.hide-col-feedback th:nth-child(9),.hide-col-feedback td:nth-child(9),
-.hide-col-matchgap th:nth-child(10),.hide-col-matchgap td:nth-child(10),
-.hide-col-skills th:nth-child(11),.hide-col-skills td:nth-child(11),
-.hide-col-addedby th:nth-child(12),.hide-col-addedby td:nth-child(12){display:none}
+   hideable, and stays first. TASK-315: data columns can be reordered, so they are matched by their col-<key>
+   class, never by position. */
+.hide-col-prio .col-prio,
+.hide-col-fit .col-fit,
+.hide-col-position .col-position,
+.hide-col-loc .col-loc,
+.hide-col-status .col-status,
+.hide-col-application .col-application,
+.hide-col-lastupdate .col-lastupdate,
+.hide-col-feedback .col-feedback,
+.hide-col-matchgap .col-matchgap,
+.hide-col-skills .col-skills,
+.hide-col-addedby .col-addedby{display:none}
 
 /* Final navbar polish */
 .app-nav{background:rgba(255,255,255,.78)!important;border-color:rgba(226,232,240,.75)!important}
@@ -352,33 +353,33 @@ button:focus-visible,.btn:focus-visible,.btn-primary:focus-visible,.btn-danger:f
   .job-table{min-width:1280px;table-layout:auto!important}
   .job-table th,.job-table td{max-width:none}
   .job-table th:nth-child(1),.job-table td:nth-child(1){width:2.25rem}
-  .job-table th:nth-child(2),.job-table td:nth-child(2){width:4.2rem}
-  .job-table th:nth-child(3),.job-table td:nth-child(3){width:3.8rem}
-  .job-table th:nth-child(4),.job-table td:nth-child(4){width:16rem;min-width:16rem;max-width:20rem}
-  .job-table th:nth-child(5),.job-table td:nth-child(5){width:5.25rem;min-width:5.25rem;max-width:5.75rem}
-  .job-table th:nth-child(6),.job-table td:nth-child(6){width:5.75rem}
-  .job-table th:nth-child(7),.job-table td:nth-child(7){width:6.25rem}
-  .job-table th:nth-child(8),.job-table td:nth-child(8){width:6.25rem}
-  .job-table th:nth-child(9),.job-table td:nth-child(9){width:4.9rem;min-width:4.9rem}
-  .job-table th:nth-child(10),.job-table td:nth-child(10){width:35%;min-width:22rem}
-  .job-table th:nth-child(11),.job-table td:nth-child(11){width:30%;min-width:20rem}
-  .job-table th:nth-child(12),.job-table td:nth-child(12){width:5rem;max-width:6rem}
+  .job-table .col-prio{width:4.2rem}
+  .job-table .col-fit{width:3.8rem}
+  .job-table .col-position{width:16rem;min-width:16rem;max-width:20rem}
+  .job-table .col-loc{width:5.25rem;min-width:5.25rem;max-width:5.75rem}
+  .job-table .col-status{width:5.75rem}
+  .job-table .col-application{width:6.25rem}
+  .job-table .col-lastupdate{width:6.25rem}
+  .job-table .col-feedback{width:4.9rem;min-width:4.9rem}
+  .job-table .col-matchgap{width:35%;min-width:22rem}
+  .job-table .col-skills{width:30%;min-width:20rem}
+  .job-table .col-addedby{width:5rem;max-width:6rem}
   .job-table input[type="date"]{width:5.7rem!important}
   .job-table select{width:5.25rem!important}
-  .job-table th:nth-child(2),.job-table td:nth-child(2),
-  .job-table th:nth-child(3),.job-table td:nth-child(3),
-  .job-table th:nth-child(6),.job-table td:nth-child(6),
-  .job-table th:nth-child(7),.job-table td:nth-child(7),
-  .job-table th:nth-child(8),.job-table td:nth-child(8),
-  .job-table th:nth-child(9),.job-table td:nth-child(9),
-  .job-table th:nth-child(12),.job-table td:nth-child(12){overflow-wrap:normal;word-break:normal}
-  .job-table td:nth-child(2) .app-badge,
-  .job-table td:nth-child(3) .app-badge,
-  .job-table td:nth-child(5) .app-badge,
-  .job-table td:nth-child(9) .app-badge,
-  .job-table td:nth-child(12) .app-badge{white-space:nowrap;word-break:normal;overflow-wrap:normal}
-  .job-table td:nth-child(12) .app-badge{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:top}
-  .job-table td:nth-child(5)>div{display:flex;flex-wrap:wrap;gap:.15rem .25rem;align-items:flex-start}
+  .job-table .col-prio,
+  .job-table .col-fit,
+  .job-table .col-status,
+  .job-table .col-application,
+  .job-table .col-lastupdate,
+  .job-table .col-feedback,
+  .job-table .col-addedby{overflow-wrap:normal;word-break:normal}
+  .job-table td.col-prio .app-badge,
+  .job-table td.col-fit .app-badge,
+  .job-table td.col-loc .app-badge,
+  .job-table td.col-feedback .app-badge,
+  .job-table td.col-addedby .app-badge{white-space:nowrap;word-break:normal;overflow-wrap:normal}
+  .job-table td.col-addedby .app-badge{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:top}
+  .job-table td.col-loc>div{display:flex;flex-wrap:wrap;gap:.15rem .25rem;align-items:flex-start}
 }
 @media (max-width: 1023px){
   .job-table{min-width:760px;font-size:10px}
