@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-10-18 22:36'
-updated_date: '2026-10-18 23:18'
+updated_date: '2026-10-19 14:38'
 labels: []
 dependencies: []
 ordinal: 311000
@@ -28,11 +28,13 @@ Owner (2026-10-19): 'as soon as I add jobs and analyze them, the relevant docume
 - [ ] #6 A Queue page in the app (linked in the navigation with the number queued+running) shows running items with progress and time left, queued items with position and Move to front / Cancel, finished items with what was produced (document, language, files) and a link to the job's review, and failed or cancelled items with the reason and Retry; it updates live while anything is queued or running
 - [x] #7 The board's preparation badges also show for New and Reviewed jobs
 - [ ] #8 Tests cover the trigger (apply/maybe vs skip), the concurrency limit, restart re-queue and each queue action, each failing when its logic is removed; vitest, tsc and backend suite pass
-- [ ] #9 Verified on localhost: importing an evaluation for a job puts its documents in the queue page, they run one at a time, and finished items show their files
+- [x] #9 Verified on localhost: importing an evaluation for a job puts its documents in the queue page, they run one at a time, and finished items show their files
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-19: #295 merged; queue page live on localhost (PORR's ready CV listed with files + Review). AC9 open: a live import-to-queue run on a real job needs the owner's OK (real-data write).
+
+AC9 verified 2026-10-19: evaluate-with-model on 5 new jobs (owner OK) -> 4 maybe; job 1846 was queued, ran alone (concurrency 1) and finished with CV DE .tex+.pdf shown under Done. The 3 link-only jobs were refused by the posting-text gate and not shown -> TASK-313; placeholder names in filenames -> TASK-314.
 <!-- SECTION:NOTES:END -->
