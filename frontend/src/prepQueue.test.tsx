@@ -106,6 +106,49 @@ describe('queue actions',()=>{
   })
 })
 
+// TASK-313: a job whose documents cannot be prepared yet (e.g. no posting text) is listed once with its reason.
+const blocked=item({job_id:21,company:'Zeta',title:'Ops Engineer',key:'',label:'Documents',document:null,language:null,status:'blocked',position:null,error:'The job has no usable posting text yet.',queued_at:null})
+const withBlocked=():QueueData=>{const d=fixture();d.items.splice(3,0,blocked);return d}
+
+describe('blocked jobs',()=>{
+  it('lists a blocked job under Blocked, between Queued and Done, with its reason and a Retry button',()=>{
+    const html=view({data:withBlocked()})
+    const listed=section(html,'Blocked')
+    expect(listed).toContain('href="/jobs/21"')
+    expect(listed).toContain('Zeta — Ops Engineer')
+    expect(listed).toContain('The job has no usable posting text yet.')
+    expect(listed.match(/>Retry</g)?.length).toBe(1)
+    expect(html.indexOf('aria-label="Queued"')).toBeLessThan(html.indexOf('aria-label="Blocked"'))
+    expect(html.indexOf('aria-label="Blocked"')).toBeLessThan(html.indexOf('aria-label="Done"'))
+    for(const title of ['Running','Queued','Done','Failed / cancelled'])expect(section(html,title)).not.toContain('Zeta')
+  })
+
+  it('posts retry with an empty key and renders the returned list',async()=>{
+    const after:QueueData={concurrency:2,items:[item({job_id:21,company:'Zeta',title:'Ops Engineer',status:'queued',position:1})]}
+    reply=()=>({status:200,body:after})
+    await queueAction(blocked,'retry')
+    expect(calls).toEqual([{method:'POST',url:'/api/jobs/application-prep/queue/action/',body:{job_id:21,key:'',action:'retry'}}])
+    expect(queueSnapshot().data).toEqual(after)
+    expect(view(queueSnapshot())).not.toContain('aria-label="Blocked"')
+  })
+
+  it('shows a failed retry inline under Blocked',async()=>{
+    reply=()=>({status:400,body:{detail:'Still no posting text.'}})
+    await queueAction(blocked,'retry')
+    expect(section(view({...queueSnapshot(),data:withBlocked()}),'Blocked')).toMatch(/role="alert".*Still no posting text\./)
+  })
+
+  it('does not trigger the fast poll on its own',async()=>{
+    vi.useFakeTimers()
+    reply=()=>({status:200,body:{concurrency:2,items:[blocked,...fixture().items.slice(3)]}})
+    const stop=watchQueue(()=>{},true)
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(29999);expect(calls.length).toBe(1)
+    await vi.advanceTimersByTimeAsync(1);expect(calls.length).toBe(2)
+    stop()
+  })
+})
+
 describe('queue polling',()=>{
   const gets=()=>calls.filter(c=>c.method==='GET').length
   it('polls every 3 s while something is queued or running, 30 s otherwise, and stops on unmount',async()=>{
@@ -142,5 +185,10 @@ describe('Queue navbar link',()=>{
     await queueAction(fixture().items[1],'first')   // the store now holds the fixture: 1 running + 2 queued
     expect(nav({username:'owner',can_generate_cv:true})).toMatch(/href="\/queue"[^>]*>Queue <span[^>]*>3<\/span>/)
     expect(nav({username:'friend',can_generate_cv:false})).not.toContain('/queue')
+  })
+  it('does not count blocked jobs',async()=>{
+    reply=()=>({status:200,body:{concurrency:2,items:[blocked,fixture().items[1]]}})
+    await queueAction(fixture().items[1],'first')   // 1 queued + 1 blocked
+    expect(nav({username:'owner',can_generate_cv:true})).toMatch(/href="\/queue"[^>]*>Queue <span[^>]*>1<\/span>/)
   })
 })
