@@ -3,9 +3,10 @@ id: TASK-319
 title: >-
   A job whose real posting arrives after a link-only analysis is re-analysed
   before documents are queued
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-19 18:44'
+updated_date: '2026-10-19 20:13'
 labels:
   - backend
 dependencies: []
@@ -21,10 +22,16 @@ Live 2026-10-19: ÖBB job 1845 was analysed from its link alone ('maybe'); when 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 When a job's link-only or thin text is replaced by a fetched posting (queue Retry, job-page fetch, automatic refresh) and the job already has an evaluation, the job is re-analysed with the real text in the background before any documents are queued; apply/maybe then queues documents (existing TASK-312 hook), skip queues nothing
-- [ ] #2 The pre-analysis fetch (evaluate-with-model / Analyze prompt) does not trigger an extra re-analysis
-- [ ] #3 Setting DACHAPPLY_REANALYSE_LATE_TEXT (default on) switches it off, restoring today's behaviour; documented in .env.example
-- [ ] #4 A failed re-analysis (e.g. usage limit) leaves the job visible in the Queue as blocked with the reason and Retry; no documents are queued on the old guess
-- [ ] #5 Tests cover re-analyse-then-queue, skip queues nothing, setting off, no double analysis, failure shows blocked; each fails when its logic is removed; CI green
-- [ ] #6 Verified on localhost on a link-only job
+- [x] #1 When a job's link-only or thin text is replaced by a fetched posting (queue Retry, job-page fetch, automatic refresh) and the job already has an evaluation, the job is re-analysed with the real text in the background before any documents are queued; apply/maybe then queues documents (existing TASK-312 hook), skip queues nothing
+- [x] #2 The pre-analysis fetch (evaluate-with-model / Analyze prompt) does not trigger an extra re-analysis
+- [x] #3 Setting DACHAPPLY_REANALYSE_LATE_TEXT (default on) switches it off, restoring today's behaviour; documented in .env.example
+- [x] #4 A failed re-analysis (e.g. usage limit) leaves the job visible in the Queue as blocked with the reason and Retry; no documents are queued on the old guess
+- [x] #5 Tests cover re-analyse-then-queue, skip queues nothing, setting off, no double analysis, failure shows blocked; each fails when its logic is removed; CI green
+- [x] #6 Verified on localhost on a link-only job
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Verified on localhost 2026-10-19 (PR #309, #311): fetching the full ÖBB ads re-analysed both jobs automatically: 1845 skip 44 -> maybe 58, 1847 -> apply 82.
+<!-- SECTION:NOTES:END -->

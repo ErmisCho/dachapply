@@ -1,9 +1,10 @@
 ---
 id: TASK-323
 title: A more complete fetched posting replaces an incomplete stored one
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-19 20:02'
+updated_date: '2026-10-19 20:13'
 labels:
   - backend
 dependencies: []
@@ -19,8 +20,14 @@ Live 2026-10-19: ÖBB job 1847's stored text (1368 chars, Cornerstone API descri
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every fetch path saves a fetched posting directly when the stored text lacks a required part (TASK-322 missing_parts) and the fetched text lacks fewer; a stored text with all four parts keeps the review step
-- [ ] #2 Pre-analysis fetch and the Queue's blocked Retry also re-fetch jobs whose stored text is incomplete, so Retry on 'Posting incomplete' can resolve it
-- [ ] #3 Tests cover replace-when-fuller, keep-review-when-complete, Retry re-fetching an incomplete job; revert-checked; CI green
-- [ ] #4 Verified on localhost: ÖBB jobs 1845/1847 get the full ad
+- [x] #1 Every fetch path saves a fetched posting directly when the stored text lacks a required part (TASK-322 missing_parts) and the fetched text lacks fewer; a stored text with all four parts keeps the review step
+- [x] #2 Pre-analysis fetch and the Queue's blocked Retry also re-fetch jobs whose stored text is incomplete, so Retry on 'Posting incomplete' can resolve it
+- [x] #3 Tests cover replace-when-fuller, keep-review-when-complete, Retry re-fetching an incomplete job; revert-checked; CI green
+- [x] #4 Verified on localhost: ÖBB jobs 1845/1847 get the full ad
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Verified on localhost 2026-10-19 (PR #311): ÖBB 1845/1847 replaced without review (6962/7053 chars), posting_missing [].
+<!-- SECTION:NOTES:END -->
