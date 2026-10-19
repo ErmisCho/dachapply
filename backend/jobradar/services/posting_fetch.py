@@ -4,6 +4,7 @@ Stdlib only -- urllib + html.parser, the same shape as services/mailbox.py's url
 link is not worth a new runtime dependency, and a whole-page text dump is the honest answer here:
 this is not a readability engine, it shows the user what the page actually says so they can decide
 whether the stored text (which may be a ChatGPT summary, not the posting) is worth replacing.
+TASK-318: the one exception is a JS-only page, which Playwright renders when a browser is installed.
 
 The URL is user data and this process runs inside a cloud network, so every hop is resolved and
 checked before it is dialled -- an unguarded fetch here is an SSRF hole into the metadata service
@@ -17,11 +18,13 @@ import json
 import logging
 import re
 import socket
+import threading
+import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from django.utils import timezone
@@ -35,6 +38,11 @@ MAX_BYTES = 2 * 1024 * 1024
 MAX_REDIRECTS = 3
 USER_AGENT = 'Mozilla/5.0 (compatible; DachApply/1.0; job posting reader)'
 ALLOWED_CONTENT_TYPES = ('text/html', 'text/plain')
+NEEDS_JAVASCRIPT = 'The page needs JavaScript and could not be read automatically. Paste the posting text on the job page.'
+RENDER_SECONDS = 20
+_render_lock = threading.Lock()
+_CSOD_CONTEXT = re.compile(r'csod\.context\s*=\s*(?=\{)')
+_CSOD_REQUISITION = re.compile(r'/requisition/(\d+)')
 
 # Nothing inside these is page text; svg/head carry markup that reads as gibberish once flattened.
 _SKIP_TAGS = {'script', 'style', 'noscript', 'svg', 'head', 'template'}
@@ -107,20 +115,32 @@ def _failed(error):
     return {'ok': False, 'text': '', 'error': error, 'final_url': ''}
 
 
+def _download(url, accept, allowed, headers=None):
+    """One guarded GET: _check_host on every hop, a capped read, unpacked and decoded. Raises _Refused
+    or urllib's errors. TASK-318: shared by the page fetch and the Cornerstone API call."""
+    _check_host(url)
+    request = Request(url, headers={'User-Agent': USER_AGENT, 'Accept': accept, 'Accept-Encoding': 'identity', **(headers or {})})
+    with build_opener(_GuardedRedirect).open(request, timeout=TIMEOUT_SECONDS) as response:
+        content_type = (response.headers.get('Content-Type') or '').split(';')[0].strip().lower()
+        if content_type and not content_type.startswith(allowed):
+            raise _Refused(f'The link returned {content_type}, not a readable web page.')
+        # Read capped, never unbounded: the other end decides the size and a job board serving
+        # a 4 GB file must not be able to decide this process's memory.
+        raw = _decompress(response.read(MAX_BYTES + 1)[:MAX_BYTES], (response.headers.get('Content-Encoding') or '').lower().strip())
+        charset = response.headers.get_content_charset() or 'utf-8'
+        final_url = response.geturl()
+    try:
+        return raw.decode(charset, errors='replace'), final_url
+    except LookupError:
+        return raw.decode('utf-8', errors='replace'), final_url
+
+
 def fetch_posting_text(url):
+    """The posting behind url. TASK-318: a JS-only page is read from Cornerstone's API when it is a
+    *.csod.com requisition, else rendered headless; when neither works the error asks for a paste."""
     url = (url or '').strip()
     try:
-        _check_host(url)
-        request = Request(url, headers={'User-Agent': USER_AGENT, 'Accept': 'text/html,text/plain', 'Accept-Encoding': 'identity'})
-        with build_opener(_GuardedRedirect).open(request, timeout=TIMEOUT_SECONDS) as response:
-            content_type = (response.headers.get('Content-Type') or '').split(';')[0].strip().lower()
-            if content_type and not content_type.startswith(ALLOWED_CONTENT_TYPES):
-                return _failed(f'The link returned {content_type}, not a readable web page.')
-            # Read capped, never unbounded: the other end decides the size and a job board serving
-            # a 4 GB file must not be able to decide this process's memory.
-            raw = _decompress(response.read(MAX_BYTES + 1)[:MAX_BYTES], (response.headers.get('Content-Encoding') or '').lower().strip())
-            charset = response.headers.get_content_charset() or 'utf-8'
-            final_url = response.geturl()
+        body, final_url = _download(url, 'text/html,text/plain', ALLOWED_CONTENT_TYPES)
     except _Refused as exc:
         return _failed(str(exc))
     except HTTPError as exc:
@@ -133,14 +153,104 @@ def fetch_posting_text(url):
         if isinstance(exc.reason, socket.gaierror):
             return _failed('The address could not be resolved.')
         return _failed(f'The site could not be reached: {exc.reason}.')
-    try:
-        body = raw.decode(charset, errors='replace')
-    except LookupError:
-        body = raw.decode('utf-8', errors='replace')
-    text = posting_text(body)
+    final_url = final_url or url
+    text = _cornerstone_text(final_url, body) or posting_text(body) or _rendered_text(final_url)
     if not text:
-        return _failed('The page returned no readable text — it may require JavaScript.')
+        return _failed(NEEDS_JAVASCRIPT)
     return {'ok': True, 'text': text, 'error': '', 'final_url': final_url}
+
+
+def _cornerstone_text(url, page):
+    """TASK-318: a Cornerstone OnDemand career site (*.csod.com) is a JS shell, but the page embeds
+    csod.context={...} with an anonymous token, and one jobDetails call returns the posting. Measured
+    on oebb.csod.com requisition 26278: {status: 0, data: {displayTitle, externalDescription (HTML)}}.
+    '' when this is not such a page or the call fails -- the caller then reads the page another way."""
+    parts = urlsplit(url)
+    requisition = _CSOD_REQUISITION.search(parts.path)
+    found = _CSOD_CONTEXT.search(page)
+    if not ((parts.hostname or '').endswith('.csod.com') and requisition and found):
+        return ''
+    try:
+        context = json.JSONDecoder().raw_decode(page, found.end())[0]
+        culture = {key.lower(): value for key, value in parse_qsl(parts.query)}.get('cultureid') or context['cultureID']
+        api = f"{parts.scheme}://{parts.netloc}/services/x/job-requisition/v2/requisitions/{requisition[1]}/jobDetails?{urlencode({'cultureId': culture})}"
+        data = json.loads(_download(api, 'application/json', ('application/json',), {'Authorization': f"Bearer {context['token']}"})[0])['data']
+        title, description = (data.get('displayTitle') or '').strip(), extract_text(data.get('externalDescription') or '')
+    except Exception as exc:  # any failure here only means "read the page another way"
+        logger.info('Cornerstone posting %s could not be read: %s', url, exc)
+        return ''
+    return '\n\n'.join(line for line in (title, description) if line) if description else ''
+
+
+def _guard_route(route):
+    """TASK-318: every request the rendered page makes is dialled from here, after _check_host.
+
+    page.route is not called again for a redirect hop -- measured with Chrome: goto on
+    https://httpbin.org/redirect/2 reached the handler once, for the first URL only, with
+    route.continue_ and with route.fulfill of the 302 alike. So the hops are followed here, each one
+    checked, and only the last answer is handed to the page. Images, media and fonts are never fetched.
+    ponytail: WebSockets bypass page.route; route_web_socket if a job board ever needs one.
+    """
+    url, response = route.request.url, None
+    if route.request.resource_type not in ('image', 'media', 'font'):
+        try:
+            for _ in range(MAX_REDIRECTS + 1):
+                _check_host(url)
+                answer = route.fetch(url=url, max_redirects=0, timeout=TIMEOUT_SECONDS * 1000)
+                location = answer.headers.get('location')
+                if not (300 <= answer.status < 400 and location):
+                    response = answer
+                    break
+                url = urljoin(url, location)
+        except Exception:  # _Refused, a network error, a hop changing scheme: none of it reaches the page
+            response = None
+    if response is None:
+        route.abort()
+    else:
+        route.fulfill(response=response)
+
+
+def _rendered_text(url):
+    """TASK-318: a JS-only page rendered by a headless browser -- the installed Google Chrome, else a
+    Playwright Chromium. '' when Playwright or a browser is missing (the container ships no browser),
+    the render fails, or another render holds the lock too long. Never raises.
+    ponytail: one render at a time, process-wide; a pool if many JS-only jobs are fetched at once.
+    """
+    try:
+        from playwright.sync_api import Error as PlaywrightError, sync_playwright
+    except ImportError:
+        logger.info('Playwright is not installed; %s is not rendered', url)
+        return ''
+    if not _render_lock.acquire(timeout=RENDER_SECONDS):
+        return ''
+    deadline = time.monotonic() + RENDER_SECONDS
+    try:
+        with sync_playwright() as playwright:
+            browser = None
+            for options in ({'channel': 'chrome'}, {}):
+                try:
+                    browser = playwright.chromium.launch(headless=True, **options)
+                    break
+                except PlaywrightError:
+                    continue
+            if browser is None:
+                logger.info('No headless browser could be launched; %s is not rendered', url)
+                return ''
+            try:
+                page = browser.new_context(service_workers='block').new_page()
+                page.route('**/*', _guard_route)
+                try:
+                    page.goto(url, wait_until='networkidle', timeout=max(1.0, deadline - time.monotonic()) * 1000)
+                except PlaywrightError:
+                    pass  # a page that never goes quiet (or was refused) is read as far as it got
+                return posting_text(page.content()[:MAX_BYTES])
+            finally:
+                browser.close()
+    except Exception as exc:
+        logger.info('Rendering %s failed: %s', url, exc)
+        return ''
+    finally:
+        _render_lock.release()
 
 
 class _TextParser(HTMLParser):

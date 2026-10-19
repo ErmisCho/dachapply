@@ -132,7 +132,16 @@ def test_retry_when_the_fetch_fails_keeps_the_job_blocked(owner, client, tasks, 
     job = _link_only(owner, 'to_apply')
     application_prep.prepare(job.id, owner)
     response = client.post(ACTION, {'job_id': job.id, 'key': '', 'action': 'retry'}, format='json')
-    assert response.status_code == 200 and fetch['calls'] == [LINK] and response.json()['items'] == [_blocked(job, REFUSED)]
+    # TASK-318: the queue says why the link could not be read, not only that the text is missing.
+    assert response.status_code == 200 and fetch['calls'] == [LINK] and response.json()['items'] == [_blocked(job, FAILED['error'])]
     job.refresh_from_db()
     assert job.source_fetch_error == FAILED['error'] and tasks['started'] == []
     assert client.post(ACTION, {'job_id': job.id, 'key': '', 'action': 'cancel'}, format='json').status_code == 400
+
+
+def test_a_blocked_job_whose_page_needs_javascript_shows_the_paste_hint(owner, client, tasks):
+    """TASK-318: the Queue tells the owner to paste the text when the link could not be read."""
+    job = _link_only(owner, 'to_apply')
+    JobLead.objects.filter(pk=job.pk).update(source_fetch_error=posting_fetch.NEEDS_JAVASCRIPT)
+    application_prep.prepare(job.id, owner)
+    assert _items(client) == [_blocked(job, posting_fetch.NEEDS_JAVASCRIPT)]

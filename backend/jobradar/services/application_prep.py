@@ -686,13 +686,15 @@ def queue_state(user):
     with _lock:
         positions = {entry: index for index, entry in enumerate(_queue, 1)}
     items, blocked = [], []
-    for job in accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES).only('id', 'company', 'title', 'status'):
+    for job in accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES).only('id', 'company', 'title', 'status', 'source_fetch_error'):
         prep = _state(job, user)
         if prep.get('reason') and not prep.get('variants') and prep['reason'] not in (ANALYSING, FILES_EXIST):
-            # TASK-313 AC2: a job whose preparation was refused shows why, instead of vanishing.
+            # TASK-313 AC2: a job whose preparation was refused shows why, instead of vanishing. TASK-318: a
+            # missing text says why its link could not be read (e.g. the paste hint), the _gate wording otherwise.
+            error = job.source_fetch_error if prep['reason'] == 'The job has no usable posting text yet.' and job.source_fetch_error else prep['reason']
             blocked.append({'job_id': job.id, 'company': job.company, 'title': job.title, 'job_status': job.status, 'key': '',
                             'label': 'Documents', 'document': None, 'language': None, 'status': 'blocked', 'position': None,
-                            'progress': 0, 'eta_seconds': None, 'error': prep['reason'], 'files': [],
+                            'progress': 0, 'eta_seconds': None, 'error': error, 'files': [],
                             'queued_at': None, 'started_at': None, 'finished_at': None})
         for key, variant in (prep.get('variants') or {}).items():
             if variant.get('review') == 'discard':
