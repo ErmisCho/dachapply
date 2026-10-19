@@ -10,16 +10,25 @@ checked before it is dialled -- an unguarded fetch here is an SSRF hole into the
 and every private peer the container can see.
 """
 import gzip
+import hashlib
 import io
 import ipaddress
 import json
+import logging
 import re
 import socket
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+from django.utils import timezone
+
+from jobradar.models import JobLead
+
+logger = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 10
 MAX_BYTES = 2 * 1024 * 1024
@@ -281,3 +290,46 @@ def normalized(text):
     """Whitespace-insensitive form -- the stored text and a freshly extracted page differ in
     wrapping long before they differ in content, so comparing raw bytes would always say 'differs'."""
     return ' '.join((text or '').split())
+
+
+def _source_hash(text):
+    return hashlib.sha256(normalized(text).encode('utf-8')).hexdigest()
+
+
+def _accepted_source(job, text):
+    """The one write that makes text the job's accepted posting text and resolves its pending copy.
+    TASK-269: the copy being resolved is remembered so the automatic refresh does not re-stage it."""
+    dismissed={'dismissed_source_hash':_source_hash(job.pending_source_text)} if job.pending_source_text else {}
+    return {'original_source_text':text,'pending_source_text':'','pending_source_fetched_at':None,'source_fetch_error':'',**dismissed}
+
+
+def replaces_thin_source(job, text):
+    """TASK-313: a fetched text is used without asking when the job has only a link or very little
+    text (JobLead.is_thin_source) and the page says more -- the owner's own few lines are overwritten."""
+    return (JobLead.is_thin_source(job.source_text) and JobLead.is_meaningful_source(text)
+            and len(normalized(text)) > len(normalized(job.source_text)))
+
+
+def fetch_missing_sources(jobs):
+    """TASK-313 AC1: before analysis, read the posting behind each thin job's URL.
+
+    Only jobs with a URL and a thin text are fetched; a page that replaces_thin_source becomes the
+    accepted text, a failure is kept in source_fetch_error. Never raises: a fetch must not fail the analysis.
+    """
+    jobs=[job for job in jobs if (job.url or '').strip() and JobLead.is_thin_source(job.source_text)]
+    if not jobs: return
+    try:
+        # Network work is independent; database writes stay in the caller's thread.
+        with ThreadPoolExecutor(max_workers=min(4,len(jobs))) as pool:
+            results=list(pool.map(fetch_posting_text,[job.url for job in jobs]))
+        checked_at=timezone.now()
+        for job,result in zip(jobs,results):
+            values={'source_checked_at':checked_at}
+            if not result['ok']:
+                values['source_fetch_error']=result['error']
+            elif replaces_thin_source(job,result['text']):
+                values.update(_accepted_source(job,result['text']))
+            JobLead.objects.filter(pk=job.pk).update(**values)
+            for key,value in values.items(): setattr(job,key,value)
+    except Exception:
+        logger.exception('Fetching posting text before analysis failed')

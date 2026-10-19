@@ -40,6 +40,7 @@ from jobradar.services import cv_tasks
 from jobradar.services.access import accessible_jobs
 from jobradar.services.application_requirements import DOCUMENT_STATUSES, DOCUMENT_TYPES, POSTING_LANGUAGES, normalize_application_requirements
 from jobradar.services.cv_generator import _edit_sidecar, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
+from jobradar.services.posting_fetch import fetch_missing_sources
 from jobradar.services.prompt_builder import APPLICATION_REQUIREMENTS_RULES, APPLICATION_REQUIREMENTS_SCHEMA_FIELD, build_candidate_profile_text, user_profile_settings
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,7 @@ NOT_ANALYSED = 'Application requirements are not analysed yet. Analyse the job, 
 ANALYSING = 'Analysing application requirements…'
 ANALYSIS_INTERRUPTED = 'Requirements analysis stopped before it finished (the server restarted). Press Prepare to retry.'
 CANCELLED = 'Cancelled from the queue. Retry to prepare it again.'
+FILES_EXIST = 'Generated files already exist for this job, so nothing was prepared automatically. Generate more from the CV section.'
 PREPARE_STATUSES = ('new', 'reviewed', 'to_apply')  # TASK-312 AC1; a retry also Ready to submit
 FINISHED_LIMIT = 50  # TASK-312: finished items the queue lists, newest first
 
@@ -273,7 +275,7 @@ def prepare(job_id, user, retry=False):
         reason, variants, context, choice = _gate(job, user)
         if reason in ('', NOT_ANALYSED) and not state['variants'] and any(latest_generated_sources(job, user)):
             # AC5: files the owner already generated are theirs; automatic drafts never join or replace them.
-            reason ='Generated files already exist for this job, so nothing was prepared automatically. Generate more from the CV section.'
+            reason = FILES_EXIST
         if reason == NOT_ANALYSED and not state['variants']:
             # TASK-308: analyse the posting ourselves, off this (request) thread; the worker prepares after.
             analyse = job.id not in _analysing
@@ -675,16 +677,24 @@ def _live(variant, user):
 
 def queue_state(user):
     """AC4: every prepared variant of the owner's unapplied jobs except discarded ones -- running, then
-    queued by position, then the newest FINISHED_LIMIT finished ones. Read-only, like board_summary.
+    queued by position, then (TASK-313) jobs whose preparation was refused, then the newest
+    FINISHED_LIMIT finished ones. Read-only, like board_summary.
 
     ponytail: one sidecar read per unapplied job per poll, as application_prep_active does; an index
     of jobs with a preparation if the board grows into thousands of open jobs.
     """
     with _lock:
         positions = {entry: index for index, entry in enumerate(_queue, 1)}
-    items = []
+    items, blocked = [], []
     for job in accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES).only('id', 'company', 'title', 'status'):
-        for key, variant in (_state(job, user).get('variants') or {}).items():
+        prep = _state(job, user)
+        if prep.get('reason') and not prep.get('variants') and prep['reason'] not in (ANALYSING, FILES_EXIST):
+            # TASK-313 AC2: a job whose preparation was refused shows why, instead of vanishing.
+            blocked.append({'job_id': job.id, 'company': job.company, 'title': job.title, 'job_status': job.status, 'key': '',
+                            'label': 'Documents', 'document': None, 'language': None, 'status': 'blocked', 'position': None,
+                            'progress': 0, 'eta_seconds': None, 'error': prep['reason'], 'files': [],
+                            'queued_at': None, 'started_at': None, 'finished_at': None})
+        for key, variant in (prep.get('variants') or {}).items():
             if variant.get('review') == 'discard':
                 continue
             status, error, live = _live(variant, user)
@@ -698,7 +708,7 @@ def queue_state(user):
     running = sorted((item for item in items if item['status'] == 'running'), key=lambda item: item['started_at'] or '')
     queued = sorted((item for item in items if item['status'] == 'queued'), key=lambda item: (item['position'] is None, item['position'] or 0, item['queued_at'] or ''))
     finished = sorted((item for item in items if item['status'] not in ('running', 'queued')), key=lambda item: item['finished_at'] or '', reverse=True)
-    return {'concurrency': settings.PREP_QUEUE_CONCURRENCY, 'items': running + queued + finished[:FINISHED_LIMIT]}
+    return {'concurrency': settings.PREP_QUEUE_CONCURRENCY, 'items': running + queued + blocked + finished[:FINISHED_LIMIT]}
 
 
 def queue_action(user, job_id, key, action):
@@ -710,6 +720,12 @@ def queue_action(user, job_id, key, action):
         job = accessible_jobs(user).filter(pk=int(job_id), status__in=JobLead.UNAPPLIED_STATUSES).first()
     except (TypeError, ValueError):
         job = None
+    prep = _state(job, user) if job and key == '' and action == 'retry' else {}
+    if prep.get('reason') and not prep.get('variants'):
+        # TASK-313 AC3: a blocked job -- read its posting (network, so outside _lock), then gate again.
+        fetch_missing_sources([job])
+        prepare(job.id, user)
+        return queue_state(user)
     with _lock:
         variant = (_state(job, user).get('variants') or {}).get(key) if job else None
         if not variant or variant.get('review') == 'discard':
