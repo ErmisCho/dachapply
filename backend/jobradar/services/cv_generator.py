@@ -14,7 +14,7 @@ import tempfile
 import time
 import urllib.parse
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event, Lock, Thread
 
@@ -46,18 +46,24 @@ class GenerationCancelled(Exception):
 
 
 class RecoverableGenerationError(RuntimeError):
-    def __init__(self, summary, diagnostics=''):
+    # TASK-317: usage_limit -- the provider refused for its usage/rate limit; reset_at -- when it said
+    # the limit resets (aware, this machine's local time), None when it did not say.
+    def __init__(self, summary, diagnostics='', usage_limit=False, reset_at=None):
         super().__init__(summary)
         self.summary=summary
         self.diagnostics=diagnostics or summary
+        self.usage_limit=usage_limit
+        self.reset_at=reset_at
 
 
 class GenerationFailed(RuntimeError):
-    def __init__(self, message, diagnostics, repair_attempts):
+    def __init__(self, message, diagnostics, repair_attempts, usage_limit=False, reset_at=None):
         super().__init__(message)
         self.public_message=message
         self.diagnostics=diagnostics
         self.repair_attempts=repair_attempts
+        self.usage_limit=usage_limit
+        self.reset_at=reset_at
 
 
 def _ensure_active(cancelled):
@@ -1758,6 +1764,34 @@ def _post_local_json(url, payload, cancelled):
     return result['body']
 
 
+_USAGE_LIMIT=re.compile(r'usage limit|rate limit|(?:5-hour|weekly|session) limit|hit your limit|too many requests|(?:HTTP|status|error)\W{0,3}429\b', re.I)
+_RESET_TIME=re.compile(r'(?:try again at|resets?(?: at)?)\s+(\d{1,2})(?::(\d{2}))?(?:\s*([ap])\.?m\b)?', re.I)
+
+
+def _provider_failure(detail, now=None):
+    """TASK-317: the RecoverableGenerationError for a failed provider run.
+
+    A usage/rate limit -- codex "ERROR: You've hit your usage limit. ... try again at 6:51 PM.", claude
+    "Claude AI usage limit reached" / "5-hour limit reached - resets 7pm" -- gets a plain summary naming
+    when it resets, and that time as reset_at so the queue can retry then. The time is this machine's
+    local time (the CLI's own clock); one already past today is tomorrow's. Anything else keeps the
+    generic summary.
+    """
+    if not _USAGE_LIMIT.search(detail):
+        return RecoverableGenerationError('The selected model could not complete the request.', detail)
+    match=_RESET_TIME.search(detail)
+    hour,minute=(int(match[1]),int(match[2] or 0)) if match else (24,0)
+    if match and match[3]:
+        hour=hour%12+(12 if match[3].lower() == 'p' else 0)
+    if hour > 23 or minute > 59:
+        return RecoverableGenerationError('Usage limit reached; try again later.', detail, usage_limit=True)
+    now=now or datetime.now().astimezone()
+    reset_at=now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if reset_at <= now:
+        reset_at+=timedelta(days=1)
+    return RecoverableGenerationError(f'Usage limit reached; resets at {hour:02d}:{minute:02d}.', detail, usage_limit=True, reset_at=reset_at)
+
+
 def run_structured_model(prompt, schema, provider, model, effort='default', speed='normal', *, workdir,
                          cancelled=None, image_path=None, read_tools=False, model_option=None, tex_files=()):
     """Run the configured provider against `prompt`, constrained to `schema`, and return the parsed dict.
@@ -1807,8 +1841,7 @@ def run_structured_model(prompt, schema, provider, model, effort='default', spee
         except GenerationCancelled:
             raise
         except Exception as exc:
-            raise RecoverableGenerationError('The selected model could not complete the request.',
-                                             _failure_detail(str(exc), '', prompt)) from None
+            raise _provider_failure(_failure_detail(str(exc), '', prompt)) from None
     elif provider == 'anthropic':
         executable=shutil.which('claude') or shutil.which('claude.exe')
         if not executable:
@@ -1842,8 +1875,7 @@ def run_structured_model(prompt, schema, provider, model, effort='default', spee
     if provider not in ('lmstudio','ollama') and (result.returncode or provider != 'anthropic' and not result_path.is_file()):
         # Both streams, not the first non-empty one: which of them carries the cause and which
         # carries the transcript differs by CLI, and dropping a stream wholesale can drop the cause.
-        raise RecoverableGenerationError('The selected model could not complete the request.',
-                                         _failure_detail(result.stderr, result.stdout, prompt))
+        raise _provider_failure(_failure_detail(result.stderr, result.stdout, prompt))
     _ensure_active(cancelled)
     try:
         if provider in ('lmstudio','ollama'):
@@ -2084,6 +2116,8 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
             except RecoverableGenerationError as exc:
                 failure=exc
                 diagnostics.append(f'Attempt {attempt+1}: {exc.summary}\n{exc.diagnostics}')
+                if exc.usage_limit:  # TASK-317: a repair cannot lift a usage limit; it only spends more
+                    raise GenerationFailed(exc.summary, '\n\n'.join(diagnostics), attempt, True, exc.reset_at) from None
                 if attempt == 2:
                     raise GenerationFailed(f'{exc.summary} Two automatic repair attempts also failed.', '\n\n'.join(diagnostics), 2) from None
 

@@ -273,4 +273,120 @@ def test_the_queue_lists_running_then_queued_by_position_then_finished_newest_fi
     assert (ready['progress'], ready['eta_seconds'], ready['files'], ready['document'], ready['language']) == (100, None, ['Old-CV.tex', 'Old-CV.pdf'], 'cv', 'de')
     assert items[4]['error'] == 'quota' and client.get(QUEUE).json()['concurrency'] == 2
     assert set(running) == {'job_id', 'company', 'title', 'job_status', 'key', 'label', 'document', 'language', 'status', 'position',
-                            'progress', 'eta_seconds', 'error', 'files', 'queued_at', 'started_at', 'finished_at'}
+                            'progress', 'eta_seconds', 'error', 'files', 'queued_at', 'started_at', 'finished_at', 'retry_at'}
+
+
+# --- TASK-317: a usage limit is retried automatically once it resets ----------------------------
+
+RESET = '2026-10-19T18:51:00+02:00'
+
+
+@pytest.fixture
+def timers(monkeypatch):
+    """No real timer in tests: each armed one is recorded, and a test calls retry_due itself."""
+    armed = []
+
+    class FakeTimer:
+        def __init__(self, interval, function):
+            self.interval, self.function, self.cancelled = interval, function, False
+
+        def start(self):
+            armed.append(self)
+
+        def cancel(self):
+            self.cancelled = True
+    monkeypatch.setattr(application_prep, 'Timer', FakeTimer)
+    monkeypatch.setattr(application_prep, '_timer', None)
+    return armed
+
+
+def _at(monkeypatch, iso):
+    from datetime import datetime
+    monkeypatch.setattr(application_prep.timezone, 'now', lambda: datetime.fromisoformat(iso))
+
+
+def _limited(tasks, task_id, reset_at=RESET):
+    tasks['live'][task_id].update(status='failed', error='Usage limit reached; resets at 18:51.', usage_limit=True, reset_at=reset_at)
+    tasks['finish'][task_id](task_id)
+
+
+def test_a_usage_limited_variant_is_retried_automatically_once_it_resets(owner, client, tasks, timers, monkeypatch):
+    _at(monkeypatch, '2026-10-19T17:00:00+02:00')
+    job = _job(owner, 'new', requirements=_req('de'))
+    application_prep.prepare(job.id, owner)
+    _limited(tasks, 'task-1')
+    assert _variant(job, owner, 'cv-de')['retry_at'] == '2026-10-19T18:52:00+02:00'
+    assert application_prep._timer[0].isoformat() == '2026-10-19T18:52:00+02:00' and timers[-1].interval == 6720
+    item = next(item for item in _items(client) if item['job_id'] == job.id)
+    assert item['status'] == 'failed' and item['retry_at'] == '2026-10-19T18:52:00+02:00' and item['error'] == 'Usage limit reached; resets at 18:51.'
+    # Before retry_at nothing is re-queued; the timer is armed again for it.
+    _at(monkeypatch, '2026-10-19T18:51:59+02:00')
+    assert application_prep.retry_due() == 0 and len(tasks['started']) == 1 and application_prep._timer
+    _at(monkeypatch, '2026-10-19T18:52:00+02:00')
+    assert application_prep.retry_due() == 1
+    assert tasks['started'] == [(job.id, 'cv-de'), (job.id, 'cv-de')] and _variant(job, owner, 'cv-de')['auto_retries'] == 1
+    assert application_prep._timer is None  # nothing else pending
+
+
+def test_a_usage_limit_without_a_reset_time_is_retried_half_an_hour_later(owner, tasks, timers, monkeypatch):
+    _at(monkeypatch, '2026-10-19T17:00:00+00:00')
+    job = _job(owner, 'new', requirements=_req('de'))
+    application_prep.prepare(job.id, owner)
+    _limited(tasks, 'task-1', reset_at=None)
+    assert _variant(job, owner, 'cv-de')['retry_at'] == '2026-10-19T17:30:00+00:00'
+
+
+def test_automatic_retries_stop_after_three(owner, tasks, timers, monkeypatch):
+    _at(monkeypatch, '2026-10-19T17:00:00+02:00')
+    job = _job(owner, 'new', requirements=_req('de'))
+    application_prep.prepare(job.id, owner)
+    for attempt in range(1, 4):
+        _limited(tasks, f'task-{attempt}')
+        _at(monkeypatch, '2026-10-19T19:00:00+02:00')
+        assert application_prep.retry_due() == 1
+    _limited(tasks, 'task-4')
+    assert _variant(job, owner, 'cv-de')['retry_at'] is None and _variant(job, owner, 'cv-de')['auto_retries'] == 3
+    assert application_prep.retry_due() == 0 and len(tasks['started']) == 4
+
+
+def test_any_other_failure_is_never_retried_automatically(owner, client, tasks, timers, monkeypatch):
+    job = _job(owner, 'new', requirements=_req('de'))
+    application_prep.prepare(job.id, owner)
+    tasks['end']('task-1', status='failed')
+    assert _variant(job, owner, 'cv-de')['retry_at'] is None and timers == []
+    assert next(item for item in _items(client) if item['job_id'] == job.id)['retry_at'] is None
+    _at(monkeypatch, '2099-01-01T00:00:00+00:00')
+    assert application_prep.retry_due() == 0 and len(tasks['started']) == 1
+
+
+def test_a_restart_schedules_pending_usage_limit_retries(owner, tasks, timers, monkeypatch):
+    waiting, due = _job(owner, 'new', requirements=_req('de')), _job(owner, 'new', requirements=_req('de'))
+    for job, retry_at in ((waiting, '2026-10-19T18:52:00+02:00'), (due, '2026-10-19T16:00:00+02:00')):
+        application_prep._save(job, owner.pk, lambda prep, retry_at=retry_at: prep.update(
+            model={'provider': 'openai', 'model': 'gpt-6.1', 'effort': 'high', 'speed': 'normal'},
+            variants={'cv-de': {'document': 'cv', 'language': 'de', 'status': 'failed', 'task_id': 'gone', 'error': 'Usage limit reached; resets at 18:51.',
+                                'files': {}, 'queued_at': '2026-10-19T10:00:00+00:00', 'retry_at': retry_at}}))
+    _at(monkeypatch, '2026-10-19T17:00:00+02:00')
+    assert application_prep.resume_queue() == 0  # nothing was left queued or running
+    assert tasks['started'] == [(due.id, 'cv-de')]  # the one already due is retried at once
+    assert application_prep._timer[0].isoformat() == '2026-10-19T18:52:00+02:00'  # the other one is scheduled
+
+
+def test_a_usage_limited_requirements_analysis_is_retried_automatically(owner, client, tasks, timers, monkeypatch):
+    from datetime import datetime
+    from jobradar.services.cv_generator import RecoverableGenerationError
+    from jobradar.tests.test_application_prep import _model
+    _at(monkeypatch, '2026-10-19T17:00:00+02:00')
+    monkeypatch.setattr(application_prep, 'fetch_missing_sources', lambda jobs: None)
+    job = _job(owner, 'new', requirements={})
+    _model(monkeypatch, RecoverableGenerationError('Usage limit reached; resets at 18:51.', usage_limit=True, reset_at=datetime.fromisoformat(RESET)))
+    application_prep.prepare(job.id, owner)
+    prep = application_prep._state(job, owner)
+    assert prep['reason'] == 'Requirements analysis failed: Usage limit reached; resets at 18:51. Press Prepare to retry.'
+    assert prep['retry_at'] == '2026-10-19T18:52:00+02:00'
+    assert next(item for item in _items(client) if item['job_id'] == job.id)['retry_at'] == '2026-10-19T18:52:00+02:00'
+    _model(monkeypatch)
+    _at(monkeypatch, '2026-10-19T18:52:00+02:00')
+    assert application_prep.retry_due() == 1
+    assert tasks['started'] == [(job.id, 'cv-en'), (job.id, 'letter-en')][:len(tasks['started'])] and tasks['started']
+    assert application_prep._state(job, owner)['retry_at'] is None

@@ -20,14 +20,20 @@ To apply job (json_importer.create_evaluation), and variants no longer all start
 one FIFO queue across all jobs (_queue, in memory) and at most settings.PREP_QUEUE_CONCURRENCY run.
 Each variant also records "queued_at"/"started_at"/"finished_at" (ISO) and may be "cancelled"; the
 sidecar stays the durable copy, so resume_queue rebuilds the queue from it after a restart.
+
+TASK-317: a variant -- or a requirements analysis (the preparation itself) -- that failed on the
+provider's usage limit records "retry_at" (ISO: the reset plus a minute, or half an hour on) and
+"auto_retries"; one Timer (_timer) wakes retry_due, which re-queues it through queue_action's retry,
+at most AUTO_RETRIES times. Any other failure clears retry_at and is never retried automatically.
 """
 import io
 import logging
 import re
 import tempfile
 import zipfile
+from datetime import datetime, timedelta
 from pathlib import Path
-from threading import RLock, Thread
+from threading import RLock, Thread, Timer
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -59,6 +65,7 @@ CANCELLED = 'Cancelled from the queue. Retry to prepare it again.'
 FILES_EXIST = 'Generated files already exist for this job, so nothing was prepared automatically. Generate more from the CV section.'
 PREPARE_STATUSES = ('new', 'reviewed', 'to_apply')  # TASK-312 AC1; a retry also Ready to submit
 FINISHED_LIMIT = 50  # TASK-312: finished items the queue lists, newest first
+AUTO_RETRIES = 3  # TASK-317: automatic retries of one usage-limited item
 
 # ponytail: one process serves generation (threaded runserver); a DB claim if that changes. Re-entrant
 # because a task's on_finish can run in the thread that started it (a task that fails at once, tests).
@@ -69,6 +76,7 @@ _analysing = set()  # TASK-308: job ids whose requirements analysis is running; 
 # ponytail: "Move to front" lives only here, so after a restart the queue is back in queued_at order.
 _queue = []
 _running = 0
+_timer = None  # TASK-317: (when, Timer) of the next retry_due wake-up; guarded by _lock
 
 _STRING = {'type': 'string'}
 # TASK-308: the strict JSON-schema form of APPLICATION_REQUIREMENTS_SCHEMA_FIELD, so structured output
@@ -240,7 +248,9 @@ def _finish(job_id, user_id, key, task_id):
                 if variant is None or variant.get('status') not in ('running', 'cancelled') or variant.get('task_id') not in ('', None, task_id):
                     return  # re-queued (retry, restart) meanwhile, or a newer run owns this variant
                 error = '' if status == 'ready' else CANCELLED if status == 'cancelled' else task.get('error') or 'Stopped before it finished.'
-                variant.update(task_id=task_id, status=status, files=files if status == 'ready' else {}, error=error, finished_at=_now())
+                reset_at = task.get('reset_at') and datetime.fromisoformat(task['reset_at'])
+                variant.update(task_id=task_id, status=status, files=files if status == 'ready' else {}, error=error, finished_at=_now(),
+                               retry_at=_retry_at(status == 'failed' and task.get('usage_limit'), reset_at, variant))
             if job:
                 _save(job, user_id, record)
         finally:
@@ -281,10 +291,10 @@ def prepare(job_id, user, retry=False):
             analyse = job.id not in _analysing
             if analyse:
                 _analysing.add(job.id)
-                _save(job, user.pk, lambda prep: prep.update(reason=ANALYSING, variants={}))
+                _save(job, user.pk, lambda prep: prep.update(reason=ANALYSING, variants={}, retry_at=None))
         elif reason:
             if not state['variants']:
-                _save(job, user.pk, lambda prep: prep.update(reason=reason, variants={}))
+                _save(job, user.pk, lambda prep: prep.update(reason=reason, variants={}, retry_at=None))
             return public_state(job, user, reason_override=reason if state['variants'] else None)
         else:
             if state['variants']:
@@ -340,7 +350,9 @@ def _analyse_then_prepare(job_id, user_id, retry):
             requirements = _analyse(job)
         except Exception as exc:  # AC2: the page says why, never a silent stop
             error = str(getattr(exc, 'summary', '') or exc)[:300].rstrip('.')
-            _save(job, user_id, lambda prep: prep.update(reason=f'Requirements analysis failed: {error}. Press Prepare to retry.'))
+            with _lock:  # TASK-317: a usage limit is retried automatically once it resets
+                _save(job, user_id, lambda prep: prep.update(reason=f'Requirements analysis failed: {error}. Press Prepare to retry.',
+                                                             retry_at=_retry_at(getattr(exc, 'usage_limit', False), getattr(exc, 'reset_at', None), prep)))
             return
         job.refresh_from_db()
         if not job.application_requirements:  # AC3: requirements stored meanwhile (an owner edit) win
@@ -695,7 +707,7 @@ def queue_state(user):
             blocked.append({'job_id': job.id, 'company': job.company, 'title': job.title, 'job_status': job.status, 'key': '',
                             'label': 'Documents', 'document': None, 'language': None, 'status': 'blocked', 'position': None,
                             'progress': 0, 'eta_seconds': None, 'error': error, 'files': [],
-                            'queued_at': None, 'started_at': None, 'finished_at': None})
+                            'queued_at': None, 'started_at': None, 'finished_at': None, 'retry_at': prep.get('retry_at')})
         for key, variant in (prep.get('variants') or {}).items():
             if variant.get('review') == 'discard':
                 continue
@@ -706,7 +718,8 @@ def queue_state(user):
                           'progress': 100 if status == 'ready' else round(live['progress']) if live else 0,
                           'eta_seconds': live['estimated_seconds_remaining'] if live else None, 'error': error,
                           'files': [Path(path).name for path in (variant.get('files') or {}).values()],
-                          'queued_at': variant.get('queued_at'), 'started_at': variant.get('started_at'), 'finished_at': variant.get('finished_at')})
+                          'queued_at': variant.get('queued_at'), 'started_at': variant.get('started_at'), 'finished_at': variant.get('finished_at'),
+                          'retry_at': variant.get('retry_at') if variant.get('status') == 'failed' else None})
     running = sorted((item for item in items if item['status'] == 'running'), key=lambda item: item['started_at'] or '')
     queued = sorted((item for item in items if item['status'] == 'queued'), key=lambda item: (item['position'] is None, item['position'] or 0, item['queued_at'] or ''))
     finished = sorted((item for item in items if item['status'] not in ('running', 'queued')), key=lambda item: item['finished_at'] or '', reverse=True)
@@ -759,20 +772,24 @@ def queue_action(user, job_id, key, action):
     return queue_state(user)
 
 
-def resume_queue():
-    """AC3: re-queue, in queued_at order, every variant a restart left queued, or running with no live
-    task. The sidecar path is a hash of user and job, so the owners' unapplied jobs come from the
-    database rather than a directory listing. A re-queued variant is plain queued again (task_id
-    cleared), so public_state and board_summary stop reporting it as interrupted."""
+def _owners():
+    """The accounts that may generate. The sidecar path is a hash of user and job, so a scan of the
+    sidecars starts from them and their unapplied jobs in the database, not a directory listing."""
     owner = (settings.CODEX_CV_OWNER_EMAIL or '').strip()
     match = Q(jobradar_profile__can_generate_cv=True)
     if owner:
         match |= Q(email__iexact=owner) | Q(username__iexact=owner)
+    return [user for user in get_user_model().objects.filter(match).distinct() if is_cv_owner(user)]
+
+
+def resume_queue():
+    """AC3: re-queue, in queued_at order, every variant a restart left queued, or running with no live
+    task (the owners' unapplied jobs, _owners). A re-queued variant is plain queued again (task_id
+    cleared), so public_state and board_summary stop reporting it as interrupted. TASK-317: then
+    retry_due, so usage-limit retries recorded before the restart are scheduled again."""
     with _lock:
         found = []
-        for user in get_user_model().objects.filter(match).distinct():
-            if not is_cv_owner(user):
-                continue
+        for user in _owners():
             for job in accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES).only('id'):
                 for key, variant in (_state(job, user).get('variants') or {}).items():
                     task_id = variant.get('task_id')
@@ -783,7 +800,79 @@ def resume_queue():
             _save(job, user.pk, lambda prep, key=key: prep['variants'][key].update(status='queued', task_id='', started_at=None))
             _queue.append((job.id, user.pk, key))
         _pump()
+    retry_due()
     return len(found)
+
+
+# --- TASK-317: automatic retry after a usage limit ----------------------------------------------
+
+def _retry_at(usage_limit, reset_at, item):
+    """When a usage-limit failure is retried automatically (ISO), arming the timer for it; None for any
+    other failure or once `item` spent its AUTO_RETRIES. Caller holds _lock."""
+    if not usage_limit or item.get('auto_retries', 0) >= AUTO_RETRIES:
+        return None
+    when = reset_at + timedelta(minutes=1) if reset_at else timezone.now() + timedelta(minutes=30)
+    _arm(when)
+    return when.isoformat()
+
+
+def _arm(when):
+    """Wake retry_due at `when`, unless the one timer already wakes sooner. Caller holds _lock."""
+    global _timer
+    if _timer and _timer[0] <= when:
+        return
+    if _timer:
+        _timer[1].cancel()
+    _timer = (when, Timer(max(0, (when - timezone.now()).total_seconds()), _retry_worker))
+    _timer[1].daemon = True
+    _timer[1].start()
+
+
+def retry_due():
+    """Re-queue, through queue_action's own retry, every usage-limited failure whose retry_at passed --
+    a failed variant, or a preparation whose requirements analysis hit the limit -- and arm the timer
+    for the next one. The sidecars are the truth, so a retry the owner already made is not repeated."""
+    global _timer
+    now, due, later = timezone.now(), [], []
+    with _lock:
+        if _timer:
+            _timer[1].cancel()
+            _timer = None
+        for user in _owners():
+            for job in accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES).only('id'):
+                prep = _state(job, user)
+                variants = prep.get('variants') or {}
+                pending = [(key, variant) for key, variant in variants.items() if variant.get('status') == 'failed'] if variants else [('', prep)]
+                for key, item in pending:
+                    if item.get('retry_at'):
+                        when = datetime.fromisoformat(item['retry_at'])
+                        if when <= now:
+                            due.append((job, user, key))
+                        else:
+                            later.append(when)
+        for job, user, key in due:
+            def spend(prep, key=key):
+                item = prep['variants'][key] if key else prep
+                item.update(retry_at=None, auto_retries=item.get('auto_retries', 0) + 1)
+            _save(job, user.pk, spend)
+        if later:
+            _arm(min(later))
+    for job, user, key in due:  # outside _lock: a blocked job's retry reads its posting first
+        try:
+            queue_action(user, job.id, key, 'retry')
+        except ValueError:
+            pass  # cancelled, discarded or moved past To apply meanwhile
+    return len(due)
+
+
+def _retry_worker():
+    close_old_connections()
+    try:
+        retry_due()
+    except Exception:
+        logger.exception('Retrying usage-limited document preparation failed')
+    finally:
+        close_old_connections()
 
 
 def _resume_worker():

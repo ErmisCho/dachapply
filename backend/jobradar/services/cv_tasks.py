@@ -512,7 +512,10 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         _update(task_id, status='cancelled', stage='Cancelled', error='')
     except Exception as exc:
         error=getattr(exc,'public_message',str(exc).splitlines()[0][:500])
-        _update(task_id, status='failed', stage='Failed', error=error, diagnostics=getattr(exc,'diagnostics',str(exc)), repair_attempts=getattr(exc,'repair_attempts',0))
+        # TASK-317: a usage limit and its reset (ISO, or None) for application_prep's automatic retry.
+        reset_at=getattr(exc,'reset_at',None)
+        _update(task_id, status='failed', stage='Failed', error=error, diagnostics=getattr(exc,'diagnostics',str(exc)), repair_attempts=getattr(exc,'repair_attempts',0),
+                usage_limit=getattr(exc,'usage_limit',False), reset_at=reset_at.isoformat() if reset_at else None)
     finally:
         if on_finish:
             # TASK-280.2: persists the outcome of a prepared variant; must never mask the task's own result.

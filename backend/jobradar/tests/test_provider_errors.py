@@ -116,3 +116,43 @@ def test_a_successful_run_is_untouched(tmp_path):
          patch('jobradar.services.cv_generator._run_command', side_effect=fake_run):
         assert cv_generator.run_structured_model(RULES_PROMPT, {'type': 'object'}, 'openai', 'deepseek',
                                                  workdir=tmp_path) == {'answer': 'ok'}
+
+
+# --- TASK-317: a usage limit says so, with when it resets ---------------------------------------
+
+CODEX_LIMIT = ('ERROR: You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit '
+               'https://chatgpt.com/settings/usage to purchase more credits or try again at 6:51 PM.')
+
+
+def _limit(tmp_path, stdout, provider='openai'):
+    with patch('jobradar.services.cv_generator.shutil.which', return_value='/usr/bin/codex'), \
+         patch('jobradar.services.cv_generator._run_command', side_effect=lambda command, cancelled=None, **kwargs: type('R', (), {'returncode': 1, 'stdout': stdout, 'stderr': ''})()), \
+         pytest.raises(RecoverableGenerationError) as exc:
+        cv_generator.run_structured_model('a short prompt', {'type': 'object'}, provider, 'gpt-6.1', workdir=tmp_path)
+    return exc.value
+
+
+def test_a_codex_usage_limit_names_its_reset_in_24h_local_time(tmp_path):
+    exc = _limit(tmp_path, f'Reading prompt from stdin...\n{CODEX_LIMIT}')
+    assert exc.summary == 'Usage limit reached; resets at 18:51.' and exc.usage_limit
+    assert (exc.reset_at.hour, exc.reset_at.minute) == (18, 51) and exc.reset_at.tzinfo
+    assert CODEX_LIMIT in exc.diagnostics  # the provider's own words stay in Technical details
+
+
+def test_a_reset_already_past_today_is_tomorrows_and_claude_wording_counts():
+    from datetime import datetime, timedelta, timezone
+    now = datetime(2026, 10, 19, 20, 0, tzinfo=timezone(timedelta(hours=2)))
+    exc = cv_generator._provider_failure('Claude usage limit reached. Your limit will reset at 7pm (Europe/Vienna).', now)
+    assert exc.summary == 'Usage limit reached; resets at 19:00.' and exc.reset_at == datetime(2026, 10, 20, 19, 0, tzinfo=now.tzinfo)
+    exc = cv_generator._provider_failure('5-hour limit reached ∙ resets 2am', now)
+    assert exc.summary == 'Usage limit reached; resets at 02:00.'
+
+
+def test_a_usage_limit_without_a_time_says_try_again_later(tmp_path):
+    exc = _limit(tmp_path, 'Claude AI usage limit reached|1760000000', provider='anthropic')
+    assert exc.summary == 'Usage limit reached; try again later.' and exc.usage_limit and exc.reset_at is None
+
+
+def test_any_other_failure_keeps_the_generic_summary(tmp_path):
+    exc = _limit(tmp_path, OLLAMA_CAUSE)
+    assert exc.summary == 'The selected model could not complete the request.' and not exc.usage_limit and exc.reset_at is None
