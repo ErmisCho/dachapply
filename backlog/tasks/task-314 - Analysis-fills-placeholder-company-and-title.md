@@ -1,9 +1,10 @@
 ---
 id: TASK-314
 title: Analysis fills placeholder company and title
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-19 14:38'
+updated_date: '2026-10-19 16:55'
 labels:
   - backend
 dependencies: []
@@ -19,10 +20,16 @@ Live run 2026-10-19: link-only jobs keep 'Unknown company' / 'Untitled role N' a
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 When an evaluation is saved and the job's company is empty or 'Unknown company', a real company name from the evaluation replaces it
-- [ ] #2 When the job's title is empty or starts with 'Untitled role', a real title from the evaluation replaces it
-- [ ] #3 A company or title the owner set (not a placeholder) is never overwritten; placeholder or URL values in the evaluation are never written
-- [ ] #4 Applies to both evaluation paths (paste import and evaluate-with-model) and happens before documents are prepared, so generated filenames use the real names
-- [ ] #5 Tests cover fill, keep-owner-value and placeholder-in-evaluation; full backend suite passes
-- [ ] #6 Verified on localhost on a job that still has placeholder names
+- [x] #1 When an evaluation is saved and the job's company is empty or 'Unknown company', a real company name from the evaluation replaces it
+- [x] #2 When the job's title is empty or starts with 'Untitled role', a real title from the evaluation replaces it
+- [x] #3 A company or title the owner set (not a placeholder) is never overwritten; placeholder or URL values in the evaluation are never written
+- [x] #4 Applies to both evaluation paths (paste import and evaluate-with-model) and happens before documents are prepared, so generated filenames use the real names
+- [x] #5 Tests cover fill, keep-owner-value and placeholder-in-evaluation; full backend suite passes
+- [x] #6 Verified on localhost on a job that still has placeholder names
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Verified on localhost 2026-10-19 (PR #298): re-analysing job 1875 renamed 'Unknown company / Untitled role 1' to 'Senacor / AI-Native Software Engineer'.
+<!-- SECTION:NOTES:END -->
