@@ -390,6 +390,22 @@ def test_short_message_and_language_suffix_reach_the_real_generator_without_over
     assert again['letter_tex'] != message['letter_tex'] and Path(message['letter_tex']).read_bytes() == before
 
 
+def test_a_usage_limit_fails_at_once_without_repair_attempts(db, workspace, monkeypatch, cv_assets):
+    """TASK-317: a repair cannot lift a usage limit, so the loop stops at the first refusal and the
+    owner reads the limit, not "Two automatic repair attempts also failed"."""
+    from types import SimpleNamespace
+    user = User.objects.create_user('limit@example.test')
+    cv_assets(user)
+    job = JobLead.objects.create(company='Acme', title='Engineer', original_source_text=POSTING, created_by=user)
+    _fake_pdflatex(monkeypatch, GENERATED)
+    runs = []
+    monkeypatch.setattr('jobradar.services.cv_generator.subprocess.run', lambda command, **kwargs: runs.append(command) or SimpleNamespace(
+        returncode=1, stderr='', stdout="ERROR: You've hit your usage limit. Upgrade to Pro or try again at 6:51 PM."))
+    with pytest.raises(cv_generator.GenerationFailed) as failure:
+        cv_generator.generate_cv_package(job, 'profile', 'de', '', False, 'openai', 'gpt-5.5', 'medium', user_id=user.id)
+    assert failure.value.public_message == 'Usage limit reached; resets at 18:51.' and failure.value.repair_attempts == 0
+    assert failure.value.usage_limit and failure.value.reset_at.hour == 18 and len(runs) == 1
+
 # --- TASK-308: preparation analyses missing requirements itself --------------------------------
 
 ANALYSED = {'application_requirements': {'posting_language': 'en', 'application_language': '', 'application_language_quote': '', 'documents': [

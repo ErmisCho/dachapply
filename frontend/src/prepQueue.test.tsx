@@ -6,7 +6,7 @@ import {MemoryRouter} from 'react-router-dom'
 import {Nav} from './App'
 import {QueueView,queueAction,queueSnapshot,watchQueue,type QueueData,type QueueItem,type QueueSnapshot} from './PrepQueue'
 
-const item=(extra:Partial<QueueItem>):QueueItem=>({job_id:7,company:'Acme GmbH',title:'Backend Developer',job_status:'to_apply',key:'cv-de',label:'German CV',document:'cv',language:'de',status:'queued',position:1,progress:0,eta_seconds:null,error:'',files:[],queued_at:'2026-10-19T08:00:00Z',started_at:null,finished_at:null,...extra})
+const item=(extra:Partial<QueueItem>):QueueItem=>({job_id:7,company:'Acme GmbH',title:'Backend Developer',job_status:'to_apply',key:'cv-de',label:'German CV',document:'cv',language:'de',status:'queued',position:1,progress:0,eta_seconds:null,error:'',files:[],queued_at:'2026-10-19T08:00:00Z',started_at:null,finished_at:null,retry_at:null,...extra})
 const fixture=():QueueData=>({concurrency:2,items:[
   item({key:'cv-de',status:'running',position:null,progress:45,eta_seconds:120}),
   item({job_id:9,company:'Beta AG',title:'Data Engineer',key:'letter-en',label:'English letter',document:'letter',language:'en',status:'queued',position:1}),
@@ -107,6 +107,18 @@ describe('queue actions',()=>{
 })
 
 // TASK-313: a job whose documents cannot be prepared yet (e.g. no posting text) is listed once with its reason.
+describe('usage-limit retries (TASK-317)',()=>{
+  it('says when a usage-limited failed or blocked item retries by itself, and nothing for any other',()=>{
+    const at=new Date(2026,9,19,18,52).toISOString()   // local 18:52, whatever the runner's timezone
+    const data=fixture();data.items[4]={...data.items[4],error:'Usage limit reached; resets at 18:51.',retry_at:at}
+    data.items.push(item({job_id:30,company:'Iota',key:'',label:'Documents',status:'blocked',position:null,error:'Requirements analysis failed: Usage limit reached; resets at 18:51. Press Prepare to retry.',retry_at:at}))
+    const html=view({data})
+    expect(section(html,'Failed / cancelled')).toContain('Failed: Usage limit reached; resets at 18:51.</p><p class="text-xs text-slate-600">Retries automatically at 18:52</p>')
+    expect(section(html,'Blocked')).toContain('Retries automatically at 18:52')
+    expect(view({data:fixture()})).not.toContain('Retries automatically')
+  })
+})
+
 const blocked=item({job_id:21,company:'Zeta',title:'Ops Engineer',key:'',label:'Documents',document:null,language:null,status:'blocked',position:null,error:'The job has no usable posting text yet.',queued_at:null})
 const withBlocked=():QueueData=>{const d=fixture();d.items.splice(3,0,blocked);return d}
 

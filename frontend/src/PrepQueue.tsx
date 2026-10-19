@@ -8,7 +8,7 @@ import {api} from './api/client'
 import {timeLeft} from './applicationPrep'
 
 export type QueueStatus='queued'|'running'|'blocked'|'ready'|'failed'|'cancelled'
-export type QueueItem={job_id:number;company:string;title:string;job_status:string;key:string;label:string;document:'cv'|'letter'|'message'|null;language:string|null;status:QueueStatus;position:number|null;progress:number;eta_seconds:number|null;error:string;files:string[];queued_at:string|null;started_at:string|null;finished_at:string|null}
+export type QueueItem={job_id:number;company:string;title:string;job_status:string;key:string;label:string;document:'cv'|'letter'|'message'|null;language:string|null;status:QueueStatus;position:number|null;progress:number;eta_seconds:number|null;error:string;files:string[];queued_at:string|null;started_at:string|null;finished_at:string|null;retry_at:string|null}
 export type QueueData={concurrency:number;items:QueueItem[]}
 export type QueueAction='cancel'|'retry'|'first'
 export type QueueSnapshot={data:QueueData|null;error:string;busy:string[];failed:{id:string;detail:string}|null}
@@ -43,6 +43,10 @@ export async function queueAction(item:QueueItem,action:QueueAction){
 }
 
 const when=(iso:string|null)=>iso?new Date(iso).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):''
+const pad=(n:number)=>String(n).padStart(2,'0')
+// TASK-317: a usage-limited item the server re-queues by itself once the limit resets.
+const retries=(item:QueueItem)=>{if(!item.retry_at)return null;const d=new Date(item.retry_at)
+  return <p className="text-xs text-slate-600">{`Retries automatically at ${pad(d.getHours())}:${pad(d.getMinutes())}`}</p>}
 
 function Job({item}:{item:QueueItem}){return <Link className="break-words text-slate-600 underline-offset-2 hover:underline" to={`/jobs/${item.job_id}`}>{item.company} — {item.title}</Link>}
 
@@ -71,14 +75,14 @@ export function QueueView({snap,onAction=queueAction}:{snap:QueueSnapshot;onActi
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">#{item.position} {item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{button(item,'first')}{button(item,'cancel')}</span></div>{failure(item)}</>}</Section>
     <Section title="Blocked" items={of('blocked')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><span className="ml-auto">{button(item,'retry')}</span></div>
-      <p className="text-xs text-red-700">{item.error}</p>{failure(item)}</>}</Section>
+      <p className="text-xs text-red-700">{item.error}</p>{retries(item)}{failure(item)}</>}</Section>
     <Section title="Done" items={of('ready')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><Link className="btn-muted ml-auto" to={`/jobs/${item.job_id}`}>Review</Link></div>
       {item.files.length>0&&<ul className="mt-1 break-all text-xs text-slate-600">{item.files.map(f=><li key={f}>{f}</li>)}</ul>}
       {item.finished_at&&<p className="text-xs text-slate-500">Finished {when(item.finished_at)}</p>}</>}</Section>
     <Section title="Failed / cancelled" items={of('failed','cancelled')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><span className="ml-auto">{button(item,'retry')}</span></div>
-      <p className={item.status==='cancelled'?'text-xs text-slate-600':'text-xs text-red-700'}>{item.status==='cancelled'?'Cancelled':`Failed: ${item.error||'unknown error'}`}</p>{failure(item)}</>}</Section>
+      <p className={item.status==='cancelled'?'text-xs text-slate-600':'text-xs text-red-700'}>{item.status==='cancelled'?'Cancelled':`Failed: ${item.error||'unknown error'}`}</p>{retries(item)}{failure(item)}</>}</Section>
   </main>
 }
 
