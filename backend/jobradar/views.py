@@ -14,7 +14,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.db import connection, transaction
 from django.db.models import Avg, Case, Count, Exists, F, IntegerField, Min, OuterRef, Prefetch, Q, Subquery, Value, When
-from django.db.models.functions import Coalesce, Substr
+from django.db.models.fields.json import KeyTextTransform
+from django.db.models.functions import Cast, Coalesce, Length, Substr
 from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.encoding import force_str
@@ -262,6 +263,9 @@ BOARD_ROW_SOURCES = {
     # The list annotations are the shown values themselves (note text, mail/pending-source flags).
     'has_pending_source': 'has_pending_source_flag', 'has_mailbox_history': 'has_mailbox_history',
     'note_preview': 'note_preview_raw',
+    # TASK-322: also follows the latest evaluation and status, both members already; the text is written by
+    # .update() (_accepted_source), so its length stands in. ponytail: a same-length edit is served stale.
+    'posting_missing': 'posting_chars',
     # Only the newest evaluation is shown (obj.evaluations.first(), Meta ordering -created_at):
     # a new or deleted one changes its id, an edit its updated_at (no .update() writes them).
     'latest_evaluation': 'latest_evaluation_id', 'latest_evaluation.id': 'latest_evaluation_id',
@@ -865,6 +869,7 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         if raw_ordering is None:
             raw_ordering=saved_sort_keys
         latest_evaluation=JobEvaluation.objects.filter(job=OuterRef('pk')).order_by('-created_at')
+        source_text=Case(When(original_source_text='', then=F('raw_description')), default=F('original_source_text'))  # JobLead.source_text
         qs=qs.annotate(
             # TASK-145 AC1/AC2: the default board GROUP order -- see _attention_rank's own docstring.
             # TASK-267: ranked by the user's saved status order; only read when the ordering resolves
@@ -902,6 +907,16 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             # return text, and it stays correlated on OuterRef('pk') exactly like that one -- the
             # row's OWN note or nothing, on a queryset accessible_jobs has already scoped.
             note_preview_raw=Subquery(ApplicationNote.objects.filter(job=OuterRef('pk'), note_type='general').exclude(note='').order_by('-created_at').values(preview=Substr('note', 1, JobLeadListSerializer.NOTE_PREVIEW_FETCH_CHARS))[:1]),
+            # TASK-322: posting_missing's inputs (posting_fetch.checked_parts) -- the latest evaluation's
+            # missing_parts and the text length it judged, as two small JSON keys, and the posting's length.
+            posting_ai=Subquery(latest_evaluation.values(parts=KeyTextTransform('missing_parts', 'structured_json_raw'))[:1]),
+            posting_ai_chars=Subquery(latest_evaluation.values(chars=Cast(KeyTextTransform('posting_chars', 'structured_json_raw'), IntegerField()))[:1]),
+            posting_chars=Length(source_text),
+        ).annotate(
+            # The posting itself (deferred above, TASK-283) is loaded only where the keyword rule needs it:
+            # a job still being worked on whose latest evaluation has no verdict on its current text.
+            # ponytail: other rows show no flag; widen the status filter if the board ever needs it there.
+            posting_check_text=Case(When(Q(posting_ai__isnull=False, posting_ai_chars=F('posting_chars')) | ~Q(status__in=JobLead.UNAPPLIED_STATUSES), then=Value(None)), default=source_text),
         ).order_by(*parse_board_ordering(raw_ordering))
         return qs.distinct()
     def _board_rows(self, qs, cache=None):

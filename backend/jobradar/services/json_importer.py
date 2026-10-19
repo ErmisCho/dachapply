@@ -116,6 +116,10 @@ def is_placeholder_label(field, value):
 
 
 def create_evaluation(job, ev, user=None):
+    # TASK-322: optional missing_parts (validate_eval never requires it) is judged on the text of this length, so
+    # posting_fetch.checked_parts drops the verdict once that text changes. Always ours, never a pasted value:
+    # the board casts it to an integer in SQL.
+    ev={**ev,'posting_chars':len(job.source_text or '')}
     evaluation=JobEvaluation.objects.create(
         job=job, fit_score=ev['fit_score'], priority=ev['priority'], recommendation=ev['recommendation'], summary=ev.get('summary',''),
         main_match_reasons=ev.get('main_match_reasons',[]), main_gaps=ev.get('main_gaps',[]), required_skills=ev.get('required_skills',[]), nice_to_have_skills=ev.get('nice_to_have_skills',[]),

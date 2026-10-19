@@ -18,7 +18,9 @@ from jobradar.services.application_prep import plan_variants
 from jobradar.services.application_requirements import normalize_application_requirements
 from jobradar.tests.test_cv_assets import GENERATED, VALID_TEX, _fake_pdflatex
 
-POSTING = 'We are hiring a Python engineer. Please send your CV and a cover letter. Wir freuen uns auf Ihre Bewerbung.'
+# TASK-322: carries tasks, requirements, salary and company, so the completeness hold lets it through.
+POSTING = ('We are hiring a Python engineer. Your tasks: build APIs. Requirements: Django. Salary: EUR 60,000 per year. '
+           'Please send your CV and a cover letter. Wir freuen uns auf Ihre Bewerbung.')
 
 
 def _req(posting='en', application='', **documents):

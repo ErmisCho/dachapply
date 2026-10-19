@@ -106,6 +106,12 @@
    "job": 904
   },
   "has_pending_source": false,
+  "posting_missing": [
+   "tasks",
+   "requirements",
+   "salary",
+   "company"
+  ],
   "created_by_username": "qc-owner",
   "created_by_email": "owner@example.test",
   "submitted_for_username": "",
@@ -171,6 +177,12 @@
     }
    },
    "has_pending_source": false,
+   "posting_missing": [
+    "tasks",
+    "requirements",
+    "salary",
+    "company"
+   ],
    "created_by_username": "qc-owner",
    "created_by_email": "owner@example.test",
    "submitted_for_username": "",
@@ -207,6 +219,12 @@
    "id": 906,
    "latest_evaluation": null,
    "has_pending_source": false,
+   "posting_missing": [
+    "tasks",
+    "requirements",
+    "salary",
+    "company"
+   ],
    "created_by_username": "qc-owner",
    "created_by_email": "owner@example.test",
    "submitted_for_username": "",
@@ -243,6 +261,7 @@
    "id": 950,
    "latest_evaluation": null,
    "has_pending_source": null,
+   "posting_missing": null,
    "created_by_username": "qc-owner",
    "created_by_email": "owner@example.test",
    "submitted_for_username": "qc-friend",
@@ -303,6 +322,7 @@
     }
    },
    "has_pending_source": false,
+   "posting_missing": [],
    "created_by_username": "qc-owner",
    "created_by_email": "owner@example.test",
    "submitted_for_username": "",
@@ -362,6 +382,12 @@
     }
    },
    "has_pending_source": false,
+   "posting_missing": [
+    "tasks",
+    "requirements",
+    "salary",
+    "company"
+   ],
    "created_by_username": "qc-owner",
    "created_by_email": "owner@example.test",
    "submitted_for_username": "",
@@ -421,6 +447,12 @@
     }
    },
    "has_pending_source": false,
+   "posting_missing": [
+    "tasks",
+    "requirements",
+    "salary",
+    "company"
+   ],
    "created_by_username": "qc-owner",
    "created_by_email": "owner@example.test",
    "submitted_for_username": "",
@@ -480,6 +512,7 @@
     }
    },
    "has_pending_source": false,
+   "posting_missing": [],
    "created_by_username": "qc-owner",
    "created_by_email": "owner@example.test",
    "submitted_for_username": "",
