@@ -309,6 +309,13 @@ class JobLead(models.Model):
     def is_meaningful_source(text):
         lines=[line.strip() for line in (text or '').splitlines() if line.strip()]
         return bool(lines) and any(not line.lower().startswith(('http://','https://','http-','https-')) for line in lines)
+    THIN_SOURCE_CHARS=300  # TASK-313: less posting text than this is a title or a note, not the job ad
+    @staticmethod
+    def is_thin_source(text):
+        """TASK-313: no posting text (a link only, see is_meaningful_source) or so little that the
+        fetched page replaces it without asking -- the non-link lines total under THIN_SOURCE_CHARS."""
+        lines=[line.strip() for line in (text or '').splitlines() if line.strip()]
+        return sum(len(line) for line in lines if not line.lower().startswith(('http://','https://','http-','https-'))) < JobLead.THIN_SOURCE_CHARS
     def save(self, *args, **kwargs):
         existing=type(self).objects.filter(pk=self.pk).values_list('original_source_text', flat=True).first() if self.pk else ''
         if self.is_meaningful_source(existing):

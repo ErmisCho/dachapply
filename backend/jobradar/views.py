@@ -1,5 +1,4 @@
 import logging
-import hashlib
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from email.utils import parseaddr
@@ -37,7 +36,7 @@ from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user
 from .local_cache import board_settings
 from .services.access import accessible_jobs, job_create_defaults, owned_by, submitted_away_jobs
 from .services.cleaning import clean_job_location
-from .services.posting_fetch import fetch_posting_text, normalized
+from .services.posting_fetch import _accepted_source, _source_hash, fetch_missing_sources, fetch_posting_text, normalized, replaces_thin_source
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_MAIL_PREFIX, DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user, is_demo_user
 from .services.interview_coach import analyze_answer, suggest_questions
@@ -2039,6 +2038,7 @@ def generate_prompt(request):
     ids=request.data.get('job_ids') or []
     jobs=accessible_jobs(request.user).filter(id__in=ids)
     if not ids or jobs.count()!=len(set(ids)): return Response({'detail':'Provide valid job_ids'}, status=400)
+    fetch_missing_sources(jobs)  # TASK-313 AC1: the prompt carries the posting, not only its link
     profile=user_profile_settings(request.user)
     return Response({'generated_prompt': build_prompt(jobs, request.data.get('custom_instructions',''), build_candidate_profile_text(request.user), profile.evaluation_prompt_template)})
 
@@ -2062,6 +2062,7 @@ def evaluate_with_model(request):
     ids=request.data.get('job_ids') or []
     jobs=accessible_jobs(request.user).filter(id__in=ids)
     if not ids or jobs.count()!=len(set(ids)): return Response({'ok':False,'errors':['Provide valid job_ids'],'detail':''}, status=400)
+    fetch_missing_sources(jobs)  # TASK-313 AC1: a link-only job is analysed from its posting, not blind
     provider=request.data.get('provider') or ''; model=request.data.get('model') or ''
     effort=request.data.get('effort') or 'default'; speed=request.data.get('speed') or 'normal'
     # The provider/model combination is checked inside evaluate_jobs, against the model picker's own
@@ -2104,19 +2105,9 @@ def cv_generation_preview(request, job_id):
     return Response(preview)
 
 
-def _source_hash(text):
-    return hashlib.sha256(normalized(text).encode('utf-8')).hexdigest()
-
-
-def _accepted_source(job, text):
-    """The one write that makes text the job's accepted posting text and resolves its pending copy.
-    TASK-269: the copy being resolved is remembered so the automatic refresh does not re-stage it."""
-    dismissed={'dismissed_source_hash':_source_hash(job.pending_source_text)} if job.pending_source_text else {}
-    return {'original_source_text':text,'pending_source_text':'','pending_source_fetched_at':None,'source_fetch_error':'',**dismissed}
-
-
 def _stage_source_fetch(job, result, checked_at=None, skip_dismissed=False, stage_only_applying=False):
-    """Persist review state. Accepted source text is only ever replaced when it is no usable posting.
+    """Persist review state. Accepted source text is only ever replaced when it is no usable posting
+    or (TASK-313) is thin and the fetched page says more.
 
     skip_dismissed (TASK-269): the automatic refresh does not re-stage a copy the owner already
     resolved; a manual fetch is an explicit request and always stages a differing copy.
@@ -2130,6 +2121,10 @@ def _stage_source_fetch(job, result, checked_at=None, skip_dismissed=False, stag
         if normalized(result['text']) == normalized(job.source_text):
             values.update(pending_source_text='',pending_source_fetched_at=None)
             state='identical'
+        elif replaces_thin_source(job,result['text']):
+            # TASK-313: a link or a few lines is replaced on every path and status; nothing to review.
+            values.update(_accepted_source(job,result['text']))
+            state='saved'
         elif stage_only_applying and job.status in ('new','reviewed'):
             if not JobLead.is_meaningful_source(job.source_text) and JobLead.is_meaningful_source(result['text']):
                 values.update(_accepted_source(job,result['text']))

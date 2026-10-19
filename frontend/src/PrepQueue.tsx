@@ -7,8 +7,8 @@ import {Link} from 'react-router-dom'
 import {api} from './api/client'
 import {timeLeft} from './applicationPrep'
 
-export type QueueStatus='queued'|'running'|'ready'|'failed'|'cancelled'
-export type QueueItem={job_id:number;company:string;title:string;job_status:string;key:string;label:string;document:'cv'|'letter'|'message';language:string;status:QueueStatus;position:number|null;progress:number;eta_seconds:number|null;error:string;files:string[];queued_at:string|null;started_at:string|null;finished_at:string|null}
+export type QueueStatus='queued'|'running'|'blocked'|'ready'|'failed'|'cancelled'
+export type QueueItem={job_id:number;company:string;title:string;job_status:string;key:string;label:string;document:'cv'|'letter'|'message'|null;language:string|null;status:QueueStatus;position:number|null;progress:number;eta_seconds:number|null;error:string;files:string[];queued_at:string|null;started_at:string|null;finished_at:string|null}
 export type QueueData={concurrency:number;items:QueueItem[]}
 export type QueueAction='cancel'|'retry'|'first'
 export type QueueSnapshot={data:QueueData|null;error:string;busy:string[];failed:{id:string;detail:string}|null}
@@ -69,6 +69,9 @@ export function QueueView({snap,onAction=queueAction}:{snap:QueueSnapshot;onActi
       <p className="text-xs text-slate-500">{Math.round(item.progress)}%{item.eta_seconds?` · ${timeLeft(item.eta_seconds)}`:''}</p></>}</Section>
     <Section title="Queued" items={of('queued')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">#{item.position} {item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{button(item,'first')}{button(item,'cancel')}</span></div>{failure(item)}</>}</Section>
+    <Section title="Blocked" items={of('blocked')}>{item=><>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><span className="ml-auto">{button(item,'retry')}</span></div>
+      <p className="text-xs text-red-700">{item.error}</p>{failure(item)}</>}</Section>
     <Section title="Done" items={of('ready')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><Link className="btn-muted ml-auto" to={`/jobs/${item.job_id}`}>Review</Link></div>
       {item.files.length>0&&<ul className="mt-1 break-all text-xs text-slate-600">{item.files.map(f=><li key={f}>{f}</li>)}</ul>}

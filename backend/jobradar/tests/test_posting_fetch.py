@@ -24,8 +24,11 @@ from jobradar.services import posting_fetch
 from jobradar.services.cv_generator import _prompt
 
 # What ChatGPT collected: a summary that reads like a posting but is not one. This is the whole
-# defect TASK-237 exists for -- the board shows it as "the original job text".
-SUMMARY = 'Backend engineer at ACME Logistics in Berlin. Python and Django, some Kubernetes. Remote possible.'
+# defect TASK-237 exists for -- the board shows it as "the original job text". TASK-313: long enough
+# not to be thin (JobLead.THIN_SOURCE_CHARS), so a fetch still stages it for review here.
+SUMMARY = ('Backend engineer at ACME Logistics in Berlin. Python and Django, some Kubernetes. Remote possible. '
+           'The team runs the shipment tracking platform and its public API, with a focus on reliability. '
+           'Candidates should know Postgres and CI pipelines, and be comfortable with on-call duty. German is a plus. Salary not stated.')
 
 POSTING_HTML = """<html><head><title>ACME Logistics careers</title>
 <style>.hero{color:red}</style></head>
@@ -203,10 +206,11 @@ def test_an_authenticated_account_without_cv_capability_can_fetch_its_own_job(db
 
     response = plain.post(f'/api/jobs/{own.id}/source-text/live/')
 
-    assert response.status_code == 200 and response.data['staged'] is True
+    # TASK-313: the job had no text, so the fetched posting is saved, not staged.
+    assert response.status_code == 200 and response.data['staged'] is False
     own.refresh_from_db()
-    assert 'Own the Postgres schema' in own.pending_source_text
-    assert own.original_source_text == ''
+    assert 'Own the Postgres schema' in own.original_source_text
+    assert own.pending_source_text == ''
 
 
 def test_blocked_posting_reports_the_http_status(client, job, net):
