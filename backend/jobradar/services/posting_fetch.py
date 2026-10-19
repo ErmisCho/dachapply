@@ -30,6 +30,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from django.utils import timezone
 
 from jobradar.models import JobLead
+from jobradar.services.json_importer import is_placeholder_label
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ RENDER_SECONDS = 20
 _render_lock = threading.Lock()
 _CSOD_CONTEXT = re.compile(r'csod\.context\s*=\s*(?=\{)')
 _CSOD_REQUISITION = re.compile(r'/requisition/(\d+)')
+CSOD_COMPANIES = {'oebb': 'ÖBB'}  # TASK-320: Cornerstone corps whose name is not the title-cased corp id
 
 # Nothing inside these is page text; svg/head carry markup that reads as gibberish once flattened.
 _SKIP_TAGS = {'script', 'style', 'noscript', 'svg', 'head', 'template'}
@@ -154,22 +156,25 @@ def fetch_posting_text(url):
             return _failed('The address could not be resolved.')
         return _failed(f'The site could not be reached: {exc.reason}.')
     final_url = final_url or url
-    text = _cornerstone_text(final_url, body) or posting_text(body) or _rendered_text(final_url)
+    text, company = _cornerstone_text(final_url, body)
+    text = text or posting_text(body) or _rendered_text(final_url)
     if not text:
         return _failed(NEEDS_JAVASCRIPT)
-    return {'ok': True, 'text': text, 'error': '', 'final_url': final_url}
+    return {'ok': True, 'text': text, 'error': '', 'final_url': final_url, **({'company': company} if company else {})}
 
 
 def _cornerstone_text(url, page):
     """TASK-318: a Cornerstone OnDemand career site (*.csod.com) is a JS shell, but the page embeds
     csod.context={...} with an anonymous token, and one jobDetails call returns the posting. Measured
     on oebb.csod.com requisition 26278: {status: 0, data: {displayTitle, externalDescription (HTML)}}.
-    '' when this is not such a page or the call fails -- the caller then reads the page another way."""
+    ('', '') when this is not such a page or the call fails -- the caller then reads the page another way.
+    TASK-320: (text, company) -- jobDetails names no employer, so the company is the site's corp
+    (csod.context's corp, else the subdomain): CSOD_COMPANIES' name, else the corp title-cased."""
     parts = urlsplit(url)
     requisition = _CSOD_REQUISITION.search(parts.path)
     found = _CSOD_CONTEXT.search(page)
     if not ((parts.hostname or '').endswith('.csod.com') and requisition and found):
-        return ''
+        return '', ''
     try:
         context = json.JSONDecoder().raw_decode(page, found.end())[0]
         culture = {key.lower(): value for key, value in parse_qsl(parts.query)}.get('cultureid') or context['cultureID']
@@ -178,8 +183,11 @@ def _cornerstone_text(url, page):
         title, description = (data.get('displayTitle') or '').strip(), extract_text(data.get('externalDescription') or '')
     except Exception as exc:  # any failure here only means "read the page another way"
         logger.info('Cornerstone posting %s could not be read: %s', url, exc)
-        return ''
-    return '\n\n'.join(line for line in (title, description) if line) if description else ''
+        return '', ''
+    if not description:
+        return '', ''
+    corp = str(context.get('corp') or parts.hostname.split('.')[0]).strip()
+    return '\n\n'.join(line for line in (title, description) if line), CSOD_COMPANIES.get(corp.lower(), corp.title())
 
 
 def _guard_route(route):
@@ -406,11 +414,14 @@ def _source_hash(text):
     return hashlib.sha256(normalized(text).encode('utf-8')).hexdigest()
 
 
-def _accepted_source(job, text):
+def _accepted_source(job, text, company=''):
     """The one write that makes text the job's accepted posting text and resolves its pending copy.
-    TASK-269: the copy being resolved is remembered so the automatic refresh does not re-stage it."""
+    TASK-269: the copy being resolved is remembered so the automatic refresh does not re-stage it.
+    TASK-320: a fetched posting's company (fetch_posting_text's 'company') fills a placeholder company
+    only (json_importer.is_placeholder_label, TASK-314), never a real name."""
     dismissed={'dismissed_source_hash':_source_hash(job.pending_source_text)} if job.pending_source_text else {}
-    return {'original_source_text':text,'pending_source_text':'','pending_source_fetched_at':None,'source_fetch_error':'',**dismissed}
+    named={'company':company} if company and is_placeholder_label('company',job.company) else {}
+    return {'original_source_text':text,'pending_source_text':'','pending_source_fetched_at':None,'source_fetch_error':'',**dismissed,**named}
 
 
 def replaces_thin_source(job, text):
@@ -438,7 +449,7 @@ def fetch_missing_sources(jobs):
             if not result['ok']:
                 values['source_fetch_error']=result['error']
             elif replaces_thin_source(job,result['text']):
-                values.update(_accepted_source(job,result['text']))
+                values.update(_accepted_source(job,result['text'],result.get('company','')))
             JobLead.objects.filter(pk=job.pk).update(**values)
             for key,value in values.items(): setattr(job,key,value)
     except Exception:

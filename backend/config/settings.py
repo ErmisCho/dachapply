@@ -152,6 +152,9 @@ CODEX_CV_OWNER_EMAIL = os.getenv('CODEX_CV_OWNER_EMAIL', 'ermis.chorinopoulos@gm
 # TASK-312: how many automatically prepared documents (services/application_prep's queue) generate at
 # once across all jobs. Each is one local model CLI run; manual Generate is not queued and not counted.
 PREP_QUEUE_CONCURRENCY = max(1, int(os.getenv('PREP_QUEUE_CONCURRENCY', '1')))
+# TASK-319: a job analysed from its link alone is analysed again once its posting is fetched, before
+# documents are prepared from the blind verdict (application_prep.reanalyse_late_text). Off = prepare at once.
+REANALYSE_LATE_TEXT = env_bool('DACHAPPLY_REANALYSE_LATE_TEXT', True)
 # Where the in-app feedback link points. Any URL works (a form, an issue tracker); it defaults to a
 # mailto for the owner so the link is never dead. A mailto opens the user's own mail client with an
 # empty body, so nothing about their jobs is transmitted unless they type it themselves.

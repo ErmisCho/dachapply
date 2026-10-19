@@ -30,7 +30,7 @@ from .models import REACHED_INTERVIEW, JobLead, JobEvaluation, ApplicationNote, 
 from .serializers import CandidateProfileSerializer, JobLeadSerializer, JobLeadListSerializer, JobEvaluationListSerializer, JobEvaluationSerializer, ApplicationNoteSerializer, FollowUpSerializer, MailboxDraftSerializer, MailboxMessageListSerializer, MailboxMessageSerializer, MailboxMessageWithSuggestionsSerializer, MailboxRunSerializer, MailboxSuggestionSerializer, PracticeEvaluateSerializer, PracticeSessionSerializer, PublicSubmissionSerializer, invalid_email_addresses, normalize_job_url
 from .services.job_evaluator import evaluate_jobs
 from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, user_profile_settings, PROFILE_FIELD_NAMES, decode_profile_value, has_candidate_profile
-from .services.json_importer import import_any_json, duplicate_title
+from .services.json_importer import import_any_json, duplicate_title, is_placeholder_label
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
 from .local_cache import board_settings
@@ -2105,29 +2105,33 @@ def cv_generation_preview(request, job_id):
     return Response(preview)
 
 
-def _stage_source_fetch(job, result, checked_at=None, skip_dismissed=False, stage_only_applying=False):
+def _stage_source_fetch(job, result, checked_at=None, skip_dismissed=False, stage_only_applying=False, user=None):
     """Persist review state. Accepted source text is only ever replaced when it is no usable posting
     or (TASK-313) is thin and the fetched page says more.
 
     skip_dismissed (TASK-269): the automatic refresh does not re-stage a copy the owner already
     resolved; a manual fetch is an explicit request and always stages a differing copy.
     stage_only_applying (TASK-311, automatic refresh): a New or Reviewed job gets nothing to review --
-    its link-only text is replaced by the fetched one, a usable text is kept and an earlier copy dropped."""
+    its link-only text is replaced by the fetched one, a usable text is kept and an earlier copy dropped.
+    user (TASK-319): a thin text the fetched posting replaced is re-analysed as that user when the job
+    was already evaluated from it (application_prep.reanalyse_late_text)."""
     checked_at=checked_at or timezone.now()
     values={'source_checked_at':checked_at}
-    state='failed'
+    state='failed'; late=False
     if result['ok']:
         values['source_fetch_error']=''
+        if result.get('company') and is_placeholder_label('company',job.company):
+            values['company']=result['company']  # TASK-320: the site names the employer whatever happens to the text
         if normalized(result['text']) == normalized(job.source_text):
             values.update(pending_source_text='',pending_source_fetched_at=None)
             state='identical'
         elif replaces_thin_source(job,result['text']):
             # TASK-313: a link or a few lines is replaced on every path and status; nothing to review.
-            values.update(_accepted_source(job,result['text']))
-            state='saved'
+            values.update(_accepted_source(job,result['text'],result.get('company','')))
+            state='saved'; late=True
         elif stage_only_applying and job.status in ('new','reviewed'):
             if not JobLead.is_meaningful_source(job.source_text) and JobLead.is_meaningful_source(result['text']):
-                values.update(_accepted_source(job,result['text']))
+                values.update(_accepted_source(job,result['text'],result.get('company','')))
                 state='saved'
             else:
                 values.update(pending_source_text='',pending_source_fetched_at=None)
@@ -2141,16 +2145,19 @@ def _stage_source_fetch(job, result, checked_at=None, skip_dismissed=False, stag
         values['source_fetch_error']=result['error']
     JobLead.objects.filter(pk=job.pk).update(**values)
     for key,value in values.items(): setattr(job,key,value)
+    if late and user:
+        from .services.application_prep import reanalyse_late_text
+        reanalyse_late_text(job,user)
     return state
 
 
-def _refresh_job_sources(jobs):
+def _refresh_job_sources(jobs, user=None):
     jobs=[job for job in jobs if (job.url or '').strip()]
     if not jobs: return []
     # Network work is independent; database writes stay in this request thread.
     with ThreadPoolExecutor(max_workers=min(4,len(jobs))) as pool:
         results=list(pool.map(fetch_posting_text,[job.url for job in jobs]))
-    return [(job,result,_stage_source_fetch(job,result,skip_dismissed=True,stage_only_applying=True)) for job,result in zip(jobs,results)]
+    return [(job,result,_stage_source_fetch(job,result,skip_dismissed=True,stage_only_applying=True,user=user)) for job,result in zip(jobs,results)]
 
 
 def _live_source_response(job, result, staged=False):
@@ -2180,7 +2187,7 @@ def job_source_text_live(request, job_id):
     result=fetch_posting_text(job.url)
     staged=False
     if request.method == 'POST':
-        staged=_stage_source_fetch(job,result)=='staged'
+        staged=_stage_source_fetch(job,result,user=request.user)=='staged'
     return Response(_live_source_response(job,result,staged))
 
 
@@ -2197,7 +2204,7 @@ def refresh_due_job_sources(request):
     # so remaining sees the source_checked_at just written.
     due=accessible_jobs(request.user).exclude(url='').filter(status__in=JobLead.UNAPPLIED_STATUSES).filter(
         Q(source_checked_at__isnull=True)|Q(source_checked_at__lt=cutoff)).order_by('source_checked_at','id')
-    outcomes=_refresh_job_sources(list(due[:4]))
+    outcomes=_refresh_job_sources(list(due[:4]),request.user)
     remaining=due.count()
     return Response({
         'disabled':False,'checked':len(outcomes),
