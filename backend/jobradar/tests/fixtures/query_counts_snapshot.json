@@ -53,7 +53,8 @@
    "archived"
   ],
   "board_status_order_custom": false,
-  "board_sort_keys": ""
+  "board_sort_keys": "",
+  "board_column_order": []
  },
  "job_detail": {
   "id": 904,

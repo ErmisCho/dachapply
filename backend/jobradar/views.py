@@ -756,7 +756,7 @@ def me(request):
     # fresh, never a reused cached relation, which is the property has_candidate_profile needs.
     # Only the columns this response reads, plus the PROFILE_HEADS prefixes (see _profile_has_text).
     profile=(UserProfile.objects.select_related('submit_for','requested_submit_for').filter(user=request.user)
-             .only('user','email_verified','can_generate_cv','board_status_order','board_sort_keys','submit_for__username','requested_submit_for__username')
+             .only('user','email_verified','can_generate_cv','board_status_order','board_column_order','board_sort_keys','submit_for__username','requested_submit_for__username')
              .annotate(**PROFILE_HEADS).first())
     request.user.jobradar_profile=profile  # is_cv_owner / is_email_verified read this relation
     submit_for=profile.submit_for if profile else None
@@ -768,7 +768,9 @@ def me(request):
         # so the board knows whether grouping is active without a second request.
         'board_status_order':JobLead.effective_status_order(profile.board_status_order if profile else ''),
         'board_status_order_custom':bool(profile and profile.board_status_order.strip()),
-        'board_sort_keys':(profile.board_sort_keys if profile else '') or ''})
+        'board_sort_keys':(profile.board_sort_keys if profile else '') or '',
+        # TASK-316: the saved column keys as stored; [] is "never set" (the board migrates once).
+        'board_column_order':[k for k in (profile.board_column_order if profile else '').split(',') if k]})
 
 @api_view(['GET','POST'])
 def friend_requests(request):

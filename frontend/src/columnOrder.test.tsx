@@ -1,12 +1,12 @@
-// TASK-315. Board table columns reorder from the Columns picker, saved in this browser only.
+// TASK-315. Board table columns reorder from the Columns picker; TASK-316 saves the order to the account.
 // Rendered with react-dom/server like boardDeclutter.test.tsx: no DOM in this vitest run (TASK-177).
 import {afterEach,describe,expect,it,vi} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {BoardHeadRow,SkeletonTableRows,columnKeys,storedColumnOrder} from './App'
+import {BoardHeadRow,SkeletonTableRows,accountColumnOrder,columnKeys,migrateColumnOrder,storedColumnOrder} from './App'
 import {movePanelInOrder,reorderPanels} from './appUtils'
 
 afterEach(()=>vi.unstubAllGlobals())
-const stubStore=(store:Record<string,string>)=>vi.stubGlobal('localStorage',{getItem:(k:string)=>store[k]??null,setItem:(k:string,v:string)=>{store[k]=v}})
+const stubStore=(store:Record<string,string>)=>vi.stubGlobal('localStorage',{getItem:(k:string)=>store[k]??null,setItem:(k:string,v:string)=>{store[k]=v},removeItem:(k:string)=>{delete store[k]}})
 const colOrder=(html:string)=>[...html.matchAll(/class="col-(\w+)/g)].map(m=>m[1])
 
 describe('saved column order (TASK-315)',()=>{
@@ -42,5 +42,25 @@ describe('board table follows the stored order (TASK-315)',()=>{
     expect(head.indexOf('Skills')).toBeLessThan(head.indexOf('Status column'))
     const rows=renderToStaticMarkup(<table><tbody><SkeletonTableRows order={order}/></tbody></table>)
     expect(colOrder(rows).slice(0,order.length)).toEqual(order)
+  })
+})
+
+describe('column order moves to the account once (TASK-316)',()=>{
+  it('hands a browser order to an account without one, then the account wins and the browser copy is dropped',()=>{
+    const store:Record<string,string>={dachapply_column_order:JSON.stringify(['skills','prio'])};stubStore(store)
+    const save=vi.fn((_order:string[])=>new Promise<void>(()=>{}))
+    migrateColumnOrder(undefined,save)  // cached user from before TASK-316: wait for /auth/me/
+    expect(save).not.toHaveBeenCalled()
+    migrateColumnOrder([],save)
+    expect(save).toHaveBeenCalledWith(['skills','prio',...columnKeys.filter(k=>k!=='skills'&&k!=='prio')])
+    save.mockClear()
+    migrateColumnOrder(['fit'],save)  // another browser saved first: never overwrite it
+    expect(save).not.toHaveBeenCalled()
+    expect(store.dachapply_column_order).toBeUndefined()
+  })
+  it('shows the account order over a stale browser order',()=>{
+    stubStore({dachapply_column_order:JSON.stringify(['skills'])})
+    expect(accountColumnOrder(['fit'])[0]).toBe('fit')
+    expect(accountColumnOrder([])[0]).toBe('skills')
   })
 })

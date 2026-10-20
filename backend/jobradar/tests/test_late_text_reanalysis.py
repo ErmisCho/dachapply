@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jobradar.models import JobEvaluation, JobLead
+from jobradar.models import JobEvaluation, JobLead, UserProfile
 from jobradar.services import application_prep
 from jobradar.services.cv_generator import RecoverableGenerationError
 from jobradar.tests.test_application_prep import POSTING, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
@@ -121,3 +121,23 @@ def test_task319_a_fetch_that_replaces_thin_text_reanalyses_an_evaluated_job(own
     assert job.original_source_text == POSTING == unevaluated.original_source_text
     # Only the evaluated job is analysed again; the other keeps today's behaviour (nothing runs).
     assert len(model['calls']) == 1 and tasks['started'] == [(job.id, 'cv-de')]
+
+
+@pytest.mark.parametrize('env, choice, reanalyses', [(True, None, True), (False, None, False), (True, False, False), (False, True, True)])
+def test_task321_the_profile_setting_overrides_the_env_default_and_unset_keeps_it(owner, client, tasks, fetch, model, settings, django_capture_on_commit_callbacks, env, choice, reanalyses):
+    settings.REANALYSE_LATE_TEXT = env
+    UserProfile.objects.filter(user=owner).update(reanalyse_late_text=choice)
+    job = _blind(owner, model)
+    model['answers'] = ['maybe']
+    _retry(client, job, django_capture_on_commit_callbacks)
+    assert len(model['calls']) == reanalyses and tasks['started'] == [(job.id, 'cv-de')]
+
+
+def test_task321_profile_round_trip_starts_unset_with_the_env_default(owner, client, settings):
+    settings.REANALYSE_LATE_TEXT = False
+    data = client.get('/api/profile/').data
+    assert data['reanalyse_late_text'] is None and data['reanalyse_late_text_default'] is False
+    assert client.patch('/api/profile/', {'reanalyse_late_text': True}, format='json').data['reanalyse_late_text'] is True
+    assert UserProfile.objects.get(user=owner).reanalyse_late_text is True
+    assert client.patch('/api/profile/', {'reanalyse_late_text': False}, format='json').data['reanalyse_late_text'] is False
+    assert UserProfile.objects.get(user=owner).reanalyse_late_text is False
