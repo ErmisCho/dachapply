@@ -41,7 +41,7 @@ from django.db import close_old_connections
 from django.db.models import Q
 from django.utils import timezone
 
-from jobradar.models import JobEvaluation, JobLead
+from jobradar.models import JobEvaluation, JobLead, UserProfile
 from jobradar.services import cv_tasks, job_evaluator
 from jobradar.services.access import accessible_jobs
 from jobradar.services.application_requirements import DOCUMENT_STATUSES, DOCUMENT_TYPES, POSTING_LANGUAGES, normalize_application_requirements
@@ -392,7 +392,8 @@ def reanalyse_late_text(job, user):
     evaluation queues them for apply/maybe itself (json_importer.create_evaluation's TASK-312 hook).
     True when that took over from preparing at once; False (REANALYSE_LATE_TEXT off, no earlier
     evaluation, an account that cannot generate) leaves the caller's own path as it was."""
-    if not settings.REANALYSE_LATE_TEXT or not is_cv_owner(user) or not JobEvaluation.objects.filter(job_id=job.id).exists():
+    choice=UserProfile.objects.filter(user=user).values_list('reanalyse_late_text', flat=True).first()  # TASK-321
+    if not (settings.REANALYSE_LATE_TEXT if choice is None else choice) or not is_cv_owner(user) or not JobEvaluation.objects.filter(job_id=job.id).exists():
         return False
     with _lock:
         if job.id in _reanalysing:

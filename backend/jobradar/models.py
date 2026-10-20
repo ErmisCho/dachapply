@@ -155,6 +155,13 @@ class UserProfile(models.Model):
     # Read only through JobLead.effective_status_order(), which appends any status missing from the
     # saved list, so a status added to the model later is never lost from the board.
     board_status_order=models.CharField(max_length=300, blank=True, default='')
+    # TASK-316: the board table's column order -- comma-separated keys from
+    # serializers.BOARD_COLUMNS (App.tsx columnKeys), validated like board_status_order. Blank is "never
+    # set": the board then offers this browser's TASK-315 localStorage order to the account once.
+    board_column_order=models.CharField(max_length=300, blank=True, default='')
+    # TASK-321: per-account override of settings.REANALYSE_LATE_TEXT. Null is "never set" and keeps
+    # the env default (application_prep.reanalyse_late_text).
+    reanalyse_late_text=models.BooleanField(null=True, blank=True, default=None)
     # TASK-83: the capability that gates the nine CV endpoints. Off by default -- generation shells
     # out to a model CLI and LaTeX on the server, so it is granted per account in the admin, never
     # by signing up. services.cv_generator.is_cv_owner still honours CODEX_CV_OWNER_EMAIL as a

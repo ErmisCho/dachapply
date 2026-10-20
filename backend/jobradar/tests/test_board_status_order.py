@@ -67,3 +67,22 @@ def test_default_board_follows_the_saved_status_order(client):
     # An explicit ordering still wins over the status order.
     r = client.get('/api/jobs/', {'status': ','.join(order), 'ordering': 'status'})
     assert [j['company'] for j in r.data] == [s for s in ALL_STATUSES if s in order]
+
+
+def test_task316_column_order_is_validated_normalized_and_reported_by_me(client):
+    assert client.get('/api/auth/me/').data['board_column_order'] == []
+    r = client.patch('/api/profile/', {'board_column_order': 'skills,bogus'}, format='json')
+    assert r.status_code == 400 and 'board_column_order' in r.data
+    r = client.patch('/api/profile/', {'board_column_order': ' skills, prio,,skills '}, format='json')
+    assert r.status_code == 200 and r.data['board_column_order'] == 'skills,prio'
+    assert client.get('/api/profile/').data['board_column_order'] == 'skills,prio'
+    assert client.get('/api/auth/me/').data['board_column_order'] == ['skills', 'prio']
+
+def test_task316_backend_column_keys_match_the_board_columns():
+    # A column added to App.tsx columnOptions but not to BOARD_COLUMNS would 400 every save of the order.
+    from pathlib import Path
+    import re
+    from jobradar.serializers import BOARD_COLUMNS
+    app = (Path(__file__).resolve().parents[3] / 'frontend' / 'src' / 'App.tsx').read_text(encoding='utf-8')
+    options = re.search(r'columnOptions:\[[^=]*=\[(.*?)\];', app).group(1)
+    assert tuple(re.findall(r"\['(\w+)'", options)) == BOARD_COLUMNS
