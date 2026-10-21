@@ -1,9 +1,10 @@
 ---
 id: TASK-327
 title: Generated CVs fill both pages without forced page breaks
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-21 09:34'
+updated_date: '2026-10-21 10:38'
 labels:
   - backend
 dependencies: []
@@ -19,9 +20,15 @@ Owner 2026-10-21: generated CVs leave large gaps. Measured on the Comprehentia C
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The generation prompt tells the model to use the two pages fully: keep the base CV's experience bullets unless clearly irrelevant, and prefer keeping more relevant base content to leaving empty space, never exceeding two pages
-- [ ] #2 A forced page break (\newpage, \clearpage, \pagebreak) the base CV does not contain is removed from the generated CV before compiling; orphaned employer headings stay prevented by the template's \Needspace
-- [ ] #3 Adjust/readjustment prompts never add forced page breaks either
-- [ ] #4 The 2-page limit check and repair loop are unchanged
+- [x] #1 The generation prompt tells the model to use the two pages fully: keep the base CV's experience bullets unless clearly irrelevant, and prefer keeping more relevant base content to leaving empty space, never exceeding two pages
+- [x] #2 A forced page break (\newpage, \clearpage, \pagebreak) the base CV does not contain is removed from the generated CV before compiling; orphaned employer headings stay prevented by the template's \Needspace
+- [x] #3 Adjust/readjustment prompts never add forced page breaks either
+- [x] #4 The 2-page limit check and repair loop are unchanged
 - [ ] #5 Live: one newly generated CV has no forced break and its pages have no large empty area
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Merged in #320. CV test files + test_api 298 passed; new unit test for the break removal; CI green. Open: AC5, one newly generated CV checked for gaps (needs one model run).
+<!-- SECTION:NOTES:END -->
