@@ -1297,8 +1297,13 @@ def exact_revision_plan(sources, instructions, unselected=()):
         value=value.casefold()
         return value in ('old:','from:') or value.startswith('replace ') and value.endswith(' from:')
     def new_marker(value): return value.casefold() in ('new:','with:')
-    def boundary(value):
-        return old_marker(value) or bool(re.match(r'^(?:\d+\.|keep\b|do not\b|submit\b|constraints?\b)',value,re.IGNORECASE))
+    def heading(value):
+        # TASK-333: 'CHANGE 2 — Restore ...', 'FILE 2: x.tex' or 'FINAL VALIDATION:' after a NEW block
+        # was spliced into the CV preamble ('Missing \begin{document}', 2026-10-21). Only checked after
+        # a blank line, so a block's own text (a letter paragraph starting 'Change ...') stays whole.
+        return bool(re.match(r'^(?:change|file|step|edit|note)\s*(?:\d|[:—–-])',value,re.IGNORECASE)) or (value.endswith(':') and len(value) <= 80 and not re.search(r'[\\{}$&%]',value))
+    def boundary(value, after_blank=False):
+        return old_marker(value) or bool(re.match(r'^(?:\d+\.|keep\b|do not\b|submit\b|constraints?\b)',value,re.IGNORECASE)) or (after_blank and heading(value))
     while index < len(lines):
         if not old_marker(lines[index].strip()):
             index+=1
@@ -1309,7 +1314,7 @@ def exact_revision_plan(sources, instructions, unselected=()):
         if index == len(lines): return None
         index+=1
         new=[]
-        while index < len(lines) and not boundary(lines[index].strip()):
+        while index < len(lines) and not boundary(lines[index].strip(), not lines[index-1].strip()):
             new.append(lines[index]); index+=1
         old,new=block(old),block(new)
         if not old or not new: return None
