@@ -1435,6 +1435,16 @@ def _dropped_photo(base_tex, generated_tex):
     return bool(generated_tex.strip()) and r'\includegraphics' in base_tex and r'\includegraphics' not in generated_tex
 
 
+_FORCED_BREAK=re.compile(r'\\(?:newpage|clearpage|pagebreak)(?:\[\d\])?(?![A-Za-z])')
+
+
+def _drop_forced_breaks(base_tex, generated_tex):
+    """TASK-327: every generated CV had a \\newpage before Huawei that the base does not, so page 1
+    ended wherever the trimmed content did. The template's \\Needspace already keeps an employer
+    heading with its entry. A base that forces breaks itself keeps them all."""
+    return generated_tex if _FORCED_BREAK.search(base_tex) else _FORCED_BREAK.sub('', generated_tex)
+
+
 def _layout_context(output, source_cv, source_letter, instructions):
     if not re.search(r'layout|overflow|overlap|page break|orphan|spacing|margin|visual|seitenumbruch|überlapp', instructions or '', re.IGNORECASE):
         return ''
@@ -1585,6 +1595,7 @@ RULES:
 - Never invent experience, tools, employers, dates, responsibilities, production ownership, metrics, or qualifications.
 - Preserve the existing LaTeX structure and good content.
 - CV maximum: two pages. Motivation letter maximum: one page.
+- Fill both CV pages: keep the base CV's experience bullets unless one is clearly irrelevant to this job, and keep more of the most relevant base content rather than leave empty space. Never add \\newpage, \\clearpage or \\pagebreak; the template's \\Needspace keeps employer headings with their entries.
 - For readjustments, make minimal targeted edits; do not regenerate wholesale unless explicitly requested.
 - Fix layout before cutting important experience. If cuts are unavoidable, remove least-relevant project content before Huawei, Citibank, or the current AI/Python systems section.
 - Keep every returned file valid LaTeX with nothing after \\end{{document}}.
@@ -1635,6 +1646,7 @@ RULES:
 - Never invent experience, tools, employers, dates, responsibilities, production ownership, metrics, or qualifications.
 - CV maximum: two pages. Motivation letter maximum: one page.
 - For readjustments, make minimal targeted edits; do not regenerate wholesale unless explicitly requested.
+- Never add \\newpage, \\clearpage or \\pagebreak unless the adjustment instructions ask for a page break.
 
 {revision_section}
 {visual_section}{correction_image_section}
@@ -2086,6 +2098,8 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
             except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
                 raise RecoverableGenerationError('The selected model returned invalid application documents.', str(exc) or 'The structured response or LaTeX document was invalid.') from None
             if create_cv:
+                if not re.search(r'page ?break|newpage|clearpage|seitenumbruch', revision_instructions or '', re.IGNORECASE):
+                    cv_tex=_drop_forced_breaks(cv_template['cv'].source, cv_tex)  # TASK-327, unless the owner asked for one
                 (output/cv_name).write_text(cv_tex, encoding='utf-8')
             if create_letter:
                 (output/letter_name).write_text(letter_tex, encoding='utf-8')
