@@ -5,6 +5,7 @@ import http.client
 import io
 import ipaddress
 import json
+import logging
 import os
 import re
 import shutil
@@ -26,6 +27,8 @@ from jobradar.models import CvAsset
 from jobradar.services import cv_workspace
 from jobradar.services.json_importer import parse_json_object
 
+
+logger=logging.getLogger(__name__)
 
 FALLBACK_MODELS = [
     {'key':'gpt-5.6-sol','label':'GPT-5.6-Sol','efforts':['low','medium','high','xhigh','max','ultra'],'default_effort':'low','fast_tier':'priority'},
@@ -54,16 +57,18 @@ class RecoverableGenerationError(RuntimeError):
         self.diagnostics=diagnostics or summary
         self.usage_limit=usage_limit
         self.reset_at=reset_at
+        self.saved_files=[]  # TASK-334: copies of a failed compile's .tex/.log under .dachapply-logs/failed
 
 
 class GenerationFailed(RuntimeError):
-    def __init__(self, message, diagnostics, repair_attempts, usage_limit=False, reset_at=None):
+    def __init__(self, message, diagnostics, repair_attempts, usage_limit=False, reset_at=None, saved_files=None):
         super().__init__(message)
         self.public_message=message
         self.diagnostics=diagnostics
         self.repair_attempts=repair_attempts
         self.usage_limit=usage_limit
         self.reset_at=reset_at
+        self.saved_files=saved_files or []
 
 
 def _ensure_active(cancelled):
@@ -1501,6 +1506,28 @@ def latex_error(log, returncode):
     return (f'{message} (line {line[1]})' if line else message), '\n'.join(lines[start:end+1])
 
 
+def _save_failed_compile(output, filename):
+    """TASK-334: copy a failed compile's .tex and .log out of the temp dir, which is about to be
+    deleted, to <workspace>/.dachapply-logs/failed/. Returns the saved paths; never raises."""
+    saved=[]
+    workspace=getattr(settings,'CODEX_CV_WORKSPACE','') or ''
+    try:
+        if not workspace or not Path(workspace).is_dir():  # never create the workspace itself
+            return saved
+        # ponytail: no rotation -- failed/ grows until someone prunes it.
+        target=Path(workspace)/'.dachapply-logs'/'failed'
+        target.mkdir(parents=True,exist_ok=True)
+        stamp=time.strftime('%Y%m%d-%H%M%S')
+        for suffix in ('.tex','.log'):
+            source=output/Path(filename).with_suffix(suffix)
+            if source.is_file():
+                shutil.copyfile(source,target/f'{stamp}-{source.name}')
+                saved.append(str(target/f'{stamp}-{source.name}'))
+    except Exception:
+        logger.debug('Could not save the failed compile of %s',filename,exc_info=True)
+    return saved
+
+
 def _compile_pdf(output, filename, is_cv, cancelled=None):
     pdflatex=shutil.which('pdflatex')
     if not pdflatex:
@@ -1520,7 +1547,9 @@ def _compile_pdf(output, filename, is_cv, cancelled=None):
                 log=output/Path(filename).with_suffix('.log')
                 text=log.read_text(encoding='utf-8', errors='replace') if log.is_file() else (result.stdout or result.stderr or '')
                 reason, block=latex_error(text, result.returncode)
-                raise RecoverableGenerationError(f'LaTeX could not compile the {"CV" if is_cv else "motivation letter"}: {reason}.', f'{block}\n\n{text[-6000:]}')
+                error=RecoverableGenerationError(f'LaTeX could not compile the {"CV" if is_cv else "motivation letter"}: {reason}.', f'{block}\n\n{text[-6000:]}')
+                error.saved_files=_save_failed_compile(output,filename)
+                raise error
     finally:
         _LATEX_LOCK.release()
     pages=_pdf_pages(output/Path(filename).with_suffix('.pdf'))
@@ -2134,6 +2163,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
                 report(82 if is_cv else 95, 'CV compiled' if is_cv else 'Motivation letter compiled')
 
         diagnostics=[]
+        saved_files=[]
         failure=None
         for attempt in range(3):
             if attempt:
@@ -2149,10 +2179,11 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
             except RecoverableGenerationError as exc:
                 failure=exc
                 diagnostics.append(f'Attempt {attempt+1}: {exc.summary}\n{exc.diagnostics}')
+                saved_files+=exc.saved_files
                 if exc.usage_limit:  # TASK-317: a repair cannot lift a usage limit; it only spends more
-                    raise GenerationFailed(exc.summary, '\n\n'.join(diagnostics), attempt, True, exc.reset_at) from None
+                    raise GenerationFailed(exc.summary, '\n\n'.join(diagnostics), attempt, True, exc.reset_at, saved_files) from None
                 if attempt == 2:
-                    raise GenerationFailed(f'{exc.summary} Two automatic repair attempts also failed.', '\n\n'.join(diagnostics), 2) from None
+                    raise GenerationFailed(f'{exc.summary} Two automatic repair attempts also failed.', '\n\n'.join(diagnostics), 2, saved_files=saved_files) from None
 
         generation_report={key:generated[key] for key in ('changed_files','main_changes','unsupported_requirements_not_claimed','confirmations')}
         report(97, 'Saving files')

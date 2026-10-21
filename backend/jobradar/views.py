@@ -2338,23 +2338,26 @@ def revise_latest_cv_documents(request, job_id):
     create_letter=create_letter and bool(source_letter)
     if not create_cv and not create_letter:
         return Response({'detail':'No previous generated files were found for this job.'}, status=400)
+    # TASK-334: each route's task appends this, plus its outcome, to .dachapply-logs/adjustments.jsonl.
+    adjust={'job_id':job.id,'company':job.company,'title':job.title,'provider':request.data.get('provider') or '','model':request.data.get('model') or '','effort':request.data.get('effort') or '',
+            'documents':[name for name,ticked in (('cv',create_cv),('letter',create_letter)) if ticked],'instructions':instructions,'correction_image':bool(correction_image)}
     if not correction_image:
         artifacts=latest_generated_artifacts(job,request.user,letter_key)
         artifacts={key:path for key,path in artifacts.items() if (create_cv and key.startswith('cv_')) or (create_letter and key.startswith('letter_'))}
         if no_change_requested(instructions):
-            task_id=start_cv_noop_task(job.id,request.user.id,artifacts)
+            task_id=start_cv_noop_task(job.id,request.user.id,artifacts,adjust={**adjust,'route':'no-change'})
             return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
         # TASK-278: blocks only found in the unticked document are applied there too; ticked ones win.
         exact_updates=exact_revision_plan([source_cv if create_cv else None,source_letter if create_letter else None],instructions,[None if create_cv else source_cv,None if create_letter else source_letter])
         if exact_updates == {}:
-            task_id=start_cv_noop_task(job.id,request.user.id,artifacts)
+            task_id=start_cv_noop_task(job.id,request.user.id,artifacts,adjust={**adjust,'route':'no-change'})
             return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
         if exact_updates:
             use_cv=create_cv or str(source_cv) in exact_updates
             use_letter=create_letter or str(source_letter) in exact_updates
             unticked=[name for name,ticked,used in (('CV',create_cv,use_cv),('letter',create_letter,use_letter)) if used and not ticked]
             report={'changed_files':[Path(path).name for path in exact_updates],'main_changes':['Applied exact OLD/NEW replacements without AI.']+[f'Also updated the {name}: some blocks were only found there.' for name in unticked],'unsupported_requirements_not_claimed':[]}
-            task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv if use_cv else None,source_letter if use_letter else None,source_updates=exact_updates,task_report=report,letter_key=letter_key)
+            task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv if use_cv else None,source_letter if use_letter else None,source_updates=exact_updates,task_report=report,letter_key=letter_key,adjust={**adjust,'route':'exact'})
             return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
     # TASK-278: free-form literal edits -- parsed deterministically, else translated by the installed
     # local model. Both are gated in the task, which falls back to the full optimization below.
@@ -2373,10 +2376,11 @@ def revise_latest_cv_documents(request, job_id):
         return Response({'detail':str(exc)}, status=503)
     if literal_pairs or literal_model:
         fallback={'profile':candidate_context,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'provider':request.data.get('provider') or '','model':request.data.get('model') or '','effort':request.data.get('effort') or '','speed':request.data.get('speed') or 'normal','source_cv':source_cv,'source_letter':source_letter,'revision_instructions':instructions[:5000],'create_cv':create_cv}
-        task_id=start_cv_literal_task(job.id,request.user.id,source_cv if create_cv else None,source_letter if create_letter else None,instructions,literal_pairs,literal_model,fallback)
+        task_id=start_cv_literal_task(job.id,request.user.id,source_cv if create_cv else None,source_letter if create_letter else None,instructions,literal_pairs,literal_model,fallback,
+                                      adjust={**adjust,'route':'literal-deterministic'} if literal_pairs else {**adjust,'route':'literal-local-model','local_model':':'.join(literal_model)})
         return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
     try:
-        task_id=start_cv_task(job.id, request.user.id, candidate_context, cv_key, request.data.get('letter_template') or '', create_letter, request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', source_cv=source_cv, source_letter=source_letter, revision_instructions=instructions[:5000], create_cv=create_cv, correction_image=correction_image)
+        task_id=start_cv_task(job.id, request.user.id, candidate_context, cv_key, request.data.get('letter_template') or '', create_letter, request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', source_cv=source_cv, source_letter=source_letter, revision_instructions=instructions[:5000], create_cv=create_cv, correction_image=correction_image, adjust={**adjust,'route':'full-optimization'})
     except RuntimeError:
         return Response({'detail':'CV generation is restarting. Try again shortly.'}, status=503)
     return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
