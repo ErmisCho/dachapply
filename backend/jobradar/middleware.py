@@ -39,7 +39,11 @@ class UserUsageMiddleware:
 
         response = self.get_response(request)
         if track_visitor:
-            self.record_usage(request)
+            # TASK-330: only a request that brought the cookie back is counted. A client that never
+            # keeps cookies (a local WebSocket poller hit / every 2 s for weeks) minted a new visitor
+            # per request -- 371,715 rows and most of Neon's 5 GB monthly transfer by 2026-10-21.
+            if not set_visitor_cookie:
+                self.record_usage(request)
             if set_visitor_cookie:
                 response.set_cookie(
                     VISITOR_COOKIE_NAME,

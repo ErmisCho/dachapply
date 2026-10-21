@@ -68,7 +68,8 @@ def owner_client(db):
     client.force_login(owner)
     client.cookies['app_sessionid'] = client.cookies['sessionid'].value
     del client.cookies['sessionid']
-    client.get('/api/auth/me/')  # warm the visitor cookie so every counted request is a repeat visit
+    client.get('/api/auth/me/')  # sets the visitor cookie (TASK-330: a cookieless request is not recorded)
+    client.get('/api/auth/me/')  # first recorded visit, so every counted request is a repeat visit
     return client
 
 

@@ -103,10 +103,25 @@ def test_background_usage_recording_holds_at_most_one_connection(db, settings, m
 
     monkeypatch.setattr(UserUsageMiddleware, 'record_usage_values', slow_recorder)
     client = APIClient()
+    client.cookies[VISITOR_COOKIE_NAME] = 'c' * 32  # TASK-330: only a returning visitor is recorded
     for _ in range(6):
         client.get('/api/auth/me/')
     assert all(done.acquire(timeout=5) for _ in range(6))
     assert peak[0] == 1
+
+
+def test_a_request_without_the_visitor_cookie_gets_it_but_is_not_recorded(db, settings):
+    """TASK-330: a cookieless local poller hit / every 2 s and minted a visitor row per hit (371,715 by
+    2026-10-21, most of Neon's 5 GB monthly transfer). Only a request that brought the cookie back counts."""
+    from jobradar.models import SiteDailyUsage, SiteVisitor, UserDailyUsage, VisitorDailyUsage
+    settings.USAGE_RECORD_ASYNC = False
+    client = APIClient()
+    first = client.get('/')
+    assert first.cookies[VISITOR_COOKIE_NAME].value
+    tables = (SiteVisitor, VisitorDailyUsage, SiteDailyUsage, UserDailyUsage)
+    assert [model.objects.count() for model in tables] == [0, 0, 0, 0]
+    client.get('/')  # the browser sends the cookie back: now it is a visitor
+    assert SiteVisitor.objects.get().visitor_id == clean_visitor_id(first.cookies[VISITOR_COOKIE_NAME].value)
 
 
 def test_a_failing_background_recorder_is_swallowed(monkeypatch):

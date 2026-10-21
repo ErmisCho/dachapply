@@ -1923,6 +1923,7 @@ def test_mailbox_runs_query_count_does_not_scale_with_run_count(client):
     middleware's own INSERT-then-UPDATE would otherwise make an unwarmed first measurement cost more
     regardless of run count."""
     client.get('/api/mailbox-runs/')  # warm-up
+    client.get('/api/mailbox-runs/')  # TASK-330: the first request only sets the visitor cookie
 
     def _run_with_message(uid):
         run = MailboxRun.objects.create(fetched_count=1)
@@ -1952,6 +1953,7 @@ def test_mailbox_runs_query_count_does_not_scale_with_messages_per_run(client):
     run = MailboxRun.objects.create(fetched_count=1)
     job = JobLead.objects.create(company='Acme', title='Engineer', status='applied', created_by=None)
     client.get('/api/mailbox-runs/')  # warm-up
+    client.get('/api/mailbox-runs/')  # TASK-330: the first request only sets the visitor cookie
 
     def _message(uid):
         message = MailboxMessage.objects.create(run=run, uid=uid, classification='uncertain', sender='hr@acme.test', subject='x', matched_job=job)

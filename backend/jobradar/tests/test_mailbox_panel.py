@@ -576,6 +576,7 @@ def test_unmatched_messages_suggestion_computation_adds_exactly_one_bulk_query(c
     count for the same reason test_unmatched_messages_query_count_does_not_scale_with_row_count already
     proves."""
     client.get('/api/mailbox-messages/unmatched/')  # warm-up: visitor-tracking middleware
+    client.get('/api/mailbox-messages/unmatched/')  # TASK-330: the first request only sets the visitor cookie
     _log_message(None, 'uncertain', sender='hr1@agency.test', body_text='Acme')
     _log_message(None, 'uncertain', sender='hr2@agency.test', body_text='not tracked at all')
 
@@ -1894,6 +1895,7 @@ def test_unmatched_messages_query_count_does_not_scale_with_row_count(client):
     faster no-op.)
     """
     client.get('/api/mailbox-messages/unmatched/')  # warm-up: visitor-tracking middleware
+    client.get('/api/mailbox-messages/unmatched/')  # TASK-330: the first request only sets the visitor cookie
 
     def _unmatched(n, with_draft):
         message = _log_message(None, 'uncertain', sender=f'hr{n}@agency.test')
@@ -2274,6 +2276,7 @@ def test_the_prefill_costs_no_extra_query_per_row(client):
     actually PRODUCE a prefill -- an `uncertain` row returns None before the extraction runs at all.
     """
     client.get('/api/mailbox-messages/unmatched/')  # warm-up: visitor-tracking middleware, as above
+    client.get('/api/mailbox-messages/unmatched/')  # TASK-330: the first request only sets the visitor cookie
 
     def _creatable(n):
         return _log_message(None, 'application_confirmed', sender=f'Acme{n} Hiring Team <hiring@ashbyhq.com>',

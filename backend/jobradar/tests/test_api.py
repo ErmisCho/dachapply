@@ -3436,7 +3436,9 @@ def test_admin_user_changelist_shows_demo_users_separately(db):
 
 
 def test_demo_login_tracks_unique_visitor_and_demo_click(db):
+    from jobradar.services.analytics import VISITOR_COOKIE_NAME
     c = APIClient()
+    c.cookies[VISITOR_COOKIE_NAME] = 'd' * 32  # the page load set it (TASK-330: cookieless requests are not recorded)
     r = c.post('/api/auth/login/', {'username': 'demo@dachapply.com', 'password': 'DemoApply2026!'}, format='json')
     assert r.status_code == 200
     assert SiteVisitor.objects.count() == 1
@@ -3456,8 +3458,10 @@ def test_demo_login_tracks_unique_visitor_and_demo_click(db):
 
 
 def test_same_visitor_collects_authenticated_anonymous_and_demo_flags(db):
+    from jobradar.services.analytics import VISITOR_COOKIE_NAME
     user = User.objects.create_user('flag-user@example.test', email='flag-user@example.test', password='secret123')
     c = APIClient()
+    c.cookies[VISITOR_COOKIE_NAME] = 'e' * 32  # the page load set it (TASK-330)
     r = c.post('/api/auth/login/', {'username': user.username, 'password': 'secret123'}, format='json')
     assert r.status_code == 200
     r = c.post('/api/auth/logout/', {}, format='json')
@@ -4338,6 +4342,7 @@ def test_feedback_due_query_count_does_not_scale_with_row_count(client):
     from django.test.utils import CaptureQueriesContext
     today=timezone.localdate()
     client.get('/api/jobs/feedback-due/')
+    client.get('/api/jobs/feedback-due/')  # TASK-330: the first request only sets the visitor cookie
     make_job(client, company='A', title='x', status='interview', feedback_due_date=today)
     make_job(client, company='B', title='x', status='interview', feedback_due_date=today+timezone.timedelta(days=1))
     with CaptureQueriesContext(connection) as few:
@@ -4455,6 +4460,7 @@ def test_jobs_list_note_preview_costs_no_extra_query(client):
     """
     from django.test.utils import CaptureQueriesContext
     client.get('/api/jobs/')
+    client.get('/api/jobs/')  # TASK-330: the first request only sets the visitor cookie
     jobs=[make_job(client, company=f'Row{i}', title='x') for i in range(6)]
     with CaptureQueriesContext(connection) as bare:
         r=client.get('/api/jobs/')
@@ -4502,6 +4508,7 @@ def test_jobs_list_query_count_does_not_scale_with_row_count(client):
             JobLead.objects.create(company='Co%s%d' % (tag, i), title='Engineer', created_by=creator, submitted_for=client.user)
 
     client.get('/api/jobs/')
+    client.get('/api/jobs/')  # TASK-330: the first request only sets the visitor cookie
     add_rows(3, 'a')
     with CaptureQueriesContext(connection) as few:
         r = client.get('/api/jobs/')
