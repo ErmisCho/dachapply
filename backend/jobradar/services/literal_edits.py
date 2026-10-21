@@ -137,6 +137,23 @@ def words(text):
     return {word.lstrip('\\').casefold() for word in _WORD.findall(unicodedata.normalize('NFKC',text))}
 
 
+# TASK-326: words asking for more than swapping text. The gate would refuse such a request anyway (rule 4),
+# so asking the local model first only delays the chosen model by up to CODEX_CV_LITERAL_EDIT_TIMEOUT.
+REWRITE_WORDS=frozenset('''
+make shorten shorter longer concise improve rewrite rephrase reword translate fit layout page pages compile
+add remove delete reorder optimize optimise tailor emphasize emphasise highlight more less
+kürze kürzen verbessere verbessern übersetze übersetzen hinzufügen entferne entfernen seite seiten
+'''.split())
+
+
+def looks_like_swap(instructions):
+    """TASK-326 (owner: the local model is for straightforward swaps only): at most 3 non-blank lines,
+    at most 300 characters and no rewrite word. ponytail: a length cap and a closed word list, not a
+    classifier -- a long swap goes to the chosen model, which is slower but never wrong."""
+    lines=[line for line in (instructions or '').splitlines() if line.strip()]
+    return 0 < len(lines) <= 3 and len(instructions) <= 300 and not words(instructions) & REWRITE_WORDS
+
+
 def _outside_spans_identical(original, edited, spans):
     position=offset=0
     for start,end,replacement in spans:
