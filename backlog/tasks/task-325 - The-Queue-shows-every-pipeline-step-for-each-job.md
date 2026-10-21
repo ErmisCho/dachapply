@@ -1,9 +1,10 @@
 ---
 id: TASK-325
 title: The Queue shows every pipeline step for each job
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-21 06:59'
+updated_date: '2026-10-21 09:03'
 labels:
   - backend frontend
 dependencies:
@@ -20,9 +21,15 @@ Owner 2026-10-21: one place to see where a job is, from link to documents. Today
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A job whose prep['pipeline'].stage is fetching or analysing appears under Running with the stage name and no document label
-- [ ] #2 A job held by the daily limit appears under Blocked with the reason and a working Retry
-- [ ] #3 A skip verdict appears under Done as Not applying with its fit score; a failed analysis appears with its reason and Retry
-- [ ] #4 Once documents are queued for the job, its pipeline row is replaced by the document rows (no duplicate)
-- [ ] #5 Existing queue rows, actions and tests are unchanged
+- [x] #1 A job whose prep['pipeline'].stage is fetching or analysing appears under Running with the stage name and no document label
+- [x] #2 A job held by the daily limit appears under Blocked with the reason and a working Retry
+- [x] #3 A skip verdict appears under Done as Not applying with its fit score; a failed analysis appears with its reason and Retry
+- [x] #4 Once documents are queued for the job, its pipeline row is replaced by the document rows (no duplicate)
+- [x] #5 Existing queue rows, actions and tests are unchanged
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Merged in #315. Added an 'Analysing requirements' row so an analysed job stays listed during the TASK-308 requirements analysis (test_an_analysed_job_stays_listed_while_its_requirements_are_analysed). Open: watch a real link move through the Queue on localhost.
+<!-- SECTION:NOTES:END -->
