@@ -4,7 +4,7 @@
 // the Applied write are measured in the browser instead, and the numbers live in the task notes.
 import {describe,expect,it,vi} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {CvGenerator,LearnedPreferenceNote,feedbackStatusPatch,fitOneScroll} from './App'
+import {CvGenerator,LearnedPreferenceNote,feedbackStatusPatch} from './App'
 import appSource from './App.tsx?raw'   // vite serves the file's text; no DOM and no new dependency
 import type {Job} from './types'
 import {replacementPrompt} from './cvModel'
@@ -27,17 +27,17 @@ describe('compact CV generator popup (TASK-216)',()=>{
     expect(html).not.toContain('Adjust latest')
   })
 
-  it('sizes to its content up to the viewport, with only a stable minimum (TASK-266)',()=>{
-    // TASK-216 pinned a fixed height so `preview` arriving could not resize the box. TASK-266's owner
-    // instruction overrides that ("there is no reason for this popup to need a scrollbar, it can
-    // expand"): a 56rem cap scrolled at 1063px of content in a 1642px-tall window. Only a minimum
-    // stays, so the loading state does not collapse; the popup scrolls only past the viewport.
+  it('sizes to its content below the measured nav, with no forced minimum (TASK-328)',()=>{
+    // TASK-328 overrides TASK-266's 36rem minimum: the owner wants the window minimal, as tall as its
+    // content, and never under the sticky nav. Nav publishes its measured height as --nav-h.
     const html=popup()
 
-    expect(html).toContain('min-h-[min(36rem,calc(100dvh-1.5rem))]')
-    expect(html).toContain('max-h-[calc(100dvh-1.5rem)]')
+    expect(html).toContain('top-[calc(var(--nav-h,0px)_+_0.5rem)]')
+    expect(html).toContain('max-h-[calc(100dvh_-_var(--nav-h,0px)_-_1rem)]')
+    expect(html).not.toContain('min-h-[')
     expect(html).not.toMatch(/ h-\[/)          // no fixed height of any kind
-    expect(html).not.toContain('56rem')
+    expect(appSource).toContain("root.setProperty('--nav-h',el.offsetHeight+'px')")
+    expect(appSource).toContain('return <div ref={navRef} lang="en" className="app-nav sticky')
   })
 
   it('is width-derived from the viewport, pinned on screen, and never scrolls sideways (TASK-266)',()=>{
@@ -47,22 +47,27 @@ describe('compact CV generator popup (TASK-216)',()=>{
     expect(html).not.toContain('w-[48rem]')
     // fixed + inset-x-0 + mx-auto centres it in the viewport, so it cannot run off the right edge
     // the way `absolute left-0` under the toolbar button could on a 1024px window.
-    expect(html).toMatch(/class="fixed inset-x-0 top-3 [^"]*mx-auto/)
+    expect(html).toMatch(/class="fixed inset-x-0 top-\[[^"]*mx-auto/)
     expect(html).toContain('overflow-y-auto')    // the single scroll area, only when content is taller
     expect(html).toContain('overflow-x-hidden')
     expect(html).toContain('[overflow-wrap:anywhere]')   // long generated-file paths wrap instead
   })
 
-  it('keeps Applied on the Generate row and lets the job text grow with the window (TASK-266)',()=>{
+  it('keeps Applied on the Generate row and the job texts small and scrollable (TASK-328)',()=>{
     // The loaded controls never render here (no effects), so these read the source.
     expect(appSource).toContain('<div className="flex flex-nowrap items-center gap-2" data-cv-action-row><ProgressButton active={loading} task={task} label="Generate"')
-    // The dialog is a flex column bounded by its max-h; the job-text section takes whatever height is
-    // left and the textarea scrolls inside it, so no rem budget for the rest of the popup is guessed.
-    expect(popup()).toMatch(/class="fixed inset-x-0 top-3 z-\[var\(--z-popup\)\] mx-auto flex flex-col /)
-    expect(appSource).toContain("'mt-2 grid min-h-0 flex-auto items-start gap-2 lg:grid-cols-2'")
-    expect(appSource).toContain("'lg:col-span-2 flex min-h-0 flex-col self-stretch [&>div]:flex [&>div]:min-h-0 [&>div]:flex-auto [&>div]:flex-col")
-    expect(appSource).toContain('[&_textarea]:min-h-[6rem] [&_textarea]:flex-auto [&_textarea]:[field-sizing:content]')
-    expect(appSource).not.toContain('100dvh-30rem')
+    // Current accepted and fetched text: a small fixed height that scrolls inside, no field-sizing:content.
+    const wrapper=appSource.slice(appSource.indexOf("<div className={compact?'lg:col-span-2"),appSource.indexOf('<PostingSource job={preview.job}'))
+    expect(wrapper).toBe("<div className={compact?'lg:col-span-2 [&_textarea]:h-28 [&_textarea]:resize-y':'lg:col-span-2'}>")
+    expect(appSource.match(/<textarea aria-label="Current accepted job text"[^>]*>/)?.[0]).not.toContain('field-sizing')
+    expect(appSource).not.toContain('data-cv-grow')
+  })
+
+  it('renders the board popup into document.body, out of the sticky selection bar (TASK-328)',()=>{
+    // At md+ the selection bar is sticky with z-index raised-1, a stacking context below the nav's
+    // sticky layer, so the z-popup dialog inside it painted under the nav. A portal escapes it.
+    expect(appSource).toContain('{cvGeneratorJob===selected[0]&&createPortal(<CvGenerator compact job={selectedJobs[0]}')
+    expect(appSource).toContain("onClose={()=>setCvGeneratorJob(null)}/>,document.body)}")
   })
 
   it('puts Generated files in the right column under Adjust, only in the popup (TASK-266)',()=>{
@@ -72,17 +77,6 @@ describe('compact CV generator popup (TASK-216)',()=>{
     expect(appSource).toContain('{compact&&<div className="empty:hidden lg:col-start-2 lg:row-start-2"><ArtifactPaths ')
     expect(appSource).toContain("compact?'grid content-start gap-2 lg:row-span-2'")
     expect(appSource).toContain("compact?'grid content-start gap-2 lg:col-start-2 lg:row-start-1'")
-  })
-
-  it('has one scroll area: the textarea grows to its content only when the dialog must scroll anyway (TASK-266)',()=>{
-    // A fake dialog whose content is `base` px with the textarea at its minimum, `grown` px with it at content height.
-    const dialog=(base:number,grown:number,client:number)=>{const attrs=new Set<string>();return {attrs,clientHeight:client,get scrollHeight(){return attrs.has('data-cv-grow')?grown:base},toggleAttribute(n:string,f?:boolean){const on=f??!attrs.has(n);if(on)attrs.add(n);else attrs.delete(n);return on}}}
-    expect(fitOneScroll(dialog(700,900,742))).toBe(false)   // fits: textarea fills the rest and scrolls inside
-    expect(fitOneScroll(dialog(808,1100,742))).toBe(true)   // even the minimum overflows: only the dialog scrolls
-    const d=dialog(808,1100,742);fitOneScroll(d);d.clientHeight=900
-    expect(fitOneScroll(d)).toBe(false)                     // decided at the minimum, so a taller window turns it back off
-    expect(d.attrs.has('data-cv-grow')).toBe(false)
-    expect(appSource).toContain('[&[data-cv-grow]>*]:shrink-0 [&[data-cv-grow]_textarea]:flex-none')
   })
 })
 

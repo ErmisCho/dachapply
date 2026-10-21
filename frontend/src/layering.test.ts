@@ -32,6 +32,6 @@ describe('layering scale (TASK-268)',()=>{
     const off=dialogs.filter(d=>!/--z-(popup|toast|tour)\)/.test(d))
     expect(off).toEqual([])
     expect(appSource).toContain('premium-card relative z-[var(--z-raised)] mb-4')
-    expect(appSource).toContain('fixed inset-x-0 top-3 z-[var(--z-popup)]')
+    expect(appSource).toContain('fixed inset-x-0 top-[calc(var(--nav-h,0px)_+_0.5rem)] z-[var(--z-popup)]')
   })
 })
