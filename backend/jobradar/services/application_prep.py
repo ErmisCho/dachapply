@@ -33,7 +33,7 @@ import tempfile
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
-from threading import RLock, Thread, Timer
+from threading import Lock, RLock, Thread, Timer
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -68,12 +68,21 @@ FINISHED_LIMIT = 50  # TASK-312: finished items the queue lists, newest first
 AUTO_RETRIES = 3  # TASK-317: automatic retries of one usage-limited item
 REANALYSIS_FAILED = 'Re-analysis failed'  # TASK-319: the prefix of a failed late-text re-analysis's reason
 INCOMPLETE = 'Posting incomplete'  # TASK-322: the prefix of _gate's reason for a posting lacking a required part
+# TASK-324/325: the automatic pipeline's in-progress stages, as the Queue labels them.
+PIPELINE_RUNNING = {'queued': 'Waiting to analyse', 'fetching': 'Fetching posting', 'analysing': 'Analysing fit',
+                    'requirements': 'Analysing requirements'}  # 'requirements' is derived in queue_state, never stored
+PIPELINE_INTERRUPTED = 'Analysis stopped before it finished (the server restarted). Press Retry.'
+DAILY_LIMIT = 'Daily limit of {} automatic runs reached. Press Retry to run it now, or raise the limit on the Profile page.'
 
 # ponytail: one process serves generation (threaded runserver); a DB claim if that changes. Re-entrant
 # because a task's on_finish can run in the thread that started it (a task that fails at once, tests).
 _lock = RLock()
 _analysing = set()  # TASK-308: job ids whose requirements analysis is running; guarded by _lock
 _reanalysing = set()  # TASK-319: job ids whose late-text re-analysis is running; guarded by _lock
+_piping = set()  # TASK-324: job ids whose pipeline thread is waiting or running; guarded by _lock
+# ponytail: one pipeline run at a time across all accounts (the rest wait on this lock, in no strict order),
+# so a bulk add of 20 links never starts 20 model processes; a worker pool if 50 a day get too slow.
+_pipeline_lock = Lock()
 # TASK-312: (job_id, user_id, key) waiting for a slot, front first, and the number of prepared tasks
 # started and not yet finished. Guarded by _lock; the sidecar is the durable copy (resume_queue).
 # ponytail: "Move to front" lives only here, so after a restart the queue is back in queued_at order.
@@ -433,6 +442,79 @@ def _reanalyse(job_id, user_id):
         close_old_connections()
 
 
+def start_pipeline(job_id, user, force=False):
+    """TASK-324: a job added with a link is fetched, checked and analysed off the request thread with the
+    automatic paths' model, and the evaluation is saved at once (a new job has nothing to overwrite); an
+    apply/maybe result then queues documents through json_importer.create_evaluation's TASK-312 hook.
+    Only for an account that can generate and a job with no evaluation. `force` (the Queue's Retry) runs
+    past the daily limit. True when a run was started or is already under way."""
+    job = JobLead.objects.filter(pk=job_id).first()
+    if not job or not job.url or not is_cv_owner(user) or JobEvaluation.objects.filter(job_id=job_id).exists():
+        return False
+    if not force:
+        limit = user_profile_settings(user).auto_pipeline_daily_limit
+        if not limit:
+            return False  # 0: automatic runs are off
+        # ponytail: counts the jobs this account added today up to this one, not the runs made; a run log
+        # if forced, failed or deleted jobs must count differently.
+        if JobLead.objects.filter(created_by=user, created_at__date=timezone.localdate(), pk__lte=job_id).count() > limit:
+            with _lock:
+                _save(job, user.pk, lambda prep: prep.update(pipeline={'stage': 'limit', 'at': _now()}, reason=DAILY_LIMIT.format(limit), retry_at=None))
+            return False
+    with _lock:
+        if job_id in _piping:
+            return True
+        _piping.add(job_id)
+        _save(job, user.pk, lambda prep: prep.update(pipeline={'stage': 'queued', 'at': _now()}, reason='', retry_at=None))
+    Thread(target=_pipeline, args=(job_id, user.pk), name='dachapply-pipeline', daemon=True).start()
+    return True
+
+
+def _pipeline(job_id, user_id):
+    """TASK-324 worker, one run at a time (_pipeline_lock), modelled on _reanalyse: fetch, then the fit
+    analysis committed (it reads whatever posting exists; _gate then holds an incomplete one as today).
+    Each stage is recorded in prep['pipeline'] for the Queue (TASK-325); a failure becomes the blocked
+    reason Retry re-runs, and a usage limit is retried after its reset (TASK-317)."""
+    close_old_connections()
+    try:
+        with _pipeline_lock:
+            job = JobLead.objects.filter(pk=job_id).first()
+            user = get_user_model().objects.filter(pk=user_id).first()
+            if not job or not user:
+                return
+
+            def stage(name, **extra):
+                _save(job, user_id, lambda prep: prep.update(pipeline={'stage': name, 'at': _now(), **extra}))
+            if JobEvaluation.objects.filter(job_id=job_id).exists():
+                _save(job, user_id, lambda prep: prep.pop('pipeline', None))  # analysed by hand while it waited
+                return
+            try:
+                stage('fetching')
+                fetch_missing_sources([job])
+                stage('analysing')
+                option, effort = cv_default_choice(available_model_options())
+                result = (job_evaluator.evaluate_jobs([job.id], user, option['provider'], option['key'], effort, 'normal', commit=True) if option
+                          else {'ok': False, 'errors': ['No document model is available on this machine']})
+            except Exception as exc:  # the Queue says why, never a run stuck at Analysing
+                logger.exception('The automatic analysis of job %s failed', job_id)
+                result = {'ok': False, 'errors': [str(exc) or type(exc).__name__]}
+            with _lock:
+                if not result['ok']:
+                    error = '; '.join(result['errors'])[:300].rstrip('.')
+                    _save(job, user_id, lambda prep: prep.update(pipeline={'stage': 'failed', 'at': _now(), 'error': error}, reason=f'Analysis failed: {error}. Press Retry.',
+                                                                 retry_at=_retry_at(result.get('usage_limit'), result.get('reset_at'), prep)))
+                elif result['preview'][0]['recommendation'] == 'skip':
+                    stage('skipped', recommendation='skip', fit_score=result['preview'][0]['fit_score'])
+                else:
+                    stage('analysed')  # the documents (or their hold) take over; queue_state lists their requirements analysis
+    except Exception:
+        logger.exception('The automatic pipeline for job %s failed', job_id)
+    finally:
+        with _lock:
+            _piping.discard(job_id)
+        close_old_connections()
+
+
 def public_state(job, user, reason_override=None):
     """What the job page shows: each variant with live progress, and interrupted runs as failed.
 
@@ -764,6 +846,18 @@ def queue_state(user):
                             'progress': 0, 'eta_seconds': None, 'error': error, 'files': [],
                             'queued_at': None, 'started_at': None, 'finished_at': None, 'retry_at': prep.get('retry_at'),
                             'incomplete': prep['reason'].startswith(INCOMPLETE)})  # TASK-322: offers Continue anyway
+        pipeline = prep.get('pipeline') or {}
+        # An analysed job stays listed while the TASK-312 hook analyses its application requirements (TASK-308).
+        stage = 'requirements' if pipeline.get('stage') == 'analysed' and prep.get('reason') == ANALYSING else pipeline.get('stage')
+        if (stage in PIPELINE_RUNNING or stage == 'skipped') and not prep.get('variants'):
+            # TASK-325: the automatic pipeline's step -- running, or finished as a skip; limit and failed are
+            # blocked above through prep['reason']. Variants replace it (the documents' own rows).
+            done = stage == 'skipped'
+            items.append({'job_id': job.id, 'company': job.company, 'title': job.title, 'job_status': job.status, 'key': '',
+                          'label': 'Not applying' if done else PIPELINE_RUNNING[stage], 'document': None, 'language': None,
+                          'status': 'skipped' if done else 'running', 'position': None, 'progress': 0, 'eta_seconds': None,
+                          'error': f"Skip · fit {pipeline.get('fit_score')}" if done else '', 'files': [], 'queued_at': None,
+                          'started_at': pipeline.get('at'), 'finished_at': pipeline.get('at') if done else None, 'retry_at': None, 'incomplete': False})
         for key, variant in (prep.get('variants') or {}).items():
             if variant.get('review') == 'discard':
                 continue
@@ -794,6 +888,11 @@ def queue_action(user, job_id, key, action):
     except (TypeError, ValueError):
         job = None
     prep = _state(job, user) if job and key == '' and action in ('retry', 'continue') else {}
+    if (action == 'retry' and (prep.get('pipeline') or {}).get('stage') in ('limit', 'failed') and not prep.get('variants')
+            and not JobEvaluation.objects.filter(job_id=job.id).exists()):
+        # TASK-324: a pipeline run held by the daily limit or failed runs again now, past the limit (retry_due too).
+        start_pipeline(job.id, user, force=True)
+        return queue_state(user)
     if action == 'continue':
         if prep.get('variants') or not (prep.get('reason') or '').startswith(INCOMPLETE):
             raise ValueError('Only a job held as Posting incomplete can be continued.')
@@ -860,7 +959,12 @@ def resume_queue():
         found = []
         for user in _owners():
             for job in accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES).only('id'):
-                for key, variant in (_state(job, user).get('variants') or {}).items():
+                prep = _state(job, user)
+                if (prep.get('pipeline') or {}).get('stage') in PIPELINE_RUNNING and job.id not in _piping:
+                    # TASK-324: a pipeline run the restart stopped is blocked with Retry, never left "running".
+                    _save(job, user.pk, lambda prep: prep.update(pipeline={'stage': 'failed', 'at': _now(), 'error': PIPELINE_INTERRUPTED},
+                                                                 reason=PIPELINE_INTERRUPTED, retry_at=None))
+                for key, variant in (prep.get('variants') or {}).items():
                     task_id = variant.get('task_id')
                     left = variant.get('status') == 'queued' or (variant.get('status') == 'running' and not (task_id and cv_tasks.get_cv_task(task_id, user.pk)))
                     if left and (job.id, user.pk, key) not in _queue:

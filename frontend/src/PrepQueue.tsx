@@ -7,7 +7,8 @@ import {Link} from 'react-router-dom'
 import {api} from './api/client'
 import {timeLeft} from './applicationPrep'
 
-export type QueueStatus='queued'|'running'|'blocked'|'ready'|'failed'|'cancelled'
+// TASK-325: 'skipped' is the automatic pipeline's skip verdict (document null), listed under Done.
+export type QueueStatus='queued'|'running'|'blocked'|'ready'|'skipped'|'failed'|'cancelled'
 export type QueueItem={job_id:number;company:string;title:string;job_status:string;key:string;label:string;document:'cv'|'letter'|'message'|null;language:string|null;status:QueueStatus;position:number|null;progress:number;eta_seconds:number|null;error:string;files:string[];queued_at:string|null;started_at:string|null;finished_at:string|null;retry_at:string|null;incomplete?:boolean}
 export type QueueData={concurrency:number;items:QueueItem[]}
 // TASK-322: 'continue' releases a job held for an incomplete posting; it acts on the whole job, so its key is ''.
@@ -70,15 +71,16 @@ export function QueueView({snap,onAction=queueAction}:{snap:QueueSnapshot;onActi
     {snap.data&&!items.length&&<p className="text-sm text-slate-600">Nothing in the queue. Documents are queued automatically once a job is analysed as apply or maybe.</p>}
     <Section title="Running" items={of('running')}>{item=><>
       <div className="flex flex-wrap items-baseline gap-x-2"><span className="font-medium">{item.label}</span><Job item={item}/></div>
-      <progress className="mt-1 block h-2 w-full appearance-none overflow-hidden rounded-full bg-slate-200 dark:bg-white/10 [&::-moz-progress-bar]:bg-blue-500 [&::-webkit-progress-bar]:bg-transparent [&::-webkit-progress-value]:bg-blue-500" max={100} value={item.progress} aria-label={`${item.label} progress`}/>
-      <p className="text-xs text-slate-500">{Math.round(item.progress)}%{item.eta_seconds?` · ${timeLeft(item.eta_seconds)}`:''}</p></>}</Section>
+      {item.document&&<><progress className="mt-1 block h-2 w-full appearance-none overflow-hidden rounded-full bg-slate-200 dark:bg-white/10 [&::-moz-progress-bar]:bg-blue-500 [&::-webkit-progress-bar]:bg-transparent [&::-webkit-progress-value]:bg-blue-500" max={100} value={item.progress} aria-label={`${item.label} progress`}/>
+      <p className="text-xs text-slate-500">{Math.round(item.progress)}%{item.eta_seconds?` · ${timeLeft(item.eta_seconds)}`:''}</p></>}</>}</Section>
     <Section title="Queued" items={of('queued')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">#{item.position} {item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{button(item,'first')}{button(item,'cancel')}</span></div>{failure(item)}</>}</Section>
     <Section title="Blocked" items={of('blocked')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{button(item,'retry')}{item.incomplete&&button(item,'continue')}</span></div>
       <p className="text-xs text-red-700">{item.error}</p>{retries(item)}{failure(item)}</>}</Section>
-    <Section title="Done" items={of('ready')}>{item=><>
+    <Section title="Done" items={of('ready','skipped')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><Link className="btn-muted ml-auto" to={`/jobs/${item.job_id}`}>Review</Link></div>
+      {item.status==='skipped'&&<p className="text-xs text-slate-600">{item.error}</p>}
       {item.files.length>0&&<ul className="mt-1 break-all text-xs text-slate-600">{item.files.map(f=><li key={f}>{f}</li>)}</ul>}
       {item.finished_at&&<p className="text-xs text-slate-500">Finished {when(item.finished_at)}</p>}</>}</Section>
     <Section title="Failed / cancelled" items={of('failed','cancelled')}>{item=><>

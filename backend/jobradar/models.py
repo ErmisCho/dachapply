@@ -162,6 +162,10 @@ class UserProfile(models.Model):
     # TASK-321: per-account override of settings.REANALYSE_LATE_TEXT. Null is "never set" and keeps
     # the env default (application_prep.reanalyse_late_text).
     reanalyse_late_text=models.BooleanField(null=True, blank=True, default=None)
+    # TASK-324: how many jobs added today run the link -> analysis pipeline automatically
+    # (application_prep.start_pipeline). 0 is a real value here, "automatic runs off": the profile
+    # serializer passes ints past the text codec, so 0 never reads back as unset.
+    auto_pipeline_daily_limit=models.PositiveIntegerField(default=50)
     # TASK-83: the capability that gates the nine CV endpoints. Off by default -- generation shells
     # out to a model CLI and LaTeX on the server, so it is granted per account in the admin, never
     # by signing up. services.cv_generator.is_cv_owner still honours CODEX_CV_OWNER_EMAIL as a
