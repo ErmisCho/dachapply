@@ -49,7 +49,7 @@ from .services.analytics import record_demo_click
 from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, rename_generated_artifact, reveal_artifact_folder, validate_model_capability
 from .services import cv_tasks
 from .services.cv_tasks import _clipboard_parts, _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, rename_task_paths, start_cv_compile_task, start_cv_literal_task, start_cv_noop_task, start_cv_revision, start_cv_task, with_expected_seconds
-from .services.literal_edits import deterministic_edit_pairs, local_literal_model
+from .services.literal_edits import deterministic_edit_pairs, local_literal_model, looks_like_swap
 from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
 from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
 
@@ -2355,7 +2355,7 @@ def revise_latest_cv_documents(request, job_id):
     # TASK-278: free-form literal edits -- parsed deterministically, else translated by the installed
     # local model. Both are gated in the task, which falls back to the full optimization below.
     literal_pairs=None if correction_image else deterministic_edit_pairs(instructions)
-    literal_model=None if correction_image or literal_pairs else local_literal_model()
+    literal_model=None if correction_image or literal_pairs or not looks_like_swap(instructions) else local_literal_model()  # TASK-326
     try:
         # needs_tools: both endpoints generate or readjust LaTeX, whose prompt tells the model to read
         # the copied source files (TASK-221 AC3).

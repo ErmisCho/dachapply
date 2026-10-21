@@ -182,8 +182,9 @@ def test_model_proposing_an_unrequested_word_is_refused(env):
 
 
 def test_mixed_instruction_never_applies_the_literal_part_alone(env):
-    instruction='replace "Hamburg" with "Berlin" and make the summary more concise'
-    assert literal_edits.deterministic_edit_pairs(instruction) is None
+    # No TASK-326 rewrite word, so the local model is asked; the gate still refuses its partial claim.
+    instruction='replace "Hamburg" with "Berlin" and mention Kubernetes'
+    assert literal_edits.deterministic_edit_pairs(instruction) is None and literal_edits.looks_like_swap(instruction)
     # Measured with gemma3:4b: the model claims literal=true and returns only the literal part.
     env.use_model({'literal':True,'edits':[{'old':'Hamburg','new':'Berlin'}]})
     task=env.revise(instruction)
@@ -191,16 +192,29 @@ def test_mixed_instruction_never_applies_the_literal_part_alone(env):
     assert 'more than these edits' in task['report']['main_changes'][-1]
 
 
+@pytest.mark.parametrize('instruction',[
+    'replace "Hamburg" with "Berlin" and make the summary more concise',
+    'Make the summary more concise.',
+    # TASK-326: the owner's screenshot -- a multi-paragraph layout request.
+    'Fit the CV on two pages.\nTighten the spacing between sections.\nDo not remove meaningful achievements solely to save space.\n\nDELIVERABLE:\nA successfully compiled 2-page PDF, with a short summary\nof the layout adjustments made.',
+])
+def test_a_request_that_is_not_a_straightforward_swap_never_reaches_the_local_model(env, instruction):
+    env.use_model({'literal':True,'edits':[{'old':'Hamburg','new':'Berlin'}]})
+    task=env.revise(instruction)
+    assert env.model_calls==[] and env.generated==[instruction[:5000]]
+    assert task['status']=='ready' and env.source.read_bytes()==env.original
+
+
 def test_model_saying_not_literal_falls_back(env):
     env.use_model({'literal':False,'edits':[]})
-    _assert_fell_back(env,env.revise('Make the summary more concise.'))
+    _assert_fell_back(env,env.revise('swap Docker for Podman'))
 
 
 def test_fallback_re_estimates_for_the_full_optimization_it_now_runs(env):
     # TASK-303: the literal route's 8.5 s stayed the task's estimate (and benchmark row) after it fell
     # back to a full model readjustment, which the 2026-10-15 GPT-6.1 rows recorded against 30 s.
     env.use_model({'literal':False,'edits':[]})
-    task=env.revise('Make the summary more concise.')
+    task=env.revise('swap Docker for Podman')
     assert cv_tasks._tasks[task['id']]['_initial_eta'] > 50
 
 
