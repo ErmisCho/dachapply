@@ -1,9 +1,10 @@
 ---
 id: TASK-329
 title: Column sorts keep the board grouped by the status order
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 13:32'
+updated_date: '2026-10-21 16:02'
 labels:
   - backend frontend
 dependencies: []
@@ -19,9 +20,15 @@ Owner 2026-10-21 (screenshot of the Statuses order New, Interview, Reviewed, To 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Any column sort that does not include Status is applied within the saved status order groups (attention_rank first)
-- [ ] #2 Sorting by the Status column itself is unchanged (pipeline order, both directions)
-- [ ] #3 Recommended sort is unchanged
-- [ ] #4 The Sorted by readout says the status order comes first for such sorts
-- [ ] #5 Live: with Fit score sorting, New jobs come before Applied ones on the board
+- [x] #1 Any column sort that does not include Status is applied within the saved status order groups (attention_rank first)
+- [x] #2 Sorting by the Status column itself is unchanged (pipeline order, both directions)
+- [x] #3 Recommended sort is unchanged
+- [x] #4 The Sorted by readout says the status order comes first for such sorts
+- [x] #5 Live: with Fit score sorting, New jobs come before Applied ones on the board
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Merged #325. Live: /api/jobs/?ordering=-fit_score,priority groups new 43, interview 6, to_apply 1, ready_to_submit 14, applied 44, rejected 27, skipped 7; readout "status order, then Fit score (desc), then Priority".
+<!-- SECTION:NOTES:END -->
