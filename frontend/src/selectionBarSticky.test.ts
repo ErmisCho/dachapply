@@ -14,6 +14,10 @@ describe('sticky selection bar (TASK-309)',()=>{
   })
   it('shrinks the desktop board box by the measured bar height',()=>{
     expect(appSource).toContain("root.setProperty('--selection-bar-h',el.offsetHeight+'px')")
-    expect(css).toContain('.job-table-scroll{max-height:calc(100vh - 7rem - var(--selection-bar-h, 0px));overflow-y:auto}')
+    expect(css).toContain('.job-table-scroll{position:relative;max-height:calc(100vh - 7rem - var(--selection-bar-h, 0px));overflow-y:auto}')
+  })
+
+  it('contains the rows\' absolute sr-only text, so nothing stretches the page below the footer (TASK-331)',()=>{
+    expect(css).toMatch(/\.job-table-scroll\{position:relative;/)
   })
 })
