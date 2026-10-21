@@ -161,7 +161,11 @@ def parse_board_ordering(raw):
         exprs.append(_ordering_expr(key, descending))
         if len(exprs) == 3:
             break
-    return (*exprs, '-created_at', 'id') if exprs else DEFAULT_BOARD_ORDERING
+    if not exprs:
+        return DEFAULT_BOARD_ORDERING
+    # TASK-329 (owner 2026-10-21): a column sort applies inside the saved status-order groups
+    # (attention_rank), unless it sorts by status itself.
+    return (*(() if 'status' in seen else ('attention_rank',)), *exprs, '-created_at', 'id')
 
 
 # REACHED_INTERVIEW (models.py, TASK-296) is the funnel's "reached interview" rule.

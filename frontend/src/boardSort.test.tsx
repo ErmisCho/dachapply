@@ -13,7 +13,7 @@ describe('boardSortChoice (TASK-277)',()=>{
   it('shows a header-click ordering as a named custom option, not recommended',()=>{
     const c=boardSortChoice('-fit_score,priority','')
     expect(c.value).toBe('-fit_score,priority')
-    expect(c.options.find(o=>o.value===c.value)?.label).toBe('Sort: custom — Fit score (desc), then Priority')
+    expect(c.options.find(o=>o.value===c.value)?.label).toBe('Sort: custom — status order, then Fit score (desc), then Priority')
   })
   it('shows the saved account sort when no ordering is chosen',()=>{
     const c=boardSortChoice('','status,-fit_score')
@@ -70,8 +70,8 @@ describe('BoardSortSelect render (TASK-277)',()=>{
   const html=(ordering?:string,savedKeys?:string)=>renderToStaticMarkup(<BoardSortSelect ordering={ordering} savedKeys={savedKeys} onChange={()=>{}}/>)
   it('selects the custom option for a header-click ordering restored from localStorage',()=>{
     const h=html('-fit_score,priority')
-    expect(selectedLabel(h)).toBe('Sort: custom — Fit score (desc), then Priority')
-    expect(h).toContain('Sorted by: Fit score (desc), then Priority')
+    expect(selectedLabel(h)).toBe('Sort: custom — status order, then Fit score (desc), then Priority')
+    expect(h).toContain('Sorted by: status order, then Fit score (desc), then Priority')
   })
   it('selects the saved option when only the account sort applies',()=>{
     const h=html('','status,-fit_score')
@@ -81,6 +81,6 @@ describe('BoardSortSelect render (TASK-277)',()=>{
   it('selects recommended and a preset honestly',()=>{
     expect(selectedLabel(html('recommended','status'))).toBe('Sort: recommended')
     expect(selectedLabel(html('-created_at'))).toBe('Sort: newest')
-    expect(html('-created_at')).toContain('Sorted by: Newest (desc)')
+    expect(html('-created_at')).toContain('Sorted by: status order, then Newest (desc)')
   })
 })

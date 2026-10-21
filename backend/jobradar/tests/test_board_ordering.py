@@ -257,7 +257,7 @@ def test_blank_saved_board_sort_yields_the_default_attention_ordering(client, so
 def test_mixing_one_valid_key_with_junk_still_honours_the_valid_one(client, sortable_board):
     r = client.get('/api/jobs/', {'ordering': 'evaluations__job__created_by__last_login,-fit_score'})
     assert r.status_code == 200
-    assert [j['company'] for j in r.data] == ['High', 'Mid', 'Low']
+    assert [j['company'] for j in r.data] == ['Low', 'High', 'Mid']  # TASK-329: Low is the only 'new' job
 
 
 def test_no_ordering_param_yields_the_default_board_ordering(client, sortable_board):
@@ -268,9 +268,20 @@ def test_no_ordering_param_yields_the_default_board_ordering(client, sortable_bo
 
 def test_legacy_single_value_orderings_still_work(client, sortable_board):
     get = lambda ordering: [j['company'] for j in client.get('/api/jobs/', {'ordering': ordering}).data]
-    assert get('-fit_score') == ['High', 'Mid', 'Low']
-    assert get('-created_at') == ['Mid', 'High', 'Low']
-    assert get('feedback_due_date') == ['High', 'Low', 'Mid']  # ascending, nulls last
+    # TASK-329: each sort applies inside the status groups -- Low, the only 'new' job, leads.
+    assert get('-fit_score') == ['Low', 'High', 'Mid']
+    assert get('-created_at') == ['Low', 'Mid', 'High']
+    assert get('feedback_due_date') == ['Low', 'High', 'Mid']  # ascending, nulls last
+
+
+def test_a_column_sort_runs_inside_the_saved_status_order(client, sortable_board):
+    """TASK-329 (owner 2026-10-21: Applied jobs led a Fit score sort although Applied is after New and
+    To apply in the saved order). The saved order decides the groups; the column sorts inside them."""
+    from jobradar.models import UserProfile
+    get = lambda ordering: [j['company'] for j in client.get('/api/jobs/', {'ordering': ordering}).data]
+    UserProfile.objects.update_or_create(user=client.user, defaults={'board_status_order': 'reviewed,new'})
+    assert get('-fit_score') == ['High', 'Mid', 'Low'] and get('fit_score') == ['Mid', 'High', 'Low']
+    assert get('-status,-fit_score')[0] == 'High'  # an explicit Status sort is not regrouped
 
 
 # --- AC3, exhaustively: every whitelisted key maps to its own expression, both directions ------
@@ -305,6 +316,8 @@ def all_keys_board(client):
     ('feedback_due_date', ['B', 'A', 'C'], ['A', 'B', 'C']),
 ])
 def test_every_whitelisted_key_sorts_both_directions(client, all_keys_board, key, ascending_order, descending_order):
+    if key != 'status':  # TASK-329: other keys sort inside a status group, so put all three in one
+        JobLead.objects.filter(pk__in=[job.pk for job in all_keys_board]).update(status='new')
     assert [j['company'] for j in client.get('/api/jobs/', {'ordering': key}).data] == ascending_order
     assert [j['company'] for j in client.get('/api/jobs/', {'ordering': f'-{key}'}).data] == descending_order
 
@@ -392,8 +405,9 @@ def test_recommended_ignores_deadline_and_staleness_within_a_group(client):
 
 def test_explicit_recommended_beats_the_saved_sort_but_an_absent_ordering_still_uses_it(client):
     from jobradar.models import UserProfile
+    # TASK-329: one status group, since every sort now runs inside the status groups.
     new_low = make_job(client, company='new_low', status='new'); _evaluate(new_low, 50, 'low')
-    int_high = make_job(client, company='int_high', status='interview'); _evaluate(int_high, 90, 'high')
-    UserProfile.objects.update_or_create(user=client.user, defaults={'board_sort_keys': '-fit_score,priority'})
-    assert _ids(client) == [int_high.id, new_low.id]                         # saved sort applies
-    assert _ids(client, ordering='recommended') == [new_low.id, int_high.id]  # explicit token wins
+    int_high = make_job(client, company='int_high', status='new'); _evaluate(int_high, 90, 'high')
+    UserProfile.objects.update_or_create(user=client.user, defaults={'board_sort_keys': 'fit_score,priority'})
+    assert _ids(client) == [new_low.id, int_high.id]                         # saved sort applies
+    assert _ids(client, ordering='recommended') == [int_high.id, new_low.id]  # explicit token wins
