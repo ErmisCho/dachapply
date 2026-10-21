@@ -5,6 +5,7 @@ import os
 import time
 import uuid
 import zipfile
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from statistics import median
@@ -276,6 +277,34 @@ def _record_benchmark(task, now):
         pass  # telemetry on the critical path: a benchmark write must never take down a generation
 
 
+def _record_adjustment(task):
+    """TASK-334: one adjustments.jsonl line per Adjust (tasks started with `adjust`), written once
+    when it turns final, so a failed Adjust can be diagnosed after the task and its temp dir are gone."""
+    adjust=task.pop('_adjust',None)
+    workspace=getattr(settings,'CODEX_CV_WORKSPACE','') or ''
+    try:
+        if not adjust or not workspace or not Path(workspace).is_dir():  # never create the workspace itself
+            return
+        report=task.get('report') if isinstance(task.get('report'),dict) else {}
+        row={'time':datetime.now().astimezone().isoformat(timespec='seconds'),**adjust,'status':task.get('status',''),
+             'error':str(task.get('error') or '')[:500],'diagnostics_head':str(task.get('diagnostics') or '')[:2000],
+             'main_changes':report.get('main_changes',[]),'failed_files':task.get('_failed_files',[])}
+        # ponytail: no rotation -- adjustments.jsonl grows until someone prunes it.
+        path=Path(workspace)/'.dachapply-logs'/'adjustments.jsonl'
+        path.parent.mkdir(exist_ok=True)
+        with path.open('a',encoding='utf-8') as handle:
+            handle.write(json.dumps(row,ensure_ascii=False,default=str)+'\n')
+    except Exception:
+        logger.debug('Could not log adjustment %s',task.get('id'),exc_info=True)
+
+
+def _keep_failed_files(task_id, exc):
+    # TASK-334: a literal route's failed compile check is followed by full optimization; keep both.
+    with _lock:
+        if task_id in _tasks:
+            _tasks[task_id].setdefault('_failed_files',[]).extend(getattr(exc,'saved_files',None) or [])
+
+
 def _remaining_runtime(task, now):
     plan=task['_stage_plan']
     stage=task.get('_stage_key')
@@ -443,6 +472,7 @@ def _update(task_id, **values):
         task.update(values, updated_at=time.time())
         if status in ('ready','failed','cancelled'):
             _record_benchmark(task,now)
+            _record_adjustment(task)
 
 
 def _cleanup():
@@ -511,6 +541,7 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
     except GenerationCancelled:
         _update(task_id, status='cancelled', stage='Cancelled', error='')
     except Exception as exc:
+        _keep_failed_files(task_id,exc)
         error=getattr(exc,'public_message',str(exc).splitlines()[0][:500])
         # TASK-317: a usage limit and its reset (ISO, or None) for application_prep's automatic retry.
         reset_at=getattr(exc,'reset_at',None)
@@ -546,6 +577,7 @@ def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, sou
     except GenerationCancelled:
         _update(task_id,status='cancelled',stage='Cancelled',error='')
     except Exception as exc:
+        _keep_failed_files(task_id,exc)
         if fall_back and isinstance(exc,RecoverableGenerationError):
             return f'the edited document failed the compile check: {str(exc).splitlines()[0][:200]}'
         _update(task_id,status='failed',stage='Failed',error=str(exc).splitlines()[0][:500],diagnostics=getattr(exc,'diagnostics',str(exc)))
@@ -581,6 +613,8 @@ def _run_literal(task_id, job_id, user_id, source_cv, source_letter, instruction
         if task_id in _tasks:
             task=_tasks[task_id]
             task.update(_stage_plan=plan,_stage_defaults=defaults,_estimate_key=estimate_key,_estimate_history=_learned_timing(estimate_key)[1])
+            if task.get('_adjust'):
+                task['_adjust']['fallback_reason']=reason  # TASK-334
             # TASK-303: the estimate was the literal route's (the 8.5 s in the failed rows of 2026-10-15);
             # the run now ahead is a full optimization: time already spent plus that route's estimate.
             task['_initial_eta']=time.monotonic()-task['_created_at']+sum(_stage_seconds(task,stage) for stage in plan)
@@ -620,7 +654,7 @@ def no_change_requested(instructions):
     return (instructions or '').strip().partition('.')[0].strip().casefold() == 'no further cv changes required'
 
 
-def start_cv_noop_task(job_id, user_id, artifacts):
+def start_cv_noop_task(job_id, user_id, artifacts, adjust=None):
     _cleanup()
     artifacts={key:path for key,path in artifacts.items() if key in ('cv_tex','cv_pdf','letter_tex','letter_pdf') and Path(path).is_file()}
     if not artifacts:
@@ -635,11 +669,12 @@ def start_cv_noop_task(job_id, user_id, artifacts):
     job_url=JobLead.objects.filter(id=job_id).values_list('url',flat=True).first()
     clipboard_tex=_clipboard_payload(artifacts,job_url)
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'ready','progress':100,'stage':'No changes requested','error':'','archive':archive.getvalue(),'filename':'application.zip','artifacts':artifacts,'report':{'changed_files':[],'main_changes':['Current files retained unchanged.'],'unsupported_requirements_not_claimed':[]},'clipboard_tex':clipboard_tex,'clipboard_tex_parts':_clipboard_parts(artifacts,job_url),'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_created_at':now,'_started_at':now,'_finished_at':now,'_stage_key':'ready','_stage_started_at':now,'_stage_plan':[],'_stage_defaults':{},'_estimate_key':('no-change',),'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'ready','progress':100,'stage':'No changes requested','error':'','archive':archive.getvalue(),'filename':'application.zip','artifacts':artifacts,'report':{'changed_files':[],'main_changes':['Current files retained unchanged.'],'unsupported_requirements_not_claimed':[]},'clipboard_tex':clipboard_tex,'clipboard_tex_parts':_clipboard_parts(artifacts,job_url),'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_created_at':now,'_started_at':now,'_finished_at':now,'_stage_key':'ready','_stage_started_at':now,'_stage_plan':[],'_stage_defaults':{},'_estimate_key':('no-change',),'_stage_times':{},'_adjust':adjust,'updated_at':time.time()}
+        _record_adjustment(_tasks[task_id])  # created final, so it never passes _update
     return task_id
 
 
-def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter=None, source_updates=None, task_report=None, letter_key=''):
+def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter=None, source_updates=None, task_report=None, letter_key='', adjust=None):
     _cleanup()
     renamed=_adopt_letter_label(job_id,user_id,letter_key,source_letter)
     if renamed != source_letter:
@@ -654,13 +689,13 @@ def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter
     compile_letter=source_letter and (not source_updates or str(source_letter) in source_updates or not Path(source_letter).with_suffix('.pdf').is_file())
     plan=(['compiling_cv','cv_compiled'] if compile_cv else [])+(['compiling_letter','letter_compiled'] if compile_letter else [])
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':task_report,'clipboard_tex':'','clipboard_tex_parts':{},'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('compile-only',bool(compile_cv),bool(compile_letter)),'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':task_report,'clipboard_tex':'','clipboard_tex_parts':{},'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('compile-only',bool(compile_cv),bool(compile_letter)),'_stage_times':{},'_adjust':adjust,'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in _tasks[task_id]['_stage_plan'])
     Thread(target=_run_compile,args=(task_id,job_id,user_id,cv_key,source_cv,source_letter,source_updates or {},task_report,cancel_event),name=f'cv-compile-{task_id[:8]}',daemon=True).start()
     return task_id
 
 
-def start_cv_literal_task(job_id, user_id, source_cv, source_letter, instructions, pairs, local_model, fallback):
+def start_cv_literal_task(job_id, user_id, source_cv, source_letter, instructions, pairs, local_model, fallback, adjust=None):
     """TASK-278: a literal readjustment from deterministic `pairs` or, when pairs is None, from
     `local_model`'s translation. `fallback` holds _run's keyword arguments (profile, cv_key, ...,
     revision_instructions) for the full-optimization run that any refusal turns into."""
@@ -673,13 +708,13 @@ def start_cv_literal_task(job_id, user_id, source_cv, source_letter, instruction
     plan=([] if pairs else ['working'])+(['compiling_cv','cv_compiled'] if source_cv else [])+(['compiling_letter','letter_compiled'] if source_letter else [])
     config={key:fallback[key] for key in ('profile','cv_key','letter_key','create_letter','create_cv','provider','model','effort','speed')}
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_tex_parts':{},'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_config':config,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'working':6,'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('literal-edit',bool(pairs),bool(source_cv),bool(source_letter)),'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_tex_parts':{},'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_config':config,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'working':6,'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('literal-edit',bool(pairs),bool(source_cv),bool(source_letter)),'_stage_times':{},'_adjust':adjust,'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in plan)
     Thread(target=_run_literal,args=(task_id,job_id,user_id,source_cv,source_letter,instructions,pairs,local_model,fallback,cancel_event),name=f'cv-literal-{task_id[:8]}',daemon=True).start()
     return task_id
 
 
-def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, auto_clipboard=True, generation_options=None, mark_ready=True, on_finish=None):
+def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, auto_clipboard=True, generation_options=None, mark_ready=True, on_finish=None, adjust=None):
     _cleanup()
     if create_letter:
         source_letter=_adopt_letter_label(job_id,user_id,letter_key,source_letter)
@@ -688,7 +723,7 @@ def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, p
     plan,defaults,estimate_key=_task_timing(provider,model,effort,speed,create_cv,create_letter,bool(source_cv or source_letter or revision_instructions or correction_image))
     cancel_event=Event()
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_tex_parts':{},'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_config':{'profile':profile,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'create_cv':create_cv,'provider':provider,'model':model,'effort':effort,'speed':speed,'generation_options':generation_options},'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'_stage_times':{},'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_tex_parts':{},'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_config':{'profile':profile,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'create_cv':create_cv,'provider':provider,'model':model,'effort':effort,'speed':speed,'generation_options':generation_options},'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':defaults,'_estimate_key':estimate_key,'_stage_times':{},'_adjust':adjust,'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in plan)
         _tasks[task_id]['_estimate_history']=_learned_timing(estimate_key)[1]
     # ponytail: one local CLI agent per task; add a concurrency cap if large batches exhaust the workstation.
