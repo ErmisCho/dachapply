@@ -330,7 +330,11 @@ describe('describeOrdering (TASK-111 small-screen sort readout)',()=>{
   })
 
   it('falls back to the raw key for anything unmapped rather than dropping it silently',()=>{
-    expect(describeOrdering('made_up_key')).toBe('Sorted by: made_up_key')
+    expect(describeOrdering('made_up_key')).toBe('Sorted by: status order, then made_up_key')
+  })
+
+  it('names the status order first for a sort without Status (TASK-329)',()=>{
+    expect(describeOrdering('-fit_score,priority')).toBe('Sorted by: status order, then Fit score (desc), then Priority')
   })
 })
 

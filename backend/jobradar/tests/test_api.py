@@ -4091,6 +4091,7 @@ def sortable_board(client):
 
 
 def test_board_ordering_by_fit_score_puts_the_best_match_first(client, sortable_board):
+    JobLead.objects.filter(company='Low').update(status='reviewed')  # TASK-329: one status group, so only the column decides
     r=client.get('/api/jobs/?ordering=-fit_score')
     assert r.status_code==200
     assert [j['company'] for j in r.data]==['High', 'Mid', 'Low']  # 90, 70, 40
@@ -4098,6 +4099,7 @@ def test_board_ordering_by_fit_score_puts_the_best_match_first(client, sortable_
 
 
 def test_board_ordering_by_created_at_puts_the_newest_first(client, sortable_board):
+    JobLead.objects.filter(company='Low').update(status='reviewed')  # TASK-329: one status group, so only the column decides
     r=client.get('/api/jobs/?ordering=-created_at')
     assert r.status_code==200
     # Mid is 1 day old, High 2, Low 3 -- and this is deliberately not the fit-score order.
@@ -4106,6 +4108,7 @@ def test_board_ordering_by_created_at_puts_the_newest_first(client, sortable_boa
 
 
 def test_board_ordering_by_feedback_due_date_is_ascending_with_nulls_last(client, sortable_board):
+    JobLead.objects.filter(company='Low').update(status='reviewed')  # TASK-329: one status group, so only the column decides
     r=client.get('/api/jobs/?ordering=feedback_due_date')
     assert r.status_code==200
     # Soonest feedback first; the job with no feedback date sinks to the bottom rather than

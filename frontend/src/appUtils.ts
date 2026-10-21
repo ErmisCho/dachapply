@@ -618,7 +618,9 @@ export function describeOrdering(ordering?:string|null):string{return 'Sorted by
 function orderingLabel(ordering?:string|null):string{
   const keys=String(ordering||'').split(',').map(s=>s.trim()).filter(Boolean)
   if(!keys.length||ordering===RECOMMENDED_ORDERING)return 'recommended'
-  return keys.map(k=>{const desc=k.startsWith('-');const key=desc?k.slice(1):k;return (orderingKeyLabels[key]||key)+(desc?' (desc)':'')}).join(', then ')
+  const columns=keys.map(k=>{const desc=k.startsWith('-');const key=desc?k.slice(1):k;return (orderingKeyLabels[key]||key)+(desc?' (desc)':'')})
+  // TASK-329: a sort without Status runs inside the saved status-order groups (views.parse_board_ordering).
+  return (keys.some(k=>k.replace(/^-/,'')==='status')?columns:['status order',...columns]).join(', then ')
 }
 // TASK-277. 'recommended' is an explicit wire token: the server always answers it with the default
 // order (status group, fit, priority, newest), even when the account has saved board_sort_keys. An

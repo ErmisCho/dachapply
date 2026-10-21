@@ -234,7 +234,8 @@ def test_local_runtime_deactivation_rejects_the_next_request(local_runtime, owne
 def test_local_runtime_board_uses_profile_edits_on_the_next_request(local_runtime, owner_client):
     url = '/api/jobs/?status=new,reviewed,to_apply,applied,interview&board=1'  # no ?ordering=: the saved one applies
     before = [row['id'] for row in json.loads(owner_client.get(url).content)]
-    response = owner_client.patch('/api/profile/', {'board_sort_keys': '-fit_score'}, content_type='application/json')
+    # TASK-329: ascending, so it still differs from the status-grouped default.
+    response = owner_client.patch('/api/profile/', {'board_sort_keys': 'fit_score'}, content_type='application/json')
     assert response.status_code == 200, response.content
     by_score = [row['id'] for row in json.loads(owner_client.get(url).content)]
     assert by_score != before
