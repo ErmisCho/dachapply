@@ -1483,6 +1483,19 @@ def _pdf_pages(pdf):
     return int(match.group(1))
 
 
+def latex_error(log, returncode):
+    """TASK-332: (reason, block) for a failed pdflatex run. The log tail alone opened on package-loading
+    noise with the '!' error at the bottom; the block runs from the first '!' line to its 'l.<n>' line."""
+    lines=log.splitlines()
+    start=next((i for i, line in enumerate(lines) if line.startswith('!')), None)
+    if start is None:
+        return f'pdflatex stopped without an error message (exit code {returncode})', f'pdflatex exit code {returncode}; no "!" error line in the log.'
+    end=next((i for i in range(start, min(start+12, len(lines))) if re.match(r'l\.\d+', lines[i])), min(start+5, len(lines)-1))
+    message=lines[start].lstrip('! ').rstrip('.')
+    line=re.match(r'l\.(\d+)', lines[end])
+    return (f'{message} (line {line[1]})' if line else message), '\n'.join(lines[start:end+1])
+
+
 def _compile_pdf(output, filename, is_cv, cancelled=None):
     pdflatex=shutil.which('pdflatex')
     if not pdflatex:
@@ -1500,8 +1513,9 @@ def _compile_pdf(output, filename, is_cv, cancelled=None):
             )
             if result.returncode:
                 log=output/Path(filename).with_suffix('.log')
-                detail=log.read_text(encoding='utf-8', errors='replace')[-6000:] if log.is_file() else (result.stdout or result.stderr or '')[-6000:]
-                raise RecoverableGenerationError(f'LaTeX could not compile the {"CV" if is_cv else "motivation letter"}.', detail)
+                text=log.read_text(encoding='utf-8', errors='replace') if log.is_file() else (result.stdout or result.stderr or '')
+                reason, block=latex_error(text, result.returncode)
+                raise RecoverableGenerationError(f'LaTeX could not compile the {"CV" if is_cv else "motivation letter"}: {reason}.', f'{block}\n\n{text[-6000:]}')
     finally:
         _LATEX_LOCK.release()
     pages=_pdf_pages(output/Path(filename).with_suffix('.pdf'))

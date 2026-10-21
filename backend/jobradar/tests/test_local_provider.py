@@ -201,7 +201,7 @@ def test_invalid_initial_output_keeps_full_context_then_compile_failure_uses_com
     assert large_facts in prompts[0] and large_facts in prompts[1]
     assert 'The selected model returned invalid application documents.' in prompts[1]
     assert large_facts not in prompts[2] and 'CANDIDATE FACTS AND RULES:' not in prompts[2]
-    assert 'LaTeX could not compile the CV.' in prompts[2]
+    assert 'LaTeX could not compile the CV:' in prompts[2]  # TASK-332: the summary now names the error
     assert 'Undefined control sequence on line 42' in prompts[2] and failed_tex in prompts[2]
 
 
