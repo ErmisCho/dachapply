@@ -974,7 +974,10 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         if existing and action=='duplicate':
             ser.validated_data['title']=duplicate_title(ser.validated_data.get('title') or 'Untitled role', accessible_jobs(request.user))
         if existing and action=='skip': return Response(JobLeadSerializer(existing).data)
-        obj=ser.save(**job_create_defaults(request.user)); return Response(JobLeadSerializer(obj).data, status=201)
+        obj=ser.save(**job_create_defaults(request.user))
+        from .services.application_prep import start_pipeline  # TASK-324: link -> analysis -> documents, off the request
+        transaction.on_commit(lambda: start_pipeline(obj.pk, request.user), robust=True)
+        return Response(JobLeadSerializer(obj).data, status=201)
     def perform_create(self, serializer): serializer.save(**job_create_defaults(self.request.user))
     @action(detail=True, methods=['patch'], url_path='source-text')
     def source_text(self, request, pk=None):
@@ -1994,6 +1997,8 @@ def bulk_create_jobs(request):
             updated.append(JobLeadSerializer(existing).data); continue
         if existing and action=='duplicate': data['title']=duplicate_title(data.get('title') or 'Untitled role', owned_qs)
         ser=JobLeadSerializer(data=data, context={'request': request}); ser.is_valid(raise_exception=True); obj=ser.save(**job_create_defaults(request.user)); created.append(JobLeadSerializer(obj).data)
+        from .services.application_prep import start_pipeline  # TASK-324, as the single add
+        transaction.on_commit(lambda job_id=obj.pk: start_pipeline(job_id, request.user), robust=True)
     if remaining:
         return Response({'ok':False,'type':'duplicate_conflicts','message':'One or more job links still need a duplicate choice.','conflicts':remaining,'created':created,'updated':updated,'skipped':skipped}, status=400)
     return Response({'ok':True,'count':len(created)+len(updated),'created':created,'updated':updated,'skipped':skipped}, status=201)

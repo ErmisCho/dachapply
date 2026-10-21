@@ -224,3 +224,28 @@ describe('Queue navbar link',()=>{
     expect(nav({username:'owner',can_generate_cv:true})).toMatch(/href="\/queue"[^>]*>Queue <span[^>]*>1<\/span>/)
   })
 })
+
+// TASK-325: the automatic pipeline's steps (TASK-324), one row per job with key '' and no document.
+describe('pipeline steps (TASK-325)',()=>{
+  const step=(extra:Partial<QueueItem>)=>item({job_id:40,company:'Kappa',title:'Platform Engineer',key:'',document:null,language:null,position:null,queued_at:null,...extra})
+  it('lists fetching and analysing under Running without a progress bar, and a skip under Done with its fit score',()=>{
+    const data=fixture();data.items.unshift(step({label:'Fetching posting',status:'running',started_at:'2026-10-21T08:00:00Z'}),step({job_id:41,label:'Analysing fit',status:'running'}))
+    data.items.push(step({job_id:42,label:'Not applying',status:'skipped',error:'Skip · fit 44',finished_at:'2026-10-21T08:05:00Z'}))
+    const html=view({data})
+    const running=section(html,'Running')
+    expect(running).toMatch(/Fetching posting.*Kappa — Platform Engineer/)
+    expect(running).toContain('Analysing fit')
+    expect(running.match(/<progress/g)?.length).toBe(1)   // only the German CV's
+    const done=section(html,'Done')
+    expect(done).toMatch(/Not applying.*href="\/jobs\/42"[^>]*>Review<.*Skip · fit 44.*Finished /)
+    for(const title of ['Queued','Blocked','Failed / cancelled'])expect(section(html,title)).not.toContain('Kappa')
+  })
+  it('shows a daily-limit hold as Blocked with Retry, posting an empty key',async()=>{
+    const held=step({label:'Documents',status:'blocked',error:'Daily limit of 50 automatic runs reached. Press Retry to run it now, or raise the limit on the Profile page.'})
+    const listed=section(view({data:{concurrency:2,items:[held]}}),'Blocked')
+    expect(listed).toContain('Daily limit of 50 automatic runs reached.')
+    expect(listed.match(/>Retry</g)?.length).toBe(1)
+    await queueAction(held,'retry')
+    expect(calls).toEqual([{method:'POST',url:'/api/jobs/application-prep/queue/action/',body:{job_id:40,key:'',action:'retry'}}])
+  })
+})
