@@ -21,7 +21,7 @@ from jobradar.tests.test_link_only_prep import LINK, THIN, _blocked, _link_only,
 @pytest.fixture
 def model(monkeypatch):
     """The evaluator's model: state['answers'] is popped per run -- a recommendation, or an exception."""
-    monkeypatch.setattr(application_prep, '_reanalysing', set())
+    monkeypatch.setattr(application_prep, '_piping', set())
     state = {'answers': [], 'calls': []}
 
     def run(prompt, schema, provider, model, effort, speed, **kwargs):
@@ -65,7 +65,11 @@ def test_task319_a_skip_reanalysis_queues_nothing_and_clears_the_block(owner, cl
     job = _blind(owner, model)
     model['answers'] = ['skip']
     _retry(client, job, django_capture_on_commit_callbacks)
-    assert len(model['calls']) == 1 and tasks['started'] == [] and _items(client) == []
+    # TASK-340: the re-analysis now runs through the pipeline, so the block is cleared and the skip is
+    # listed under Done as 'Not applying' like any pipeline skip -- nothing blocked, nothing queued.
+    items = _items(client)
+    assert len(model['calls']) == 1 and tasks['started'] == []
+    assert [(item['status'], item['label']) for item in items] == [('skipped', 'Not applying')]
 
 
 def test_task319_setting_off_prepares_at_once_from_the_earlier_analysis(owner, client, tasks, fetch, model, settings, django_capture_on_commit_callbacks):

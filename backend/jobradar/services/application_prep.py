@@ -86,7 +86,6 @@ ANALYSIS_SECONDS = {'fit': 120, 'requirements': 60}
 # because a task's on_finish can run in the thread that started it (a task that fails at once, tests).
 _lock = RLock()
 _analysing = set()  # TASK-308: job ids whose requirements analysis is running; guarded by _lock
-_reanalysing = set()  # TASK-319: job ids whose late-text re-analysis is running; guarded by _lock
 _piping = set()  # TASK-324: job ids whose pipeline thread is waiting or running; guarded by _lock
 # ponytail: one pipeline run at a time across all accounts (the rest wait on this lock, in no strict order),
 # so a bulk add of 20 links never starts 20 model processes; a worker pool if 50 a day get too slow.
@@ -418,42 +417,10 @@ def reanalyse_late_text(job, user):
     choice=UserProfile.objects.filter(user=user).values_list('reanalyse_late_text', flat=True).first()  # TASK-321
     if not (settings.REANALYSE_LATE_TEXT if choice is None else choice) or not is_cv_owner(user) or not JobEvaluation.objects.filter(job_id=job.id).exists():
         return False
-    with _lock:
-        if job.id in _reanalysing:
-            return True  # already running for this text; a second model run would only repeat it
-        _reanalysing.add(job.id)
-    Thread(target=_reanalyse, args=(job.id, user.pk), name='dachapply-reanalyse', daemon=True).start()
-    return True
-
-
-def _reanalyse(job_id, user_id):
-    """TASK-319 worker, with the model the automatic paths use (cv_default_choice, as _analyse). A failure
-    becomes the blocked reason the Queue retries; a usage limit is retried after its reset (TASK-317)."""
-    close_old_connections()
-    try:
-        job = JobLead.objects.filter(pk=job_id).first()
-        user = get_user_model().objects.filter(pk=user_id).first()
-        if not job or not user:
-            return
-        option, effort = cv_default_choice(available_model_options())
-        result = (job_evaluator.evaluate_jobs([job.id], user, option['provider'], option['key'], effort, 'normal', commit=True) if option
-                  else {'ok': False, 'errors': ['No document model is available on this machine']})
-        with _lock:
-            if not result['ok']:
-                error = '; '.join(result['errors'])[:300].rstrip('.')
-                _save(job, user_id, lambda prep: prep.update(reason=f'{REANALYSIS_FAILED}: {error}. Press Retry.',
-                                                             retry_at=_retry_at(result.get('usage_limit'), result.get('reset_at'), prep)))
-            elif result['preview'][0]['recommendation'] == 'skip':
-                prep = _state(job, user)
-                if prep.get('reason') and not prep.get('variants'):
-                    # Nothing is prepared for a skip, so the reason the job was blocked for no longer stands.
-                    _save(job, user_id, lambda prep: prep.update(reason='', retry_at=None))
-    except Exception:
-        logger.exception('Re-analysing job %s after its posting was fetched failed', job_id)
-    finally:
-        with _lock:
-            _reanalysing.discard(job_id)
-        close_old_connections()
+    # TASK-340 (measured 2026-10-22, job 1533): this ran in its own thread, so the Queue never showed it, the
+    # navbar estimate never counted it, and a success left 'Re-analysis failed ... Press Retry' standing. The
+    # pipeline shows the stages, clears the reason when it starts, and applies the TASK-338 document rule.
+    return start_pipeline(job.id, user, force=True, reanalyse=CHANGED)
 
 
 def start_pipeline(job_id, user, force=False, reanalyse=''):
@@ -1173,7 +1140,7 @@ def queue_action(user, job_id, key, action):
         # again first; the re-analysis prepares, not this.
         before = job.source_text
         fetch_missing_sources([job])
-        late = job.source_text != before or prep['reason'].startswith(REANALYSIS_FAILED) or job.id in _reanalysing
+        late = job.source_text != before or prep['reason'].startswith(REANALYSIS_FAILED) or job.id in _piping
         if not (late and reanalyse_late_text(job, user)):
             prepare(job.id, user)
         return queue_state(user)
