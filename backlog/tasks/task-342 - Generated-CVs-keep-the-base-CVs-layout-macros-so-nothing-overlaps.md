@@ -1,9 +1,10 @@
 ---
 id: TASK-342
 title: Generated CVs keep the base CV's layout macros so nothing overlaps
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 14:15'
+updated_date: '2026-10-22 14:26'
 labels:
   - backend
 dependencies: []
@@ -19,8 +20,14 @@ Found 2026-10-22 while verifying TASK-327 on a fresh Comprehentia CV (job 1895):
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A full generation (not an Adjust) replaces every layout macro the base CV defines (\newcommand{\resume...} definitions) with the base definition when the model changed it
-- [ ] #2 Adjust/revision runs keep the owner's own macro edits (e.g. \resumeItem -> \normalsize)
-- [ ] #3 Regenerated Comprehentia CV: no overlap between project headings and bullets (rendered and inspected), 2 pages
-- [ ] #4 Tests cover macro restore with nested braces and the revision exemption
+- [x] #1 A full generation (not an Adjust) replaces every layout macro the base CV defines (\newcommand{\resume...} definitions) with the base definition when the model changed it
+- [x] #2 Adjust/revision runs keep the owner's own macro edits (e.g. \resumeItem -> \normalsize)
+- [x] #3 Regenerated Comprehentia CV: no overlap between project headings and bullets (rendered and inspected), 2 pages
+- [x] #4 Tests cover macro restore with nested braces and the revision exemption
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Merged #351. Live: restore applied to the real Comprehentia CV via an exact OLD/NEW Adjust (no AI, logged): \resumeSubHeadingListStart and \resumeItemListStart back to base; compiles to 2 pages; project headings no longer overlap their first bullet (rendered at 130 dpi).
+<!-- SECTION:NOTES:END -->
