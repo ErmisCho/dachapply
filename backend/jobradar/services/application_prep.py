@@ -73,6 +73,9 @@ PIPELINE_RUNNING = {'queued': 'Waiting to analyse', 'fetching': 'Fetching postin
                     'requirements': 'Analysing requirements'}  # 'requirements' is derived in queue_state, never stored
 PIPELINE_INTERRUPTED = 'Analysis stopped before it finished (the server restarted). Press Retry.'
 DAILY_LIMIT = 'Daily limit of {} automatic runs reached. Press Retry to run it now, or raise the limit on the Profile page.'
+CHANGED = 'Posting changed since these documents were made'  # TASK-336: the note documents the owner reviewed keep
+REANALYSED = 'Analysed again since these documents were made'  # TASK-337: the same note when only time passed
+PRIORITY_ORDER = {'high': 0, 'medium': 1, 'low': 2}
 
 # ponytail: one process serves generation (threaded runserver); a DB claim if that changes. Re-entrant
 # because a task's on_finish can run in the thread that started it (a task that fails at once, tests).
@@ -275,9 +278,10 @@ def _finish(job_id, user_id, key, task_id):
             _pump()
 
 
-def prepare(job_id, user, retry=False):
+def prepare(job_id, user, retry=False, inline=False):
     """Queue preparation for a New, Reviewed or To-apply job, or with retry, re-queue only its failed
     (or cancelled) variants. TASK-312: variants join the back of the shared queue rather than starting.
+    `inline` (TASK-335's daily batch) analyses missing requirements in the calling thread, not a new one.
 
     Returns the public state, or None when this account/server cannot generate at all. Concurrency
     safe: a second call (a double transition) finds the variants already recorded and starts nothing.
@@ -333,7 +337,10 @@ def prepare(job_id, user, retry=False):
             _queue.extend((job.id, user.pk, variant['key']) for variant in variants)
             _pump()
     if analyse:
-        Thread(target=_analyse_then_prepare, args=(job.id, user.pk, retry), daemon=True).start()
+        if inline:
+            _analyse_then_prepare(job.id, user.pk, retry)
+        else:
+            Thread(target=_analyse_then_prepare, args=(job.id, user.pk, retry), daemon=True).start()
     return public_state(job, user)
 
 
@@ -442,14 +449,16 @@ def _reanalyse(job_id, user_id):
         close_old_connections()
 
 
-def start_pipeline(job_id, user, force=False):
+def start_pipeline(job_id, user, force=False, reanalyse=''):
     """TASK-324: a job added with a link is fetched, checked and analysed off the request thread with the
     automatic paths' model, and the evaluation is saved at once (a new job has nothing to overwrite); an
     apply/maybe result then queues documents through json_importer.create_evaluation's TASK-312 hook.
     Only for an account that can generate and a job with no evaluation. `force` (the Queue's Retry) runs
-    past the daily limit. True when a run was started or is already under way."""
+    past the daily limit. True when a run was started or is already under way.
+    TASK-336/337: `reanalyse` (the note documents the owner reviewed get) analyses a job that has an
+    evaluation again, committed; _after_reanalysis then decides what happens to its documents."""
     job = JobLead.objects.filter(pk=job_id).first()
-    if not job or not job.url or not is_cv_owner(user) or JobEvaluation.objects.filter(job_id=job_id).exists():
+    if not job or not is_cv_owner(user) or not reanalyse and (not job.url or JobEvaluation.objects.filter(job_id=job_id).exists()):
         return False
     if not force:
         limit = user_profile_settings(user).auto_pipeline_daily_limit
@@ -466,11 +475,11 @@ def start_pipeline(job_id, user, force=False):
             return True
         _piping.add(job_id)
         _save(job, user.pk, lambda prep: prep.update(pipeline={'stage': 'queued', 'at': _now()}, reason='', retry_at=None))
-    Thread(target=_pipeline, args=(job_id, user.pk), name='dachapply-pipeline', daemon=True).start()
+    Thread(target=_pipeline, args=(job_id, user.pk, reanalyse), name='dachapply-pipeline', daemon=True).start()
     return True
 
 
-def _pipeline(job_id, user_id):
+def _pipeline(job_id, user_id, reanalyse=''):
     """TASK-324 worker, one run at a time (_pipeline_lock), modelled on _reanalyse: fetch, then the fit
     analysis committed (it reads whatever posting exists; _gate then holds an incomplete one as today).
     Each stage is recorded in prep['pipeline'] for the Queue (TASK-325); a failure becomes the blocked
@@ -485,9 +494,10 @@ def _pipeline(job_id, user_id):
 
             def stage(name, **extra):
                 _save(job, user_id, lambda prep: prep.update(pipeline={'stage': name, 'at': _now(), **extra}))
-            if JobEvaluation.objects.filter(job_id=job_id).exists():
+            if not reanalyse and JobEvaluation.objects.filter(job_id=job_id).exists():
                 _save(job, user_id, lambda prep: prep.pop('pipeline', None))  # analysed by hand while it waited
                 return
+            before = _outcome(job)  # TASK-338: what a re-analysis is compared with
             try:
                 stage('fetching')
                 fetch_missing_sources([job])
@@ -501,18 +511,184 @@ def _pipeline(job_id, user_id):
             with _lock:
                 if not result['ok']:
                     error = '; '.join(result['errors'])[:300].rstrip('.')
-                    _save(job, user_id, lambda prep: prep.update(pipeline={'stage': 'failed', 'at': _now(), 'error': error}, reason=f'Analysis failed: {error}. Press Retry.',
+                    # A failed re-analysis says so, so the Queue's Retry analyses it again (TASK-319's path).
+                    failed = REANALYSIS_FAILED if reanalyse else 'Analysis failed'
+                    _save(job, user_id, lambda prep: prep.update(pipeline={'stage': 'failed', 'at': _now(), 'error': error}, reason=f'{failed}: {error}. Press Retry.',
                                                                  retry_at=_retry_at(result.get('usage_limit'), result.get('reset_at'), prep)))
                 elif result['preview'][0]['recommendation'] == 'skip':
                     stage('skipped', recommendation='skip', fit_score=result['preview'][0]['fit_score'])
                 else:
                     stage('analysed')  # the documents (or their hold) take over; queue_state lists their requirements analysis
+            if reanalyse and result['ok']:
+                _after_reanalysis(job, user, result['preview'][0]['recommendation'] == 'skip', reanalyse, before)
     except Exception:
         logger.exception('The automatic pipeline for job %s failed', job_id)
     finally:
         with _lock:
             _piping.discard(job_id)
         close_old_connections()
+
+
+def _outcome(job):
+    """TASK-338: what a re-analysis may change -- the latest recommendation and the requirements' documents."""
+    job.refresh_from_db(fields=['application_requirements'])
+    return (JobEvaluation.objects.filter(job_id=job.id).order_by('-created_at', '-id').values_list('recommendation', flat=True).first(),
+            (job.application_requirements or {}).get('documents') or [])
+
+
+def _unreviewed(prep):
+    return [key for key, variant in (prep.get('variants') or {}).items() if not variant.get('review') and variant.get('status') in ('ready', 'failed', 'cancelled')]
+
+
+def _after_reanalysis(job, user, skip, note, before):
+    """TASK-336/337: what a re-analysis does to the job's documents -- TASK-338: only when something changed,
+    the posting (note CHANGED), the recommendation or the requirements' documents; a stale re-check with the
+    same outcome leaves documents alone and adds no note. 'Reviewed' is any review mark (keep or discard; a
+    selected package is kept, so Ready to submit counts too). A skip stops the documents still queued or
+    running and keeps every file. Otherwise kept variants, or files the owner generated, stay with `note`,
+    and the unreviewed finished variants are redone (_redo) within today's prepare budget; over it the job
+    is marked redo_pending and run_daily redoes it first. Variants still queued or running are left alone.
+    ponytail: a running one keeps the text it started from; Retry it by hand if that matters."""
+    if note != CHANGED and _outcome(job) == before:
+        return
+    prep = _state(job, user)
+    variants = prep.get('variants') or {}
+    if skip:
+        for key, variant in variants.items():
+            if variant.get('status') in ('queued', 'running'):
+                try:
+                    queue_action(user, job.id, key, 'cancel')
+                except ValueError:
+                    pass  # finished or interrupted meanwhile
+        return
+    if any(variant.get('review') == 'keep' for variant in variants.values()) or (not variants and any(latest_generated_sources(job, user))):
+        _save(job, user.pk, lambda prep: prep.update(outdated=note))
+    if _unreviewed(prep):
+        preps = {other.id: _state(other, user) for other in accessible_jobs(user).only('id')}
+        if _left(user_profile_settings(user).daily_prepare_limit, preps, 'auto_prepared_on') == 0:
+            _save(job, user.pk, lambda prep: prep.update(redo_pending=True))
+        else:
+            _redo(job, user)
+
+
+def _redo(job, user):
+    """TASK-336/338: queue each unreviewed finished variant again from the latest analysis (its old files
+    stay on disk, the new ones are written beside them), stamped against today's prepare budget. The
+    number redone."""
+    redo, queued_at = [], _now()
+
+    def change(prep):
+        prep.pop('redo_pending', None)
+        redo[:] = _unreviewed(prep)  # read again under the sidecar lock: the owner may have reviewed meanwhile
+        if redo:
+            prep['auto_prepared_on'] = timezone.localdate().isoformat()
+        for key in redo:
+            prep['variants'][key].update(status='queued', task_id='', error='', files={}, retry_at=None,
+                                         queued_at=queued_at, started_at=None, finished_at=None)
+    with _lock:
+        _save(job, user.pk, change)
+        _queue.extend((job.id, user.pk, key) for key in redo)
+        _pump()
+    return len(redo)
+
+
+def _left(limit, preps, key):
+    """What is left of today's `limit` (None = Unlimited) after the runs the sidecars stamp with today."""
+    today = timezone.localdate().isoformat()
+    return None if limit is None else max(0, limit - sum(prep.get(key) == today for prep in preps.values()))
+
+
+def _counted_run(job, user, note):
+    """One analysis that counts against today's analysis budget (TASK-335/336/337)."""
+    def stamp(prep):
+        prep['auto_analysed_on'] = timezone.localdate().isoformat()
+        prep.pop('posting_changed', None)
+    _save(job, user.pk, stamp)
+    start_pipeline(job.id, user, force=True, reanalyse=note)
+
+
+def reanalyse_changed(job, user):
+    """TASK-336: the automatic refresh accepted new text for an open, analysed job -- analyse it again
+    through the pipeline, within today's analysis budget (TASK-338: also the owner's Use fetched). Over the
+    budget the job is marked, and run_daily takes it first once there is budget again. True only when a
+    re-analysis was started, so a caller that would prepare otherwise still does."""
+    if job.status not in JobLead.UNAPPLIED_STATUSES or not is_cv_owner(user) or not JobEvaluation.objects.filter(job_id=job.id).exists():
+        return False
+    preps = {other.id: _state(other, user) for other in accessible_jobs(user).only('id')}
+    if _left(user_profile_settings(user).daily_analyse_limit, preps, 'auto_analysed_on') == 0:
+        _save(job, user.pk, lambda prep: prep.update(posting_changed=True))
+        return False
+    _counted_run(job, user, CHANGED)
+    return True
+
+
+def run_daily(user):
+    """TASK-335/336/337: spend what is left of today's budgets. Analyses (daily_analyse_limit): first jobs
+    whose changed posting waited for budget, then waiting jobs (New/Reviewed/To apply, a link, no
+    evaluation) newest first, then open jobs whose latest evaluation is older than reanalyse_after_days,
+    oldest first. Documents (daily_prepare_limit): first jobs whose redo waited for budget (TASK-338), then
+    New/Reviewed/To apply jobs whose latest evaluation is apply/maybe and that have nothing prepared,
+    queued, refused or generated by the owner, highest fit then priority first. Each job is tried at most
+    once a day.
+
+    'Today' survives a restart without a column: every run stamps the job's sidecar (auto_analysed_on,
+    auto_prepared_on), and a budget is its limit minus today's stamps across the account's jobs.
+    ponytail: one sidecar read per job of the account per call (the local loop, every few minutes); a
+    counter column if an account grows into thousands of jobs."""
+    profile, today = user_profile_settings(user), timezone.localdate().isoformat()
+    jobs = list(accessible_jobs(user).defer('raw_description', 'original_source_text', 'pending_source_text'))  # the workers re-read a job
+    latest = {row['job_id']: row for row in JobEvaluation.objects.filter(job__in=jobs).order_by('created_at', 'id')
+              .values('job_id', 'recommendation', 'fit_score', 'priority', 'created_at')}
+    preps = {job.id: _state(job, user) for job in jobs}
+    fresh = [job for job in jobs if job.status in JobLead.UNAPPLIED_STATUSES and job.id not in _piping]
+    changed = [job for job in fresh if preps[job.id].get('posting_changed') and job.id in latest]
+    waiting = sorted((job for job in fresh if job.status in PREPARE_STATUSES and job.url and job.id not in latest),
+                     key=lambda job: job.created_at, reverse=True)
+    days = profile.reanalyse_after_days
+    cutoff = timezone.now() - timedelta(days=days)
+    stale = sorted((job for job in fresh if days and job.id in latest and latest[job.id]['created_at'] < cutoff
+                    and not preps[job.id].get('posting_changed')), key=lambda job: latest[job.id]['created_at'])
+    runs = [(job, note) for group, note in ((changed, CHANGED), (waiting, ''), (stale, REANALYSED))
+            for job in group if preps[job.id].get('auto_analysed_on') != today]
+    runs = runs[:_left(profile.daily_analyse_limit, preps, 'auto_analysed_on')]
+    for job, note in runs:
+        _counted_run(job, user, note)
+    started = {job.id for job, _ in runs}  # their re-analysis decides about their documents
+    documents = sorted((job for job in fresh if job.status in PREPARE_STATUSES and job.id not in started
+                        and (latest.get(job.id) or {}).get('recommendation') in ('apply', 'maybe')
+                        and not preps[job.id].get('variants') and not preps[job.id].get('reason')
+                        and preps[job.id].get('auto_prepared_on') != today and not any(latest_generated_sources(job, user))),
+                       key=lambda job: (-latest[job.id]['fit_score'], PRIORITY_ORDER.get(latest[job.id]['priority'], 3)))
+    left = _left(profile.daily_prepare_limit, preps, 'auto_prepared_on')
+    for job in [job for job in fresh if preps[job.id].get('redo_pending') and job.id not in started][:left]:
+        if _redo(job, user) and left is not None:
+            left -= 1
+    documents = documents[:left]
+    for job in documents:
+        _save(job, user.pk, lambda prep: prep.update(auto_prepared_on=today))
+    if documents:
+        Thread(target=_prepare_batch, args=([job.id for job in documents], user.pk), name='dachapply-daily-prepare', daemon=True).start()
+
+
+def _prepare_batch(job_ids, user_id):
+    """TASK-335: one job at a time under _pipeline_lock, so the batch's requirements analyses never run
+    beside each other or beside a pipeline analysis."""
+    close_old_connections()
+    try:
+        user = get_user_model().objects.filter(pk=user_id).first()
+        for job_id in job_ids:
+            with _pipeline_lock:
+                prepare(job_id, user, inline=True)
+    except Exception:
+        logger.exception('The daily document preparation failed')
+    finally:
+        close_old_connections()
+
+
+def daily_tick():
+    """TASK-335..337: services.mailbox_loop's hook, so the daily budgets are spent only while the local app runs."""
+    for user in _owners():
+        run_daily(user)
 
 
 def public_state(job, user, reason_override=None):
@@ -551,7 +727,8 @@ def public_state(job, user, reason_override=None):
     order = {'cv': 0, 'letter': 1, 'message': 2}
     variants.sort(key=lambda variant: (order.get(variant['document'], 3), variant['language']))
     return {'reason': reason_override if reason_override is not None else state.get('reason', ''), 'rule': LETTER_RULE,
-            'model': state.get('model') or {}, 'variants': variants, 'selection': selected, 'invalidated': state.get('invalidated', '')}
+            'model': state.get('model') or {}, 'variants': variants, 'selection': selected, 'invalidated': state.get('invalidated', ''),
+            'outdated': state.get('outdated', '')}  # TASK-336/337
 
 
 # --- TASK-280.3: review, final package, independent adjustment, export ----------------------------
@@ -651,6 +828,8 @@ def review(job, user, action, key='', keys=None):
 
     def change(prep):  # validated under the sidecar lock, so a check and its write cannot interleave
         variants = prep.get('variants') or {}
+        if action in ('keep', 'select'):
+            prep.pop('outdated', None)  # TASK-336: the owner approved documents again after the change
         if action == 'select':
             _check_package(job, variants, keys)
             for chosen in keys:
@@ -849,7 +1028,8 @@ def queue_state(user):
         pipeline = prep.get('pipeline') or {}
         # An analysed job stays listed while the TASK-312 hook analyses its application requirements (TASK-308).
         stage = 'requirements' if pipeline.get('stage') == 'analysed' and prep.get('reason') == ANALYSING else pipeline.get('stage')
-        if (stage in PIPELINE_RUNNING or stage == 'skipped') and not prep.get('variants'):
+        # TASK-336/337: a re-analysis under way also shows beside the job's documents.
+        if (stage in PIPELINE_RUNNING or stage == 'skipped') and (not prep.get('variants') or stage in PIPELINE_RUNNING and job.id in _piping):
             # TASK-325: the automatic pipeline's step -- running, or finished as a skip; limit and failed are
             # blocked above through prep['reason']. Variants replace it (the documents' own rows).
             done = stage == 'skipped'

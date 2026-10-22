@@ -1,6 +1,7 @@
 from datetime import time
 
 from django.conf import settings
+from django.core.validators import MaxValueValidator
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
@@ -166,6 +167,14 @@ class UserProfile(models.Model):
     # (application_prep.start_pipeline). 0 is a real value here, "automatic runs off": the profile
     # serializer passes ints past the text codec, so 0 never reads back as unset.
     auto_pipeline_daily_limit=models.PositiveIntegerField(default=50)
+    # TASK-335: per day, how many waiting jobs (a link, no evaluation) are analysed and how many apply/maybe
+    # jobs with nothing prepared get documents (application_prep.run_daily). 0 is off and null is Unlimited:
+    # ints and None both pass the profile serializer's text codec untouched, so neither reads back as unset.
+    daily_analyse_limit=models.PositiveIntegerField(null=True, blank=True, default=10, validators=[MaxValueValidator(50)])
+    daily_prepare_limit=models.PositiveIntegerField(null=True, blank=True, default=10, validators=[MaxValueValidator(50)])
+    # TASK-337: an open job whose latest evaluation is older than this many days is analysed again, within
+    # daily_analyse_limit. 0 is Off.
+    reanalyse_after_days=models.PositiveSmallIntegerField(default=7, validators=[MaxValueValidator(60)])
     # TASK-83: the capability that gates the nine CV endpoints. Off by default -- generation shells
     # out to a model CLI and LaTeX on the server, so it is granted per account in the admin, never
     # by signing up. services.cv_generator.is_cv_owner still honours CODEX_CV_OWNER_EMAIL as a

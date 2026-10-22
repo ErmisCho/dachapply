@@ -718,7 +718,9 @@ def test_due_refresh_saves_the_fetched_text_over_a_link_only_text(client, job, l
 
 @pytest.mark.parametrize('status', ['new', 'reviewed'])
 def test_due_refresh_keeps_a_usable_text_and_drops_an_earlier_copy(client, job, live_posting, status):
-    """TASK-311 AC3: a usable saved text stays, nothing is staged, and a copy staged earlier is cleared."""
+    """TASK-311 AC3: a usable saved text stays, nothing is staged, and a copy staged earlier is cleared.
+    TASK-338: still so here because the fetched copy lacks parts the saved text has (salary, company); a
+    changed full posting replaces it (test_existing_jobs_pipeline)."""
     _refresh(job, status, pending='Earlier candidate')
     JobLead.objects.filter(pk=job.pk).update(pending_source_fetched_at=timezone.now())
     assert client.post('/api/jobs/source-text/refresh-due/').data['staged'] == 0

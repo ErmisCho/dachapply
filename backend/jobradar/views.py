@@ -37,7 +37,7 @@ from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user
 from .local_cache import board_settings
 from .services.access import accessible_jobs, job_create_defaults, owned_by, submitted_away_jobs
 from .services.cleaning import clean_job_location
-from .services.posting_fetch import _accepted_source, _source_hash, fetch_missing_sources, fetch_posting_text, normalized, replaces_thin_source
+from .services.posting_fetch import _accepted_source, _source_hash, fetch_missing_sources, fetch_posting_text, missing_parts, normalized, replaces_thin_source
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_MAIL_PREFIX, DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user, is_demo_user
 from .services.interview_coach import analyze_answer, suggest_questions
@@ -995,11 +995,17 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         company=company.strip() or 'Unknown company'
         # One update keeps the popup's generation identity and source text from being half-saved.
         # Saving either reviewed version resolves the pending comparison atomically.
+        changed=normalized(text) != normalized(job.source_text)
         JobLead.objects.filter(pk=job.pk).update(company=company, **_accepted_source(job, text))
-        if job.status == 'to_apply':
-            # TASK-306: the choice may have been all that held preparation back; retry as the transition does.
-            from .services.application_prep import prepare_on_to_apply
-            transaction.on_commit(lambda: prepare_on_to_apply(job.pk, request.user.pk), robust=True)
+        from .services.application_prep import prepare_on_to_apply, reanalyse_changed
+
+        def after():
+            # TASK-338: a changed text (Use fetched, or a pasted posting) analyses an evaluated open job again,
+            # and that re-analysis decides about its documents. Otherwise TASK-306: the choice may have been
+            # all that held preparation back; retry as the transition does.
+            if not (changed and reanalyse_changed(job, request.user)) and job.status == 'to_apply':
+                prepare_on_to_apply(job.pk, request.user.pk)
+        transaction.on_commit(after, robust=True)
         return Response({'company':company,'original_source_text':text})
     def destroy(self, request, pk=None):
         qs=accessible_jobs(request.user)
@@ -2156,7 +2162,11 @@ def _stage_source_fetch(job, result, checked_at=None, skip_dismissed=False, stag
             values.update(_accepted_source(job,result['text'],result.get('company','')))
             state='saved'; late=True
         elif stage_only_applying and job.status in ('new','reviewed'):
-            if not JobLead.is_meaningful_source(job.source_text) and JobLead.is_meaningful_source(result['text']):
+            # TASK-338: a New or Reviewed job takes a changed full posting without review (and is analysed
+            # again below); a copy the owner dismissed, a thin one or one lacking more parts is not taken.
+            dismissed=skip_dismissed and _source_hash(result['text']) == job.dismissed_source_hash
+            full=not JobLead.is_thin_source(result['text']) and len(missing_parts(result['text'])) <= len(missing_parts(job.source_text))
+            if not dismissed and JobLead.is_meaningful_source(result['text']) and (full or not JobLead.is_meaningful_source(job.source_text)):
                 values.update(_accepted_source(job,result['text'],result.get('company','')))
                 state='saved'
             else:
@@ -2171,7 +2181,12 @@ def _stage_source_fetch(job, result, checked_at=None, skip_dismissed=False, stag
         values['source_fetch_error']=result['error']
     JobLead.objects.filter(pk=job.pk).update(**values)
     for key,value in values.items(): setattr(job,key,value)
-    if late and user:
+    if state == 'saved' and user and stage_only_applying:
+        # TASK-336: text the automatic refresh accepted re-analyses an evaluated open job through the
+        # pipeline, within the daily analysis budget (on this path it replaces TASK-319's late-text run).
+        from .services.application_prep import reanalyse_changed
+        reanalyse_changed(job,user)
+    elif late and user:
         from .services.application_prep import reanalyse_late_text
         reanalyse_late_text(job,user)
     return state

@@ -1,7 +1,7 @@
 // TASK-280.2: labels and actions for the documents prepared automatically when a job moves into To apply.
 // TASK-280.3: the owner's review of them (keep / discard / final package). TASK-299: the board badge.
 export type PrepVariant={key:string;document:'cv'|'letter'|'message';language:string;letter_template?:string;status:'queued'|'running'|'ready'|'failed'|'cancelled';error?:string;files?:Record<string,string>;missing?:boolean;progress?:number;step_label?:string;estimated_seconds_remaining?:number;review?:''|'keep'|'discard';selected?:boolean;adjusting?:boolean;adjust_error?:string}
-export type PrepState={reason:string;rule:string;model:{provider?:string;model?:string;effort?:string};variants:PrepVariant[];selection?:string[];invalidated?:string}
+export type PrepState={reason:string;rule:string;model:{provider?:string;model?:string;effort?:string};variants:PrepVariant[];selection?:string[];invalidated?:string;outdated?:string}
 export type PrepSummary={running:number;done:number;failed:number;progress:number;eta:number}
 
 const DOCUMENTS:Record<string,string>={cv:'CV',letter:'Full letter',message:'Short message'}

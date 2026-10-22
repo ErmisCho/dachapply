@@ -2,7 +2,7 @@
 // postingSource.test.tsx), so the pure panel is rendered to markup; polling needs a browser.
 import {describe,expect,it} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {ApplicationPrepPanel,PrepBadge} from './App'
+import {ApplicationPrepPanel,DailySlider,PrepBadge} from './App'
 import {anyPreparing,isPreparing,prepAction,prepBadge,reviewText,variantLabel,variantStatusText,type PrepState,type PrepVariant} from './applicationPrep'
 
 const rule='Letters the posting does not mention, or calls optional, are not prepared automatically.'
@@ -84,6 +84,11 @@ describe('reviewing prepared documents',()=>{
     expect(html).toContain('role="alert"');expect(html).toContain('Me-CV-Acme-DE.pdf is no longer on disk')
   })
 
+  it('notes kept documents made before the posting changed (TASK-336)',()=>{
+    expect(render(state([v({review:'keep'})],'',{outdated:'Posting changed since these documents were made'}))).toContain('Posting changed since these documents were made')
+    expect(render(state([],'',{outdated:'Posting changed since these documents were made'}),'new')).toContain('Posting changed')   // owner-made files, nothing prepared
+  })
+
   it('shows an adjustment in progress and one that failed',()=>{
     expect(variantStatusText(v({adjusting:true,progress:40,estimated_seconds_remaining:60}))).toBe('Adjusting · 40% · about 1 min left')
     expect(isPreparing(state([v({adjusting:true})]))).toBe(true)
@@ -110,5 +115,17 @@ describe('board preparation badge',()=>{
   it('polls only while something is running',()=>{
     expect(anyPreparing({'3':{running:0,done:2,failed:0,progress:100,eta:0}})).toBe(false)
     expect(anyPreparing({'3':{running:1,done:2,failed:0,progress:10,eta:60}})).toBe(true)
+  })
+})
+
+// TASK-335/337: the Profile's daily-run sliders say their value, Off and Unlimited, to screen readers too.
+describe('daily-run slider',()=>{
+  const slider=(value:number|null,unlimited=true,unit='job')=>renderToStaticMarkup(<DailySlider id="s" label="Analyse waiting jobs per day" help="" unit={unit} max={50} unlimited={unlimited} value={value} onChange={()=>{}}/>)
+  it('labels the value, Off and Unlimited',()=>{
+    expect(slider(10)).toContain('aria-valuetext="10 jobs"');expect(slider(10)).toContain('for="s"')
+    expect(slider(1)).toContain('aria-valuetext="1 job"')
+    expect(slider(0)).toContain('aria-valuetext="Off"')
+    const unlimited=slider(null);expect(unlimited).toContain('aria-valuetext="Unlimited"');expect(unlimited).toContain('max="51"');expect(unlimited).toContain('value="51"')
+    const days=slider(7,false,'day');expect(days).toContain('max="50"');expect(days).toContain('7 days')
   })
 })
