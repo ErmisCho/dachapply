@@ -157,6 +157,8 @@ def fetch_posting_text(url):
         return _failed(f'The site could not be reached: {exc.reason}.')
     final_url = final_url or url
     text, company = _cornerstone_text(final_url, body)
+    if not text:
+        text, company = _workday_text(final_url)
     text = text or posting_text(body)
     if not text or missing_parts(text):
         # TASK-322: a page lacking a required part is read once more headless, and the more complete
@@ -195,6 +197,36 @@ def _cornerstone_text(url, page):
         return '', ''
     corp = str(context.get('corp') or parts.hostname.split('.')[0]).strip()
     return '\n\n'.join(line for line in (title, description) if line), CSOD_COMPANIES.get(corp.lower(), corp.title())
+
+
+def _workday_text(url):
+    """TASK-341: a Workday career site (*.myworkdayjobs.com) serves its posting flattened into a few
+    lines (measured on zuehlke.wd3, job 1533: 6,914 chars in 5 lines, every heading and bullet run
+    together), but its public cxs endpoint returns jobPostingInfo.jobDescription as HTML with them.
+    https://<tenant>.wdN.myworkdayjobs.com/[<locale>/]<site>/job/<path> ->
+    https://<host>/wday/cxs/<tenant>/<site>/job/<path>. ('', '') when not such a link or the call
+    fails -- the caller then reads the page another way. The company is hiringOrganization.name with
+    Workday's leading numeric org code ('1006 Zühlke Engineering (Austria) GmbH') removed."""
+    parts = urlsplit(url)
+    host = parts.hostname or ''
+    path = [segment for segment in parts.path.split('/') if segment]
+    if path and re.fullmatch(r'[a-z]{2}-[A-Z]{2}', path[0]):
+        path = path[1:]  # locale prefix, e.g. /en-US/<site>/job/...
+    if not (host.endswith('.myworkdayjobs.com') and len(path) >= 3 and path[1] == 'job'):
+        return '', ''
+    try:
+        api = f"{parts.scheme}://{parts.netloc}/wday/cxs/{host.split('.')[0]}/{path[0]}/{'/'.join(path[1:])}"
+        data = json.loads(_download(api, 'application/json', ('application/json',))[0])
+        info = data.get('jobPostingInfo') or {}
+        title, description = (info.get('title') or '').strip(), extract_text(info.get('jobDescription') or '')
+        location = (info.get('location') or '').strip()
+        company = re.sub(r'^\d+\s+', '', ((data.get('hiringOrganization') or {}).get('name') or '').strip())
+    except Exception as exc:  # any failure here only means "read the page another way"
+        logger.info('Workday posting %s could not be read: %s', url, exc)
+        return '', ''
+    if not description:
+        return '', ''
+    return '\n\n'.join(line for line in (title, description, location and f'Location: {location}') if line), company
 
 
 def _guard_route(route):
@@ -416,7 +448,7 @@ def posting_text(html):
 # an umlaut typed without its e. ponytail: a keyword rule, it says a heading or word is there, not that
 # the section says anything; the evaluation's missing_parts (posting_missing) overrides it.
 POSTING_PARTS = {
-    'tasks': re.compile(r"aufgaben|tae?tigkeit|\b(?:dein|ihr) job\b|(?:deine|ihre) rolle|was (?:dich|sie) erwartet|responsibilit|what you(?:'ll| will) do|your (?:role|tasks|mission)|\bduties\b"),
+    'tasks': re.compile(r"aufgaben|tae?tigkeit|\b(?:dein|ihr) job\b|(?:deine|ihre) rolle|was (?:dich|sie) erwartet|responsibilit|what you(?:'ll| will) do|your (?:role|tasks|mission)|\bduties\b|\bthe role\b|make an impact|in this role|you(?:'ll| will) be doing"),  # TASK-341: Workday/Zühlke-style headings
     'requirements': re.compile(r"anforderung|profil|qualifikation|mitbring|bringst du mit|bringen sie mit|requirements|qualifications|what you bring|skills|who you are"),
     'salary': re.compile(r"gehalt|brutto|kollektivvertrag|\bkv\b|ue?berzahlung|vergue?tung|salary|compensation|pay range|per (?:year|annum)|(?:€|\beur|\bchf|\$)\s?\d|\d\s?(?:€|eur\b|chf\b|usd\b)"),
     'company': re.compile(r"ue?ber uns|wir sind|unternehmen|about us|who we are|our company|\bwe are\b|wir bieten|what we offer"),
