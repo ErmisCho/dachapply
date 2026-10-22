@@ -26,10 +26,12 @@ provider's usage limit records "retry_at" (ISO: the reset plus a minute, or half
 "auto_retries"; one Timer (_timer) wakes retry_due, which re-queues it through queue_action's retry,
 at most AUTO_RETRIES times. Any other failure clears retry_at and is never retried automatically.
 """
+import heapq
 import io
 import logging
 import re
 import tempfile
+import time
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -76,6 +78,9 @@ DAILY_LIMIT = 'Daily limit of {} automatic runs reached. Press Retry to run it n
 CHANGED = 'Posting changed since these documents were made'  # TASK-336: the note documents the owner reviewed keep
 REANALYSED = 'Analysed again since these documents were made'  # TASK-337: the same note when only time passed
 PRIORITY_ORDER = {'high': 0, 'medium': 1, 'low': 2}
+# TASK-340: seconds one automatic analysis takes before any run of it was measured (cv_tasks.measured_seconds
+# replaces it from the first recorded run) -- unmeasured guesses; the same model's CV generation call is ~110 s.
+ANALYSIS_SECONDS = {'fit': 120, 'requirements': 60}
 
 # ponytail: one process serves generation (threaded runserver); a DB claim if that changes. Re-entrant
 # because a task's on_finish can run in the thread that started it (a task that fails at once, tests).
@@ -312,7 +317,7 @@ def prepare(job_id, user, retry=False, inline=False):
             analyse = job.id not in _analysing
             if analyse:
                 _analysing.add(job.id)
-                _save(job, user.pk, lambda prep: prep.update(reason=ANALYSING, variants={}, retry_at=None))
+                _save(job, user.pk, lambda prep: prep.update(reason=ANALYSING, variants={}, retry_at=None, analysing_at=_now()))
         elif reason:
             if not state['variants']:
                 _save(job, user.pk, lambda prep: prep.update(reason=reason, variants={}, retry_at=None))
@@ -354,11 +359,13 @@ def _analyse(job):
     prompt = ('Read the job posting below and classify how to apply to it. The posting below is the original_source_text; '
               'quote from it.\n\n' + APPLICATION_REQUIREMENTS_RULES
               + '\n\nReturn only a JSON object: {' + APPLICATION_REQUIREMENTS_SCHEMA_FIELD + '}\n\nJob posting:\n' + job.source_text)
+    started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix='dachapply-requirements-') as workdir:
         data = run_structured_model(prompt, REQUIREMENTS_SCHEMA, provider, model, effort, 'normal', workdir=workdir, model_option=model_option)
     requirements = normalize_application_requirements((data or {}).get('application_requirements'), job, source='analysis')
     if not requirements:
         raise RuntimeError('the model returned no application requirements')
+    cv_tasks.record_duration('requirements', provider, model, effort, time.monotonic() - started)  # TASK-340
     return requirements
 
 
@@ -499,12 +506,16 @@ def _pipeline(job_id, user_id, reanalyse=''):
                 return
             before = _outcome(job)  # TASK-338: what a re-analysis is compared with
             try:
-                stage('fetching')
+                # TASK-340: the run's duration (fetch + analysis) is measured, and its start kept across both stages.
+                started, began = time.monotonic(), _now()
+                stage('fetching', started=began)
                 fetch_missing_sources([job])
-                stage('analysing')
+                stage('analysing', started=began)
                 option, effort = cv_default_choice(available_model_options())
                 result = (job_evaluator.evaluate_jobs([job.id], user, option['provider'], option['key'], effort, 'normal', commit=True) if option
                           else {'ok': False, 'errors': ['No document model is available on this machine']})
+                if result['ok']:
+                    cv_tasks.record_duration('fit', option['provider'], option['key'], effort, time.monotonic() - started)
             except Exception as exc:  # the Queue says why, never a run stuck at Analysing
                 logger.exception('The automatic analysis of job %s failed', job_id)
                 result = {'ok': False, 'errors': [str(exc) or type(exc).__name__]}
@@ -1006,16 +1017,21 @@ def _live(variant, user):
 def queue_state(user):
     """AC4: every prepared variant of the owner's unapplied jobs except discarded ones -- running, then
     queued by position, then (TASK-313) jobs whose preparation was refused, then the newest
-    FINISHED_LIMIT finished ones. Read-only, like board_summary.
+    FINISHED_LIMIT finished ones. Read-only, like board_summary. TASK-340: each running or queued item's
+    eta_seconds is when it should finish, from measured durations, and 'summary' is {done (ready or skipped today),
+    total, analyses_left, documents_left, seconds_left} for the navbar.
 
     ponytail: one sidecar read per unapplied job per poll, as application_prep_active does; an index
     of jobs with a preparation if the board grows into thousands of open jobs.
     """
     with _lock:
         positions = {entry: index for index, entry in enumerate(_queue, 1)}
-    items, blocked = [], []
+    expected = {route: cv_tasks.measured_seconds(route) or seconds for route, seconds in ANALYSIS_SECONDS.items()}
+    items, blocked, fits, requirements = [], [], [], []
+    today, done = timezone.localdate(), 0
     for job in accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES).only('id', 'company', 'title', 'status', 'source_fetch_error'):
         prep = _state(job, user)
+        done += _done_today(prep, today)
         if prep.get('reason') and not prep.get('variants') and prep['reason'] not in (ANALYSING, FILES_EXIST):
             # TASK-313 AC2: a job whose preparation was refused shows why, instead of vanishing. TASK-318: a
             # missing text says why its link could not be read (e.g. the paste hint), the _gate wording otherwise.
@@ -1026,18 +1042,32 @@ def queue_state(user):
                             'queued_at': None, 'started_at': None, 'finished_at': None, 'retry_at': prep.get('retry_at'),
                             'incomplete': prep['reason'].startswith(INCOMPLETE)})  # TASK-322: offers Continue anyway
         pipeline = prep.get('pipeline') or {}
-        # An analysed job stays listed while the TASK-312 hook analyses its application requirements (TASK-308).
-        stage = 'requirements' if pipeline.get('stage') == 'analysed' and prep.get('reason') == ANALYSING else pipeline.get('stage')
+        # An analysed job stays listed while its application requirements are analysed (TASK-308) -- TASK-340: only
+        # while that run is alive (public_state's test), so one a restart stopped never shows as running, and not
+        # over a fit analysis queued or running again for the job, which stays in the fit lane.
+        stage = pipeline.get('stage')
+        if job.id in _analysing and stage not in PIPELINE_RUNNING:
+            stage = 'requirements'
         # TASK-336/337: a re-analysis under way also shows beside the job's documents.
         if (stage in PIPELINE_RUNNING or stage == 'skipped') and (not prep.get('variants') or stage in PIPELINE_RUNNING and job.id in _piping):
             # TASK-325: the automatic pipeline's step -- running, or finished as a skip; limit and failed are
             # blocked above through prep['reason']. Variants replace it (the documents' own rows).
             done = stage == 'skipped'
-            items.append({'job_id': job.id, 'company': job.company, 'title': job.title, 'job_status': job.status, 'key': '',
-                          'label': 'Not applying' if done else PIPELINE_RUNNING[stage], 'document': None, 'language': None,
-                          'status': 'skipped' if done else 'running', 'position': None, 'progress': 0, 'eta_seconds': None,
-                          'error': f"Skip · fit {pipeline.get('fit_score')}" if done else '', 'files': [], 'queued_at': None,
-                          'started_at': pipeline.get('at'), 'finished_at': pipeline.get('at') if done else None, 'retry_at': None, 'incomplete': False})
+            item = {'job_id': job.id, 'company': job.company, 'title': job.title, 'job_status': job.status, 'key': '',
+                    'label': 'Not applying' if done else PIPELINE_RUNNING[stage], 'document': None, 'language': None,
+                    'status': 'skipped' if done else 'running', 'position': None, 'progress': 0, 'eta_seconds': None,
+                    'error': f"Skip · fit {pipeline.get('fit_score')}" if done else '', 'files': [], 'queued_at': None,
+                    'started_at': pipeline.get('at'), 'finished_at': pipeline.get('at') if done else None, 'retry_at': None, 'incomplete': False}
+            items.append(item)
+            # TASK-340: eta_seconds is the run's expected duration here (what is left of it once running); _schedule
+            # turns the fit analyses' into finish times. A requirements analysis runs in a thread of its own.
+            if stage == 'requirements':
+                item['eta_seconds'] = round(max(0, expected['requirements'] - _elapsed(prep.get('analysing_at') or pipeline.get('at'))))
+                requirements.append(item)
+            elif not done:
+                # The run's start (fetch included); a sidecar from before TASK-340 has only the stage's.
+                item['eta_seconds'] = expected['fit'] - (0 if stage == 'queued' else _elapsed(pipeline.get('started') or pipeline.get('at')))
+                fits.append((stage == 'queued', pipeline.get('at') or '', item))
         for key, variant in (prep.get('variants') or {}).items():
             if variant.get('review') == 'discard':
                 continue
@@ -1046,14 +1076,72 @@ def queue_state(user):
                           'label': _label(variant), 'document': variant.get('document'), 'language': variant.get('language'),
                           'status': status, 'position': positions.get((job.id, user.pk, key)) if status == 'queued' else None,
                           'progress': 100 if status == 'ready' else round(live['progress']) if live else 0,
-                          'eta_seconds': live['estimated_seconds_remaining'] if live else None, 'error': error,
+                          'eta_seconds': live['estimated_seconds_remaining'] if live else _document_seconds(prep, variant) if status == 'queued' else None, 'error': error,
                           'files': [Path(path).name for path in (variant.get('files') or {}).values()],
                           'queued_at': variant.get('queued_at'), 'started_at': variant.get('started_at'), 'finished_at': variant.get('finished_at'),
                           'retry_at': variant.get('retry_at') if variant.get('status') == 'failed' else None, 'incomplete': False})
     running = sorted((item for item in items if item['status'] == 'running'), key=lambda item: item['started_at'] or '')
     queued = sorted((item for item in items if item['status'] == 'queued'), key=lambda item: (item['position'] is None, item['position'] or 0, item['queued_at'] or ''))
     finished = sorted((item for item in items if item['status'] not in ('running', 'queued')), key=lambda item: item['finished_at'] or '', reverse=True)
-    return {'concurrency': settings.PREP_QUEUE_CONCURRENCY, 'items': running + queued + blocked + finished[:FINISHED_LIMIT]}
+    # TASK-340: the lanes run side by side, so the time left is the latest one's end: fit analyses one at a time
+    # under _pipeline_lock (the one holding it first, then the waiting ones as queued -- the lock keeps no strict
+    # order); each requirements analysis in its own thread (a pipeline job's runs beside the next fit; the daily
+    # batch's holds the lock, so a fit waiting behind it ends up to one requirements analysis later than shown);
+    # documents PREP_QUEUE_CONCURRENCY at a time in queue order, independent of the lock.
+    # ponytail: documents an analysis will yield are unknown until it ends, so they are not counted yet.
+    fits.sort(key=lambda fit: fit[:2])
+    documents = [item for item in running + queued if item['document']]
+    lanes = [_schedule([item for *_, item in fits], 1), _schedule(documents, settings.PREP_QUEUE_CONCURRENCY),
+             *(item['eta_seconds'] for item in requirements)]
+    # A job moved past To apply today left the list above, but what was done for it today still counts.
+    for job in accessible_jobs(user).exclude(status__in=JobLead.UNAPPLIED_STATUSES).filter(updated_at__date=today).only('id'):
+        done += _done_today(_state(job, user), today)
+    pending = len(running) + len(queued)
+    summary = {'done': done, 'total': done + pending, 'analyses_left': pending - len(documents), 'documents_left': len(documents),
+               'seconds_left': round(max(lanes, default=0))}
+    return {'concurrency': settings.PREP_QUEUE_CONCURRENCY, 'summary': summary, 'items': running + queued + blocked + finished[:FINISHED_LIMIT]}
+
+
+def _done_today(prep, today):
+    """TASK-340: how many of a job's items the Queue page lists under Done finished today -- ready documents,
+    or the pipeline's skip. Failed and cancelled are not done."""
+    pipeline, variants = prep.get('pipeline') or {}, prep.get('variants') or {}
+    stamps = [variant.get('finished_at') for variant in variants.values() if variant.get('status') == 'ready' and variant.get('review') != 'discard']
+    if pipeline.get('stage') == 'skipped' and not variants:
+        stamps.append(pipeline.get('at'))
+    return sum(1 for iso in stamps if (when := _when(iso)) and timezone.localdate(when) == today)
+
+
+def _when(iso):
+    """An aware datetime from a stored ISO stamp, or None."""
+    try:
+        value = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return None
+    return value if timezone.is_aware(value) else None
+
+
+def _elapsed(iso):
+    since = _when(iso)
+    return max(0, (timezone.now() - since).total_seconds()) if since else 0
+
+
+def _document_seconds(prep, variant):
+    """TASK-340: a queued variant's expected duration from cv_tasks' measured timing for the model it will run with."""
+    choice, document = prep.get('model') or {}, variant.get('document')
+    return cv_tasks.estimate_seconds(choice.get('provider'), choice.get('model'), choice.get('effort'), choice.get('speed') or 'normal',
+                                     create_cv=document == 'cv', create_letter=document != 'cv')['seconds']
+
+
+def _schedule(items, slots):
+    """TASK-340: items run `slots` at a time in this order, each for its eta_seconds (a running one's: what is
+    left); each eta_seconds becomes when that item finishes, from now. Returns when the last one does."""
+    free = [0] * slots
+    for item in items:
+        end = heapq.heappop(free) + max(0, item['eta_seconds'] or 0)
+        item['eta_seconds'] = round(end)
+        heapq.heappush(free, end)
+    return max(free)
 
 
 def queue_action(user, job_id, key, action):

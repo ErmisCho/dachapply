@@ -4,10 +4,11 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
 import {MemoryRouter} from 'react-router-dom'
 import {Nav} from './App'
-import {QueueView,queueAction,queueSnapshot,watchQueue,type QueueData,type QueueItem,type QueueSnapshot} from './PrepQueue'
+import {about,timeLeft} from './applicationPrep'
+import {QueueView,queueAction,queueProgress,queueSnapshot,watchQueue,type QueueData,type QueueItem,type QueueSnapshot} from './PrepQueue'
 
 const item=(extra:Partial<QueueItem>):QueueItem=>({job_id:7,company:'Acme GmbH',title:'Backend Developer',job_status:'to_apply',key:'cv-de',label:'German CV',document:'cv',language:'de',status:'queued',position:1,progress:0,eta_seconds:null,error:'',files:[],queued_at:'2026-10-19T08:00:00Z',started_at:null,finished_at:null,retry_at:null,...extra})
-const fixture=():QueueData=>({concurrency:2,items:[
+const fixture=():QueueData=>({concurrency:2,summary:{done:1,total:4,analyses_left:0,documents_left:3,seconds_left:1500},items:[
   item({key:'cv-de',status:'running',position:null,progress:45,eta_seconds:120}),
   item({job_id:9,company:'Beta AG',title:'Data Engineer',key:'letter-en',label:'English letter',document:'letter',language:'en',status:'queued',position:1}),
   item({job_id:9,company:'Beta AG',title:'Data Engineer',key:'message-en',label:'English message',document:'message',language:'en',status:'queued',position:2}),
@@ -213,15 +214,42 @@ describe('Queue navbar link',()=>{
     vi.stubGlobal('window',{matchMedia:()=>({matches:true,addEventListener:()=>{},removeEventListener:()=>{}})})
     try{return renderToStaticMarkup(<MemoryRouter><Nav/></MemoryRouter>)}finally{vi.unstubAllGlobals()}
   }
-  it('is shown to the CV owner with the queued+running count, and to nobody else',async()=>{
+  it('is shown to the CV owner with done/total and the time left while work is pending, and to nobody else',async()=>{
     await queueAction(fixture().items[1],'first')   // the store now holds the fixture: 1 running + 2 queued
-    expect(nav({username:'owner',can_generate_cv:true})).toMatch(/href="\/queue"[^>]*>Queue <span[^>]*>3<\/span>/)
+    const html=nav({username:'owner',can_generate_cv:true})
+    expect(html).toMatch(/href="\/queue"[^>]*>Queue <span class="whitespace-nowrap"><span[^>]*>1\/4 · about 25 min<\/span><\/span>/)
+    expect(html).toContain('aria-label="Queue: 1 of 4 done, about 25 min left"')
+    expect(html).toMatch(/title="German CV · Acme GmbH: about 2 min left\s+0 analyses and 3 documents left, about 25 min in total"/)
     expect(nav({username:'friend',can_generate_cv:false})).not.toContain('/queue')
   })
-  it('does not count blocked jobs',async()=>{
-    reply=()=>({status:200,body:{concurrency:2,items:[blocked,fixture().items[1]]}})
-    await queueAction(fixture().items[1],'first')   // 1 queued + 1 blocked
-    expect(nav({username:'owner',can_generate_cv:true})).toMatch(/href="\/queue"[^>]*>Queue <span[^>]*>1<\/span>/)
+  it('is plain Queue when only blocked or finished items remain',async()=>{
+    reply=()=>({status:200,body:{concurrency:2,summary:{done:1,total:1,analyses_left:0,documents_left:0,seconds_left:0},items:[blocked,fixture().items[3]]}})
+    await queueAction(fixture().items[1],'first')
+    expect(nav({username:'owner',can_generate_cv:true})).toMatch(/href="\/queue"[^>]*>Queue<\/a>/)
+  })
+})
+
+// TASK-340: the navbar's estimate, in the job page's and Queue page's wording (applicationPrep.about).
+describe('queue estimate text (TASK-340)',()=>{
+  it('rounds to minutes, at least one, and switches to hours',()=>{
+    expect([0,59,60,89,1500,3599,3600,4800].map(about)).toEqual(['about 1 min','about 1 min','about 1 min','about 1 min','about 25 min','about 1 h','about 1 h','about 1 h 20 min'])
+    expect([timeLeft(120),timeLeft(4800),timeLeft(0)]).toEqual(['about 2 min left','about 1 h 20 min left',''])
+  })
+  it('is null while idle and lists what runs, soonest first, then what is left',()=>{
+    expect(queueProgress(null)).toBeNull()
+    const data:QueueData={concurrency:1,summary:{done:3,total:12,analyses_left:2,documents_left:7,seconds_left:5000},items:[
+      item({key:'',label:'Analysing fit',document:null,company:'Kappa',status:'running',position:null,eta_seconds:400}),
+      item({status:'running',position:null,eta_seconds:30}),item({key:'letter-de',status:'queued',eta_seconds:900})]}
+    expect(queueProgress(data)).toEqual({text:'3/12 · about 1 h 23 min',label:'Queue: 3 of 12 done, about 1 h 23 min left',
+      title:'German CV · Acme GmbH: about 1 min left\nAnalysing fit · Kappa: about 7 min left\n2 analyses and 7 documents left, about 1 h 23 min in total'})
+  })
+  it('shows each queued and pipeline row\'s finish estimate on the Queue page',()=>{
+    const data=fixture();data.items[1]={...data.items[1],eta_seconds:720}
+    data.items.unshift(item({job_id:41,key:'',label:'Waiting to analyse',document:null,status:'running',position:null,eta_seconds:300}))
+    const html=view({data})
+    expect(section(html,'Queued')).toMatch(/#1 English letter.*Ready in about 12 min/)
+    expect(section(html,'Queued').match(/Ready in/g)?.length).toBe(1)   // the message has no estimate
+    expect(section(html,'Running')).toMatch(/Waiting to analyse.*about 5 min left/)
   })
 })
 
