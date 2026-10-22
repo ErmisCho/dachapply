@@ -10,7 +10,9 @@ import {timeLeft} from './applicationPrep'
 // TASK-325: 'skipped' is the automatic pipeline's skip verdict (document null), listed under Done.
 export type QueueStatus='queued'|'running'|'blocked'|'ready'|'skipped'|'failed'|'cancelled'
 export type QueueItem={job_id:number;company:string;title:string;job_status:string;key:string;label:string;document:'cv'|'letter'|'message'|null;language:string|null;status:QueueStatus;position:number|null;progress:number;eta_seconds:number|null;error:string;files:string[];queued_at:string|null;started_at:string|null;finished_at:string|null;retry_at:string|null;incomplete?:boolean}
-export type QueueData={concurrency:number;items:QueueItem[]}
+// TASK-340: the server's estimate from measured durations -- finished today of the total, and the time left.
+export type QueueSummary={done:number;total:number;analyses_left:number;documents_left:number;seconds_left:number}
+export type QueueData={concurrency:number;summary?:QueueSummary;items:QueueItem[]}
 // TASK-322: 'continue' releases a job held for an incomplete posting; it acts on the whole job, so its key is ''.
 export type QueueAction='cancel'|'retry'|'first'|'continue'
 export type QueueSnapshot={data:QueueData|null;error:string;busy:string[];failed:{id:string;detail:string}|null}
@@ -25,6 +27,13 @@ let pages=0,timer:ReturnType<typeof setTimeout>|undefined
 function set(next:Partial<QueueSnapshot>){snap={...snap,...next};listeners.forEach(f=>f())}
 
 export const activeCount=(data:QueueData|null)=>data?.items.filter(i=>i.status==='queued'||i.status==='running').length||0
+export const duration=(seconds:number)=>{if(seconds<60)return '<1 min';const m=Math.round(seconds/60);return m<60?`~${m} min`:`~${Math.floor(m/60)} h${m%60?` ${m%60} min`:''}`}
+const plural=(n:number,one:string,many:string)=>`${n} ${n===1?one:many}`
+// TASK-340: the navbar link's badge while anything is running or queued, else null (plain 'Queue').
+export function queueProgress(data:QueueData|null){const s=data?.summary;if(!s||!activeCount(data))return null
+  const now=data!.items.filter(i=>i.status==='running').sort((a,b)=>(a.eta_seconds||0)-(b.eta_seconds||0)).map(i=>`${i.label} · ${i.company}: ${duration(i.eta_seconds||0)} left`)
+  const left=`${plural(s.analyses_left,'analysis','analyses')} and ${plural(s.documents_left,'document','documents')} left, ${duration(s.seconds_left)} in total`
+  return {text:`${s.done}/${s.total} · ${duration(s.seconds_left)}`,label:`Queue: ${s.done} of ${s.total} done, ${duration(s.seconds_left)} left`,title:[...now,left].join('\n')}}
 // Fast only while the page is open and something is moving; the navbar count alone never polls fast.
 export const queueDelay=(data:QueueData|null,onPage:boolean)=>onPage&&activeCount(data)?3000:30000
 function schedule(){clearTimeout(timer);timer=listeners.size?setTimeout(poll,queueDelay(snap.data,pages>0)):undefined}
