@@ -506,15 +506,16 @@ def _pipeline(job_id, user_id, reanalyse=''):
                 return
             before = _outcome(job)  # TASK-338: what a re-analysis is compared with
             try:
-                stage('fetching')
+                # TASK-340: the run's duration (fetch + analysis) is measured, and its start kept across both stages.
+                started, began = time.monotonic(), _now()
+                stage('fetching', started=began)
                 fetch_missing_sources([job])
-                stage('analysing')
+                stage('analysing', started=began)
                 option, effort = cv_default_choice(available_model_options())
-                started = time.monotonic()
                 result = (job_evaluator.evaluate_jobs([job.id], user, option['provider'], option['key'], effort, 'normal', commit=True) if option
                           else {'ok': False, 'errors': ['No document model is available on this machine']})
                 if result['ok']:
-                    cv_tasks.record_duration('fit', option['provider'], option['key'], effort, time.monotonic() - started)  # TASK-340
+                    cv_tasks.record_duration('fit', option['provider'], option['key'], effort, time.monotonic() - started)
             except Exception as exc:  # the Queue says why, never a run stuck at Analysing
                 logger.exception('The automatic analysis of job %s failed', job_id)
                 result = {'ok': False, 'errors': [str(exc) or type(exc).__name__]}
@@ -1017,7 +1018,7 @@ def queue_state(user):
     """AC4: every prepared variant of the owner's unapplied jobs except discarded ones -- running, then
     queued by position, then (TASK-313) jobs whose preparation was refused, then the newest
     FINISHED_LIMIT finished ones. Read-only, like board_summary. TASK-340: each running or queued item's
-    eta_seconds is when it should finish, from measured durations, and 'summary' is {done (finished today),
+    eta_seconds is when it should finish, from measured durations, and 'summary' is {done (ready or skipped today),
     total, analyses_left, documents_left, seconds_left} for the navbar.
 
     ponytail: one sidecar read per unapplied job per poll, as application_prep_active does; an index
@@ -1027,8 +1028,10 @@ def queue_state(user):
         positions = {entry: index for index, entry in enumerate(_queue, 1)}
     expected = {route: cv_tasks.measured_seconds(route) or seconds for route, seconds in ANALYSIS_SECONDS.items()}
     items, blocked, fits, requirements = [], [], [], []
+    today, done = timezone.localdate(), 0
     for job in accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES).only('id', 'company', 'title', 'status', 'source_fetch_error'):
         prep = _state(job, user)
+        done += _done_today(prep, today)
         if prep.get('reason') and not prep.get('variants') and prep['reason'] not in (ANALYSING, FILES_EXIST):
             # TASK-313 AC2: a job whose preparation was refused shows why, instead of vanishing. TASK-318: a
             # missing text says why its link could not be read (e.g. the paste hint), the _gate wording otherwise.
@@ -1039,9 +1042,12 @@ def queue_state(user):
                             'queued_at': None, 'started_at': None, 'finished_at': None, 'retry_at': prep.get('retry_at'),
                             'incomplete': prep['reason'].startswith(INCOMPLETE)})  # TASK-322: offers Continue anyway
         pipeline = prep.get('pipeline') or {}
-        # An analysed job stays listed while the TASK-312 hook analyses its application requirements (TASK-308).
-        # TASK-340: also one the daily batch or a To-apply move is running, so its time is counted.
-        stage = 'requirements' if prep.get('reason') == ANALYSING and (pipeline.get('stage') == 'analysed' or job.id in _analysing) else pipeline.get('stage')
+        # An analysed job stays listed while its application requirements are analysed (TASK-308) -- TASK-340: only
+        # while that run is alive (public_state's test), so one a restart stopped never shows as running, and not
+        # over a fit analysis queued or running again for the job, which stays in the fit lane.
+        stage = pipeline.get('stage')
+        if job.id in _analysing and stage not in PIPELINE_RUNNING:
+            stage = 'requirements'
         # TASK-336/337: a re-analysis under way also shows beside the job's documents.
         if (stage in PIPELINE_RUNNING or stage == 'skipped') and (not prep.get('variants') or stage in PIPELINE_RUNNING and job.id in _piping):
             # TASK-325: the automatic pipeline's step -- running, or finished as a skip; limit and failed are
@@ -1059,7 +1065,8 @@ def queue_state(user):
                 item['eta_seconds'] = round(max(0, expected['requirements'] - _elapsed(prep.get('analysing_at') or pipeline.get('at'))))
                 requirements.append(item)
             elif not done:
-                item['eta_seconds'] = expected['fit'] - (_elapsed(pipeline.get('at')) if stage == 'analysing' else 0)
+                # The run's start (fetch included); a sidecar from before TASK-340 has only the stage's.
+                item['eta_seconds'] = expected['fit'] - (0 if stage == 'queued' else _elapsed(pipeline.get('started') or pipeline.get('at')))
                 fits.append((stage == 'queued', pipeline.get('at') or '', item))
         for key, variant in (prep.get('variants') or {}).items():
             if variant.get('review') == 'discard':
@@ -1086,12 +1093,23 @@ def queue_state(user):
     documents = [item for item in running + queued if item['document']]
     lanes = [_schedule([item for *_, item in fits], 1), _schedule(documents, settings.PREP_QUEUE_CONCURRENCY),
              *(item['eta_seconds'] for item in requirements)]
-    today = timezone.localdate()
-    done = sum(1 for item in finished if (when := _when(item['finished_at'])) and timezone.localdate(when) == today)
+    # A job moved past To apply today left the list above, but what was done for it today still counts.
+    for job in accessible_jobs(user).exclude(status__in=JobLead.UNAPPLIED_STATUSES).filter(updated_at__date=today).only('id'):
+        done += _done_today(_state(job, user), today)
     pending = len(running) + len(queued)
     summary = {'done': done, 'total': done + pending, 'analyses_left': pending - len(documents), 'documents_left': len(documents),
                'seconds_left': round(max(lanes, default=0))}
     return {'concurrency': settings.PREP_QUEUE_CONCURRENCY, 'summary': summary, 'items': running + queued + blocked + finished[:FINISHED_LIMIT]}
+
+
+def _done_today(prep, today):
+    """TASK-340: how many of a job's items the Queue page lists under Done finished today -- ready documents,
+    or the pipeline's skip. Failed and cancelled are not done."""
+    pipeline, variants = prep.get('pipeline') or {}, prep.get('variants') or {}
+    stamps = [variant.get('finished_at') for variant in variants.values() if variant.get('status') == 'ready' and variant.get('review') != 'discard']
+    if pipeline.get('stage') == 'skipped' and not variants:
+        stamps.append(pipeline.get('at'))
+    return sum(1 for iso in stamps if (when := _when(iso)) and timezone.localdate(when) == today)
 
 
 def _when(iso):

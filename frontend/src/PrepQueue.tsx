@@ -5,7 +5,7 @@
 import {useSyncExternalStore} from 'react'
 import {Link} from 'react-router-dom'
 import {api} from './api/client'
-import {timeLeft} from './applicationPrep'
+import {about,timeLeft} from './applicationPrep'
 
 // TASK-325: 'skipped' is the automatic pipeline's skip verdict (document null), listed under Done.
 export type QueueStatus='queued'|'running'|'blocked'|'ready'|'skipped'|'failed'|'cancelled'
@@ -27,13 +27,12 @@ let pages=0,timer:ReturnType<typeof setTimeout>|undefined
 function set(next:Partial<QueueSnapshot>){snap={...snap,...next};listeners.forEach(f=>f())}
 
 export const activeCount=(data:QueueData|null)=>data?.items.filter(i=>i.status==='queued'||i.status==='running').length||0
-export const duration=(seconds:number)=>{if(seconds<60)return '<1 min';const m=Math.round(seconds/60);return m<60?`~${m} min`:`~${Math.floor(m/60)} h${m%60?` ${m%60} min`:''}`}
 const plural=(n:number,one:string,many:string)=>`${n} ${n===1?one:many}`
 // TASK-340: the navbar link's badge while anything is running or queued, else null (plain 'Queue').
 export function queueProgress(data:QueueData|null){const s=data?.summary;if(!s||!activeCount(data))return null
-  const now=data!.items.filter(i=>i.status==='running').sort((a,b)=>(a.eta_seconds||0)-(b.eta_seconds||0)).map(i=>`${i.label} · ${i.company}: ${duration(i.eta_seconds||0)} left`)
-  const left=`${plural(s.analyses_left,'analysis','analyses')} and ${plural(s.documents_left,'document','documents')} left, ${duration(s.seconds_left)} in total`
-  return {text:`${s.done}/${s.total} · ${duration(s.seconds_left)}`,label:`Queue: ${s.done} of ${s.total} done, ${duration(s.seconds_left)} left`,title:[...now,left].join('\n')}}
+  const now=data!.items.filter(i=>i.status==='running').sort((a,b)=>(a.eta_seconds||0)-(b.eta_seconds||0)).map(i=>`${i.label} · ${i.company}: ${about(i.eta_seconds||0)} left`)
+  const left=`${plural(s.analyses_left,'analysis','analyses')} and ${plural(s.documents_left,'document','documents')} left, ${about(s.seconds_left)} in total`
+  return {text:`${s.done}/${s.total} · ${about(s.seconds_left)}`,label:`Queue: ${s.done} of ${s.total} done, ${about(s.seconds_left)} left`,title:[...now,left].join('\n')}}
 // Fast only while the page is open and something is moving; the navbar count alone never polls fast.
 export const queueDelay=(data:QueueData|null,onPage:boolean)=>onPage&&activeCount(data)?3000:30000
 function schedule(){clearTimeout(timer);timer=listeners.size?setTimeout(poll,queueDelay(snap.data,pages>0)):undefined}
@@ -81,9 +80,11 @@ export function QueueView({snap,onAction=queueAction}:{snap:QueueSnapshot;onActi
     <Section title="Running" items={of('running')}>{item=><>
       <div className="flex flex-wrap items-baseline gap-x-2"><span className="font-medium">{item.label}</span><Job item={item}/></div>
       {item.document&&<><progress className="mt-1 block h-2 w-full appearance-none overflow-hidden rounded-full bg-slate-200 dark:bg-white/10 [&::-moz-progress-bar]:bg-blue-500 [&::-webkit-progress-bar]:bg-transparent [&::-webkit-progress-value]:bg-blue-500" max={100} value={item.progress} aria-label={`${item.label} progress`}/>
-      <p className="text-xs text-slate-500">{Math.round(item.progress)}%{item.eta_seconds?` · ${timeLeft(item.eta_seconds)}`:''}</p></>}</>}</Section>
+      <p className="text-xs text-slate-500">{Math.round(item.progress)}%{item.eta_seconds?` · ${timeLeft(item.eta_seconds)}`:''}</p></>}
+      {!item.document&&item.eta_seconds!=null&&<p className="text-xs text-slate-500">{about(item.eta_seconds)} left</p>}</>}</Section>
     <Section title="Queued" items={of('queued')}>{item=><>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">#{item.position} {item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{button(item,'first')}{button(item,'cancel')}</span></div>{failure(item)}</>}</Section>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">#{item.position} {item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{button(item,'first')}{button(item,'cancel')}</span></div>
+      {item.eta_seconds!=null&&<p className="text-xs text-slate-500">Ready in {about(item.eta_seconds)}</p>}{failure(item)}</>}</Section>
     <Section title="Blocked" items={of('blocked')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{button(item,'retry')}{item.incomplete&&button(item,'continue')}</span></div>
       <p className="text-xs text-red-700">{item.error}</p>{retries(item)}{failure(item)}</>}</Section>

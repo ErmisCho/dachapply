@@ -71,12 +71,14 @@ def test_single_add_fetches_analyses_commits_and_an_apply_queues_documents(owner
     assert [(item['key'], item['status']) for item in _items(client)] == [('cv-de', 'running')]
 
 
-def test_an_analysed_job_stays_listed_while_its_requirements_are_analysed(owner, client, tasks, fetch, model):
+def test_an_analysed_job_stays_listed_while_its_requirements_are_analysed(owner, client, tasks, fetch, model, monkeypatch):
     job = JobLead.objects.create(company='ACME', title='Python Engineer', created_by=owner, url=LINK, original_source_text=POSTING)
     application_prep._save(job, owner.pk, lambda prep: prep.update(pipeline={'stage': 'analysed', 'at': 'T'}, reason=application_prep.ANALYSING, variants={}))
+    monkeypatch.setattr(application_prep, '_analysing', {job.id})  # TASK-340: listed while the analysis thread runs
     [row] = _items(client)
     assert (row['key'], row['status'], row['label'], row['document']) == ('', 'running', 'Analysing requirements', None)
     application_prep._save(job, owner.pk, lambda prep: prep.update(reason=''))  # analysed and done: nothing left to show
+    application_prep._analysing.discard(job.id)
     assert _items(client) == []
 
 

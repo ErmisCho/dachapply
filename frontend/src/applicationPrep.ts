@@ -9,8 +9,10 @@ const LANGUAGES:Record<string,string>={en:'English',de:'German'}
 
 export function variantLabel(v:PrepVariant){return `${DOCUMENTS[v.document]||v.document} · ${LANGUAGES[v.language]||v.language.toUpperCase()}`}
 
-// TASK-312: also the queue page's time-left wording.
-export const timeLeft=(seconds?:number|null)=>seconds?`about ${Math.max(1,Math.round(seconds/60))} min left`:''
+// TASK-312: also the queue page's time-left wording. TASK-340: one wording for every estimate (job page, Queue
+// page, navbar) -- at least a minute, hours past sixty.
+export const about=(seconds:number)=>{const m=Math.max(1,Math.round(seconds/60));return `about ${m<60?`${m} min`:`${Math.floor(m/60)} h${m%60?` ${m%60} min`:''}`}`}
+export const timeLeft=(seconds?:number|null)=>seconds?`${about(seconds)} left`:''
 const minutes=(seconds?:number)=>seconds?` · ${timeLeft(seconds)}`:''
 
 export function variantStatusText(v:PrepVariant){

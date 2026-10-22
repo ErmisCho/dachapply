@@ -284,23 +284,27 @@ def _append_benchmark(row):
 # TASK-340: the automatic analyses (route 'fit' or 'requirements') append their durations to the same
 # store, so the Queue's estimate reads measured runs as documents do; _learned_timing never reads them.
 ANALYSIS_RUNS=20
+MIN_ANALYSIS_SECONDS=5  # a run shorter than this made no real model call (a stub, a cached answer) and would skew the median
 
 
 def record_duration(route, provider, model, effort, seconds):
-    """One successful analysis run of `route`, `seconds` long."""
+    """One successful analysis run of `route`, `seconds` long; a degenerate one is not recorded."""
+    if seconds < MIN_ANALYSIS_SECONDS:
+        return
     _append_benchmark(lambda: {'route':route,'provider':provider,'model':model,'effort':effort,'status':'ready','cache_hit':False,
                                'actual_seconds':round(seconds,2),'stage_seconds':{route:round(seconds,2)},'recorded_at':round(time.time(),3)})
 
 
 def measured_seconds(route):
-    """Median of the newest ANALYSIS_RUNS durations of `route` with the model its newest run used, or None.
-    ponytail: the next run is assumed to use the newest run's model (both analyses take cv_default_choice),
-    so a changed default is estimated from the old model's runs until its own first run is recorded."""
+    """Median of the newest ANALYSIS_RUNS durations of `route` with the provider, model and effort its newest
+    run used (as _learned_timing groups), or None.
+    ponytail: the next run is assumed to use the newest run's settings (both analyses take cv_default_choice),
+    so a changed default is estimated from the old settings' runs until its own first run is recorded."""
     rows=[row for row in _benchmark_rows() if row.get('route') == route and isinstance(row.get('actual_seconds'),(int,float))]
     if not rows:
         return None
-    model=(rows[-1].get('provider'),rows[-1].get('model'))
-    return median([row['actual_seconds'] for row in rows if (row.get('provider'),row.get('model')) == model][-ANALYSIS_RUNS:])
+    group=lambda row:(row.get('provider'),row.get('model'),row.get('effort'))
+    return median([row['actual_seconds'] for row in rows if group(row) == group(rows[-1])][-ANALYSIS_RUNS:])
 
 
 def _record_adjustment(task):
