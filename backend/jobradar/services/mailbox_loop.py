@@ -4,6 +4,7 @@ Replaces TASK-275's Windows scheduled task. Every TICK_SECONDS it runs the check
 tick with force=False, so UserProfile cadence, check window and calendar quiet hours decide when a
 check really happens; a pending manual request still runs first. Same daemon-thread shape and start
 gate as demo_scheduler (runserver only). Disable with DACHAPPLY_LOCAL_MAILBOX_LOOP=0.
+TASK-335..337: each tick first spends the daily pipeline budgets (application_prep.daily_tick).
 """
 import logging
 import threading
@@ -11,6 +12,7 @@ import time
 
 from django.db import close_old_connections
 
+from jobradar.services.application_prep import daily_tick
 from jobradar.services.demo_scheduler import should_start_local_loop
 from jobradar.services.mailbox import MailboxCheckInProgress, check_mailbox_tick
 
@@ -23,6 +25,12 @@ _started_lock = threading.Lock()
 
 def tick():
     """One iteration; never raises, so a bad tick cannot kill the thread or runserver."""
+    try:
+        close_old_connections()
+        # TASK-335..337: the daily pipeline budgets ride this loop (local app only); quick, it only starts threads.
+        daily_tick()
+    except Exception:
+        logger.exception('Daily pipeline run failed')
     try:
         close_old_connections()
         check_mailbox_tick(force=False)
