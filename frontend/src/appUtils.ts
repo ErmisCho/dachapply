@@ -749,8 +749,8 @@ export function splitInterviewRows<T extends {status:string}>(rows:T[],shown:boo
 // ponytail: fixed heading list; a posting with unusual headings gets the "no structured version" note.
 const POSTING_SECTIONS:[string,RegExp][]=[
   ['Overview',/^(overview|about (the )?(role|position|job|us|company)|the role|über uns|die stelle|job description|stellenbeschreibung)$/],
-  ['Responsibilities',/^(tasks ?(\/|and|&) ?responsibilities|(key )?responsibilities|your (tasks|responsibilities|role|mission|impact)|what you('ll| will) do|(ihre |deine )?aufgaben|(ihr |dein )?aufgabengebiet|das erwartet (dich|sie)|tätigkeiten)$/],
-  ['Requirements',/^(required experience|requirements|(required )?qualifications|must[- ]haves?|your (profile|skills)|what you (bring|need|have)|who you are|anforderungen|(ihr |dein )?profil|qualifikationen?|das (bringst du|bringen sie) mit|was (du|sie) mitbring(st|en))$/],
+  ['Responsibilities',/^(tasks ?(\/|and|&) ?responsibilities|(key )?responsibilities|your (tasks|responsibilities|role|mission|impact)|what you('ll| will) do|how you(['’]ll| will) make an impact|what you(['’]ll| will) be doing|(ihre |deine )?aufgaben|(ihr |dein )?aufgabengebiet|das erwartet (dich|sie)|tätigkeiten)$/],
+  ['Requirements',/^(required experience|requirements|(required )?qualifications|must[- ]haves?|your (profile|skills)|what you (bring|need|have)|who you are|what(['’]s| is) important to us|what we(['’]re| are) looking for|anforderungen|(ihr |dein )?profil|qualifikationen?|das (bringst du|bringen sie) mit|was (du|sie) mitbring(st|en))$/],
   ['Nice to have',/^(preferred qualifications|nice[- ]to[- ]haves?|bonus( points)?|wünschenswert|von vorteil)$/],
   ['Benefits',/^(benefits|perks|what we offer|we offer|our offer|why (join )?us|wir bieten( dir| ihnen)?|unser angebot|das bieten wir( dir| ihnen)?|was wir (dir |ihnen )?bieten)$/],
   ['Pay',/^(pay ?\/ ?compensation|pay|salary|compensation|gehalt|vergütung)$/],

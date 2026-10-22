@@ -57,6 +57,10 @@ describe('structured version of the posting (TASK-302)',()=>{
     ])
     expect(postingSections('Ihre Aufgaben:\n• Daten\nIhr Profil\n• Python\nIhre Aufgaben\n• Mehr')).toEqual([
       {title:'Responsibilities',lines:['Daten','Mehr']},{title:'Requirements',lines:['Python']}])
+    // TASK-341: Workday/Zühlke headings, curly or straight apostrophes (job 1533).
+    expect(postingSections('The role\nData platforms\nHow you’ll make an impact\nAdvise customers\nWhat\'s important to us\nPython\nWhat we offer\nShares')).toEqual([
+      {title:'Overview',lines:['Data platforms']},{title:'Responsibilities',lines:['Advise customers']},
+      {title:'Requirements',lines:['Python']},{title:'Benefits',lines:['Shares']}])
   })
 
   it('says there is no structured version for unheaded page text',()=>{
