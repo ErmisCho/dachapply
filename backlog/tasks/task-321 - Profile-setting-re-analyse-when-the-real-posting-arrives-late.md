@@ -1,10 +1,10 @@
 ---
 id: TASK-321
 title: 'Profile setting: re-analyse when the real posting arrives late'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-19 18:45'
-updated_date: '2026-10-20 17:00'
+updated_date: '2026-10-22 13:44'
 labels:
   - backend
   - frontend
@@ -22,11 +22,11 @@ Follow-up to TASK-319: the owner wants to change the default later from the app.
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Profile page toggle overrides DACHAPPLY_REANALYSE_LATE_TEXT for the account
-- [ ] #2 Shipped via the owner's Azure deploy before localhost runs it
+- [x] #2 Shipped via the owner's Azure deploy before localhost runs it
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-2026-10-20 measured on a branch server with a scratch DB: the Profile checkbox starts 'Not set for this account yet' (null, server default true, shown ticked); unticking + Save profile stored false and it reloads unticked. Tests: env on/off x account unset/true/false, and False round-trips through the profile codec. AC2 waits for the Azure deploy.
+Verified 2026-10-22: Profile shows "Analyse a job again when its real posting arrives after a link-only analysis"; /api/profile/ reanalyse_late_text null = env default true.
 <!-- SECTION:NOTES:END -->
