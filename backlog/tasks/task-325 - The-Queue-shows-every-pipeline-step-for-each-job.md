@@ -1,10 +1,10 @@
 ---
 id: TASK-325
 title: The Queue shows every pipeline step for each job
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-21 06:59'
-updated_date: '2026-10-21 09:03'
+updated_date: '2026-10-22 13:26'
 labels:
   - backend frontend
 dependencies:
@@ -31,5 +31,5 @@ Owner 2026-10-21: one place to see where a job is, from link to documents. Today
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Merged in #315. Added an 'Analysing requirements' row so an analysed job stays listed during the TASK-308 requirements analysis (test_an_analysed_job_stays_listed_while_its_requirements_are_analysed). Open: watch a real link move through the Queue on localhost.
+Live 2026-10-22: Queue showed pipeline rows Waiting to analyse / Fetching posting / Analysing fit during the daily batch and the job 1533 re-analysis (Analysing fit, eta 117 then 82 s); daily-limit and failed rows blocked with Retry; skips under Done as Not applying.
 <!-- SECTION:NOTES:END -->

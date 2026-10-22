@@ -1,9 +1,10 @@
 ---
 id: TASK-337
 title: Analyses older than N days are re-run automatically
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 06:43'
+updated_date: '2026-10-22 13:26'
 labels:
   - backend frontend
 dependencies: []
@@ -19,8 +20,14 @@ Owner 2026-10-22: run the pipeline for existing jobs too, with Profile settings.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Profile slider 'Re-analyse after N days': Off, 1..60, default 7 (migration)
-- [ ] #2 Once a day, open jobs whose latest evaluation is older than N days are re-analysed, oldest first, within the daily analysis slider
-- [ ] #3 Documents follow TASK-336's rule (unreviewed redone, reviewed kept with a note)
-- [ ] #4 Tests cover the age cut-off, Off, and the shared daily cap
+- [x] #1 Profile slider 'Re-analyse after N days': Off, 1..60, default 7 (migration)
+- [x] #2 Once a day, open jobs whose latest evaluation is older than N days are re-analysed, oldest first, within the daily analysis slider
+- [x] #3 Documents follow TASK-336's rule (unreviewed redone, reviewed kept with a note)
+- [x] #4 Tests cover the age cut-off, Off, and the shared daily cap
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Merged #340, deployed. Re-analyse after N days slider live (default 7); stale same-result re-checks leave documents alone (test).
+<!-- SECTION:NOTES:END -->
