@@ -1411,6 +1411,24 @@ def _fresh_pair(source, base=None):
     return source.parent/f'{base}-{index}.tex'
 
 
+class FileLocked(RuntimeError):
+    """A target file is open in another program. Deliberately not a RecoverableGenerationError: no
+    model repair or AI fallback can unlock a file the owner has open."""
+
+
+def _ensure_writable(paths):
+    """TASK-343: every existing target must open for writing before the first one is written. Measured
+    2026-10-22: a CV PDF open in Foxit PDF Editor failed the PDF copy after the edited .tex was already
+    written, leaving the .tex edited, the PDF stale and the letter unwritten. r+b changes nothing."""
+    for path in paths:
+        path=Path(path)
+        if path.is_file():
+            try:
+                path.open('r+b').close()
+            except OSError:
+                raise FileLocked(f'{path.name} is open in another program (for example a PDF viewer). Close it and try again; nothing was changed.') from None
+
+
 def persist_generated_files(output, workspace, cv_name=None, letter_name=None, cv_target=None, letter_target=None):
     cv_dir=workspace/'CVs'
     letter_dir=workspace/'output'
@@ -1420,18 +1438,20 @@ def persist_generated_files(output, workspace, cv_name=None, letter_name=None, c
     cv_target=None if _is_sent(cv_target,sent) else cv_target
     letter_target=None if _is_sent(letter_target,sent) else letter_target
     saved={}
+    pairs=[]
     if cv_name:
         cv_tex=Path(cv_target) if cv_target else _unique_destination(cv_dir, cv_name)
         cv_pdf=cv_tex.with_suffix('.pdf') if cv_target else _unique_destination(cv_dir, Path(cv_name).with_suffix('.pdf').name)
-        shutil.copy2(output/cv_name, cv_tex)
-        shutil.copy2(output/Path(cv_name).with_suffix('.pdf'), cv_pdf)
-        saved.update(cv_tex=str(cv_tex),cv_pdf=str(cv_pdf))
+        pairs.append(('cv',cv_name,cv_tex,cv_pdf))
     if letter_name:
         letter_tex=Path(letter_target) if letter_target else _unique_destination(letter_dir, letter_name)
         letter_pdf=letter_tex.with_suffix('.pdf') if letter_target else _unique_destination(letter_dir, Path(letter_name).with_suffix('.pdf').name)
-        shutil.copy2(output/letter_name, letter_tex)
-        shutil.copy2(output/Path(letter_name).with_suffix('.pdf'), letter_pdf)
-        saved.update(letter_tex=str(letter_tex),letter_pdf=str(letter_pdf))
+        pairs.append(('letter',letter_name,letter_tex,letter_pdf))
+    _ensure_writable(path for _,_,tex,pdf in pairs for path in (tex,pdf))  # TASK-343: all or nothing
+    for kind,name,tex,pdf in pairs:
+        shutil.copy2(output/name, tex)
+        shutil.copy2(output/Path(name).with_suffix('.pdf'), pdf)
+        saved.update({f'{kind}_tex':str(tex),f'{kind}_pdf':str(pdf)})
     # TASK-232: both flags. The master one may forbid opening a folder at all; the second decides
     # whether a FINISHED run opens one by itself, and defaults off -- the artifact paths and their
     # copy controls are already on screen, so this window only ever stole focus.
@@ -2290,6 +2310,8 @@ def recompile_generated_package(job, cv_key, source_cv=None, source_letter=None,
             compiled.append((kind,source))
             if progress:
                 progress(82 if kind == 'cv' else 95,'CV compiled' if kind == 'cv' else 'Motivation letter compiled')
+        # TASK-343: a sent document gets a fresh pair, so only the files written in place are checked.
+        _ensure_writable(path for _,source in compiled if not _is_sent(source,sent) for path in (source,source.with_suffix('.pdf')))
         written=[]
         redirected={}
         sent_letters=_retired_entry(job,user).get('letters',{}) if user and source_letter else {}
