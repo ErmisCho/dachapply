@@ -1448,6 +1448,39 @@ def _dropped_photo(base_tex, generated_tex):
 _FORCED_BREAK=re.compile(r'\\(?:newpage|clearpage|pagebreak)(?:\[\d\])?(?![A-Za-z])')
 
 
+_MACRO_HEAD=re.compile(r'\\newcommand\{(\\resume[A-Za-z]*)\}(?:\[\d\])?(?:\[[^\]]*\])?\{')
+
+
+def _macro_spans(tex):
+    """{name: (start, end)} of every \\newcommand{\\resume...}[n]{body} definition, the body found by brace
+    matching (escaped \\{ \\} skipped). A definition whose braces never close is left out."""
+    spans={}
+    for head in _MACRO_HEAD.finditer(tex):
+        depth, index=1, head.end()
+        while index < len(tex) and depth:
+            char=tex[index]
+            if char == '\\':
+                index+=2
+                continue
+            depth+=1 if char == '{' else -1 if char == '}' else 0
+            index+=1
+        if not depth:
+            spans.setdefault(head[1], (head.start(), index))
+    return spans
+
+
+def _restore_base_macros(base_tex, generated_tex):
+    """TASK-342: the base CV's layout macros are tuned together -- v1.5's \\resumeProjectHeading ends with
+    \\vspace{-7pt}, which only works with the default itemize topsep of its \\resumeItemListStart. A model
+    that tightened the list (topsep=4pt, measured on Comprehentia 2026-10-22) made every project heading
+    overlap its first bullet. A full generation gets each base-defined \\resume* macro back verbatim."""
+    base, generated=_macro_spans(base_tex), _macro_spans(generated_tex)
+    for name, (start, end) in sorted(generated.items(), key=lambda item: item[1][0], reverse=True):
+        if name in base and generated_tex[start:end] != base_tex[base[name][0]:base[name][1]]:
+            generated_tex=generated_tex[:start]+base_tex[base[name][0]:base[name][1]]+generated_tex[end:]
+    return generated_tex
+
+
 def _drop_forced_breaks(base_tex, generated_tex):
     """TASK-327: every generated CV had a \\newpage before Huawei that the base does not, so page 1
     ended wherever the trimmed content did. The template's \\Needspace already keeps an employer
@@ -2148,6 +2181,8 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
             if create_cv:
                 if not re.search(r'page ?break|newpage|clearpage|seitenumbruch', revision_instructions or '', re.IGNORECASE):
                     cv_tex=_drop_forced_breaks(cv_template['cv'].source, cv_tex)  # TASK-327, unless the owner asked for one
+                if not is_revision:
+                    cv_tex=_restore_base_macros(cv_template['cv'].source, cv_tex)  # TASK-342; an Adjust keeps its own edits
                 (output/cv_name).write_text(cv_tex, encoding='utf-8')
             if create_letter:
                 (output/letter_name).write_text(letter_tex, encoding='utf-8')
