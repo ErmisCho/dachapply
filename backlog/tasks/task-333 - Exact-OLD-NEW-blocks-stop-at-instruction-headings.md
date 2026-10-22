@@ -1,9 +1,10 @@
 ---
 id: TASK-333
 title: Exact OLD/NEW blocks stop at instruction headings
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 15:35'
+updated_date: '2026-10-22 13:26'
 labels:
   - backend
 dependencies: []
@@ -19,8 +20,14 @@ Owner 2026-10-21: a Sportradar Adjust with 10 OLD/NEW blocks failed 'LaTeX could
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A NEW block ends at a heading line after a blank line: CHANGE/FILE/STEP/EDIT/FINAL/VALIDATION/NOTE lines, or a short line ending with ':' that has no LaTeX characters
-- [ ] #2 Blank lines inside a NEW block (e.g. between two LaTeX items) and prose paragraphs of letter text are kept
-- [ ] #3 The owner's 10-block Sportradar instruction (structure reproduced in a test) yields 10 clean pairs with no heading text
-- [ ] #4 Applied to the real Sportradar files, the edits compile: CV 2 pages, letter 1 page
+- [x] #1 A NEW block ends at a heading line after a blank line: CHANGE/FILE/STEP/EDIT/FINAL/VALIDATION/NOTE lines, or a short line ending with ':' that has no LaTeX characters
+- [x] #2 Blank lines inside a NEW block (e.g. between two LaTeX items) and prose paragraphs of letter text are kept
+- [x] #3 The owner's 10-block Sportradar instruction (structure reproduced in a test) yields 10 clean pairs with no heading text
+- [x] #4 Applied to the real Sportradar files, the edits compile: CV 2 pages, letter 1 page
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Merged #333. Owner instruction on the real Sportradar files: old parser leaked 8 heading lines into the CV and 3 into the letter; fixed parser none; then applied live via revise-latest at 18:19: all 10 edits, CV 2 pages, letter 1 page.
+<!-- SECTION:NOTES:END -->
