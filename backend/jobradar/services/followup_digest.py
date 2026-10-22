@@ -10,6 +10,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from jobradar.models import ApplicationNote, FollowUp, JobLead, MailboxDraft, MailboxMessage, ScheduledTaskRun
+from jobradar.services.demo_data import DEMO_USERNAME
 
 logger = logging.getLogger(__name__)
 
@@ -232,9 +233,19 @@ def reconcile_sent_followups(transport, user):
     return recorded
 
 
+def undeliverable(user):
+    """TASK-338: the demo account (demo@dachapply.com: that domain has no mail server, so the 2026-10-22
+    digest bounced to the owner) and RFC 2606 example domains never get mail. ponytail: .test stays
+    deliverable because the test suite's recipients use it; add it if a real account ever does."""
+    domain = (user.email or '').rpartition('@')[2].lower()
+    return (user.get_username().lower() == DEMO_USERNAME.lower()
+            or domain in ('example.com', 'example.net', 'example.org')
+            or domain.rpartition('.')[2] in ('example', 'invalid', 'localhost'))
+
+
 def send_digest(user, today):
     """Mail one user their digest. Returns True only when an email was actually sent."""
-    if not user.email:
+    if not user.email or undeliverable(user):
         return False
     profile = getattr(user, 'jobradar_profile', None)
     if profile is not None and not profile.follow_up_digest_enabled:
