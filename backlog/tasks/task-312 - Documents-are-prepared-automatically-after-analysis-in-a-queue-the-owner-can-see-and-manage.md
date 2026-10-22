@@ -3,10 +3,10 @@ id: TASK-312
 title: >-
   Documents are prepared automatically after analysis, in a queue the owner can
   see and manage
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-18 22:36'
-updated_date: '2026-10-20 17:00'
+updated_date: '2026-10-22 13:44'
 labels: []
 dependencies: []
 ordinal: 311000
@@ -34,9 +34,5 @@ Owner (2026-10-19): 'as soon as I add jobs and analyze them, the relevant docume
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-2026-10-19: #295 merged; queue page live on localhost (PORR's ready CV listed with files + Review). AC9 open: a live import-to-queue run on a real job needs the owner's OK (real-data write).
-
-AC9 verified 2026-10-19: evaluate-with-model on 5 new jobs (owner OK) -> 4 maybe; job 1846 was queued, ran alone (concurrency 1) and finished with CV DE .tex+.pdf shown under Done. The 3 link-only jobs were refused by the posting-text gate and not shown -> TASK-313; placeholder names in filenames -> TASK-314.
-
-2026-10-20 AC6 measured in headless Chrome against a scratch server (origin/main c44e969, scratch sqlite + CV workspace, provider faked at generate_cv_package): nav 'Queue 4'->1 live without reload; Running '35% · about 2 min left'; Queued #1-#3 with Move to front (Echo #3->#1) and Cancel (Beta -> Cancelled), API agreed; Done shows document, language, files and Review -> /jobs/<id>; Failed shows reason + Retry (Delta -> queued #3, then ran). One running at a time throughout. Poll 3.0 s while active, 30.0 s idle (nav count). AC8: 25/25 mutations of trigger, skip, concurrency, restart re-queue, cancel/retry/first and the 400 guards make tests in test_application_prep_queue.py fail (2 re-run by the coordinator); backend 1788 passed, vitest 463 passed, tsc clean.
+Verified 2026-10-22: documents are prepared automatically after apply/maybe analyses and the Queue lists running/queued/blocked/done items with Retry/Cancel/Move first/Continue anyway; used daily since (TASK-313..340 built on it).
 <!-- SECTION:NOTES:END -->
