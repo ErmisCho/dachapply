@@ -1489,6 +1489,17 @@ def _macro_spans(tex):
     return spans
 
 
+def _unstick_project_headings(tex):
+    """TASK-345: base v1.5 ends \\resumeProjectHeading with \\vspace{-7pt}, so the underlined project name
+    touches its first bullet (the base PDF too). The owner keeps the base files; a newly generated CV gets
+    -2pt (measured on the MP Corporate Finance CV, 2026-10-25: no contact, still 2 pages)."""
+    span=_macro_spans(tex).get('\\resumeProjectHeading')
+    if not span:
+        return tex
+    start, end=span
+    return tex[:start]+tex[start:end].replace('\\vspace{-7pt}', '\\vspace{-2pt}')+tex[end:]
+
+
 def _restore_base_macros(base_tex, generated_tex):
     """TASK-342: the base CV's layout macros are tuned together -- v1.5's \\resumeProjectHeading ends with
     \\vspace{-7pt}, which only works with the default itemize topsep of its \\resumeItemListStart. A model
@@ -2202,7 +2213,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
                 if not re.search(r'page ?break|newpage|clearpage|seitenumbruch', revision_instructions or '', re.IGNORECASE):
                     cv_tex=_drop_forced_breaks(cv_template['cv'].source, cv_tex)  # TASK-327, unless the owner asked for one
                 if not is_revision:
-                    cv_tex=_restore_base_macros(cv_template['cv'].source, cv_tex)  # TASK-342; an Adjust keeps its own edits
+                    cv_tex=_unstick_project_headings(_restore_base_macros(cv_template['cv'].source, cv_tex))  # TASK-342/345; an Adjust keeps its own edits
                 (output/cv_name).write_text(cv_tex, encoding='utf-8')
             if create_letter:
                 (output/letter_name).write_text(letter_tex, encoding='utf-8')
