@@ -139,6 +139,19 @@ def test_an_idle_queue_has_nothing_left(owner, workspace):
     assert application_prep.queue_state(owner)['summary'] == {'done': 0, 'total': 0, 'analyses_left': 0, 'documents_left': 0, 'seconds_left': 0}
 
 
+def test_a_skipped_pipeline_row_keeps_the_done_count_a_number(owner, workspace):
+    """TASK-344: the pipeline row's skip flag was named `done` and overwrote the counter (navbar 'true/2')."""
+    from django.utils import timezone
+    now = timezone.now().isoformat()  # 'today' is the real date here (no frozen clock in this test)
+    skipped = _job(owner, 'new')  # created first, so listed (newest first) and counted last -- where the bug bit
+    ready = _job(owner, 'to_apply')
+    application_prep._save(ready, owner.pk, lambda prep: prep.update(variants={'cv-de': {
+        'document': 'cv', 'language': 'de', 'status': 'ready', 'task_id': '', 'error': '', 'files': {}, 'queued_at': now, 'started_at': now, 'finished_at': now}}))
+    application_prep._save(skipped, owner.pk, lambda prep: prep.update(pipeline={'stage': 'skipped', 'at': now, 'recommendation': 'skip', 'fit_score': 41}))
+    summary = application_prep.queue_state(owner)['summary']
+    assert summary['done'] == 2 and summary['total'] == 2 and type(summary['done']) is int
+
+
 def test_a_fit_run_counts_its_fetch_and_an_old_sidecar_its_stage(owner, workspace, monkeypatch):
     _at(monkeypatch, NOW)
     fetching, legacy = _job(owner, 'new'), _job(owner, 'new')

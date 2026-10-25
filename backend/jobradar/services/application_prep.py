@@ -1019,19 +1019,19 @@ def queue_state(user):
         if (stage in PIPELINE_RUNNING or stage == 'skipped') and (not prep.get('variants') or stage in PIPELINE_RUNNING and job.id in _piping):
             # TASK-325: the automatic pipeline's step -- running, or finished as a skip; limit and failed are
             # blocked above through prep['reason']. Variants replace it (the documents' own rows).
-            done = stage == 'skipped'
+            skipped = stage == 'skipped'  # TASK-344: not `done`, which is the summary's counter
             item = {'job_id': job.id, 'company': job.company, 'title': job.title, 'job_status': job.status, 'key': '',
-                    'label': 'Not applying' if done else PIPELINE_RUNNING[stage], 'document': None, 'language': None,
-                    'status': 'skipped' if done else 'running', 'position': None, 'progress': 0, 'eta_seconds': None,
-                    'error': f"Skip · fit {pipeline.get('fit_score')}" if done else '', 'files': [], 'queued_at': None,
-                    'started_at': pipeline.get('at'), 'finished_at': pipeline.get('at') if done else None, 'retry_at': None, 'incomplete': False}
+                    'label': 'Not applying' if skipped else PIPELINE_RUNNING[stage], 'document': None, 'language': None,
+                    'status': 'skipped' if skipped else 'running', 'position': None, 'progress': 0, 'eta_seconds': None,
+                    'error': f"Skip · fit {pipeline.get('fit_score')}" if skipped else '', 'files': [], 'queued_at': None,
+                    'started_at': pipeline.get('at'), 'finished_at': pipeline.get('at') if skipped else None, 'retry_at': None, 'incomplete': False}
             items.append(item)
             # TASK-340: eta_seconds is the run's expected duration here (what is left of it once running); _schedule
             # turns the fit analyses' into finish times. A requirements analysis runs in a thread of its own.
             if stage == 'requirements':
                 item['eta_seconds'] = round(max(0, expected['requirements'] - _elapsed(prep.get('analysing_at') or pipeline.get('at'))))
                 requirements.append(item)
-            elif not done:
+            elif not skipped:
                 # The run's start (fetch included); a sidecar from before TASK-340 has only the stage's.
                 item['eta_seconds'] = expected['fit'] - (0 if stage == 'queued' else _elapsed(pipeline.get('started') or pipeline.get('at')))
                 fits.append((stage == 'queued', pipeline.get('at') or '', item))
