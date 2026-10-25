@@ -1,10 +1,10 @@
 ---
 id: TASK-328
 title: CV generator popup is compact and never goes under the navbar
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-21 10:24'
-updated_date: '2026-10-21 10:38'
+updated_date: '2026-10-25 14:33'
 labels:
   - frontend
 dependencies: []
@@ -24,11 +24,11 @@ Owner 2026-10-21 (screenshot of the board's Generate CV and Motivation Letter po
 - [x] #2 Current accepted text (and the other posting textareas) in the popup are a small fixed height that scrolls inside, resizable by the user, instead of growing to the full text
 - [x] #3 The popup has no forced minimum height; it is only as tall as its content, capped to the space below the navbar
 - [x] #4 The job page's full-size generator section is unchanged
-- [ ] #5 Works at phone width with no horizontal scroll
+- [x] #5 Works at phone width with no horizontal scroll
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Merged in #322. Measured on localhost (1726x1634 viewport, job 1895): popup is portalled into body, top 45px vs navbar bottom 36.8px (also with the page scrolled 800px), height 537px (was nearly the viewport), Current accepted text 110px tall scrolling a 4782-char posting (scrollHeight 1328), popup centre hit-tests inside the dialog, no horizontal scroll. vitest 8 files 67 passed, tsc clean, CI green. Open: AC5 phone width -- the browser window could not be resized and the app refuses iframes, so it is checked in code only (width min(64rem,100vw-1.5rem), nav height measured).
+2026-10-25 AC5 measured in headless Chrome against a scratch server (sqlite copy of the schema, test account, fake jobs; current main build): 390x844 and 360x844 mobile: popup top 61 px below navbar bottom 53 px, popup 12..378 px (366 wide) / 12..348 px, page scrollWidth == viewport (390/390, 360/360), dialog scrollWidth == clientWidth, accepted-text box 110 px, popup on top; control at 1280: top 45 vs nav 37, 1024 wide.
 <!-- SECTION:NOTES:END -->

@@ -3,10 +3,10 @@ id: TASK-317
 title: >-
   Usage-limit failures show the real reason and retry automatically after the
   reset
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-19 17:19'
-updated_date: '2026-10-20 17:00'
+updated_date: '2026-10-25 14:33'
 labels:
   - backend
   - frontend
@@ -33,7 +33,5 @@ Live 2026-10-19: Codex usage limit hit; Queue showed only 'The selected model co
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Merged in PR #305 and live on localhost 2026-10-19 (queue items carry retry_at). AC5 waits for the next real usage limit: one cannot be triggered on demand.
-
-2026-10-20 AC5 measured on a localhost scratch server: a fake provider emitted codex's real text "You've hit your usage limit ... try again at 6:50 PM" through the real _provider_failure/cv_tasks/_finish path; the Queue page showed 'Failed: Usage limit reached; resets at 18:50. Retries automatically at 18:51' (API retry_at 18:51:00+02:00). At 18:51:00 it re-queued and ran by itself, failed again and was rescheduled for the next day (bounded). Not a live provider limit; that cannot be triggered on demand.
+All ACs met (AC5 measured 2026-10-20 with codex's real usage-limit text through the real path on a scratch server). A live provider limit cannot be triggered on demand. Closed 2026-10-25.
 <!-- SECTION:NOTES:END -->

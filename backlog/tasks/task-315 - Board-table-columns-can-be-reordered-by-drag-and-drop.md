@@ -1,10 +1,10 @@
 ---
 id: TASK-315
 title: Board table columns can be reordered by drag and drop
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-19 16:19'
-updated_date: '2026-10-20 17:00'
+updated_date: '2026-10-25 14:33'
 labels:
   - frontend
 dependencies: []
@@ -31,7 +31,5 @@ Owner 2026-10-19: 'maybe through the statuses drag and drop window of statuses, 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Verified on localhost 2026-10-19 (PR #301): drag (DragEvents) moved Skills before Position in header and rows, order survived reload, arrow button and Reset order work. AC4 (phone width) checked by code only: mobile cards untouched; not screen-verified, to avoid resizing the owner's browser window.
-
-2026-10-20 AC4 measured in headless Chrome (device metrics 390x844 and 360x844, mobile): cards render, no table, scrollWidth == innerWidth (390/390, 360/360), 0 cards outside the viewport, card text identical with no saved order vs a fully reversed one; control at 1280px: the same saved order reverses the table header.
+All ACs met (AC4 measured 2026-10-20 in headless Chrome at 390/360 px). Closed 2026-10-25.
 <!-- SECTION:NOTES:END -->
