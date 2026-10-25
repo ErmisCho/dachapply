@@ -1,10 +1,10 @@
 ---
 id: TASK-324
 title: 'A job link runs fetch, check, analysis and documents automatically'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-21 06:59'
-updated_date: '2026-10-21 09:03'
+updated_date: '2026-10-25 15:25'
 labels:
   - backend frontend
 dependencies: []
@@ -33,5 +33,5 @@ Owner 2026-10-21: one pipeline from link to documents. Adding a job (single add 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Merged in #315 and deployed (Azure run 39563038852, migration 0060). Targeted tests: 140 + 301 passed; vitest 26; tsc clean. Localhost relaunched; Profile shows the daily limit field at 50; Queue loads. Open: one real link end to end on localhost (the owner picks the link).
+Live 2026-10-25 with links from the owner's XING alerts. Job 1936 (Phactum DevOps Engineer): added with only the link, fetched, analysed in ~70 s, skip/41, listed under Done as Not applying. Job 1937 (MP Corporate Finance AI & Automation Engineer): fetched, apply/86, held as Posting incomplete (missing company description), Continue anyway -> requirements analysed -> English CV generated (16:24, 2 pages, 29 bullets, no forced breaks). Found: TASK-344 (navbar count) fixed; company placeholder filled as 'Unknown company; posting refers to MP' (corrected by hand); base template's project headings touch their first bullet.
 <!-- SECTION:NOTES:END -->
