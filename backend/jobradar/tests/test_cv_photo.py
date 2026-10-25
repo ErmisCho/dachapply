@@ -1,4 +1,4 @@
-from jobradar.services.cv_generator import _drop_forced_breaks, _dropped_photo, _restore_base_macros
+from jobradar.services.cv_generator import _drop_forced_breaks, _dropped_photo, _restore_base_macros, _unstick_project_headings
 
 BASE = '\documentclass{article}\begin{document}\includegraphics{./Picture.jpg} CV\end{document}'
 
@@ -30,3 +30,12 @@ def test_a_generation_gets_the_base_layout_macros_back():
     assert '\\newcommand{\\resumeItemListStart}{\\begin{itemize}}' in restored and '\\vspace{-7pt}' in restored
     assert '\\newcommand{\\resumeExtra}{\\textbf{x}}' in restored  # not in the base: the model's own macro stays
     assert _restore_base_macros(base, base) == base
+
+
+def test_project_headings_get_room_above_their_first_bullet():
+    """TASK-345: only \\resumeProjectHeading's -7pt changes; other macros keep theirs."""
+    tex = ('\\newcommand{\\resumeSubheading}[4]{\\item #1\\vspace{-7pt}}\n'
+           '\\newcommand{\\resumeProjectHeading}[2]{\n  \\item\n  \\begin{tabular*}{0.97\\textwidth}{l r}\n    \\small#1 & #2 \\\\\n  \\end{tabular*}\\vspace{-7pt}\n}\n')
+    out = _unstick_project_headings(tex)
+    assert '\\end{tabular*}\\vspace{-2pt}' in out and '\\item #1\\vspace{-7pt}' in out
+    assert _unstick_project_headings('no macros here') == 'no macros here'

@@ -112,7 +112,10 @@ def validate_eval(ev, i, require_job_id=True):
 
 def is_placeholder_label(field, value):
     text=str(value or '').strip().casefold()
-    return not text or (text == 'unknown company' if field == 'company' else text.startswith('untitled role'))
+    if field == 'company':
+        # TASK-346: an analysis once proposed 'Unknown company; posting refers to MP' -- not a name.
+        return not text or 'unknown' in text or ';' in text
+    return not text or text.startswith('untitled role')
 
 
 def create_evaluation(job, ev, user=None):

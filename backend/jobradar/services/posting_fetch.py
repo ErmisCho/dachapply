@@ -160,6 +160,7 @@ def fetch_posting_text(url):
     if not text:
         text, company = _workday_text(final_url)
     text = text or posting_text(body)
+    company = company or _json_ld_company(body)  # TASK-346: Xing, Personio and others name the employer there
     if not text or missing_parts(text):
         # TASK-322: a page lacking a required part is read once more headless, and the more complete
         # text is kept (a tie keeps the plain one). Measured: a Workday link rendered to its career-site
@@ -409,6 +410,22 @@ def _location_line(location):
         if name and name not in names:
             names.append(name)
     return f"Ort: {'; '.join(names)}" if names else ''
+
+
+def _json_ld_company(html):
+    """TASK-346: the schema.org JobPosting's hiringOrganization name, or ''. Measured 2026-10-25: Xing ('MP
+    Corporate Finance GmbH', 'Phactum Softwareentwicklung GmbH') and Personio ('SQUER') carry it."""
+    for block in _parse(html).json_ld:
+        try:
+            data = json.loads(block)
+        except ValueError:
+            continue
+        for posting in _job_postings(data):
+            org = posting.get('hiringOrganization')
+            name = org.get('name') if isinstance(org, dict) else org
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+    return ''
 
 
 def posting_text(html):
