@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-09 09:17'
-updated_date: '2026-10-09 12:09'
+updated_date: '2026-10-26 10:53'
 labels:
   - ci
   - cost
@@ -33,6 +33,8 @@ Owner, 2026-10-09: Azure Container Apps costs ~0.22 EUR/day because the 30-min u
 
 <!-- SECTION:NOTES:BEGIN -->
 AC4 superseded, not met: owner asked (2026-10-09) for automatic jobs to run only while the local app runs, so TASK-276 replaced the Windows scheduled task with an in-app loop; the script was never registered and is deleted. Merge run for #215 showed build-and-push skipped (no deploy). Azure cost was already 0.00/day since TASK-257 (Oct 1); measured via Cost Management query.
+
+2026-10-26: AC4 superseded by TASK-276 (in-app mailbox loop replaced the Windows scheduled task; verified 2026-10-09, a MailboxRun appeared with no trigger).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
