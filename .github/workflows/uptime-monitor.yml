@@ -2,16 +2,18 @@ name: Uptime monitor
 
 # The deploy workflow already curls the app once, immediately after shipping. That catches a broken
 # release but says nothing about the hours in between -- a database outage or a crashed revision
-# would otherwise be discovered only on the next manual visit. This checks every 30 minutes and
+# would otherwise be discovered only on the next manual visit. This checks every hour and
 # fails the run when it cannot, which GitHub reports by email.
 #
-# Owner, 2026-10-09: every 30 minutes on weekdays, 08:00-18:00 Berlin time only. GitHub cron is
-# UTC, so the schedule covers both CET and CEST and the first step skips runs outside local hours.
+# Owner, 2026-10-09: weekdays, 08:00-18:00 Berlin time only. GitHub cron is UTC, so the schedule
+# covers both CET and CEST and the first step skips runs outside local hours.
 # (TASK-275 blamed this probe for the Azure bill; that was wrong -- it was minReplicas=1, TASK-257.)
+# TASK-347, owner 2026-10-30: hourly, not every 30 minutes -- each probe wakes the Neon compute for
+# at least its 5-minute scale-to-zero window, and the free allowance ran out twice in October.
 
 on:
   schedule:
-    - cron: '*/30 6-16 * * 1-5'
+    - cron: '0 6-16 * * 1-5'
   workflow_dispatch:
 
 permissions:
