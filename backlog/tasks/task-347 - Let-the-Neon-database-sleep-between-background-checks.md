@@ -1,10 +1,10 @@
 ---
 id: TASK-347
 title: Let the Neon database sleep between background checks
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-30 17:30'
-updated_date: '2026-10-30 20:50'
+updated_date: '2026-11-01 18:55'
 labels:
   - backend
   - ops
@@ -35,7 +35,7 @@ Owner decisions, 2026-10-30: mail checks hourly between 08:00 and 20:00 (the exi
 - [x] #6 Measured against a real Neon database with the local app running idle: no queries for at least 55 consecutive minutes between two scheduled wakes (sampled from a separate connection, sample cadence stated)
 - [x] #7 Uptime monitor probes hourly instead of every 30 minutes, still only weekdays 08:00-18:00 Berlin
 - [x] #8 Backend tests green (`cd backend && uv run pytest -q`), with tests covering the next-wake calculation (inside window, outside window, window crossing midnight, pending request)
-- [ ] #9 The owner's profile check window is 08:00-20:00 on the database the app uses (after the fancy-paper data is restored, since the restore replaces the profile row)
+- [x] #9 The owner's profile check window is 08:00-20:00 on the database the app uses (after the fancy-paper data is restored, since the restore replaces the profile row)
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -51,5 +51,7 @@ Measured 2026-10-30 against the new Neon DB (delicate-bar), branch server `runse
 - Suite: 1884 passed (no .env in the worktree). Two email tests fail only when a real `.env` sits in the checkout root (pre-existing, not hermetic): test_api.py::test_one_failing_send_does_not_stop_the_rest_of_the_batch, test_email_verification.py::test_registration_survives_a_mail_host_that_is_down.
 - Mutation check: disabling the "touch no database before `_next_wake`" guard fails 2 loop tests.
 
-AC9 is open: set the owner's mailbox_check_window to 08:00-20:00 after the fancy-paper data is restored, since the restore replaces the profile row.
+2026-11-01: the quota reset and fancy-paper became readable again. pg_dump (postgres:18 image) was restored into delicate-bar with --clean --single-transaction: all 29 tables and 4,494 rows match fancy-paper exactly. AC9: the owner's window was changed from 08:00-17:00 to 08:00-20:00. Production's database-url secret now points at delicate-bar, and secret-key was rotated (it held a database URL). The revision was restarted; /api/health/ is ok and a login reads tables (400 Invalid credentials). The backup secret was repointed, and a manual run produced a 2,373,488-byte dump with 29 tables. Localhost seeded demo data at 08:01 on 11-01, so it runs the merged loop.
+
+Gotcha: pg_restore through Neon's pooler (transaction mode) leaves `search_path=''` on the pooled server session, and app queries landing on it fail with 'relation does not exist'. Fixed by terminating the `pgbouncer` backend from a direct connection. Restore through the direct (non -pooler) host next time.
 <!-- SECTION:NOTES:END -->
