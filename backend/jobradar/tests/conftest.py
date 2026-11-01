@@ -1,6 +1,16 @@
 import pytest
 
-from jobradar.services import cv_generator, draft_chat
+from jobradar.services import cv_generator, demo_scheduler, draft_chat, mailbox_loop
+
+
+@pytest.fixture(autouse=True)
+def _fresh_loop_state(monkeypatch):
+    """TASK-347: both in-process loops remember their next wake in a module global; without this a
+    tick in one test makes the next test's tick a no-op sleep."""
+    monkeypatch.setattr(mailbox_loop, '_next_wake', None)
+    monkeypatch.setattr(mailbox_loop, '_failures', 0)
+    monkeypatch.setattr(demo_scheduler, '_done_on', None)
+    monkeypatch.setattr(demo_scheduler, '_failures', 0)
 
 
 @pytest.fixture(autouse=True)
