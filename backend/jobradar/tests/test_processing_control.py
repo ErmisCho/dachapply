@@ -68,6 +68,19 @@ def test_restart_keeps_pause_pending_and_uncertain_work(tmp_path):
     assert restarted.status()['processing'] == 'paused'
 
 
+def test_pipeline_and_daily_documents_share_admission_lane(tmp_path):
+    control = processing.Store(tmp_path / 'control.sqlite3')
+    pipeline = control.enqueue('pipeline', {'args': [1, 2]})
+    document = control.enqueue('daily-document', {'args': [3, 2]})
+    assert control.claim(pipeline, 'pipeline', 1)
+    assert not control.claim(document, 'daily-document', 1)
+    control.mode('paused')
+    control.finish(pipeline)
+    assert not control.claim(document, 'daily-document', 1)
+    control.mode('running')
+    assert control.claim(document, 'daily-document', 1)
+
+
 def test_failed_units_are_visible_without_payload(tmp_path, monkeypatch):
     monkeypatch.setenv('DACHAPPLY_CONTROL_DB', str(tmp_path / 'control.sqlite3'))
 

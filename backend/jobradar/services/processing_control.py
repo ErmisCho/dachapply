@@ -65,7 +65,13 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             if db.execute('SELECT mode FROM control WHERE id=1').fetchone()[0] != 'running':
                 return False
-            if db.execute("SELECT count(*) FROM units WHERE kind=? AND state='running'", (kind,)).fetchone()[0] >= limit:
+            # These workers share application_prep._pipeline_lock. A waiting worker is queued,
+            # so Pause must prevent it becoming the next safe unit after that lock is released.
+            if kind in ('pipeline', 'daily-document'):
+                active = db.execute("SELECT count(*) FROM units WHERE kind IN ('pipeline','daily-document') AND state='running'").fetchone()[0]
+            else:
+                active = db.execute("SELECT count(*) FROM units WHERE kind=? AND state='running'", (kind,)).fetchone()[0]
+            if active >= limit:
                 return False
             return bool(db.execute("UPDATE units SET state='running' WHERE id=? AND state='queued'", (unit_id,)).rowcount)
 
