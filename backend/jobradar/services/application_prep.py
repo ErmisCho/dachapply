@@ -45,6 +45,7 @@ from django.utils import timezone
 
 from jobradar.models import JobEvaluation, JobLead, UserProfile
 from jobradar.services import cv_tasks, job_evaluator
+from jobradar.services.processing_control import accepting, durable, store as processing_store
 from jobradar.services.access import accessible_jobs
 from jobradar.services.application_requirements import DOCUMENT_STATUSES, DOCUMENT_TYPES, POSTING_LANGUAGES, normalize_application_requirements
 from jobradar.services.cv_generator import _edit_sidecar, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
@@ -211,7 +212,7 @@ def _now():
 
 def _pump():
     """TASK-312 AC2: start queued variants, front first, while a slot is free. Caller holds _lock."""
-    while _queue and _running < settings.PREP_QUEUE_CONCURRENCY:
+    while _queue and _running < settings.PREP_QUEUE_CONCURRENCY and accepting():
         _start(*_queue.pop(0))
 
 
@@ -343,6 +344,8 @@ def prepare(job_id, user, retry=False, inline=False):
     if analyse:
         if inline:
             _analyse_then_prepare(job.id, user.pk, retry)
+        elif processing_store():
+            _analyse_then_prepare.submit(job.id, user.pk, retry)
         else:
             Thread(target=_analyse_then_prepare, args=(job.id, user.pk, retry), daemon=True).start()
     return public_state(job, user)
@@ -368,6 +371,7 @@ def _analyse(job):
     return requirements
 
 
+@durable('requirements')
 def _analyse_then_prepare(job_id, user_id, retry):
     """TASK-308 worker: analyse, store, then prepare as usual. A failure becomes the panel's reason."""
     close_old_connections()
@@ -383,14 +387,16 @@ def _analyse_then_prepare(job_id, user_id, retry):
             with _lock:  # TASK-317: a usage limit is retried automatically once it resets
                 _save(job, user_id, lambda prep: prep.update(reason=f'Requirements analysis failed: {error}. Press Prepare to retry.',
                                                              retry_at=_retry_at(getattr(exc, 'usage_limit', False), getattr(exc, 'reset_at', None), prep)))
-            return
+            return False
         job.refresh_from_db()
         if not job.application_requirements:  # AC3: requirements stored meanwhile (an owner edit) win
             job.application_requirements = requirements
             job.save(update_fields=['application_requirements', 'updated_at'])
         prepare(job_id, user, retry)
+        return True
     except Exception:
         logger.exception('Analysing application requirements for job %s failed', job_id)
+        return False
     finally:
         with _lock:
             _analysing.discard(job_id)
@@ -449,10 +455,14 @@ def start_pipeline(job_id, user, force=False, reanalyse=''):
             return True
         _piping.add(job_id)
         _save(job, user.pk, lambda prep: prep.update(pipeline={'stage': 'queued', 'at': _now()}, reason='', retry_at=None))
-    Thread(target=_pipeline, args=(job_id, user.pk, reanalyse), name='dachapply-pipeline', daemon=True).start()
+    if processing_store():
+        _pipeline.submit(job_id, user.pk, reanalyse)
+    else:
+        Thread(target=_pipeline, args=(job_id, user.pk, reanalyse), name='dachapply-pipeline', daemon=True).start()
     return True
 
 
+@durable('pipeline')
 def _pipeline(job_id, user_id, reanalyse=''):
     """TASK-324 worker, one run at a time (_pipeline_lock), modelled on _reanalyse: fetch, then the fit
     analysis committed (it reads whatever posting exists; _gate then holds an incomplete one as today).
@@ -499,8 +509,10 @@ def _pipeline(job_id, user_id, reanalyse=''):
                     stage('analysed')  # the documents (or their hold) take over; queue_state lists their requirements analysis
             if reanalyse and result['ok']:
                 _after_reanalysis(job, user, result['preview'][0]['recommendation'] == 'skip', reanalyse, before)
+            return result['ok']
     except Exception:
         logger.exception('The automatic pipeline for job %s failed', job_id)
+        return False
     finally:
         with _lock:
             _piping.discard(job_id)
@@ -645,7 +657,11 @@ def run_daily(user):
     for job in documents:
         _save(job, user.pk, lambda prep: prep.update(auto_prepared_on=today))
     if documents:
-        Thread(target=_prepare_batch, args=([job.id for job in documents], user.pk), name='dachapply-daily-prepare', daemon=True).start()
+        if processing_store():
+            for job in documents:
+                _prepare_one.submit(job.id, user.pk)
+        else:
+            Thread(target=_prepare_batch, args=([job.id for job in documents], user.pk), name='dachapply-daily-prepare', daemon=True).start()
 
 
 def _prepare_batch(job_ids, user_id):
@@ -653,18 +669,27 @@ def _prepare_batch(job_ids, user_id):
     beside each other or beside a pipeline analysis."""
     close_old_connections()
     try:
-        user = get_user_model().objects.filter(pk=user_id).first()
         for job_id in job_ids:
-            with _pipeline_lock:
-                prepare(job_id, user, inline=True)
+            _prepare_one(job_id, user_id)
     except Exception:
         logger.exception('The daily document preparation failed')
     finally:
         close_old_connections()
 
 
+@durable('daily-document')
+def _prepare_one(job_id, user_id):
+    user = get_user_model().objects.filter(pk=user_id).first()
+    if user:
+        with _pipeline_lock:
+            prepare(job_id, user, inline=True)
+
+
+@durable('daily-tick')
 def daily_tick():
     """TASK-335..337: services.mailbox_loop's hook, so the daily budgets are spent only while the local app runs."""
+    if not accepting():
+        return
     for user in _owners():
         run_daily(user)
 
@@ -1202,6 +1227,10 @@ def resume_queue():
                 for key, variant in (prep.get('variants') or {}).items():
                     task_id = variant.get('task_id')
                     left = variant.get('status') == 'queued' or (variant.get('status') == 'running' and not (task_id and cv_tasks.get_cv_task(task_id, user.pk)))
+                    if processing_store() and variant.get('status') == 'running' and left:
+                        # Abrupt failure is uncertain, unlike graceful drain. Never duplicate model work.
+                        _save(job, user.pk, lambda prep, key=key: prep['variants'][key].update(status='failed', error=INTERRUPTED))
+                        continue
                     if left and (job.id, user.pk, key) not in _queue:
                         found.append((variant.get('queued_at') or '', job, user, key))
         for _, job, user, key in sorted(found, key=lambda item: item[0]):
