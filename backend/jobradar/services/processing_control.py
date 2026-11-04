@@ -132,7 +132,7 @@ def tracked(kind):
 
 
 def admit_document(control, kind, function, args, kwargs):
-    from jobradar.services import cv_tasks
+    from jobradar.services import cv_tasks, application_prep
     from pathlib import Path
     bound = inspect.signature(function).bind(*args, **kwargs)
     values = dict(bound.arguments)
@@ -140,8 +140,10 @@ def admit_document(control, kind, function, args, kwargs):
     callback = values.pop('on_finish', None)
     finish = None
     if callback:
-        closure = inspect.getclosurevars(callback).nonlocals
-        finish = {name: closure[name] for name in ('job_id', 'user_id', 'key')}
+        if not isinstance(callback, functools.partial) or callback.func not in (application_prep._finish, application_prep._adjusted):
+            raise TypeError('Unsupported document completion callback')
+        finish = dict(zip(('job_id', 'user_id', 'key'), callback.args))
+        finish['action'] = 'finish' if callback.func is application_prep._finish else 'adjusted'
     with cv_tasks._lock:
         snapshot = {name: value for name, value in cv_tasks._tasks[values['task_id']].items()
                     if name not in ('_cancel', 'archive')}
@@ -169,9 +171,11 @@ def restore_document(payload):
     values['cancel_event'] = snapshot['_cancel']
     finish = payload.get('finish')
     if finish:
-        with application_prep._lock:
-            application_prep._running += 1
-        values['on_finish'] = lambda task_id: application_prep._finish(finish['job_id'], finish['user_id'], finish['key'], task_id)
+        if finish['action'] == 'finish':
+            with application_prep._lock:
+                application_prep._running += 1
+        callback = application_prep._finish if finish['action'] == 'finish' else application_prep._adjusted
+        values['on_finish'] = functools.partial(callback, finish['job_id'], finish['user_id'], finish['key'])
     return values
 
 

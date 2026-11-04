@@ -115,9 +115,8 @@ def test_document_snapshot_restores_binary_input_and_callback_once(tmp_path, mon
     monkeypatch.setattr(application_prep, '_running', 0)
     results = []
     monkeypatch.setattr(application_prep, '_finish', lambda *args: results.append(args))
-    job_id, user_id, key = 1, 2, 'cv-en'
-    def finished(task_id):
-        application_prep._finish(job_id, user_id, key, task_id)
+    from functools import partial
+    finished = partial(application_prep._finish, 1, 2, 'cv-en')
     def fixture(task_id, correction_image, cancel_event, on_finish):
         pass
     control, identity, kind, payload, live = processing.admit_document(processing.store(), 'documents', fixture,
@@ -129,3 +128,17 @@ def test_document_snapshot_restores_binary_input_and_callback_once(tmp_path, mon
     restored['on_finish']('fixture-task')
     assert results == [(1, 2, 'cv-en', 'fixture-task')]
     assert application_prep._running == 1
+
+
+def test_adjustment_callback_restores_without_taking_preparation_slot(monkeypatch):
+    from jobradar.services import application_prep, cv_tasks
+    monkeypatch.setattr(application_prep, '_running', 0)
+    monkeypatch.setattr(cv_tasks, '_tasks', {})
+    results = []
+    monkeypatch.setattr(application_prep, '_adjusted', lambda *args: results.append(args))
+    payload = {'document': {'task_id': 'adjustment'}, 'snapshot': {},
+               'finish': {'action': 'adjusted', 'job_id': 1, 'user_id': 2, 'key': 'cv-en'}}
+    restored = processing.restore_document(payload)
+    restored['on_finish']('adjustment')
+    assert results == [(1, 2, 'cv-en', 'adjustment')]
+    assert application_prep._running == 0

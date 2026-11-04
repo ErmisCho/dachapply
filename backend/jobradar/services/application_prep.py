@@ -33,6 +33,7 @@ import re
 import tempfile
 import time
 import zipfile
+from functools import partial
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock, RLock, Thread, Timer
@@ -233,8 +234,7 @@ def _start(job_id, user_id, key):
     if len({item['language'] for item in variants.values()}) > 1:
         options['name_suffix'] = variant['language'].upper()
 
-    def finished(task_id):
-        _finish(job_id, user_id, key, task_id)
+    finished = partial(_finish, job_id, user_id, key)
     _save(job, user_id, lambda prep: prep['variants'][key].update(status='running', task_id='', started_at=_now()))
     _running += 1
     try:
@@ -880,8 +880,7 @@ def adjust(job, user, key, instructions, choice=None):
     context = load_candidate_evidence(build_candidate_profile_text(user), profile.learned_application_preferences, profile.candidate_evidence)
     document, files = variant['document'], variant['files']
 
-    def finished(task_id):
-        _adjusted(job.id, user.pk, key, task_id)
+    finished = partial(_adjusted, job.id, user.pk, key)
     task_id = cv_tasks.start_cv_task(
         job.id, user.pk, context, variant['language'], variant.get('letter_template', ''), document != 'cv',
         choice['provider'], choice['model'], choice['effort'], choice['speed'],
