@@ -136,7 +136,7 @@ class Command(BaseCommand):
 
             def drain():
                 stopping.wait()
-                while control.status()['running_jobs'] or requests[0]:
+                while control.active_units() or requests[0]:
                     time.sleep(.1)
                 server.shutdown()
             threading.Thread(target=drain, daemon=True).start()

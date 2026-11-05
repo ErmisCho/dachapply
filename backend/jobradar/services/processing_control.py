@@ -1,4 +1,5 @@
 """Local supervisor's cooperative gate. Never suspend a process or interrupt a safe unit."""
+import hashlib
 import functools
 import base64
 import inspect
@@ -20,6 +21,37 @@ def event(name, kind='runtime'):
         'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'event': name, 'kind': kind}))
 
 
+def job_key(kind, payload):
+    """Stable logical identity: retries may use a new thread/task ID."""
+    if kind in ('daily-tick', 'daily-document'):
+        return None
+    args, kwargs = payload.get('args', []), payload.get('kwargs', {})
+    if kind in ('mailbox', 'mailbox-tick'):
+        if not kwargs.get('force', args[0] if args else False):
+            return None
+        identity = ['mailbox']
+    elif kind in ('pipeline', 'requirements'):
+        identity = [kind, kwargs.get('job_id', args[0] if args else None),
+                    kwargs.get('user_id', args[1] if len(args) > 1 else None)]
+    elif payload.get('finish'):
+        identity = [kind, payload['finish']]
+    elif 'document' in payload:
+        document = dict(payload['document'])
+        document.pop('task_id', None)
+        identity = [kind, document]
+    else:
+        identity = [kind, payload]
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+
+def report_mailbox_job(owner_id):
+    """Promote an actual mailbox check, never an empty scheduler wake, to a job."""
+    control = store()
+    unit_id = getattr(_local, 'unit_id', None)
+    if control is not None and unit_id:
+        control.set_job_key(unit_id, 'mailbox:' + str(owner_id))
+
+
 class Store:
     def __init__(self, path):
         self.path = str(path)
@@ -33,6 +65,11 @@ class Store:
                 CREATE UNIQUE INDEX IF NOT EXISTS pending_unit ON units(kind, payload)
                     WHERE state IN ('queued', 'running');
             ''')
+            db.execute('BEGIN IMMEDIATE')
+            if 'job_key' not in {row[1] for row in db.execute('PRAGMA table_info(units)')}:
+                db.execute('ALTER TABLE units ADD COLUMN job_key TEXT')
+                for unit_id, kind, payload in db.execute('SELECT id,kind,payload FROM units').fetchall():
+                    db.execute('UPDATE units SET job_key=? WHERE id=?', (job_key(kind, json.loads(payload)), unit_id))
 
     @contextmanager
     def connect(self):
@@ -56,8 +93,8 @@ class Store:
         identity = json.dumps(payload, sort_keys=True, separators=(',', ':'))
         unit_id = uuid.uuid4().hex
         with self.connect() as db:
-            cursor = db.execute('INSERT OR IGNORE INTO units VALUES (?, ?, ?, ?, ?)',
-                                (unit_id, kind, identity, 'queued', time.time()))
+            cursor = db.execute('INSERT OR IGNORE INTO units (id,kind,payload,state,created,job_key) VALUES (?, ?, ?, ?, ?, ?)',
+                                (unit_id, kind, identity, 'queued', time.time(), job_key(kind, payload)))
             return unit_id if cursor.rowcount else None
 
     def claim(self, unit_id, kind, limit):
@@ -75,11 +112,22 @@ class Store:
                 return False
             return bool(db.execute("UPDATE units SET state='running' WHERE id=? AND state='queued'", (unit_id,)).rowcount)
 
+    def active_units(self):
+        with self.connect() as db:
+            return db.execute("SELECT count(*) FROM units WHERE state='running'").fetchone()[0]
+
+    def set_job_key(self, unit_id, key):
+        with self.connect() as db:
+            db.execute('UPDATE units SET job_key=? WHERE id=?', (key, unit_id))
+
     def finish(self, unit_id, state='completed'):
         with self.connect() as db:
+            if state == 'completed':
+                db.execute("UPDATE units SET state='resolved',payload='{}' WHERE state='interrupted' "
+                           "AND job_key=(SELECT job_key FROM units WHERE id=?)", (unit_id,))
             db.execute("UPDATE units SET state=?, payload=CASE WHEN ? IN ('completed','failed','cancelled') THEN '{}' ELSE payload END WHERE id=?", (state, state, unit_id))
             # Retain bounded history, never delete pending or uncertain work.
-            db.execute("DELETE FROM units WHERE state IN ('completed','failed','cancelled') AND id NOT IN "
+            db.execute("DELETE FROM units WHERE state IN ('completed','failed','cancelled','resolved') AND id NOT IN "
                        "(SELECT id FROM units ORDER BY created DESC LIMIT 500)")
 
     def cancel_document(self, task_id, user_id):
@@ -106,12 +154,12 @@ class Store:
     def status(self):
         with self.connect() as db:
             db.execute('BEGIN')
-            counts = dict(db.execute('SELECT state,count(*) FROM units GROUP BY state'))
+            counts = dict(db.execute('SELECT state,count(*) FROM units WHERE job_key IS NOT NULL GROUP BY state'))
+            active = db.execute("SELECT count(*) FROM units WHERE state='running'").fetchone()[0]
             mode = db.execute('SELECT mode FROM control WHERE id=1').fetchone()[0]
-        active = counts.get('running', 0)
         state = ('draining' if active else 'stopping') if mode == 'stopping' else (
             ('pausing' if active else 'paused') if mode == 'paused' else 'running')
-        return {'processing': state, 'running_jobs': active, 'remaining_jobs': counts.get('queued', 0),
+        return {'processing': state, 'running_jobs': counts.get('running', 0), 'remaining_jobs': counts.get('queued', 0),
                 'completed_jobs': counts.get('completed', 0), 'failed_jobs': counts.get('failed', 0),
                 'cancelled_jobs': counts.get('cancelled', 0),
                 'interrupted_jobs': counts.get('interrupted', 0), 'total_jobs': None}
@@ -280,6 +328,7 @@ def execute(control, unit_id, kind, args, kwargs, limit=1):
         time.sleep(.1)
     event('unit_started', kind)
     _local.active = True
+    _local.unit_id = unit_id
     try:
         result = _handlers[kind](*args, **kwargs)
     except BaseException:
@@ -287,6 +336,10 @@ def execute(control, unit_id, kind, args, kwargs, limit=1):
         event('unit_failed', kind)
         raise
     else:
+        actual = result[0] if isinstance(result, tuple) and result else result
+        if (kind in ('mailbox', 'mailbox-tick') and (actual is None or getattr(actual, 'skipped', False))
+                or kind in ('pipeline', 'requirements') and actual is None):
+            control.set_job_key(unit_id, None)
         failed = result is False or bool(getattr(result, 'error', ''))
         if isinstance(result, tuple) and result:
             failed = bool(getattr(result[0], 'error', ''))
@@ -295,6 +348,7 @@ def execute(control, unit_id, kind, args, kwargs, limit=1):
         return result
     finally:
         _local.active = False
+        _local.unit_id = None
 
 
 def recover_pending():
