@@ -23,14 +23,14 @@ def event(name, kind='runtime'):
 
 def job_key(kind, payload):
     """Stable logical identity: retries may use a new thread/task ID."""
-    if kind in ('daily-tick', 'daily-document'):
+    if kind == 'daily-tick':
         return None
     args, kwargs = payload.get('args', []), payload.get('kwargs', {})
     if kind in ('mailbox', 'mailbox-tick'):
         if not kwargs.get('force', args[0] if args else False):
             return None
         identity = ['mailbox']
-    elif kind in ('pipeline', 'requirements'):
+    elif kind in ('pipeline', 'requirements', 'daily-document'):
         identity = [kind, kwargs.get('job_id', args[0] if args else None),
                     kwargs.get('user_id', args[1] if len(args) > 1 else None)]
     elif payload.get('finish'):
@@ -52,6 +52,14 @@ def report_mailbox_job(owner_id):
         control.set_job_key(unit_id, 'mailbox:' + str(owner_id))
 
 
+def handoff_documents():
+    """Called under preparation's status lock as variants replace their daily request."""
+    control = store()
+    unit_id = getattr(_local, 'unit_id', None)
+    if control is not None and unit_id and getattr(_local, 'kind', None) == 'daily-document':
+        control.set_job_key(unit_id, None)
+
+
 class Store:
     def __init__(self, path):
         self.path = str(path)
@@ -68,8 +76,14 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             if 'job_key' not in {row[1] for row in db.execute('PRAGMA table_info(units)')}:
                 db.execute('ALTER TABLE units ADD COLUMN job_key TEXT')
-                for unit_id, kind, payload in db.execute('SELECT id,kind,payload FROM units').fetchall():
-                    db.execute('UPDATE units SET job_key=? WHERE id=?', (job_key(kind, json.loads(payload)), unit_id))
+                for unit_id, kind, payload, state in db.execute('SELECT id,kind,payload,state FROM units').fetchall():
+                    key = None if kind == 'daily-document' and state == 'completed' else job_key(kind, json.loads(payload))
+                    db.execute('UPDATE units SET job_key=? WHERE id=?', (key, unit_id))
+            if db.execute('PRAGMA user_version').fetchone()[0] < 2:
+                # Upgrade waiting daily requests hidden by the previous counter policy.
+                for unit_id, payload in db.execute("SELECT id,payload FROM units WHERE kind='daily-document' AND state='queued'").fetchall():
+                    db.execute('UPDATE units SET job_key=? WHERE id=?', (job_key('daily-document', json.loads(payload)), unit_id))
+                db.execute('PRAGMA user_version=2')
 
     @contextmanager
     def connect(self):
@@ -126,6 +140,8 @@ class Store:
                 db.execute("UPDATE units SET state='resolved',payload='{}' WHERE state='interrupted' "
                            "AND job_key=(SELECT job_key FROM units WHERE id=?)", (unit_id,))
             db.execute("UPDATE units SET state=?, payload=CASE WHEN ? IN ('completed','failed','cancelled') THEN '{}' ELSE payload END WHERE id=?", (state, state, unit_id))
+            if state == 'completed':
+                db.execute("UPDATE units SET job_key=NULL WHERE id=? AND kind='daily-document'", (unit_id,))
             # Retain bounded history, never delete pending or uncertain work.
             db.execute("DELETE FROM units WHERE state IN ('completed','failed','cancelled','resolved') AND id NOT IN "
                        "(SELECT id FROM units ORDER BY created DESC LIMIT 500)")
@@ -329,6 +345,7 @@ def execute(control, unit_id, kind, args, kwargs, limit=1):
     event('unit_started', kind)
     _local.active = True
     _local.unit_id = unit_id
+    _local.kind = kind
     try:
         result = _handlers[kind](*args, **kwargs)
     except BaseException:
@@ -337,7 +354,10 @@ def execute(control, unit_id, kind, args, kwargs, limit=1):
         raise
     else:
         actual = result[0] if isinstance(result, tuple) and result else result
-        if (kind in ('mailbox', 'mailbox-tick') and (actual is None or getattr(actual, 'skipped', False))
+        manual = kwargs.get('force', args[0] if args else False) or (
+            isinstance(result, tuple) and len(result) > 1 and result[1] is not None)
+        empty_poll = not manual and getattr(actual, 'fetched_count', None) == 0 and not getattr(actual, 'error', '')
+        if (kind in ('mailbox', 'mailbox-tick') and (actual is None or getattr(actual, 'skipped', False) or empty_poll)
                 or kind in ('pipeline', 'requirements') and actual is None):
             control.set_job_key(unit_id, None)
         failed = result is False or bool(getattr(result, 'error', ''))
@@ -349,6 +369,7 @@ def execute(control, unit_id, kind, args, kwargs, limit=1):
     finally:
         _local.active = False
         _local.unit_id = None
+        _local.kind = None
 
 
 def recover_pending():

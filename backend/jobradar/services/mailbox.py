@@ -4558,8 +4558,7 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
                 return run
 
         from jobradar.services.processing_control import report_mailbox_job
-        if force:
-            report_mailbox_job(owner.pk)
+        report_mailbox_job(owner.pk)
         active_transport = transport or _default_transport()
         # AC1: Gmail-API messages have no IMAP UID, so their resume marker is Gmail's own ascending
         # internalDate (ms epoch) instead -- MAX(uid) stays the IMAP marker exactly as before (this
@@ -4603,8 +4602,6 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
             raw_messages = active_transport.fetch_new(last_marker, lookback_days=_lookback_days(profile)) if is_gmail_api else active_transport.fetch_new(last_marker)
         except GmailFetchIncomplete as exc:
             raw_messages, fetch_error = exc.messages, exc
-        if raw_messages:
-            report_mailbox_job(owner.pk)
         newest_owner_reply_by_thread = {}
         for candidate in raw_messages:
             if candidate.thread_id and candidate.received_at and _is_owner_address(candidate.sender):

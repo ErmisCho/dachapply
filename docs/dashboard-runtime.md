@@ -36,6 +36,19 @@ cancel request restores its Event and cancelling status; Resume finalizes cancel
 entering a compiler/model handler. Cancelled units are counted separately from completed/failed work.
 Do not downgrade a control database with pending cancellation flags to a revision that ignores
 them. Finalize pending cancellations with the fixed runtime before rollback, or defer the downgrade.
+The private control-store upgrade adds a `job_key` column. An older runtime's five-column
+INSERT cannot enqueue into this upgraded store; reads working does not make downgrade safe.
+Back up the private store with its source revision before first Start. Restore matching source and
+store snapshots only after draining and reconciling intervening work; otherwise defer rollback.
+Never replace new queued/interrupted work with an older snapshot.
+
+Daily preparation requests count while queued or preparing. Under the preparation/status lock,
+ownership transfers to the actual document variants; the completed wrapper adds no completion.
+Scheduled mailbox checks become visible before the transport is entered, so running, failed and
+interrupted checks remain visible even if no message has arrived. Successful empty scheduled polls,
+skipped checks and unconfigured wakes add no completions; explicit completed checks still count.
+Successful Retry resolves only matching interrupted identities and clears their private payloads.
+
 The UI reports real running/remaining counts and retained completed/failed/interrupted history. An
 open queue has no total, percentage or ETA. Terminal history is bounded to 500 records; terminal
 payloads are removed. Pending document descriptors can contain private candidate text and image

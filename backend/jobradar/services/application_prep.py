@@ -46,7 +46,7 @@ from django.utils import timezone
 
 from jobradar.models import JobEvaluation, JobLead, UserProfile
 from jobradar.services import cv_tasks, job_evaluator
-from jobradar.services.processing_control import accepting, durable, store as processing_store
+from jobradar.services.processing_control import accepting, durable, handoff_documents, store as processing_store
 from jobradar.services.access import accessible_jobs
 from jobradar.services.application_requirements import DOCUMENT_STATUSES, DOCUMENT_TYPES, POSTING_LANGUAGES, normalize_application_requirements
 from jobradar.services.cv_generator import _edit_sidecar, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
@@ -339,6 +339,7 @@ def prepare(job_id, user, retry=False, inline=False):
                                                         'status': 'queued', 'task_id': '', 'error': '', 'files': {},
                                                         'queued_at': queued_at, 'started_at': None, 'finished_at': None}
             _save(job, user.pk, queue)
+            handoff_documents()
             _queue.extend((job.id, user.pk, variant['key']) for variant in variants)
             _pump()
     if analyse:
