@@ -142,3 +142,18 @@ def test_adjustment_callback_restores_without_taking_preparation_slot(monkeypatc
     restored['on_finish']('adjustment')
     assert results == [(1, 2, 'cv-en', 'adjustment')]
     assert application_prep._running == 0
+
+
+def test_durable_cancel_is_owner_scoped_and_restores_event(tmp_path, monkeypatch):
+    from jobradar.services import cv_tasks
+    monkeypatch.setattr(cv_tasks, '_tasks', {})
+    control = processing.Store(tmp_path / 'processing.sqlite3')
+    payload = {'document': {'task_id': 'queued-document', 'user_id': 2},
+               'snapshot': {'status': 'queued'}, 'finish': None}
+    control.enqueue('documents', payload)
+    assert not control.cancel_document('queued-document', 3)
+    assert control.cancel_document('queued-document', 2)
+    import json
+    restored = processing.restore_document(json.loads(control.recover()[0][2]))
+    assert restored['cancel_event'].is_set()
+    assert cv_tasks._tasks['queued-document']['status'] == 'cancelling'

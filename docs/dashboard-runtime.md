@@ -31,6 +31,11 @@ existing behavior.
 
 On an abrupt crash, previously running work is marked interrupted and requires review/retry; it is
 never blindly replayed after potentially committing an external side effect. Queued work survives.
+Cancellation is written to the durable document unit before HTTP acknowledges it. A recovered
+cancel request restores its Event and cancelling status; Resume finalizes cancellation without
+entering a compiler/model handler. Cancelled units are counted separately from completed/failed work.
+Do not downgrade a control database with pending cancellation flags to a revision that ignores
+them. Finalize pending cancellations with the fixed runtime before rollback, or defer the downgrade.
 The UI reports real running/remaining counts and retained completed/failed/interrupted history. An
 open queue has no total, percentage or ETA. Terminal history is bounded to 500 records; terminal
 payloads are removed. Pending document descriptors can contain private candidate text and image
@@ -52,3 +57,5 @@ pdflatex, and headless Chrome. Mail credentials/outbound loops are disabled. The
 adapter suppresses clipboard writes; it does not mock the compiler or supervisor. A missing-job
 document checks failure reporting; real compilation checks saved output and draining. Live Gmail,
 paid model generation, production database access, installation and deployment are not exercised.
+`test_processing_cancellation_lifecycle.py` also drives real authenticated HTTP cancellation across
+graceful Stop/Start/Resume and verifies that no cancelled PDF is produced or counted completed.

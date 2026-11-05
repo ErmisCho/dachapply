@@ -801,6 +801,9 @@ def cancel_cv_task(task_id, user_id):
             return None
         if task['status'] in ('ready','failed','cancelled'):
             return False
+        control = processing_store()
+        if control:
+            control.cancel_document(task_id, user_id)
         task['_cancel'].set()
         task.update(status='cancelling', stage='Cancelling', _stage_key='cancelling', _stage_started_at=time.monotonic(), updated_at=time.time())
         return True

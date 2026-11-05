@@ -77,10 +77,25 @@ class Store:
 
     def finish(self, unit_id, state='completed'):
         with self.connect() as db:
-            db.execute("UPDATE units SET state=?, payload=CASE WHEN ? IN ('completed','failed') THEN '{}' ELSE payload END WHERE id=?", (state, state, unit_id))
+            db.execute("UPDATE units SET state=?, payload=CASE WHEN ? IN ('completed','failed','cancelled') THEN '{}' ELSE payload END WHERE id=?", (state, state, unit_id))
             # Retain bounded history, never delete pending or uncertain work.
-            db.execute("DELETE FROM units WHERE state IN ('completed','failed') AND id NOT IN "
+            db.execute("DELETE FROM units WHERE state IN ('completed','failed','cancelled') AND id NOT IN "
                        "(SELECT id FROM units ORDER BY created DESC LIMIT 500)")
+
+    def cancel_document(self, task_id, user_id):
+        """Persist the request before HTTP acknowledges it; the serving thread owns its Event."""
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for unit_id, raw in db.execute("SELECT id,payload FROM units WHERE state IN ('queued','running')"):
+                payload = json.loads(raw)
+                document = payload.get('document', {})
+                if document.get('task_id') == task_id and document.get('user_id') == user_id:
+                    payload['cancel_requested'] = True
+                    payload['snapshot'].update(status='cancelling', stage='Cancelling', _stage_key='cancelling')
+                    db.execute('UPDATE units SET payload=? WHERE id=?',
+                               (json.dumps(payload, sort_keys=True, separators=(',', ':')), unit_id))
+                    return True
+        return False
 
     def recover(self):
         with self.connect() as db:
@@ -98,6 +113,7 @@ class Store:
             ('pausing' if active else 'paused') if mode == 'paused' else 'running')
         return {'processing': state, 'running_jobs': active, 'remaining_jobs': counts.get('queued', 0),
                 'completed_jobs': counts.get('completed', 0), 'failed_jobs': counts.get('failed', 0),
+                'cancelled_jobs': counts.get('cancelled', 0),
                 'interrupted_jobs': counts.get('interrupted', 0), 'total_jobs': None}
 
 
@@ -164,6 +180,8 @@ def restore_document(payload):
     task_id = values['task_id']
     snapshot = dict(payload['snapshot'])
     snapshot['_cancel'] = threading.Event()
+    if payload.get('cancel_requested'):
+        snapshot['_cancel'].set()
     snapshot['archive'] = None
     snapshot['_estimate_key'] = tuple(snapshot.get('_estimate_key') or ())
     with cv_tasks._lock:
@@ -190,12 +208,19 @@ def execute_document(control, unit_id, kind, payload, live):
     _local.active = True
     event('unit_started', 'documents')
     try:
-        _handlers[kind](**values)
+        if values['cancel_event'].is_set():
+            # Never enter a compiler/model handler for work cancelled while queued.
+            cv_tasks._update(task_id, status='cancelled', stage='Cancelled', error='')
+            if values.get('on_finish'):
+                values['on_finish'](task_id)
+        else:
+            _handlers[kind](**values)
     finally:
         with cv_tasks._lock:
-            failed = cv_tasks._tasks.get(task_id, {}).get('status') != 'ready'
-        control.finish(unit_id, 'failed' if failed else 'completed')
-        event('unit_failed' if failed else 'unit_completed', 'documents')
+            status = cv_tasks._tasks.get(task_id, {}).get('status')
+        outcome = 'completed' if status == 'ready' else 'cancelled' if status == 'cancelled' else 'failed'
+        control.finish(unit_id, outcome)
+        event('unit_' + outcome, 'documents')
         _local.active = False
 
 
