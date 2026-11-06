@@ -339,6 +339,7 @@ def durable(kind, limit=1):
             unit_id = control.enqueue(kind, {'args': args, 'kwargs': kwargs})
             if unit_id:
                 threading.Thread(target=execute, args=(control, unit_id, kind, args, kwargs, limit), daemon=True).start()
+            return unit_id
         wrapped.submit = submit
         return wrapped
     return decorate
@@ -363,7 +364,7 @@ def execute(control, unit_id, kind, args, kwargs, limit=1):
             isinstance(result, tuple) and len(result) > 1 and result[1] is not None)
         empty_poll = not manual and getattr(actual, 'fetched_count', None) == 0 and not getattr(actual, 'error', '')
         if (kind in ('mailbox', 'mailbox-tick') and (actual is None or getattr(actual, 'skipped', False))
-                or kind in ('pipeline', 'requirements') and actual is None):
+                or kind in ('pipeline', 'requirements', 'interview-prep') and actual is None):
             control.set_job_key(unit_id, None)
         failed = result is False or bool(getattr(result, 'error', ''))
         if isinstance(result, tuple) and result:
@@ -382,7 +383,7 @@ def recover_pending():
     control = store()
     if control is None:
         return
-    from jobradar.services import application_prep, mailbox  # registers allowlisted handlers
+    from jobradar.services import application_prep, interview_prep, mailbox  # registers allowlisted handlers
     for unit_id, kind, payload in control.recover():
         data = json.loads(payload)
         if 'document' in data:
@@ -401,4 +402,6 @@ def recover_pending():
             application_prep._piping.add(args[0])
         elif kind == 'requirements':
             application_prep._analysing.add(args[0])
+        elif kind == 'interview-prep':
+            interview_prep._active.add(args[0])
         threading.Thread(target=execute, args=(control, unit_id, kind, args, kwargs), daemon=True).start()

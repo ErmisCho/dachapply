@@ -46,6 +46,7 @@ from .services.mailbox import apply_suggestion, attach_message_to_job, dismiss_s
 from .services.followup_digest import owned_jobs, record_job_followup_sent
 from .services.draft_chat import ChatTurn, generate_followup_draft, profile_draft_choice, run_chat_turn
 from .services.analytics import record_demo_click
+from .services.db_usage import is_owner as db_usage_is_owner
 from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, rename_generated_artifact, reveal_artifact_folder, validate_model_capability
 from .services import cv_tasks
 from .services.cv_tasks import _clipboard_parts, _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, rename_task_paths, start_cv_compile_task, start_cv_literal_task, start_cv_noop_task, start_cv_revision, start_cv_task, with_expected_seconds
@@ -546,7 +547,7 @@ def login_view(request):
     else:
         user=authenticate(request, username=username, password=password)
     if not user: return Response({'detail':'Invalid credentials'}, status=400)
-    login(request, user); return Response({'username':user.username, 'is_staff':user.is_staff, 'is_demo':is_demo_user(user), 'can_use_mailbox':is_mailbox_owner(user), 'can_generate_cv':is_cv_owner(user), 'cv_generation_notice':'' if settings.CODEX_CV_ENABLED else CV_LOCAL_ONLY_NOTICE})
+    login(request, user); return Response({'username':user.username, 'is_staff':user.is_staff, 'is_demo':is_demo_user(user), 'can_use_mailbox':is_mailbox_owner(user), 'can_view_db_usage':db_usage_is_owner(user), 'can_generate_cv':is_cv_owner(user), 'cv_generation_notice':'' if settings.CODEX_CV_ENABLED else CV_LOCAL_ONLY_NOTICE})
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -798,7 +799,7 @@ def me(request):
     requested=profile.requested_submit_for if profile else None
     # candidate_profile_missing is the nudge signal: true means every prompt endpoint will refuse
     # with 400 {'code':'candidate_profile_required'} until the user fills in Settings -> profile.
-    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'is_demo':is_demo_user(request.user), 'can_use_mailbox':is_mailbox_owner(request.user), 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user), 'cv_generation_notice':'' if settings.CODEX_CV_ENABLED else CV_LOCAL_ONLY_NOTICE, 'candidate_profile_missing':not (profile and _profile_has_text(profile, request.user)), 'email_verified':is_email_verified(request.user), 'feedback_url':settings.FEEDBACK_URL, 'board_thresholds':BOARD_THRESHOLDS,
+    return Response({'username':request.user.username, 'is_staff':request.user.is_staff, 'is_demo':is_demo_user(request.user), 'can_use_mailbox':is_mailbox_owner(request.user), 'can_view_db_usage':db_usage_is_owner(request.user), 'submit_for_username':submit_for.username if submit_for else None, 'requested_submit_for_username':requested.username if requested else None, 'is_friend_submitter':bool(submit_for), 'can_generate_cv':is_cv_owner(request.user), 'cv_generation_notice':'' if settings.CODEX_CV_ENABLED else CV_LOCAL_ONLY_NOTICE, 'candidate_profile_missing':not (profile and _profile_has_text(profile, request.user)), 'email_verified':is_email_verified(request.user), 'feedback_url':settings.FEEDBACK_URL, 'board_thresholds':BOARD_THRESHOLDS,
         # TASK-267: the effective (full) status order plus whether it is custom, and the saved sort,
         # so the board knows whether grouping is active without a second request.
         'board_status_order':JobLead.effective_status_order(profile.board_status_order if profile else ''),

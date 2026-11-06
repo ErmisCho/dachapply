@@ -57,7 +57,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from jobradar.models import JobEvaluation, JobLead, UserProfile
-from jobradar.services import cv_tasks, job_evaluator
+from jobradar.services import cv_tasks, interview_prep, job_evaluator
 from jobradar.services.processing_control import accepting, durable, handoff_documents, store as processing_store
 from jobradar.services.access import accessible_jobs
 from jobradar.services.application_requirements import DOCUMENT_STATUSES, DOCUMENT_TYPES, POSTING_LANGUAGES, normalize_application_requirements
@@ -1119,6 +1119,7 @@ def queue_state(user):
                           'files': [Path(path).name for path in (variant.get('files') or {}).values()],
                           'queued_at': variant.get('queued_at'), 'started_at': variant.get('started_at'), 'finished_at': variant.get('finished_at'),
                           'retry_at': variant.get('retry_at') if variant.get('status') == 'failed' else None, 'incomplete': False})
+    items += interview_prep.queue_items(user)  # TASK-355: its own runs, for jobs past UNAPPLIED_STATUSES
     running = sorted((item for item in items if item['status'] == 'running'), key=lambda item: item['started_at'] or '')
     queued = sorted((item for item in items if item['status'] == 'queued'), key=lambda item: (item['position'] is None, item['position'] or 0, item['queued_at'] or ''))
     finished = sorted((item for item in items if item['status'] not in ('running', 'queued')), key=lambda item: item['finished_at'] or '', reverse=True)

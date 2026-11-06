@@ -164,6 +164,11 @@ REANALYSE_LATE_TEXT = env_bool('DACHAPPLY_REANALYSE_LATE_TEXT', True)
 # mailto for the owner so the link is never dead. A mailto opens the user's own mail client with an
 # empty body, so nothing about their jobs is transmitted unless they type it themselves.
 FEEDBACK_URL = os.getenv('FEEDBACK_URL') or (f'mailto:{CODEX_CV_OWNER_EMAIL}?subject=DACHApply%20feedback' if CODEX_CV_OWNER_EMAIL else '')
+# TASK-356: Neon usage tracking (services/db_usage.py), off unless the key and project are set. The owner
+# address receives the alerts and is the one account that sees the panel.
+NEON_API_KEY = os.getenv('NEON_API_KEY', '').strip()
+NEON_PROJECT_ID = os.getenv('NEON_PROJECT_ID', '').strip()
+DB_USAGE_OWNER_EMAIL = os.getenv('DB_USAGE_OWNER_EMAIL', '').strip()
 # Where generated .tex/.pdf files are written and read back from (services/cv_generator.
 # persist_generated_files, latest_generated_sources). No default: it used to fall back to C:\latex
 # under DEBUG, which is one person's laptop, so every developer's machine claimed to have a CV
