@@ -50,13 +50,15 @@ class GenerationCancelled(Exception):
 
 class RecoverableGenerationError(RuntimeError):
     # TASK-317: usage_limit -- the provider refused for its usage/rate limit; reset_at -- when it said
-    # the limit resets (aware, this machine's local time), None when it did not say.
-    def __init__(self, summary, diagnostics='', usage_limit=False, reset_at=None):
+    # the limit resets (aware, this machine's local time), None when it did not say. TASK-350: transient
+    # -- the provider run itself failed, so running it again may work (unlike an answer that came back wrong).
+    def __init__(self, summary, diagnostics='', usage_limit=False, reset_at=None, transient=False):
         super().__init__(summary)
         self.summary=summary
         self.diagnostics=diagnostics or summary
         self.usage_limit=usage_limit
         self.reset_at=reset_at
+        self.transient=transient
         self.saved_files=[]  # TASK-334: copies of a failed compile's .tex/.log under .dachapply-logs/failed
 
 
@@ -1902,7 +1904,9 @@ def _provider_failure(detail, now=None):
     generic summary.
     """
     if not _USAGE_LIMIT.search(detail):
-        return RecoverableGenerationError('The selected model could not complete the request.', detail)
+        # shortcut: every other failed run counts as transient, a bad key or missing model too (the cap bounds
+        # those to a few refused runs); match permanent causes in `detail` once real stderr shows them.
+        return RecoverableGenerationError('The selected model could not complete the request.', detail, transient=True)
     match=_RESET_TIME.search(detail)
     hour,minute=(int(match[1]),int(match[2] or 0)) if match else (24,0)
     if match and match[3]:

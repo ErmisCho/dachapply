@@ -110,7 +110,8 @@ def evaluate_jobs(job_ids, user, provider, model, effort='default', speed='norma
         # The provider's own words, not a generic failure: a missing ollama model and an out-of-quota
         # API key are different problems and the owner can only act on the difference.
         # TASK-319: a usage limit says so too, so the late-text re-analysis can retry after the reset (TASK-317).
-        limit = {'usage_limit': True, 'reset_at': exc.reset_at} if exc.usage_limit else {}
+        # TASK-350: a provider run that failed for another reason says that too, for the same retry with its own cap.
+        limit = {'usage_limit': True, 'reset_at': exc.reset_at} if exc.usage_limit else {'transient': True} if exc.transient else {}
         return {'ok': False, 'errors': [exc.summary], 'detail': exc.diagnostics, **limit}
 
     if not isinstance(data, dict) or not isinstance(data.get('evaluations'), list):
