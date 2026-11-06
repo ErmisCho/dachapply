@@ -1,9 +1,10 @@
 // TASK-280.2: the job page's view of automatically prepared documents. No DOM here (see
 // postingSource.test.tsx), so the pure panel is rendered to markup; polling needs a browser.
-import {describe,expect,it} from 'vitest'
+import {describe,expect,it,vi} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {ApplicationPrepPanel,DailySlider,PrepBadge} from './App'
-import {anyPreparing,isPreparing,prepAction,prepBadge,reviewText,variantLabel,variantStatusText,type PrepState,type PrepVariant} from './applicationPrep'
+import {ApplicationPrepPanel,DailySlider,PrepBadge,TexPicker} from './App'
+import appSource from './App.tsx?raw'
+import {anyPreparing,defaultTex,isPreparing,prepAction,prepBadge,reviewText,texLabel,texOptions,variantLabel,variantStatusText,type PrepState,type PrepVariant} from './applicationPrep'
 
 const rule='Letters the posting does not mention, or calls optional, are not prepared automatically.'
 const v=(extra:Partial<PrepVariant>):PrepVariant=>({key:'cv-de',document:'cv',language:'de',status:'ready',files:{cv_pdf:'C:\\ws\\CVs\\Me-CV-Acme-DE.pdf'},...extra})
@@ -45,6 +46,54 @@ describe('prepared documents panel',()=>{
   it('flags a ready variant whose file is gone',()=>{
     expect(variantStatusText(v({missing:true}))).toContain('no longer on disk')
     expect(variantLabel(v({document:'message',language:'en'}))).toBe('Short message · English')
+  })
+})
+
+// TASK-348: every generated letter, one dropdown. No DOM here, so TexPicker's element tree is read directly.
+describe('choosing which TeX to copy',()=>{
+  const letter=(template:string,extra:Partial<PrepVariant>={})=>v({key:`letter-de-${template}`,document:'letter',letter_template:template,letter_label:template,files:{letter_tex:`C:\\ws\\${template}.tex`},...extra})
+  const letters=[v({key:'letter-de',document:'letter',letter_label:'Motivationsschreiben',recommended:true}),letter('Bewerbungsschreiben'),letter('Anschreiben')]
+  const parts=(element:any,type:string):any[]=>[element].flat(9).flatMap(node=>!node||typeof node!=='object'?[]:[...(node.type===type?[node]:[]),...parts(node.props?.children,type)])
+  const picker=(variants:PrepVariant[],value='',onCopy=(_:string)=>{},onChange=(_:string)=>{})=>TexPicker({state:state([v({}),...variants]),value,onChange,onCopy})
+
+  it('lists every ready TeX by its readable name with the recommended one preselected',()=>{
+    const html=renderToStaticMarkup(<ApplicationPrepPanel jobId={7} state={state([v({}),...letters])} jobStatus="to_apply"/>)
+    expect(html).toContain('aria-label="TeX file to copy"')
+    expect(html.match(/<option[^>]*>[^<]*<\/option>/g)).toEqual(['<option value="letter-de" selected="">Motivationsschreiben · German (recommended)</option>','<option value="letter-de-Bewerbungsschreiben">Bewerbungsschreiben · German</option>','<option value="letter-de-Anschreiben">Anschreiben · German</option>','<option value="cv-de">CV · German</option>'])
+    expect(html).toContain('Full letter · German · Bewerbungsschreiben')   // the rows differ too
+  })
+
+  it('copies the selected key, and choosing only reports the choice: no request',()=>{
+    const fetchSpy=vi.fn();vi.stubGlobal('fetch',fetchSpy)
+    const onCopy=vi.fn(),onChange=vi.fn(),element=picker(letters,'letter-de-Anschreiben',onCopy,onChange)
+    expect(parts(element,'select')[0].props.value).toBe('letter-de-Anschreiben')
+    parts(element,'select')[0].props.onChange({target:{value:'letter-de-Bewerbungsschreiben'}})
+    expect(onChange).toHaveBeenCalledWith('letter-de-Bewerbungsschreiben');expect(onCopy).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    parts(element,'button')[0].props.onClick()
+    expect(onCopy).toHaveBeenCalledWith('letter-de-Anschreiben')
+    vi.unstubAllGlobals()
+  })
+
+  it('the job page keeps the choice in local state and fetches the one chosen file only on Copy',()=>{
+    expect(appSource).toContain('<TexPicker state={state} value={texKey} onChange={setTexKey} onCopy={onCopy}/>')
+    expect(appSource).toContain('application-prep/export/?as=tex${key?`&key=${encodeURIComponent(key)}`')
+  })
+
+  it('shows a failed letter inline, keeps the rest selectable, and preselects the first ready one',()=>{
+    const failed={...letters[0],status:'failed' as const,error:'provider down',files:{}}
+    const html=renderToStaticMarkup(picker([failed,letters[1],letters[2]]))
+    expect(html).toContain('Motivationsschreiben · German (recommended): Failed: provider down')
+    expect(html).not.toContain('<option value="letter-de"')
+    expect(html).toContain('<option value="letter-de-Bewerbungsschreiben" selected="">')
+    expect(texOptions(state([failed]))).toEqual([]);expect(renderToStaticMarkup(TexPicker({state:state([failed]),value:'',onChange:()=>{}}))).not.toContain('<select')
+  })
+
+  it('leaves out discarded letters, and a job prepared before TASK-348 keeps its one label',()=>{
+    expect(texOptions(state([{...letters[1],review:'discard'},letters[2]])).map(x=>x.key)).toEqual(['letter-de-Anschreiben'])
+    expect(defaultTex(texOptions(state([v({key:'letter-de',document:'letter'})])))).toBe('letter-de')
+    expect(texLabel(v({key:'letter-de',document:'letter'}))).toBe('Full letter · German')
+    expect(render(state([v({})]))).not.toContain('<select')   // no letter wanted: nothing to choose between
   })
 })
 

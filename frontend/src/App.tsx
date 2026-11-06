@@ -7,7 +7,7 @@ import {artifactStem,comboValid,draftEffort,cvClipboardParts,cvClipboardTex,cvPi
 import type {PanelDragPreview} from './appUtils';
 import {postingSections} from './appUtils' // TASK-302
 import {defaultLetter,letterMismatchWarning,letterOptions} from './letterOptions';
-import {anyPreparing,isPreparing,packageText,prepAction,prepBadge,preparedFile,reviewText,usable,variantLabel,variantStatusText,type PrepState,type PrepSummary} from './applicationPrep';
+import {anyPreparing,defaultTex,failedLetters,isPreparing,packageText,prepAction,prepBadge,preparedFile,reviewText,texLabel,texOptions,usable,variantLabel,variantStatusText,type PrepState,type PrepSummary} from './applicationPrep';
 import PrepQueue,{queueProgress,useQueue} from './PrepQueue';
 import {APPLICATION_LANGUAGES,DOCUMENT_STATUSES,DOCUMENT_TYPES,POSTING_LANGUAGES,documentLabel,editableRequirements,isAnalysed,requirementsBadge,requirementsPayload} from './applicationRequirements';
 import type {ApplicationNote,ApplicationRequirements,RequirementDocument,EvaluateWithModelPreviewRow,EvaluateWithModelResult,Job,FollowUp,FeedbackDueRow,CandidateProfile,FunnelCounts,InviteCode,JobMailboxPayload,LiveSourceText,MailboxDraft,MailboxMessage,MatchReason,MailboxRun,MailboxSuggestion,PostingJob,PracticeSession,Stats} from './types';
@@ -821,10 +821,17 @@ export function DailySlider({id,label,help,unit,max,unlimited=false,value,onChan
   return <div className="mt-3"><label className="block text-sm font-medium text-slate-700" htmlFor={id}>{label}</label><div className="mt-1 flex items-center gap-3"><input id={id} type="range" min={0} max={top} step={1} className="w-64" value={value??top} aria-valuetext={text} onChange={e=>{const next=Number(e.target.value);onChange(unlimited&&next===top?null:next)}}/><output htmlFor={id} className="text-sm text-slate-600 dark:text-slate-300">{text}</output></div><p className="mt-1 text-xs font-normal text-slate-500">{help}</p></div>
 }
 
+// TASK-348: choose which generated TeX to paste into ChatGPT. Choosing is local state only; Copy reads that one file.
+export function TexPicker({state,value,onChange,onCopy}:{state:PrepState;value:string;onChange:(key:string)=>void;onCopy?:(key:string)=>void}){
+  const options=texOptions(state);const failed=failedLetters(state);const chosen=options.some(v=>v.key===value)?value:defaultTex(options)
+  if(!options.length&&!failed.length)return null
+  return <div className="mt-2 text-sm">{options.length>0&&<div className="flex flex-wrap items-center gap-2"><select aria-label="TeX file to copy" className="w-auto max-w-full" value={chosen} onChange={e=>onChange(e.target.value)}>{options.map(v=><option key={v.key} value={v.key}>{texLabel(v)}</option>)}</select><button className="btn-muted px-2 py-0.5" onClick={()=>onCopy?.(chosen)}>Copy TeX</button></div>}{failed.map(v=><p key={v.key} className="mt-1 text-xs text-red-700">{texLabel(v)}: {variantStatusText(v)}</p>)}</div>
+}
+
 export function ApplicationPrepPanel({jobId=0,state,jobStatus,busy=false,error=null,onAction,onReview,onAdjust,onCopy}:{jobId?:number;state:PrepState|null;jobStatus:string;busy?:boolean;error?:any;onAction?:()=>void;onReview?:(body:any)=>void;onAdjust?:(key:string,instructions:string)=>Promise<boolean>;onCopy?:(key:string)=>void}){
   const selection=state?.selection||[];const selectionKey=selection.join(',')
   const[picked,setPicked]=useState<string[]>(selection);useEffect(()=>setPicked(selectionKey?selectionKey.split(','):[]),[selectionKey])
-  const[adjustKey,setAdjustKey]=useState('');const[adjustText,setAdjustText]=useState('')
+  const[adjustKey,setAdjustKey]=useState('');const[adjustText,setAdjustText]=useState('');const[texKey,setTexKey]=useState('')
   if(!state||(!state.variants.length&&!state.reason&&!state.outdated&&jobStatus!=='to_apply'))return null
   const action=prepAction(state,jobStatus)
   const exportUrl=(key:string,as='zip')=>fileUrl(`/jobs/${jobId}/application-prep/export/?as=${as}${key?`&key=${encodeURIComponent(key)}`:''}`)
@@ -837,6 +844,7 @@ export function ApplicationPrepPanel({jobId=0,state,jobStatus,busy=false,error=n
     {state.outdated&&<p className="mt-2 text-sm text-amber-700">{state.outdated}</p>}
     {selection.length>0?<div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-emerald-200 bg-emerald-50 p-2 text-sm"><span><b>Final package:</b> {packageText(state)}</span><a className="btn-muted px-2 py-0.5" href={exportUrl('')}>Download package</a><button className="btn-muted px-2 py-0.5" onClick={()=>onCopy?.('')}>Copy package TeX</button><button className="btn-muted px-2 py-0.5" disabled={busy} onClick={()=>onReview?.({action:'clear'})}>Clear selection</button>{changed&&selectButton}</div>
       :ready&&<div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-amber-200 bg-amber-50 p-2 text-sm text-amber-900"><span>Drafts: no final package is selected, so this job is not Ready to submit. Tick one CV and the letters that go with it, in one language.</span>{selectButton}</div>}
+    {state.variants.some(v=>v.document==='letter')&&<TexPicker state={state} value={texKey} onChange={setTexKey} onCopy={onCopy}/>}
     {state.variants.length>0&&<ul className="mt-2 grid gap-2 text-sm">{state.variants.map(v=><li key={v.key} className="rounded border border-slate-100 p-2">
       <div className="flex flex-wrap items-baseline gap-x-2">{usable(v)&&v.review!=='discard'&&<input type="checkbox" className="row-select self-center" aria-label={`Include ${variantLabel(v)} in the final package`} checked={picked.includes(v.key)} disabled={busy} onChange={e=>setPicked(e.target.checked?[...picked,v.key]:picked.filter(k=>k!==v.key))}/>}<span className="font-medium">{variantLabel(v)}</span>{v.status==='ready'&&<Badge tone={v.selected?'green':v.review==='discard'?'slate':v.review==='keep'?'teal':'yellow'}>{reviewText(v)}</Badge>}<span className={v.status==='failed'?'text-red-700':v.status==='ready'&&!v.missing?'text-emerald-700':'text-slate-600'}>{variantStatusText(v)}</span>{v.status==='ready'&&<span className="break-all text-xs text-slate-500">{preparedFile(v)}</span>}</div>
       {v.adjust_error&&<p className="mt-1 text-xs text-red-700">Adjustment failed: {v.adjust_error} The previous files are unchanged.</p>}

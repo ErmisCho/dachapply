@@ -15,7 +15,7 @@ from rest_framework.test import APIClient
 
 from jobradar.models import JobLead
 from jobradar.services import application_prep, cv_generator, cv_tasks
-from jobradar.tests.test_application_prep import _job, _move, _req, _state, client, generator, owner, workspace  # noqa: F401 -- fixtures
+from jobradar.tests.test_application_prep import _job, _move, _one_german_letter, _req, _state, client, generator, owner, workspace  # noqa: F401 -- fixtures
 from jobradar.tests.test_cv_assets import GENERATED, VALID_TEX, _fake_pdflatex
 
 URL = 'https://jobs.example.test/acme/123'
@@ -24,6 +24,7 @@ URL = 'https://jobs.example.test/acme/123'
 @pytest.fixture
 def prepared(client, owner, generator, django_capture_on_commit_callbacks):
     """A To-apply job with cv/letter in EN and DE prepared (mixed language, cover letter required)."""
+    _one_german_letter(owner)  # TASK-348: these are about one letter per language; test_all_letters has the rest
     job = _job(owner)
     JobLead.objects.filter(pk=job.pk).update(url=URL)
     job.refresh_from_db()
@@ -121,6 +122,7 @@ def test_discard_keeps_the_files_and_restore_works_only_while_they_exist(client,
 
 
 def test_retry_skips_a_discarded_failed_variant(client, owner, generator, django_capture_on_commit_callbacks):
+    _one_german_letter(owner)  # TASK-348: these are about one letter per language; test_all_letters has the rest
     generator['fail'] = {'letter-de'}
     job = _job(owner)
     _move(client, job, 'to_apply', django_capture_on_commit_callbacks)

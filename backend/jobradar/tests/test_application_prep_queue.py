@@ -11,7 +11,7 @@ from rest_framework.test import APIClient
 
 from jobradar.models import JobLead
 from jobradar.services import application_prep, cv_tasks, json_importer
-from jobradar.tests.test_application_prep import POSTING, _job, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
+from jobradar.tests.test_application_prep import POSTING, _job, _one_german_letter, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
 
 QUEUE = '/api/jobs/application-prep/queue/'
 ACTION = QUEUE + 'action/'
@@ -250,6 +250,7 @@ def test_the_queue_endpoints_are_owner_only(owner, tasks):
 # --- AC4: the queue page's list ------------------------------------------------------------------
 
 def test_the_queue_lists_running_then_queued_by_position_then_finished_newest_first(owner, client, tasks, settings):
+    _one_german_letter(owner)  # TASK-348: test_all_letters has the several-letters queue
     settings.PREP_QUEUE_CONCURRENCY = 2
     older, newer = _job(owner, 'to_apply', requirements=_req('de')), _job(owner, 'reviewed', requirements=_req('de'))
     application_prep._save(older, owner.pk, lambda prep: prep.update(variants={

@@ -12,7 +12,7 @@ import pytest
 from django.contrib.auth.models import User
 from rest_framework.test import APIClient
 
-from jobradar.models import JobLead, UserProfile
+from jobradar.models import CvAsset, JobLead, UserProfile
 from jobradar.services import application_prep, cv_generator, cv_tasks
 from jobradar.services.application_prep import plan_variants
 from jobradar.services.application_requirements import normalize_application_requirements
@@ -148,6 +148,10 @@ def generator(monkeypatch, workspace):
     return state
 
 
+def _one_german_letter(owner):
+    CvAsset.objects.filter(user=owner, key__in=('motivationsschreiben', 'bewerbungsschreiben')).delete()
+
+
 def _job(owner, status='reviewed', requirements=None, text=POSTING):
     return JobLead.objects.create(company='ACME', title='Python Engineer', status=status, created_by=owner, original_source_text=text,
                                   application_requirements=_req('mixed', '', cover_letter='required') if requirements is None else requirements)
@@ -165,6 +169,7 @@ def _state(client, job):
 
 
 def test_transition_into_to_apply_prepares_variants_as_drafts(client, owner, generator, django_capture_on_commit_callbacks):
+    _one_german_letter(owner)  # TASK-348: these are about one letter per language; test_all_letters has the rest
     job = _job(owner)
     _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
     variants, payload = _state(client, job)
@@ -233,6 +238,7 @@ def test_reentering_to_apply_after_a_skip_tries_again(client, owner, generator, 
 
 
 def test_double_transition_generates_each_variant_once(client, owner, generator, django_capture_on_commit_callbacks):
+    _one_german_letter(owner)  # TASK-348: these are about one letter per language; test_all_letters has the rest
     # A failed variant included: re-entering To apply is not a retry; only the Retry action is.
     generator['fail'] = {'cv-de'}
     job = _job(owner)
@@ -262,6 +268,7 @@ def test_concurrent_prepare_calls_start_each_variant_once(owner, workspace, monk
 
 
 def test_a_failed_variant_leaves_the_others_and_retry_reruns_only_it(client, owner, generator, django_capture_on_commit_callbacks):
+    _one_german_letter(owner)  # TASK-348: these are about one letter per language; test_all_letters has the rest
     generator['fail'] = {'letter-de'}
     job = _job(owner)
     _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
@@ -305,6 +312,7 @@ def test_existing_generated_files_are_never_joined_or_replaced(client, owner, wo
 
 
 def test_a_variant_that_cannot_start_does_not_stop_the_others(owner, generator, monkeypatch):
+    _one_german_letter(owner)  # TASK-348: these are about one letter per language; test_all_letters has the rest
     job = _job(owner, 'to_apply')
     real = cv_tasks.start_cv_task
 

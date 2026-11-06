@@ -8,6 +8,7 @@ State lives in the job's workspace sidecar under 'preparation' -- the same local
 already tracks the job's generated files -- so it survives a restart without a migration:
 {"reason": "why nothing was started, else ''", "model": {...},
  "variants": {"cv-de": {"document": "cv"|"letter"|"message", "language": "en"|"de", "letter_template": "",
+                        "letter_label": "", "recommended": false,
                         "status": "queued"|"running"|"ready"|"failed", "task_id": "", "error": "", "files": {...}}}}
 
 TASK-280.3 adds the owner's review beside it, in the same sidecar: per variant "review" ("keep" |
@@ -25,6 +26,11 @@ TASK-317: a variant -- or a requirements analysis (the preparation itself) -- th
 provider's usage limit records "retry_at" (ISO: the reset plus a minute, or half an hour on) and
 "auto_retries"; one Timer (_timer) wakes retry_due, which re-queues it through queue_action's retry,
 at most AUTO_RETRIES times. Any other failure clears retry_at and is never retried automatically.
+
+TASK-348: a wanted full letter is prepared once per stored letter template of its language. The
+recommended template (_letter_template's guess) keeps "letter-<lang>", the others are
+"letter-<lang>-<template key>"; the owner picks one for the package, and a job prepared before this
+simply has the one.
 """
 import heapq
 import io
@@ -49,7 +55,7 @@ from jobradar.services import cv_tasks, job_evaluator
 from jobradar.services.processing_control import accepting, durable, handoff_documents, store as processing_store
 from jobradar.services.access import accessible_jobs
 from jobradar.services.application_requirements import DOCUMENT_STATUSES, DOCUMENT_TYPES, POSTING_LANGUAGES, normalize_application_requirements
-from jobradar.services.cv_generator import _edit_sidecar, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
+from jobradar.services.cv_generator import _edit_sidecar, _filename_label, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
 from jobradar.services.posting_fetch import PART_NAMES, fetch_missing_sources, posting_missing
 from jobradar.services.prompt_builder import APPLICATION_REQUIREMENTS_RULES, APPLICATION_REQUIREMENTS_SCHEMA_FIELD, build_candidate_profile_text, user_profile_settings
 
@@ -185,15 +191,21 @@ def _gate(job, user):
     if reason:
         return reason, [], '', None
     templates = user_templates(user)
-    for variant in variants:
+    planned, variants = variants, []
+    for variant in planned:
         language = LANGUAGE_NAMES[variant['language']]
         if variant['language'] not in templates:
             return f'No {language} CV template is stored on this account.', [], '', None
+        variants.append(variant)
         if variant['document'] != 'cv':
             letters = templates[variant['language']]['letters']
             if not letters:
                 return f'No {language} letter template is stored on this account.', [], '', None
-            variant['letter_template'] = _letter_template(letters, variant['letter_type'])
+            variant['letter_template'] = recommended = _letter_template(letters, variant['letter_type'])
+            if variant['document'] == 'letter':  # TASK-348: every template, the guess first under the key it always had
+                variant.update(letter_label=letters[recommended].label or recommended, recommended=True)
+                variants += [{**variant, 'key': f"{variant['key']}-{key}", 'letter_template': key, 'letter_label': asset.label or key, 'recommended': False}
+                             for key, asset in letters.items() if key != recommended]
     option, effort = cv_default_choice(available_model_options())  # TASK-303 AC1
     if not option:
         return 'No document model is available on this machine.', [], '', None
@@ -209,6 +221,17 @@ def _gate(job, user):
 
 def _now():
     return timezone.now().isoformat()
+
+
+def _name_suffix(variant, variants):
+    """One variant's file-name suffix: its language when the job has several and, TASK-348, its template
+    when another letter's label gives the same file name, because PREP_QUEUE_CONCURRENCY above 1 could
+    then write them over each other. A label that differs already names the file (_target_names)."""
+    language = [variant['language'].upper()] if len({item['language'] for item in variants.values()}) > 1 else []
+    names = [_filename_label(item['letter_label']) for item in variants.values() if item.get('letter_label') and item['language'] == variant['language']]
+    extra = variant.get('letter_label') and not variant.get('recommended')
+    template = [_filename_label(variant['letter_template'])] if extra and names.count(_filename_label(variant['letter_label'])) > 1 else []
+    return '-'.join(template + language)
 
 
 def _pump():
@@ -231,8 +254,8 @@ def _start(job_id, user_id, key):
         return  # cancelled, re-prepared or its job deleted while it waited
     document, choice = variant['document'], prep.get('model') or {}
     options = {'short_message': True} if document == 'message' else {}
-    if len({item['language'] for item in variants.values()}) > 1:
-        options['name_suffix'] = variant['language'].upper()
+    if suffix := _name_suffix(variant, variants):
+        options['name_suffix'] = suffix
 
     finished = partial(_finish, job_id, user_id, key)
     _save(job, user_id, lambda prep: prep['variants'][key].update(status='running', task_id='', started_at=_now()))
@@ -336,6 +359,7 @@ def prepare(job_id, user, retry=False, inline=False):
                 for variant in variants:
                     prep['variants'][variant['key']] = {'document': variant['document'], 'language': variant['language'],
                                                         'letter_template': variant.get('letter_template', ''),
+                                                        'letter_label': variant.get('letter_label', ''), 'recommended': bool(variant.get('recommended')),
                                                         'status': 'queued', 'task_id': '', 'error': '', 'files': {},
                                                         'queued_at': queued_at, 'started_at': None, 'finished_at': None}
             _save(job, user.pk, queue)
@@ -738,7 +762,8 @@ def public_state(job, user, reason_override=None):
 # --- TASK-280.3: review, final package, independent adjustment, export ----------------------------
 
 def _label(variant):
-    return f"{DOCUMENT_NAMES.get(variant.get('document'), 'Document')} · {LANGUAGE_NAMES.get(variant.get('language'), variant.get('language', ''))}"
+    label = f"{DOCUMENT_NAMES.get(variant.get('document'), 'Document')} · {LANGUAGE_NAMES.get(variant.get('language'), variant.get('language', ''))}"
+    return f"{label} · {variant['letter_label']}" if variant.get('letter_label') else label
 
 
 def _files_present(variant):

@@ -1,13 +1,14 @@
 // TASK-280.2: labels and actions for the documents prepared automatically when a job moves into To apply.
 // TASK-280.3: the owner's review of them (keep / discard / final package). TASK-299: the board badge.
-export type PrepVariant={key:string;document:'cv'|'letter'|'message';language:string;letter_template?:string;status:'queued'|'running'|'ready'|'failed'|'cancelled';error?:string;files?:Record<string,string>;missing?:boolean;progress?:number;step_label?:string;estimated_seconds_remaining?:number;review?:''|'keep'|'discard';selected?:boolean;adjusting?:boolean;adjust_error?:string}
+export type PrepVariant={key:string;document:'cv'|'letter'|'message';language:string;letter_template?:string;letter_label?:string;recommended?:boolean;status:'queued'|'running'|'ready'|'failed'|'cancelled';error?:string;files?:Record<string,string>;missing?:boolean;progress?:number;step_label?:string;estimated_seconds_remaining?:number;review?:''|'keep'|'discard';selected?:boolean;adjusting?:boolean;adjust_error?:string}
 export type PrepState={reason:string;rule:string;model:{provider?:string;model?:string;effort?:string};variants:PrepVariant[];selection?:string[];invalidated?:string;outdated?:string}
 export type PrepSummary={running:number;done:number;failed:number;progress:number;eta:number}
 
 const DOCUMENTS:Record<string,string>={cv:'CV',letter:'Full letter',message:'Short message'}
 const LANGUAGES:Record<string,string>={en:'English',de:'German'}
 
-export function variantLabel(v:PrepVariant){return `${DOCUMENTS[v.document]||v.document} · ${LANGUAGES[v.language]||v.language.toUpperCase()}`}
+const languageName=(v:PrepVariant)=>LANGUAGES[v.language]||v.language.toUpperCase()
+export function variantLabel(v:PrepVariant){return `${DOCUMENTS[v.document]||v.document} · ${languageName(v)}${v.letter_label?` · ${v.letter_label}`:''}`}
 
 // TASK-312: also the queue page's time-left wording. TASK-340: one wording for every estimate (job page, Queue
 // page, navbar) -- at least a minute, hours past sixty.
@@ -40,6 +41,13 @@ export function preparedFile(v:PrepVariant){const path=v.files?.cv_pdf||v.files?
 
 // TASK-280.3: a variant the owner can act on -- ready, with its files on disk.
 export const usable=(v:PrepVariant)=>v.status==='ready'&&!v.missing
+
+// TASK-348: the TeX dropdown -- every usable document, letters first, the recommended letter preselected
+// (or the first one ready when it failed), and each letter by its own template's name.
+export function texOptions(state:PrepState){const ready=state.variants.filter(v=>usable(v)&&v.review!=='discard');return [...ready.filter(v=>v.document==='letter'),...ready.filter(v=>v.document!=='letter')]}
+export const defaultTex=(options:PrepVariant[])=>(options.find(v=>v.recommended)||options[0])?.key||''
+export const texLabel=(v:PrepVariant)=>v.letter_label?`${v.letter_label} · ${languageName(v)}${v.recommended?' (recommended)':''}`:variantLabel(v)
+export const failedLetters=(state:PrepState)=>state.variants.filter(v=>v.document==='letter'&&v.review!=='discard'&&(v.status==='failed'||v.status==='cancelled'))
 
 // TASK-280.3 AC5: the review badge. Generated-but-unreviewed documents say plainly that they are drafts.
 export function reviewText(v:PrepVariant){return v.selected?'In final package':v.review==='discard'?'Discarded':v.review==='keep'?'Kept':'Draft'}
