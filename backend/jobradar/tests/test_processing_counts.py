@@ -194,3 +194,48 @@ def test_pre_key_upgrade_does_not_revive_finished_daily_wrapper(tmp_path):
     control = processing.Store(path)
     assert control.status()['remaining_jobs'] == 1
     assert control.status()['completed_jobs'] == 0
+
+
+def test_daily_analysis_retry_hands_interruption_to_variants(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from jobradar.services import application_prep as prep
+    monkeypatch.setenv('DACHAPPLY_CONTROL_DB', str(tmp_path / 'control.sqlite3'))
+    control = processing.store()
+    for job, owner in ((1, 2), (1, 3), (4, 2)):
+        unit = control.enqueue('daily-document', {'args': [job, owner], 'kwargs': {}})
+        assert control.claim(unit, 'daily-document', 1)
+        control.recover()
+    job = SimpleNamespace(id=1, status='reviewed')
+    monkeypatch.setattr(prep.JobLead.objects, 'filter', lambda **kwargs: SimpleNamespace(first=lambda: job))
+    monkeypatch.setattr(prep, 'is_cv_owner', lambda user: True)
+    monkeypatch.setattr(prep.settings, 'CODEX_CV_WORKSPACE', str(tmp_path))
+    monkeypatch.setattr(prep, 'public_state', lambda *args, **kwargs: {'variants': []})
+    monkeypatch.setattr(prep, 'latest_generated_sources', lambda *args: [])
+    monkeypatch.setattr(prep, '_gate', lambda *args: ('', [{'key': 'cv-en', 'document': 'cv', 'language': 'en'}], '', {}))
+    monkeypatch.setattr(prep, '_save', lambda *args: None)
+    monkeypatch.setattr(prep, '_queue', [])
+    monkeypatch.setattr(prep, '_pump', lambda: None)
+    prep.prepare(1, SimpleNamespace(pk=2), retry=True)
+    assert prep._queue == [(1, 2, 'cv-en')]
+    assert control.status()['interrupted_jobs'] == 2
+
+
+@pytest.mark.parametrize('outcome,remaining', [('empty', 0), ('failed', 1), ('skipped', 1)])
+def test_empty_mailbox_retry_resolves_only_successful_matching_check(tmp_path, monkeypatch, outcome, remaining):
+    from types import SimpleNamespace
+    monkeypatch.setenv('DACHAPPLY_CONTROL_DB', str(tmp_path / 'control.sqlite3'))
+    control = processing.store()
+    for owner in (2, 3):
+        lost = control.enqueue('mailbox-tick', {'args': [], 'kwargs': {'attempt': owner}})
+        control.set_job_key(lost, 'mailbox:' + str(owner))
+        assert control.claim(lost, 'mailbox-tick', 1)
+        control.recover()
+    def check():
+        if outcome != 'skipped':
+            processing.report_mailbox_job(2)
+        return SimpleNamespace(fetched_count=0, error='failure' if outcome == 'failed' else '', skipped=outcome == 'skipped'), None
+    monkeypatch.setitem(processing._handlers, 'mailbox-tick', check)
+    retry = control.enqueue('mailbox-tick', {'args': [], 'kwargs': {}})
+    processing.execute(control, retry, 'mailbox-tick', [], {})
+    assert control.status()['interrupted_jobs'] == remaining + 1  # other owner's interruption remains
+    assert control.status()['completed_jobs'] == 0

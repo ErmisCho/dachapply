@@ -339,7 +339,7 @@ def prepare(job_id, user, retry=False, inline=False):
                                                         'status': 'queued', 'task_id': '', 'error': '', 'files': {},
                                                         'queued_at': queued_at, 'started_at': None, 'finished_at': None}
             _save(job, user.pk, queue)
-            handoff_documents()
+            handoff_documents(job.id, user.pk)
             _queue.extend((job.id, user.pk, variant['key']) for variant in variants)
             _pump()
     if analyse:
