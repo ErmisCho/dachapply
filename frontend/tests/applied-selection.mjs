@@ -25,7 +25,9 @@ test('applied jobs leave the real board selection and generators',{timeout:60000
       await new Promise(resolve=>setTimeout(resolve,100))
     }
     browser=await chromium.launch(process.platform==='win32'?{channel:'chrome'}:{})
-    for(const count of [1,2])await t.test(`${count} selected job(s)`,async()=>{
+    for(const scenario of ['single','batch','applied-popup','applied-date'])await t.test(scenario,async()=>{
+      const count=['batch','applied-date'].includes(scenario)?2:1
+      const caseJobs=jobs.map(job=>({...job,status:scenario.startsWith('applied-')?'applied':'reviewed',status_date:'2026-11-01'}))
       const context=await browser.newContext({viewport:{width:1440,height:1000}})
       const page=await context.newPage()
       page.setDefaultTimeout(5000)
@@ -41,16 +43,18 @@ test('applied jobs leave the real board selection and generators',{timeout:60000
         let data=[]
         let status=200
         if(path==='/api/auth/me/')data=user
-        else if(path==='/api/jobs/')data=jobs
+        else if(path==='/api/jobs/')data=caseJobs
         else if(path==='/api/stats/')data={}
         else if(path==='/api/jobs/application-prep/active/')data={}
         else if(path==='/api/jobs/source-text/refresh-due/')data={remaining:0,staged:0}
         else if(/^\/api\/jobs\/\d+\/cv-generation\/$/.test(path)){
-          const id=Number(path.split('/')[3]);previews.push(id);data=preview(jobs.find(job=>job.id===id))
+          const id=Number(path.split('/')[3]);previews.push(id);data=preview(caseJobs.find(job=>job.id===id))
+        }else if(/^\/api\/jobs\/\d+\/source-text\/$/.test(path)&&route.request().method()==='PATCH'){
+          data={...caseJobs.find(job=>job.id===Number(path.split('/')[3])),...route.request().postDataJSON()}
         }else if(/^\/api\/jobs\/\d+\/$/.test(path)&&route.request().method()==='PATCH'){
           const id=Number(path.split('/')[3]);const body=route.request().postDataJSON()
           if(rejectPatch){status=500;data={detail:'Synthetic save failure'}}
-          else{patches.push(id);data={...jobs.find(job=>job.id===id),...body}}
+          else{patches.push(id);data={...caseJobs.find(job=>job.id===id),...body}}
         }
         await route.fulfill({status,json:data})
       })
@@ -59,7 +63,28 @@ test('applied jobs leave the real board selection and generators',{timeout:60000
         const checkbox=id=>page.getByRole('checkbox',{name:new RegExp(`^Select Fixture ${id}`)})
         await checkbox(1).check()
         if(count===2)await checkbox(2).check()
+        if(scenario==='applied-date'){
+          rejectPatch=false
+          const saved=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/jobs/1/'&&response.request().method()==='PATCH')
+          await page.getByLabel('Application date for Fixture 1 Engineer 1',{exact:true}).fill('2026-11-05')
+          await (await saved).finished()
+          await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))
+          assert.equal(await checkbox(1).isChecked(),true,'date save keeps the Applied job selected')
+          assert.equal(await checkbox(2).isChecked(),true)
+          assert.deepEqual(patches,[1])
+          assert.deepEqual(errors,[])
+          return
+        }
         await page.getByRole('button',{name:count===1?'Generate CV and Motivation Letter':'Generate CV and Letters',exact:true}).click()
+        if(scenario==='applied-popup'){
+          const dialog=page.getByRole('dialog',{name:'Generate CV and Motivation Letter',exact:true})
+          await dialog.getByRole('button',{name:'Save company and job text',exact:true}).click()
+          await dialog.getByText('Company and job text saved.',{exact:true}).waitFor()
+          assert.equal(await checkbox(1).isChecked(),true,'source save keeps the Applied job selected')
+          assert.equal(await dialog.isVisible(),true)
+          assert.deepEqual(errors,[])
+          return
+        }
         const apply=page.getByRole('button',{name:count===1?'Mark applied':'Mark as applied',exact:true})
         await apply.first().waitFor()
         // Failed saves must leave both the popup and selection intact.
