@@ -63,6 +63,11 @@ GMAIL_OAUTH_CLIENT_SECRET = ''
 # installed. Tests that exercise it set the model and patch the runner themselves.
 CODEX_CV_LITERAL_EDIT_MODEL = ''
 
+# TASK-356: same reason as the Gmail settings above; a test that wants tracking on sets these itself.
+NEON_API_KEY = ''
+NEON_PROJECT_ID = ''
+DB_USAGE_OWNER_EMAIL = ''
+
 # TASK-281: usage counters are written before the response so tests can assert on them right away.
 # The one test of the background path turns this on itself.
 USAGE_RECORD_ASYNC = False

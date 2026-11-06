@@ -312,6 +312,7 @@ class JobLeadSerializer(serializers.ModelSerializer):
     def update(self, instance, attrs):
         new_status=attrs.get('status')
         entering_to_apply=new_status == 'to_apply' and instance.status != 'to_apply'
+        entering_interview=new_status == 'interview' and instance.status != 'interview'
         if new_status in JobLead.DATED_STATUSES and instance.status != new_status and not attrs.get('status_date'):
             attrs['status_date']=timezone.localdate()
         status_for_last_update=new_status or instance.status
@@ -338,6 +339,9 @@ class JobLeadSerializer(serializers.ModelSerializer):
             # after the status is committed; prepare() itself refuses a second, concurrent start.
             from .services.application_prep import prepare_on_to_apply
             transaction.on_commit(lambda: prepare_on_to_apply(updated.pk, request.user.pk), robust=True)
+        if entering_interview and request:
+            from .services.interview_prep import on_entering_interview  # TASK-355
+            transaction.on_commit(lambda: on_entering_interview(updated.pk, request.user.pk), robust=True)
         return updated
     def get_latest_evaluation(self, obj):
         ev=obj.evaluations.first()

@@ -15,7 +15,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.core.wsgi import get_wsgi_application
 from django.conf import settings
 
-from jobradar.services import application_prep
+from jobradar.services import application_prep, db_usage
 from jobradar.services.processing_control import Store, recover_pending, event
 
 
@@ -131,6 +131,7 @@ class Command(BaseCommand):
             from jobradar.services.mailbox_loop import _loop
             if os.environ.get('DACHAPPLY_LOCAL_MAILBOX_LOOP', '1') != '0':
                 threading.Thread(target=_loop, daemon=True).start()
+            db_usage.start()
             threading.Thread(target=channel.serve_forever, daemon=True).start()
             channel_started = True
 

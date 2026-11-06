@@ -10,7 +10,7 @@ from rest_framework.decorators import api_view, throttle_classes
 from rest_framework.response import Response
 
 from .models import JobLead
-from .services import application_prep
+from .services import application_prep, interview_prep
 from .services.access import accessible_jobs
 from .services.application_prep import prepare, public_state
 from .services.cv_generator import is_cv_owner
@@ -44,6 +44,26 @@ def application_prep_retry(request, job_id):
     if state is None:
         return Response({'detail': 'CV generation is unavailable on this server.'}, status=503)
     return Response(state)
+
+
+@api_view(['GET'])
+def interview_prep_status(request, job_id):
+    """TASK-355: the job's prep notes and the state of its run."""
+    job = _job(request, job_id)
+    if not job:
+        return _not_found()
+    return Response(interview_prep.state(job, request.user))
+
+
+@api_view(['POST'])
+@throttle_classes([CVGenerationUserThrottle])
+def interview_prep_run(request, job_id):
+    """{regenerate?: true} Generate or Retry. Only regenerate replaces a note; a run going refuses both."""
+    job = _job(request, job_id)
+    if not job:
+        return _not_found()
+    interview_prep.start(job.id, request.user, regenerate=request.data.get('regenerate') is True)
+    return Response(interview_prep.state(job, request.user))
 
 
 @api_view(['POST'])

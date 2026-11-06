@@ -2631,7 +2631,12 @@ def apply_suggestion(suggestion: MailboxSuggestion, user=None) -> MailboxSuggest
 
     with transaction.atomic():
         job = JobLead.objects.select_for_update().get(pk=suggestion.job_id)
+        entering_interview = suggestion.payload.get('status') == 'interview' and job.status != 'interview'
         JobLeadSerializer().update(job, dict(suggestion.payload))
+        if entering_interview and user:
+            # TASK-355: no request reaches the serializer here, so its own hook cannot fire.
+            from jobradar.services.interview_prep import on_entering_interview
+            transaction.on_commit(lambda: on_entering_interview(job.pk, user.pk), robust=True)
         suggestion.status = 'confirmed'
         suggestion.decided_at = timezone.now()
         suggestion.save(update_fields=['status', 'decided_at'])

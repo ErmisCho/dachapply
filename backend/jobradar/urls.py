@@ -2,7 +2,8 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import *
 from .views_invites import InviteCodeViewSet
-from .views_application_prep import application_prep_active, application_prep_adjust, application_prep_export, application_prep_queue, application_prep_queue_action, application_prep_retry, application_prep_review, application_prep_status
+from .views_application_prep import application_prep_active, application_prep_adjust, application_prep_export, application_prep_queue, application_prep_queue_action, application_prep_retry, application_prep_review, application_prep_status, interview_prep_run, interview_prep_status
+from .views_db_usage import db_usage_status
 
 router=DefaultRouter()
 router.register('jobs', JobLeadViewSet, basename='jobs')
@@ -28,6 +29,8 @@ urlpatterns=[
  path('jobs/<int:job_id>/application-prep/review/', application_prep_review), path('jobs/<int:job_id>/application-prep/adjust/', application_prep_adjust), path('jobs/<int:job_id>/application-prep/export/', application_prep_export), path('jobs/application-prep/active/', application_prep_active),
  # TASK-312: the cross-job preparation queue and its actions.
  path('jobs/application-prep/queue/', application_prep_queue), path('jobs/application-prep/queue/action/', application_prep_queue_action),
+ # TASK-355: a job's interview prep notes; TASK-356: database usage.
+ path('jobs/<int:job_id>/interview-prep/', interview_prep_status), path('jobs/<int:job_id>/interview-prep/run/', interview_prep_run), path('db-usage/', db_usage_status),
  path('debug/raise-test-error/', raise_test_error),
  path('practice/evaluate/', practice_evaluate), path('practice/history/', practice_history), path('practice/questions/', practice_questions),
  path('export/', export_user_data), path('import/', import_user_data),
