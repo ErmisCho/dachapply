@@ -194,11 +194,11 @@ def encode_profile_value(field, value):
     return value
 
 
-def user_profile_settings(user):
+def user_profile_settings(user, whole=False):
     # No candidate_profile default and no backfill: an account with an empty profile keeps it
     # empty, so prompt generation refuses instead of borrowing somebody else's bio.
     defaults={field: encode_profile_value(field, '') for field in PROFILE_FIELD_NAMES}
-    profile, _ = UserProfile.objects.get_or_create(user=user, defaults=defaults)
+    profile, _ = (UserProfile.whole if whole else UserProfile.objects).get_or_create(user=user, defaults=defaults)
     return profile
 
 
@@ -225,7 +225,7 @@ def has_candidate_profile(user):
     """
     if not getattr(user, 'is_authenticated', False):
         return False
-    profile = UserProfile.objects.filter(user=user).first()
+    profile = UserProfile.whole.filter(user=user).only(*PROFILE_FIELD_NAMES).first()
     return bool(profile and _profile_parts(profile))
 
 

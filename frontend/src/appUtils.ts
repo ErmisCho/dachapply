@@ -45,6 +45,14 @@ export async function copyToClipboard(text:string){
   try{return document.execCommand('copy')}catch{return false}finally{textarea.remove()}
 }
 
+// TASK-354. Calls load every `ms` while the tab is shown and once when it is shown again. Returns stop.
+export function pollWhileVisible(load:()=>void,ms:number){
+  const tick=()=>{if(!document.hidden)load()}
+  const timer=setInterval(tick,ms)
+  document.addEventListener('visibilitychange',tick)
+  return()=>{clearInterval(timer);document.removeEventListener('visibilitychange',tick)}
+}
+
 // TASK-272. A flag that turns itself off `ms` after the last flash() - the "Copied" cues. Plain
 // function so it is testable with fake timers (no DOM in this vitest run); useFlash wraps it.
 export function createFlash(ms:number,set:(on:boolean)=>void){

@@ -5,6 +5,7 @@ import {renderToStaticMarkup} from 'react-dom/server'
 import {MemoryRouter} from 'react-router-dom'
 import {Nav} from './App'
 import {about,timeLeft} from './applicationPrep'
+import {pollWhileVisible} from './appUtils'
 import {QueueView,queueAction,queueProgress,queueSnapshot,watchQueue,type QueueData,type QueueItem,type QueueSnapshot} from './PrepQueue'
 
 const item=(extra:Partial<QueueItem>):QueueItem=>({job_id:7,company:'Acme GmbH',title:'Backend Developer',job_status:'to_apply',key:'cv-de',label:'German CV',document:'cv',language:'de',status:'queued',position:1,progress:0,eta_seconds:null,error:'',files:[],queued_at:'2026-10-19T08:00:00Z',started_at:null,finished_at:null,retry_at:null,...extra})
@@ -25,7 +26,7 @@ const originalFetch=Object.getOwnPropertyDescriptor(globalThis,'fetch')
 const originalDocument=Object.getOwnPropertyDescriptor(globalThis,'document')
 beforeEach(()=>{
   calls=[];reply=()=>({status:200,body:fixture()})
-  Object.defineProperty(globalThis,'document',{value:{cookie:''},configurable:true,writable:true})
+  Object.defineProperty(globalThis,'document',{value:{cookie:'',addEventListener:()=>{},removeEventListener:()=>{}},configurable:true,writable:true})
   Object.defineProperty(globalThis,'fetch',{value:async(url:string,init:any)=>{calls.push({method:init?.method||'GET',url,body:init?.body?JSON.parse(init.body):undefined});const r=reply()
     return {ok:r.status<400,status:r.status,statusText:'',headers:{get:()=>'application/json'},json:async()=>r.body,text:async()=>JSON.stringify(r.body)}},configurable:true,writable:true})
 })
@@ -205,6 +206,51 @@ describe('queue polling',()=>{
     await vi.advanceTimersByTimeAsync(29999);expect(gets()).toBe(1)
     await vi.advanceTimersByTimeAsync(1);expect(gets()).toBe(2)
     stop()
+  })
+
+  // TASK-354: 537 of 779 requests in the measured window were this poll, from tabs nobody was looking at.
+  const tab=()=>{const handlers=new Set<()=>void>();const doc={cookie:'',hidden:false,addEventListener:(_:string,f:()=>void)=>handlers.add(f),removeEventListener:(_:string,f:()=>void)=>handlers.delete(f)}
+    vi.stubGlobal('document',doc);return {handlers,set:(hidden:boolean)=>{doc.hidden=hidden;handlers.forEach(f=>f())}}}
+
+  it('stops polling while the tab is hidden and refreshes at once when it is shown',async()=>{
+    vi.useFakeTimers();const page=tab()
+    const stop=watchQueue(()=>{},true)
+    await vi.advanceTimersByTimeAsync(0);expect(gets()).toBe(1)
+    page.set(true)
+    await vi.advanceTimersByTimeAsync(3600000);expect(gets()).toBe(1)
+    page.set(false)
+    await vi.advanceTimersByTimeAsync(0);expect(gets()).toBe(2)
+    await vi.advanceTimersByTimeAsync(3000);expect(gets()).toBe(3)   // polling resumes
+    stop();expect(page.handlers.size).toBe(0)
+    vi.unstubAllGlobals()
+  })
+
+  it('does not reschedule from a reply that lands after the tab was hidden',async()=>{
+    vi.useFakeTimers();const page=tab()
+    const stop=watchQueue(()=>{},true)
+    page.set(true)   // the first request is still in flight
+    await vi.advanceTimersByTimeAsync(3600000);expect(gets()).toBe(1)
+    stop();vi.unstubAllGlobals()
+  })
+
+  it('keeps the 3 s progress polls off while hidden, and on while shown',async()=>{
+    vi.useFakeTimers();const page=tab();const load=vi.fn()
+    const stop=pollWhileVisible(load,3000)
+    await vi.advanceTimersByTimeAsync(6000);expect(load).toHaveBeenCalledTimes(2)
+    page.set(true)
+    await vi.advanceTimersByTimeAsync(60000);expect(load).toHaveBeenCalledTimes(2)
+    page.set(false);expect(load).toHaveBeenCalledTimes(3)
+    stop();await vi.advanceTimersByTimeAsync(60000);expect(load).toHaveBeenCalledTimes(3);expect(page.handlers.size).toBe(0)
+    vi.unstubAllGlobals()
+  })
+
+  it('makes no request from a tab opened hidden until it is shown',async()=>{
+    vi.useFakeTimers();const page=tab();page.set(true)
+    const stop=watchQueue(()=>{})
+    await vi.advanceTimersByTimeAsync(3600000);expect(gets()).toBe(0)
+    page.set(false)
+    await vi.advanceTimersByTimeAsync(0);expect(gets()).toBe(1)
+    stop();vi.unstubAllGlobals()
   })
 })
 

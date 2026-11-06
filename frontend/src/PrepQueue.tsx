@@ -35,11 +35,16 @@ export function queueProgress(data:QueueData|null){const s=data?.summary;if(!s||
   return {text:`${s.done}/${s.total} · ${about(s.seconds_left)}`,label:`Queue: ${s.done} of ${s.total} done, ${about(s.seconds_left)} left`,title:[...now,left].join('\n')}}
 // Fast only while the page is open and something is moving; the navbar count alone never polls fast.
 export const queueDelay=(data:QueueData|null,onPage:boolean)=>onPage&&activeCount(data)?3000:30000
-function schedule(){clearTimeout(timer);timer=listeners.size?setTimeout(poll,queueDelay(snap.data,pages>0)):undefined}
+// TASK-354: a hidden tab does not poll at all, and showing it loads at once.
+const hidden=()=>document.hidden
+function schedule(){clearTimeout(timer);timer=listeners.size&&!hidden()?setTimeout(poll,queueDelay(snap.data,pages>0)):undefined}
 async function poll(){try{set({data:await api(PATH),error:''})}catch(e:any){set({error:e?.detail||'Could not load the queue.'})}schedule()}
+const visibilityChanged=()=>{if(hidden())schedule();else poll()}
 
-// Subscribing loads at once and keeps polling until the last subscriber leaves.
-export function watchQueue(onChange:()=>void,page=false){listeners.add(onChange);if(page)pages++;poll();return()=>{listeners.delete(onChange);if(page)pages--;if(!listeners.size){clearTimeout(timer);timer=undefined}}}
+// Subscribing loads at once (when shown) and keeps polling until the last subscriber leaves.
+export function watchQueue(onChange:()=>void,page=false){if(!listeners.size)document.addEventListener('visibilitychange',visibilityChanged)
+  listeners.add(onChange);if(page)pages++;if(!hidden())poll()
+  return()=>{listeners.delete(onChange);if(page)pages--;if(!listeners.size){clearTimeout(timer);timer=undefined;document.removeEventListener('visibilitychange',visibilityChanged)}}}
 const watchPage=(onChange:()=>void)=>watchQueue(onChange,true)
 export const queueSnapshot=()=>snap
 export function useQueue(page=false){return useSyncExternalStore(page?watchPage:watchQueue,queueSnapshot,queueSnapshot)}

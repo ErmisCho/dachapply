@@ -64,7 +64,7 @@ def owned_jobs(user):
 def build_user_export(user):
     jobs = owned_jobs(user).prefetch_related('evaluations', 'notes', 'followups')
     job_ids = list(jobs.values_list('id', flat=True))
-    profile = getattr(user, 'jobradar_profile', None)
+    profile = UserProfile.whole.filter(user=user).first()
     return {
         'schema_version': SCHEMA_VERSION,
         'exported_at': timezone.now().isoformat(),
@@ -350,7 +350,7 @@ def import_user_export(user, payload):
 
     with transaction.atomic():
         for item in data.get('profile', []):
-            profile, created = UserProfile.objects.get_or_create(user=user)
+            profile, created = UserProfile.whole.get_or_create(user=user)
             changed = _assign_fields(profile, PROFILE_FIELDS, item) if isinstance(item, dict) else False
             if changed:
                 profile.save()
