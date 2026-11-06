@@ -74,7 +74,7 @@ class CustomUserAdmin(UserAdmin):
         if not ids:
             return []
         demo=User.objects.filter(username=DEMO_USERNAME).first()
-        users=User.objects.filter(pk__in=ids).select_related('jobradar_profile').order_by('username')
+        users=User.objects.filter(pk__in=ids).order_by('username')
         rows=[]
         for user in users:
             profile=getattr(user, 'jobradar_profile', None)

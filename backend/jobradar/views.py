@@ -825,7 +825,7 @@ def friend_requests(request):
 
 @api_view(['GET','PATCH','PUT'])
 def profile_settings(request):
-    profile=user_profile_settings(request.user)
+    profile=user_profile_settings(request.user, whole=True)
     if request.method == 'GET':
         return Response(CandidateProfileSerializer(profile).data)
     ser=CandidateProfileSerializer(profile, data=request.data, partial=True)

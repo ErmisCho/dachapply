@@ -291,7 +291,7 @@ def send_due_digests():
         return 0
     today = now.date()
     sent = 0
-    for user in get_user_model().objects.filter(is_active=True).select_related('jobradar_profile'):
+    for user in get_user_model().objects.filter(is_active=True):
         try:
             if send_digest(user, today):
                 sent += 1

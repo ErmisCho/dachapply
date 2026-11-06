@@ -4,6 +4,7 @@ from django.conf import settings
 from django.core.validators import MaxValueValidator
 from django.db import models
 from django.db.models import Q
+from django.db.models.fields.related_descriptors import ReverseOneToOneDescriptor
 from django.utils import timezone
 
 
@@ -22,12 +23,30 @@ class SiteVisitor(models.Model):
     class Meta: ordering=['-last_seen_at','-created_at']
     def __str__(self): return self.user.get_username() if self.user_id else self.visitor_id
 
+# TASK-354: the profile row is ~186 KB, nearly all of it these columns, and almost every request loads it;
+# that was most of Neon's monthly transfer. So nothing loads them unless it asks. Reading one off a profile
+# fetches that column then (one query each), and save() skips columns that were never loaded. Code that reads
+# several uses UserProfile.whole. select_related('jobradar_profile') bypasses all of this: do not use it.
+PROFILE_LARGE_FIELDS=('candidate_profile','candidate_evidence','learned_application_preferences','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template')
+
+
+class LeanProfileManager(models.Manager):
+    def get_queryset(self): return super().get_queryset().defer(*PROFILE_LARGE_FIELDS)
+
+
+class LeanProfileAccessor(ReverseOneToOneDescriptor):
+    """user.jobradar_profile. Deferring here, not in Meta.base_manager_name: that needs a migration, and
+    Django loads a deferred column through _base_manager.only(column), which a defer() of it would cancel."""
+    def get_queryset(self, **hints): return super().get_queryset(**hints).defer(*PROFILE_LARGE_FIELDS)
+
+
 class UserProfile(models.Model):
     # candidate_profile and candidate_evidence default to '' on purpose. Until migration 0025 the
     # default was one specific person's real bio, so every account that skipped onboarding had its
     # jobs evaluated against that stranger's persona. An empty profile now refuses prompt generation
     # (services/prompt_builder.CandidateProfileRequired) instead of scoring the job against nobody.
     user=models.OneToOneField(settings.AUTH_USER_MODEL, related_name='jobradar_profile', on_delete=models.CASCADE)
+    user.related_accessor_class=LeanProfileAccessor
     submit_for=models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, related_name='friend_submitters', on_delete=models.SET_NULL)
     requested_submit_for=models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, related_name='friend_submit_requests', on_delete=models.SET_NULL)
     # TASK-93. Default True, not False, and deliberately: migration 0028 adds the column to every
@@ -188,6 +207,8 @@ class UserProfile(models.Model):
     enrichment_prompt_template=models.TextField(blank=True, default='')
     bulk_links_prompt_template=models.TextField(blank=True, default='')
     created_at=models.DateTimeField(auto_now_add=True)
+    objects=LeanProfileManager()
+    whole=models.Manager()
     def __str__(self): return f'{self.user} -> {self.submit_for or self.requested_submit_for or "self"}'
 
 class CvAsset(models.Model):

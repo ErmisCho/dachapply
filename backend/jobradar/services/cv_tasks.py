@@ -13,7 +13,7 @@ from threading import Event, Lock, Thread
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db import close_old_connections
+from django.db import close_old_connections, transaction
 from django.db.models import OuterRef, Q, Subquery
 
 from jobradar.models import ApplicationNote, JobEvaluation, JobLead, UserProfile
@@ -470,11 +470,14 @@ def _learn_application_preference(user_id, instructions, create_cv, create_lette
         return ''
     scope='CV + letter' if create_cv and create_letter else 'CV' if create_cv else 'Letter'
     entry=f'- [{scope}] {instructions}'
-    profile,_=UserProfile.objects.get_or_create(user_id=user_id)
-    lines=profile.learned_application_preferences.splitlines()
-    if entry.casefold() not in {line.casefold() for line in lines}:
-        profile.learned_application_preferences='\n'.join([*lines,entry]).strip()
-        profile.save(update_fields=['learned_application_preferences'])
+    # Locked: parallel document tasks read, append and write this one column, and without the lock the
+    # last write would drop the other task's line.
+    with transaction.atomic():
+        profile,_=UserProfile.whole.select_for_update().get_or_create(user_id=user_id)
+        lines=profile.learned_application_preferences.splitlines()
+        if entry.casefold() not in {line.casefold() for line in lines}:
+            profile.learned_application_preferences='\n'.join([*lines,entry]).strip()
+            profile.save(update_fields=['learned_application_preferences'])
     return entry
 
 
