@@ -46,6 +46,8 @@ export const usable=(v:PrepVariant)=>v.status==='ready'&&!v.missing
 // (or the first one ready when it failed), and each letter by its own template's name.
 export function texOptions(state:PrepState){const ready=state.variants.filter(v=>usable(v)&&v.review!=='discard');return [...ready.filter(v=>v.document==='letter'),...ready.filter(v=>v.document!=='letter')]}
 export const defaultTex=(options:PrepVariant[])=>(options.find(v=>v.recommended)||options[0])?.key||''
+// The one rule for which TeX is selected: TexPicker shows it, the job page's bar copies it (TASK-351).
+export const chosenTex=(options:PrepVariant[],value:string)=>options.some(v=>v.key===value)?value:defaultTex(options)
 export const texLabel=(v:PrepVariant)=>v.letter_label?`${v.letter_label} · ${languageName(v)}${v.recommended?' (recommended)':''}`:variantLabel(v)
 export const failedLetters=(state:PrepState)=>state.variants.filter(v=>v.document==='letter'&&v.review!=='discard'&&(v.status==='failed'||v.status==='cancelled'))
 
