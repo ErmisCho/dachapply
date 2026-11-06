@@ -66,6 +66,7 @@ import logging
 import re
 import time
 import unicodedata
+from jobradar.services.processing_control import durable
 from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time, timedelta
 from datetime import timezone as dt_timezone
@@ -4399,6 +4400,7 @@ def pending_mailbox_check_request() -> MailboxCheckRequest | None:
     return MailboxCheckRequest.objects.filter(handled_at__isnull=True).order_by('requested_at').first()
 
 
+@durable('mailbox-tick')
 def check_mailbox_tick(force=False):
     """TASK-276: one tick of the check_mailbox command, shared with the in-app local loop
     (services.mailbox_loop). A pending request (AC3) runs first, regardless of cadence, and is marked
@@ -4479,6 +4481,7 @@ def _alert_on_failure_transition(run: MailboxRun) -> None:
         logger.warning('Mailbox health alert failed: %s', exc)
 
 
+@durable('mailbox')
 def run_check(force=False, transport=None) -> MailboxRun | None:
     """The one entry point management/commands/check_mailbox.py (and the manual "run now" trigger,
     services.mailbox_tasks) calls.
@@ -4554,6 +4557,8 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
                 run.save()
                 return run
 
+        from jobradar.services.processing_control import report_mailbox_job
+        report_mailbox_job(owner.pk)
         active_transport = transport or _default_transport()
         # AC1: Gmail-API messages have no IMAP UID, so their resume marker is Gmail's own ascending
         # internalDate (ms epoch) instead -- MAX(uid) stays the IMAP marker exactly as before (this

@@ -13,6 +13,7 @@ import uuid
 from threading import Lock, Thread
 
 from django.db import close_old_connections
+from jobradar.services.processing_control import store as processing_store
 
 from jobradar.services.mailbox import (
     MailboxCheckInProgress,
@@ -78,6 +79,12 @@ def start_mailbox_check(user) -> dict:
     same honest refusal a scheduled one would, not a bypass.
     """
     _cleanup()
+    if processing_store():
+        # Reuse the database-backed request path, including its result_run link, across restarts.
+        from jobradar.services.mailbox import check_mailbox_tick
+        request = queue_mailbox_check_request(user)
+        check_mailbox_tick.submit(force=True)
+        return {'queued': True, 'request_id': request.id}
     if not has_mailbox_credentials():
         request = queue_mailbox_check_request(user)
         return {'queued': True, 'request_id': request.id}

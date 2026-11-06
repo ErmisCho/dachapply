@@ -66,7 +66,7 @@ _env_file_keys |= load_env_file(BASE_DIR / '.env')
 # Everything else (migrate, flush, dbshell, shell, loaddata, ...) keeps TASK-100's guard: reaching
 # production from a laptop stays an explicit per-command opt-in. check_mailbox is a server in this
 # sense -- its whole purpose is writing suggestions where the website can show them.
-LOCAL_PROD_DB_SERVING_COMMANDS = frozenset({'runserver', 'check_mailbox'})
+LOCAL_PROD_DB_SERVING_COMMANDS = frozenset({'runserver', 'check_mailbox', 'dashboard_runtime'})
 # Separate reason, deliberately not folded into the set above: these commands open no database
 # connection at all, so the guard has nothing to protect and refusing to start is a false positive
 # that blocks real work. gmail_oauth_setup does an OAuth handshake and writes a token file; it

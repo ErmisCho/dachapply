@@ -20,6 +20,7 @@ from jobradar.models import ApplicationNote, JobEvaluation, JobLead, UserProfile
 from jobradar.services.cv_generator import GenerationCancelled, RecoverableGenerationError, _artifact_metadata_path, _filename_label, _is_sent, _letter_label, _sent_paths, applicant_name, generate_cv_package, latest_generated_sources, preference_exclusion, preferred_names, read_revision_sources, recompile_generated_package, rename_generated_artifact
 from jobradar.services.literal_edits import NotLiteral, gate_literal_edits, literal_report, translate_literal_edits
 from jobradar.services.posting_fetch import fetch_posting_text
+from jobradar.services.processing_control import tracked, store as processing_store
 
 
 logger=logging.getLogger(__name__)
@@ -508,7 +509,7 @@ def _update(task_id, **values):
 def _cleanup():
     cutoff=time.time()-3600
     with _lock:
-        for task_id in [key for key, task in _tasks.items() if task['updated_at'] < cutoff]:
+        for task_id in [key for key, task in _tasks.items() if task['updated_at'] < cutoff and task['status'] not in ('queued', 'running', 'cancelling')]:
             del _tasks[task_id]
 
 
@@ -524,6 +525,7 @@ def _retry_missing_source(job):
     job.refresh_from_db()
 
 
+@tracked('documents')
 def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, cancel_event=None, auto_clipboard=True, route_reason='', generation_options=None, mark_ready=True, on_finish=None):
     close_old_connections()
     try:
@@ -587,6 +589,7 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         close_old_connections()
 
 
+@tracked('documents')
 def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, source_updates, task_report, cancel_event, fall_back=False):
     """Compile (with source_updates: edit, then compile) the latest documents. With fall_back, a
     compile or page-limit failure -- raised before recompile_generated_package writes anything --
@@ -616,6 +619,7 @@ def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, sou
     return ''
 
 
+@tracked('documents')
 def _run_literal(task_id, job_id, user_id, source_cv, source_letter, instructions, pairs, local_model, fallback, cancel_event):
     """TASK-278: deterministic pairs (or the local model's translation) -> gate -> compile check ->
     write. Any refusal on the way discards every edit and runs full optimization in this same task."""
@@ -721,7 +725,11 @@ def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter
     with _lock:
         _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':task_report,'clipboard_tex':'','clipboard_tex_parts':{},'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('compile-only',bool(compile_cv),bool(compile_letter)),'_stage_times':{},'_adjust':adjust,'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in _tasks[task_id]['_stage_plan'])
-    Thread(target=_run_compile,args=(task_id,job_id,user_id,cv_key,source_cv,source_letter,source_updates or {},task_report,cancel_event),name=f'cv-compile-{task_id[:8]}',daemon=True).start()
+    args=(task_id,job_id,user_id,cv_key,source_cv,source_letter,source_updates or {},task_report,cancel_event)
+    if processing_store():
+        _run_compile.submit(*args)
+    else:
+        Thread(target=_run_compile,args=args,name=f'cv-compile-{task_id[:8]}',daemon=True).start()
     return task_id
 
 
@@ -740,7 +748,11 @@ def start_cv_literal_task(job_id, user_id, source_cv, source_letter, instruction
     with _lock:
         _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':None,'clipboard_tex':'','clipboard_tex_parts':{},'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_config':config,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'working':6,'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('literal-edit',bool(pairs),bool(source_cv),bool(source_letter)),'_stage_times':{},'_adjust':adjust,'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in plan)
-    Thread(target=_run_literal,args=(task_id,job_id,user_id,source_cv,source_letter,instructions,pairs,local_model,fallback,cancel_event),name=f'cv-literal-{task_id[:8]}',daemon=True).start()
+    args=(task_id,job_id,user_id,source_cv,source_letter,instructions,pairs,local_model,fallback,cancel_event)
+    if processing_store():
+        _run_literal.submit(*args)
+    else:
+        Thread(target=_run_literal,args=args,name=f'cv-literal-{task_id[:8]}',daemon=True).start()
     return task_id
 
 
@@ -757,7 +769,11 @@ def start_cv_task(job_id, user_id, profile, cv_key, letter_key, create_letter, p
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in plan)
         _tasks[task_id]['_estimate_history']=_learned_timing(estimate_key)[1]
     # ponytail: one local CLI agent per task; add a concurrency cap if large batches exhaust the workstation.
-    Thread(target=_run, args=(task_id,job_id,user_id,profile,cv_key,letter_key,create_letter,provider,model,effort,speed,source_cv,source_letter,revision_instructions,create_cv,correction_image,base_templates,replace_existing,cancel_event,auto_clipboard,'',generation_options,mark_ready,on_finish), name=f'cv-agent-{task_id[:8]}', daemon=True).start()
+    args=(task_id,job_id,user_id,profile,cv_key,letter_key,create_letter,provider,model,effort,speed,source_cv,source_letter,revision_instructions,create_cv,correction_image,base_templates,replace_existing,cancel_event,auto_clipboard,'',generation_options,mark_ready,on_finish)
+    if processing_store():
+        _run.submit(*args)
+    else:
+        Thread(target=_run,args=args,name=f'cv-agent-{task_id[:8]}',daemon=True).start()
     return task_id
 
 
@@ -785,6 +801,9 @@ def cancel_cv_task(task_id, user_id):
             return None
         if task['status'] in ('ready','failed','cancelled'):
             return False
+        control = processing_store()
+        if control:
+            control.cancel_document(task_id, user_id)
         task['_cancel'].set()
         task.update(status='cancelling', stage='Cancelling', _stage_key='cancelling', _stage_started_at=time.monotonic(), updated_at=time.time())
         return True
