@@ -52,12 +52,17 @@ def report_mailbox_job(owner_id):
         control.set_job_key(unit_id, 'mailbox:' + str(owner_id))
 
 
-def handoff_documents():
+def handoff_documents(job_id=None, user_id=None):
     """Called under preparation's status lock as variants replace their daily request."""
     control = store()
     unit_id = getattr(_local, 'unit_id', None)
-    if control is not None and unit_id and getattr(_local, 'kind', None) == 'daily-document':
-        control.set_job_key(unit_id, None)
+    if control is not None:
+        with control.connect() as db:
+            if job_id is not None and user_id is not None:
+                key = job_key('daily-document', {'args': [job_id, user_id]})
+                db.execute("UPDATE units SET state='resolved',payload='{}' WHERE state='interrupted' AND job_key=?", (key,))
+            if unit_id and getattr(_local, 'kind', None) == 'daily-document':
+                db.execute('UPDATE units SET job_key=NULL WHERE id=?', (unit_id,))
 
 
 class Store:
@@ -134,14 +139,14 @@ class Store:
         with self.connect() as db:
             db.execute('UPDATE units SET job_key=? WHERE id=?', (key, unit_id))
 
-    def finish(self, unit_id, state='completed'):
+    def finish(self, unit_id, state='completed', *, count_job=True):
         with self.connect() as db:
             if state == 'completed':
                 db.execute("UPDATE units SET state='resolved',payload='{}' WHERE state='interrupted' "
                            "AND job_key=(SELECT job_key FROM units WHERE id=?)", (unit_id,))
             db.execute("UPDATE units SET state=?, payload=CASE WHEN ? IN ('completed','failed','cancelled') THEN '{}' ELSE payload END WHERE id=?", (state, state, unit_id))
             if state == 'completed':
-                db.execute("UPDATE units SET job_key=NULL WHERE id=? AND kind='daily-document'", (unit_id,))
+                db.execute("UPDATE units SET job_key=NULL WHERE id=? AND (kind='daily-document' OR ?=0)", (unit_id, count_job))
             # Retain bounded history, never delete pending or uncertain work.
             db.execute("DELETE FROM units WHERE state IN ('completed','failed','cancelled','resolved') AND id NOT IN "
                        "(SELECT id FROM units ORDER BY created DESC LIMIT 500)")
@@ -357,13 +362,14 @@ def execute(control, unit_id, kind, args, kwargs, limit=1):
         manual = kwargs.get('force', args[0] if args else False) or (
             isinstance(result, tuple) and len(result) > 1 and result[1] is not None)
         empty_poll = not manual and getattr(actual, 'fetched_count', None) == 0 and not getattr(actual, 'error', '')
-        if (kind in ('mailbox', 'mailbox-tick') and (actual is None or getattr(actual, 'skipped', False) or empty_poll)
+        if (kind in ('mailbox', 'mailbox-tick') and (actual is None or getattr(actual, 'skipped', False))
                 or kind in ('pipeline', 'requirements') and actual is None):
             control.set_job_key(unit_id, None)
         failed = result is False or bool(getattr(result, 'error', ''))
         if isinstance(result, tuple) and result:
             failed = bool(getattr(result[0], 'error', ''))
-        control.finish(unit_id, 'failed' if failed else 'completed')
+        control.finish(unit_id, 'failed' if failed else 'completed',
+                       count_job=not (kind in ('mailbox', 'mailbox-tick') and empty_poll))
         event('unit_failed' if failed else 'unit_completed', kind)
         return result
     finally:
