@@ -16,8 +16,11 @@ export type FeedbackDueRow={id:number;company:string;title:string;status:string;
 // /api/stats/ funnel + source rows. Rates are number|null on purpose: null is "no denominator yet",
 // which must never render as 0% ("you convert nothing"). `offers` here is *reached* offer over the
 // application cohort - a different measure from the flat stats.offers, which is *currently* in offer.
-export type FunnelCounts={applications:number;interviews:number;offers:number;applied_to_interview_rate:number|null;interview_to_offer_rate:number|null}
-export type Funnel={recent_window_days:number;recent_window_start:string;all_time:FunnelCounts;recent:FunnelCounts;interviews_without_application:number}
+export type FunnelCounts={applications:number;interviews:number;offers:number;waiting?:number;applied_to_interview_rate:number|null;interview_to_offer_rate:number|null}
+export type Funnel={recent_window_days:number;recent_window_start:string;all_time:FunnelCounts;recent:FunnelCounts;interviews_without_application:number;fit_bands?:FitBand[]}
+export type FitBand={band:string;applications:number;interviews:number;rejections:number}
+export type NextUpRow={id:number;company:string;title:string;status:string;latest_fit_score:number|null}
+export type SkipRecommendedRow={id:number;company:string;title:string}
 export type Stats={funnel?:Funnel;[key:string]:any}
 // TASK-125 AC1/AC2/AC5: mailbox_check_enabled is the explicit off switch (never a cadence of 0 --
 // see the model comment on UserProfile.mailbox_check_cadence_minutes for why). The window fields are

@@ -27,6 +27,11 @@ provider's usage limit records "retry_at" (ISO: the reset plus a minute, or half
 "auto_retries"; one Timer (_timer) wakes retry_due, which re-queues it through queue_action's retry,
 at most AUTO_RETRIES times. Any other failure clears retry_at and is never retried automatically.
 
+TASK-350: a re-analysis that failed transiently -- the provider run failed (RecoverableGenerationError's
+transient) or the database or network dropped (TRANSIENT_ERRORS), not a wrong answer or a bad setup -- does
+the same, TRANSIENT_DELAY later, while the job's "auto_retries" is below TRANSIENT_RETRIES. retry_due spends
+nothing while processing is paused or stopping, and a run that succeeds clears "auto_retries".
+
 TASK-348: a wanted full letter is prepared once per stored letter template of its language. The
 recommended template (_letter_template's guess) keeps "letter-<lang>", the others are
 "letter-<lang>-<template key>"; the owner picks one for the package, and a job prepared before this
@@ -47,6 +52,7 @@ from threading import Lock, RLock, Thread, Timer
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import close_old_connections
+from django.db import OperationalError
 from django.db.models import Q
 from django.utils import timezone
 
@@ -76,8 +82,15 @@ FILES_EXIST = 'Generated files already exist for this job, so nothing was prepar
 PREPARE_STATUSES = ('new', 'reviewed', 'to_apply')  # TASK-312 AC1; a retry also Ready to submit
 FINISHED_LIMIT = 50  # TASK-312: finished items the queue lists, newest first
 AUTO_RETRIES = 3  # TASK-317: automatic retries of one usage-limited item
+TRANSIENT_RETRIES = 2  # TASK-350: of a transiently failed re-analysis; each one is a model run, hence below AUTO_RETRIES
+TRANSIENT_DELAY = timedelta(minutes=10)
+RETRY_POLL = timedelta(minutes=1)  # TASK-350: how soon retry_due looks again while it cannot run
+# TASK-350: raised out of a pipeline run. OperationalError is what Django makes of psycopg_pool's "couldn't get
+# a connection after N sec" (measured on a real job); the others are a dropped fetch. Anything else is a defect.
+TRANSIENT_ERRORS = (OperationalError, ConnectionError, TimeoutError)
 REANALYSIS_FAILED = 'Re-analysis failed'  # TASK-319: the prefix of a failed late-text re-analysis's reason
 INCOMPLETE = 'Posting incomplete'  # TASK-322: the prefix of _gate's reason for a posting lacking a required part
+SALARY_ONLY = f'{INCOMPLETE}: missing salary.'  # TASK-350: such a hold, stored before a missing salary stopped holding
 # TASK-324/325: the automatic pipeline's in-progress stages, as the Queue labels them.
 PIPELINE_RUNNING = {'queued': 'Waiting to analyse', 'fetching': 'Fetching posting', 'analysing': 'Analysing fit',
                     'requirements': 'Analysing requirements'}  # 'requirements' is derived in queue_state, never stored
@@ -167,7 +180,11 @@ def _letter_template(letters, letter_type):
 
 
 def _state(job, user):
-    return _read_artifact_metadata(job, user).get('preparation') or {}
+    prep = _read_artifact_metadata(job, user).get('preparation') or {}
+    reason = prep.get('reason') or ''
+    if reason.startswith(INCOMPLETE) and (reason.startswith(SALARY_ONLY) or job.status == 'ready_to_submit'):
+        return {**prep, 'reason': ''}  # TASK-350: an older hold _gate would no longer give stops counting here
+    return prep
 
 
 def _save(job, user_id, change):
@@ -183,9 +200,10 @@ def _gate(job, user):
     if not job.is_meaningful_source(job.source_text):
         return 'The job has no usable posting text yet.', [], '', None
     prep, missing = _state(job, user), posting_missing(job)
-    if missing and not (prep.get('continue_incomplete') or prep.get('variants')):
+    if set(missing) - {'salary'} and job.status != 'ready_to_submit' and not (prep.get('continue_incomplete') or prep.get('variants')):
         # TASK-322: a posting lacking a required part holds documents until the owner pastes it or continues;
-        # a job with documents already prepared (a retry) is past that hold.
+        # a job with documents already prepared (a retry) is past that hold. TASK-350: a salary alone never
+        # holds (posting_missing still reports it) and Ready to submit is past it too.
         return f"{INCOMPLETE}: missing {', '.join(PART_NAMES[part] for part in missing)}. Paste the full posting on the job page, or Continue anyway.", [], '', None
     variants, reason = plan_variants(job.application_requirements)
     if reason:
@@ -520,21 +538,25 @@ def _pipeline(job_id, user_id, reanalyse=''):
                     cv_tasks.record_duration('fit', option['provider'], option['key'], effort, time.monotonic() - started)
             except Exception as exc:  # the Queue says why, never a run stuck at Analysing
                 logger.exception('The automatic analysis of job %s failed', job_id)
-                result = {'ok': False, 'errors': [str(exc) or type(exc).__name__]}
+                result = {'ok': False, 'errors': [str(exc) or type(exc).__name__], 'transient': isinstance(exc, TRANSIENT_ERRORS)}
             with _lock:
+                if result['ok']:
+                    _save(job, user_id, lambda prep: prep.pop('auto_retries', None))  # TASK-350: a later failure starts a new count
                 if not result['ok']:
                     error = '; '.join(result['errors'])[:300].rstrip('.')
                     # A failed re-analysis says so, so the Queue's Retry analyses it again (TASK-319's path).
                     failed = REANALYSIS_FAILED if reanalyse else 'Analysis failed'
-                    _save(job, user_id, lambda prep: prep.update(pipeline={'stage': 'failed', 'at': _now(), 'error': error}, reason=f'{failed}: {error}. Press Retry.',
-                                                                 retry_at=_retry_at(result.get('usage_limit'), result.get('reset_at'), prep)))
+                    _save(job, user_id, lambda prep: prep.update(pipeline={'stage': 'failed', 'at': _now(), 'error': error, 'note': reanalyse}, reason=f'{failed}: {error}. Press Retry.',
+                                                                 retry_at=_retry_at(result.get('usage_limit'), result.get('reset_at'), prep, reanalyse and result.get('transient'))))
                 elif result['preview'][0]['recommendation'] == 'skip':
                     stage('skipped', recommendation='skip', fit_score=result['preview'][0]['fit_score'])
                 else:
                     stage('analysed')  # the documents (or their hold) take over; queue_state lists their requirements analysis
             if reanalyse and result['ok']:
                 _after_reanalysis(job, user, result['preview'][0]['recommendation'] == 'skip', reanalyse, before)
-            return result['ok']
+            # TASK-350: None counts no job on the dashboard (processing_control.execute), so an attempt its automatic
+            # retry replaces is not a failed job; the last attempt, retry_at empty, counts once.
+            return result['ok'] or (None if _state(job, user).get('retry_at') else False)
     except Exception:
         logger.exception('The automatic pipeline for job %s failed', job_id)
         return False
@@ -1268,12 +1290,17 @@ def resume_queue():
 
 # --- TASK-317: automatic retry after a usage limit ----------------------------------------------
 
-def _retry_at(usage_limit, reset_at, item):
-    """When a usage-limit failure is retried automatically (ISO), arming the timer for it; None for any
-    other failure or once `item` spent its AUTO_RETRIES. Caller holds _lock."""
-    if not usage_limit or item.get('auto_retries', 0) >= AUTO_RETRIES:
+def _retry_at(usage_limit, reset_at, item, transient=False):
+    """When a usage-limit or transient failure is retried automatically (ISO), arming the timer for it;
+    None for any other failure or once `item` spent its AUTO_RETRIES or TRANSIENT_RETRIES (one count, so
+    the two together never exceed AUTO_RETRIES). Caller holds _lock."""
+    spent = item.get('auto_retries', 0)
+    if usage_limit and spent < AUTO_RETRIES:
+        when = reset_at + timedelta(minutes=1) if reset_at else timezone.now() + timedelta(minutes=30)
+    elif transient and spent < TRANSIENT_RETRIES:
+        when = timezone.now() + TRANSIENT_DELAY
+    else:
         return None
-    when = reset_at + timedelta(minutes=1) if reset_at else timezone.now() + timedelta(minutes=30)
     _arm(when)
     return when.isoformat()
 
@@ -1293,7 +1320,9 @@ def _arm(when):
 def retry_due():
     """Re-queue, through queue_action's own retry, every usage-limited failure whose retry_at passed --
     a failed variant, or a preparation whose requirements analysis hit the limit -- and arm the timer
-    for the next one. The sidecars are the truth, so a retry the owner already made is not repeated."""
+    for the next one. The sidecars are the truth, so a retry the owner already made is not repeated.
+    TASK-350: a failed re-analysis runs again as it was, also beside documents, which queue_action's retry
+    cannot reach. While processing is not accepting, nothing is spent and it looks again after RETRY_POLL."""
     global _timer
     now, due, later = timezone.now(), [], []
     with _lock:
@@ -1304,7 +1333,7 @@ def retry_due():
             for job in accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES).only('id'):
                 prep = _state(job, user)
                 variants = prep.get('variants') or {}
-                pending = [(key, variant) for key, variant in variants.items() if variant.get('status') == 'failed'] if variants else [('', prep)]
+                pending = [('', prep), *((key, variant) for key, variant in variants.items() if variant.get('status') == 'failed')]
                 for key, item in pending:
                     if item.get('retry_at'):
                         when = datetime.fromisoformat(item['retry_at'])
@@ -1312,6 +1341,8 @@ def retry_due():
                             due.append((job, user, key))
                         else:
                             later.append(when)
+        if due and not accepting():
+            due, later = [], [*later, now + RETRY_POLL]
         for job, user, key in due:
             def spend(prep, key=key):
                 item = prep['variants'][key] if key else prep
@@ -1320,10 +1351,16 @@ def retry_due():
         if later:
             _arm(min(later))
     for job, user, key in due:  # outside _lock: a blocked job's retry reads its posting first
+        prep = _state(job, user)
         try:
-            queue_action(user, job.id, key, 'retry')
+            if not key and (prep.get('reason') or '').startswith(REANALYSIS_FAILED):
+                start_pipeline(job.id, user, force=True, reanalyse=(prep.get('pipeline') or {}).get('note') or CHANGED)
+            else:
+                queue_action(user, job.id, key, 'retry')
         except ValueError:
             pass  # cancelled, discarded or moved past To apply meanwhile
+        except Exception:  # one job's retry must not lose the others, already spent above
+            logger.exception('Retrying job %s failed', job.id)
     return len(due)
 
 
@@ -1333,6 +1370,8 @@ def _retry_worker():
         retry_due()
     except Exception:
         logger.exception('Retrying usage-limited document preparation failed')
+        with _lock:
+            _arm(timezone.now() + RETRY_POLL)  # TASK-350: retry_due took the timer down, so a database outage would lose every retry
     finally:
         close_old_connections()
 

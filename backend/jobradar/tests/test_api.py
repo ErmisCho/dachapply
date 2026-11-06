@@ -3770,9 +3770,9 @@ def test_funnel_recent_window_is_narrower_than_all_time(client):
     funnel=client.get('/api/stats/').data['funnel']
     assert funnel['recent_window_days']==90
     assert funnel['recent_window_start']==(today-timezone.timedelta(days=90)).isoformat()
-    assert funnel['all_time']=={'applications':4, 'interviews':1, 'offers':0, 'applied_to_interview_rate':25.0, 'interview_to_offer_rate':0.0}
+    assert funnel['all_time']=={'applications':4, 'interviews':1, 'offers':0, 'waiting':3, 'applied_to_interview_rate':25.0, 'interview_to_offer_rate':0.0}
     # The recent window drops both old rows, so its interview rate is 0/2, not 1/4.
-    assert funnel['recent']=={'applications':2, 'interviews':0, 'offers':0, 'applied_to_interview_rate':0.0, 'interview_to_offer_rate':None}
+    assert funnel['recent']=={'applications':2, 'interviews':0, 'offers':0, 'waiting':2, 'applied_to_interview_rate':0.0, 'interview_to_offer_rate':None}
 
 
 def test_funnel_rate_is_null_not_zero_when_nothing_was_applied_to(client):
@@ -3788,7 +3788,7 @@ def test_interview_without_an_application_cannot_push_a_rate_over_100(client):
     """Status can be set straight to interview, leaving applied_at null.
 
     Counting that job in the numerator against an applied_at denominator is how a funnel
-    silently reports 200%. It is excluded from both sides and reported on its own instead.
+    silently reports 200%. TASK-353: it counts on both sides, and is still reported on its own.
     """
     today=timezone.localdate()
     make_job(client, company='Applied properly', title='A', status='applied', applied_at=today)
@@ -3797,10 +3797,9 @@ def test_interview_without_an_application_cannot_push_a_rate_over_100(client):
     assert straight_to_interview.applied_at is None
 
     funnel=client.get('/api/stats/').data['funnel']
-    assert funnel['all_time']['applications']==1
-    assert funnel['all_time']['interviews']==0
-    assert funnel['all_time']['applied_to_interview_rate']==0.0
-    assert funnel['all_time']['applied_to_interview_rate'] <= 100
+    assert funnel['all_time']['applications']==2
+    assert funnel['all_time']['interviews']==1
+    assert funnel['all_time']['applied_to_interview_rate']==50.0
     assert funnel['interviews_without_application']==1
 
 
@@ -3810,7 +3809,7 @@ def test_funnel_only_counts_the_requesting_users_jobs(client):
     make_job(client, company='Mine', title='A', status='applied', applied_at=today)
     JobLead.objects.create(company='Theirs', title='B', status='interview', applied_at=today, created_by=stranger)
     funnel=client.get('/api/stats/').data['funnel']
-    assert funnel['all_time']=={'applications':1, 'interviews':0, 'offers':0, 'applied_to_interview_rate':0.0, 'interview_to_offer_rate':None}
+    assert funnel['all_time']=={'applications':1, 'interviews':0, 'offers':0, 'waiting':1, 'applied_to_interview_rate':0.0, 'interview_to_offer_rate':None}
 
 
 # --- TASK-86: daily reminder digest ----------------------------------------------------------

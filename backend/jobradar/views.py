@@ -187,6 +187,10 @@ def _row_reached_interview(row):
     return row['status'] in ('interview', 'offer', 'accepted') or row['interview_stage'] is not None or row['interview_at'] is not None
 
 
+def _row_waiting(row):
+    return row['status'] == 'applied' and not _row_reached_interview(row)
+
+
 def funnel_counts(application_rows):
     """applied -> interview -> offer over already-fetched application rows."""
     applications = len(application_rows)
@@ -196,9 +200,36 @@ def funnel_counts(application_rows):
         'applications': applications,
         'interviews': interviews,
         'offers': offers,
+        'waiting': sum(_row_waiting(row) for row in application_rows),
         'applied_to_interview_rate': conversion_rate(interviews, applications),
         'interview_to_offer_rate': conversion_rate(offers, interviews),
     }
+
+
+NEXT_UP_ORDER = ['ready_to_submit', 'to_apply', 'new']
+NEXT_UP_ROWS = 6
+# TASK-353: every job that reached interview is in the funnel, and the fit bands are over the same rows.
+FIT_BANDS = (('80+', 80), ('70-79', 70), ('60-69', 60), ('Under 60', None), ('No score', None))
+
+
+def fit_band(score):
+    if score is None:
+        return 'No score'
+    return next((label for label, floor in FIT_BANDS if floor is not None and score >= floor), 'Under 60')
+
+
+def fit_band_counts(rows):
+    bands = {label: {'band': label, 'applications': 0, 'interviews': 0, 'rejections': 0} for label, _floor in FIT_BANDS}
+    for row in rows:
+        band = bands[fit_band(row['latest_fit_score'])]
+        band['applications'] += 1
+        band['interviews'] += _row_reached_interview(row)
+        band['rejections'] += row['status'] == 'rejected'
+    return list(bands.values())
+
+
+def latest_evaluation_value(field):
+    return Subquery(JobEvaluation.objects.filter(job=OuterRef('pk')).order_by('-created_at', '-id').values(field)[:1])
 
 
 def password_rejection(password, user=None):
@@ -1137,6 +1168,28 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             'overdue': row['feedback_due_date'] < today,
             'gmail_search_url': mailbox.gmail_conversation_url('', authuser=authuser, search_query=row['company']),
         } for row in rows])
+
+    @action(detail=False, methods=['post'], url_path='clear-skip-recommended')
+    def clear_skip_recommended(self, request):
+        """TASK-352: move the jobs the owner confirmed to Skipped.
+
+        The ids are only the confirmed list: each one still has to be this user's, still New and
+        still recommended skip, so a job that changed after the list was shown stays put. Saved
+        through JobLeadSerializer so a job moves exactly as a board PATCH moves it. Skipped starts
+        nothing: the serializer's only triggers are entering To apply and Applied.
+        """
+        ids=request.data.get('ids')
+        if not isinstance(ids, list) or not all(type(i) is int for i in ids):
+            return Response({'detail':'ids must be a list of job ids.'}, status=400)
+        jobs=accessible_jobs(request.user).filter(pk__in=ids, status='new').annotate(latest_recommendation=latest_evaluation_value('recommendation')).filter(latest_recommendation='skip')
+        moved=[]
+        with transaction.atomic():
+            for job in jobs:
+                serializer=JobLeadSerializer(job, data={'status':'skipped'}, partial=True, context={'request':request})
+                serializer.is_valid(raise_exception=True)
+                serializer.save()
+                moved.append(job.pk)
+        return Response({'moved':moved})
 
     @action(detail=False, methods=['get'], url_path='new-unanalyzed')
     def new_unanalyzed(self, request):
@@ -2530,7 +2583,8 @@ def import_eval(request):
 def stats(request):
     jobs=accessible_jobs(request.user)
     today=timezone.localdate(); now=timezone.now(); evaluations=JobEvaluation.objects.filter(job__in=jobs)
-    application_rows=list(jobs.filter(applied_at__isnull=False).values('applied_at','status','interview_stage','interview_at'))
+    funnel_rows=list(jobs.filter(Q(applied_at__isnull=False) | REACHED_INTERVIEW).annotate(latest_fit_score=latest_evaluation_value('fit_score')).values('id','applied_at','status','interview_stage','interview_at','status_date','created_at','latest_fit_score'))
+    application_rows=[row for row in funnel_rows if row['applied_at']]
     application_dates=Counter(row['applied_at'] for row in application_rows)
     count_between=lambda start,end: sum(count for date,count in application_dates.items() if start <= date <= end)
     week_start=today-timezone.timedelta(days=today.weekday())
@@ -2563,7 +2617,9 @@ def stats(request):
     upcoming_interviews=[{'id':j.id, 'company':j.company, 'title':j.title, 'interview_at':j.interview_at, 'interview_note':j.interview_note}
                          for j in jobs.filter(interview_at__gte=now).exclude(status__in=['rejected','withdrawn','skipped','archived']).order_by('interview_at')[:10]]
     recent_start=today-timezone.timedelta(days=JobLead.FUNNEL_RECENT_DAYS)
-    recent_applications=[row for row in application_rows if row['applied_at'] >= recent_start]
+    # TASK-353: a job that reached interview was applied to even when no date was recorded. It counts on
+    # both sides of the rate (so no rate can pass 100%), and its recent cohort falls back to its status or creation date.
+    recent_applications=[row for row in funnel_rows if (row['applied_at'] or row['status_date'] or row['created_at'].date()) >= recent_start]
     # TASK-286: the board's Active interviews / Due follow-ups tiles list these rows, and the counts are their lengths, so tile and list cannot disagree.
     interview_jobs=list(jobs.filter(status='interview').values('id','company','title','interview_stage','interview_total'))
     due_followups=list(FollowUp.objects.filter(job__in=jobs, completed=False, follow_up_date__lte=today).exclude(job__interview_at__gt=now).values('job','follow_up_date', company=F('job__company'), title=F('job__title'), status=F('job__status')))
@@ -2574,13 +2630,18 @@ def stats(request):
         interviews_without_application=Count('id', filter=REACHED_INTERVIEW & Q(applied_at__isnull=True)),
     )
     funnel={'recent_window_days':JobLead.FUNNEL_RECENT_DAYS, 'recent_window_start':recent_start.isoformat(),
-            'all_time':funnel_counts(application_rows), 'recent':funnel_counts(recent_applications),
-            'interviews_without_application':job_counts['interviews_without_application']}
+            'all_time':funnel_counts(funnel_rows), 'recent':funnel_counts(recent_applications),
+            'interviews_without_application':job_counts['interviews_without_application'],
+            'fit_bands':fit_band_counts(funnel_rows)}
+    # TASK-351/352: the board's Next up list and its clear-skip list, from one query over the open statuses.
+    open_rows=list(jobs.filter(status__in=NEXT_UP_ORDER).annotate(latest_fit_score=latest_evaluation_value('fit_score'), latest_recommendation=latest_evaluation_value('recommendation')).values('id','company','title','status','latest_fit_score','latest_recommendation'))
+    skip_recommended_new=sorted(({'id':row['id'], 'company':row['company'], 'title':row['title']} for row in open_rows if row['status'] == 'new' and row['latest_recommendation'] == 'skip'), key=lambda row:(row['company'].lower(), row['title'].lower(), row['id']))
+    next_up=sorted((row for row in open_rows if row['status'] != 'new' or row['latest_recommendation'] in ('apply','maybe')), key=lambda row:(NEXT_UP_ORDER.index(row['status']), -(row['latest_fit_score'] or 0), row['id']))
     # Preserve the endpoint's existing grouped response exactly; removing model ordering here would
     # change its current values, which TASK-193 explicitly forbids even though it would be cleaner SQL.
     jobs_by_status=dict(jobs.values_list('status').annotate(c=Count('id')))
     evaluation_counts=evaluations.aggregate(average_fit_score=Avg('fit_score'), high_priority_jobs=Count('job', filter=Q(priority='high', job__status='new'), distinct=True))
-    return Response({'total_jobs':job_counts['total_jobs'], 'funnel':funnel, 'jobs_by_status':jobs_by_status, 'average_fit_score':evaluation_counts['average_fit_score'] or 0, 'high_priority_jobs':evaluation_counts['high_priority_jobs'], 'applications_sent':len(application_rows), 'applications_this_week':applications_this_week, 'applications_per_workday':round(applications_this_week/max(elapsed_workdays,1), 1), 'workday_applications':workday_applications, 'month_week_applications':month_week_applications, 'weekly_applications':weekly_applications, 'interviews':len(interview_jobs), 'interview_jobs':interview_jobs, 'upcoming_interviews':upcoming_interviews, 'offers':job_counts['offers'], 'accepted':job_counts['accepted'], 'rejected':job_counts['rejected'], 'withdrawn':job_counts['withdrawn'], 'jobs_needing_follow_up':len(due_followups), 'due_followups':due_followups})
+    return Response({'total_jobs':job_counts['total_jobs'], 'funnel':funnel, 'next_up':next_up[:NEXT_UP_ROWS], 'next_up_total':len(next_up), 'skip_recommended_new':skip_recommended_new, 'jobs_by_status':jobs_by_status, 'average_fit_score':evaluation_counts['average_fit_score'] or 0, 'high_priority_jobs':evaluation_counts['high_priority_jobs'], 'applications_sent':len(application_rows), 'applications_this_week':applications_this_week, 'applications_per_workday':round(applications_this_week/max(elapsed_workdays,1), 1), 'workday_applications':workday_applications, 'month_week_applications':month_week_applications, 'weekly_applications':weekly_applications, 'interviews':len(interview_jobs), 'interview_jobs':interview_jobs, 'upcoming_interviews':upcoming_interviews, 'offers':job_counts['offers'], 'accepted':job_counts['accepted'], 'rejected':job_counts['rejected'], 'withdrawn':job_counts['withdrawn'], 'jobs_needing_follow_up':len(due_followups), 'due_followups':due_followups})
 
 @api_view(['GET', 'POST'])
 def export_user_data(request):
