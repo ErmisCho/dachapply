@@ -161,9 +161,9 @@ def test_task322_continue_is_refused_for_a_job_not_held_as_incomplete(owner, cli
 
 
 def test_task322_pasting_the_full_posting_clears_the_hold(owner, client, tasks, django_capture_on_commit_callbacks):
-    job = _job(owner, 'to_apply', requirements=_req('de'), text=_ad(GERMAN, without=['salary']))
+    job = _job(owner, 'to_apply', requirements=_req('de'), text=_ad(GERMAN, without=['company']))
     application_prep.prepare(job.id, owner)
-    assert _items(client)[0]['error'] == REASON.format('salary')
+    assert _items(client)[0]['error'] == REASON.format('company description')
     with django_capture_on_commit_callbacks(execute=True):
         assert client.patch(f'/api/jobs/{job.id}/source-text/', {'original_source_text': _ad(GERMAN)}, format='json').status_code == 200
     assert tasks['started'] == [(job.id, 'cv-de')]
