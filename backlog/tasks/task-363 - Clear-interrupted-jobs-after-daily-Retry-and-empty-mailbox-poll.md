@@ -1,5 +1,5 @@
 ---
-id: TASK-348
+id: TASK-363
 title: Clear interrupted jobs after daily Retry and empty mailbox poll
 status: In Progress
 assignee:
@@ -15,7 +15,7 @@ modified_files:
   - backend/jobradar/tests/runtime_retry_fixture.py
   - backend/jobradar/tests/test_processing_retry_lifecycle.py
 priority: low
-ordinal: 348000
+ordinal: 363000
 ---
 
 ## Description
@@ -41,6 +41,8 @@ TEMP-93 follow-up to PR 367. Isolated data only; do not deploy or touch the live
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
+2026-11-09: renumbered from TASK-348, which the cover-letter task (#370) also used; code comments citing TASK-348 mean that one. Code done (#369); Done waits for a production deploy and check (TW-00A).
+
 Both new count regressions failed on unchanged main (daily 3 vs 2; empty poll 2 vs 1), then 26 queue/count tests passed. Isolated runtime kill/HTTP Retry reached ready and zero interruptions; corrected expected completed count to include requirements analysis.
 
 Full gate passed: uv run pytest -q (1912 passed in 722.61s); npm ci and npm run build passed. Real disposable dashboard process killed during inline daily analysis; after startup HTTP Retry reached one ready document, two completed jobs (analysis + document), and zero interrupted/pending/running jobs. Other-owner/job and failed/skipped mailbox cases covered. Groma is not initialized, so no architecture references were invented. No live service changes or deployment.
