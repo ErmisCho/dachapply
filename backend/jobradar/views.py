@@ -33,6 +33,7 @@ from .services.job_evaluator import evaluate_jobs
 from .services.prompt_builder import build_prompt, build_enrichment_prompt, build_bulk_links_prompt, build_combined_prompt, build_candidate_profile_text, user_profile_settings, PROFILE_FIELD_NAMES, decode_profile_value, has_candidate_profile
 from .services.json_importer import import_any_json, duplicate_title, is_placeholder_label
 from .services.exporters import jobs_json, jobs_csv, chatgpt_brief
+from .services.job_search import search_jobs
 from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user_export, export_user_data_csv, export_user_data_xlsx, import_user_export, parse_import_payload
 from .local_cache import board_settings
 from .services.access import accessible_jobs, job_create_defaults, owned_by, submitted_away_jobs
@@ -882,7 +883,7 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         if p.get('skill'):
             s=p['skill']; qs=qs.filter(Q(evaluations__matched_skills__icontains=s)|Q(evaluations__required_skills__icontains=s)|Q(original_source_text__icontains=s)|Q(raw_description__icontains=s))
         if p.get('search'):
-            s=p['search']; qs=qs.filter(Q(company__icontains=s)|Q(title__icontains=s)|Q(original_source_text__icontains=s)|Q(raw_description__icontains=s)|Q(url__icontains=s))
+            qs=search_jobs(qs, p['search'])  # TASK-362: per word, umlaut-equal, typo-tolerant
         if p.get('analyzed') in ('1','true','yes'):
             qs=qs.filter(evaluations__isnull=False)
         if p.get('board') in ('1','true','yes'):
