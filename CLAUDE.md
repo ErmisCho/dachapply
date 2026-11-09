@@ -57,3 +57,30 @@ Before calling anything done: `cd frontend && npm run build` **in the owner's ch
 served bundle hash matches `frontend/dist/index.html`, and load the page to assert it rendered — a
 200 is not enough. A worktree build never reaches them, and a `git pull` advances the backend while
 the compiled bundle stays put, which has white-screened their board more than once.
+
+## Merge without asking, unless it is destructive or irreversible
+
+Owner instruction, 2026-11-09: *"I want to be asked about merging only when it's a destructive or/and
+irreversible situation."* Once a PR's CI is green and its review findings are fixed, squash-merge it
+(`gh pr merge --squash`, never `--delete-branch`; TW-00A still orders the rest) without asking.
+
+Ask first, with options, when the PR:
+- adds or changes a migration (it reaches production on the next deploy, and committing one has broken
+  the live board) or runs any data-changing command against production;
+- deletes or rewrites owner data or files (CV workspace, evidence file, sidecars), or anything else
+  without a way back;
+- needs a force-push, a history rewrite, or touches secrets, auth or CI gates.
+
+Deploying stays the owner's call (TASK-275); merging does not deploy.
+
+## Use Codex to spare Claude tokens
+
+Owner instruction, 2026-11-09. Codex CLI is installed (`codex --version`). Prefer it for work that does
+not need Claude's judgment:
+- **PR review:** `codex review` on each PR before merging, instead of a Claude review agent. Claude
+  applies the fixes and verifies them.
+- **Read-only sweeps:** `codex exec` for broad greps, audits and "where is X used" questions, keeping
+  only the findings.
+
+Claude stays the coordinator, the implementer, and the asian-dad grader. Codex output is evidence, not
+proof: TW-003 applies to it exactly as to any agent.
