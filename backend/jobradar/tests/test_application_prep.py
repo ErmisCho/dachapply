@@ -88,6 +88,12 @@ class SyncThread:
     def start(self):
         self.target(*self.args)
 
+    def join(self, timeout=None):  # TASK-357: _bounded waits on its worker; this one has already finished
+        pass
+
+    def is_alive(self):
+        return False
+
 
 @pytest.fixture
 def workspace(settings, tmp_path):

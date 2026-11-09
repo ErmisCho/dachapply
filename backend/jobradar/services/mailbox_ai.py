@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 from jobradar.models import MailboxMessage
+from jobradar.services.cv_generator import _run_command
 
 
 CLASSIFICATIONS = list(dict(MailboxMessage.CLASSIFICATIONS))
@@ -35,7 +36,7 @@ def codex_available():
 
 
 def _run(command, **kwargs):
-    return subprocess.run(command, **kwargs)
+    return _run_command(command, **kwargs)  # TASK-357: its timeout kills the CLI's whole process tree
 
 
 def classify_batch(entries, model, effort, timeout_seconds):

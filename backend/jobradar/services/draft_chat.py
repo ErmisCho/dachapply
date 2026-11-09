@@ -56,7 +56,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from jobradar.services.cv_generator import CLAUDE_EFFORTS, available_model_options, validate_model_capability
+from jobradar.services.cv_generator import CLAUDE_EFFORTS, _run_command, available_model_options, validate_model_capability
 from jobradar.services.interview_coach import _load_llm_config
 from django.db.models import F
 
@@ -146,7 +146,7 @@ def _run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     """subprocess.run, split out as its own name so tests can stub the model process (non-zero exit,
     malformed output, subprocess.TimeoutExpired) without ever spawning a real one (AC7/AC10).
     """
-    return subprocess.run(command, **kwargs)
+    return _run_command(command, **kwargs)  # TASK-357: its timeout kills the CLI's whole process tree
 
 
 def _run_provider_turn(provider: str, model: str, effort: str, speed: str, model_option: dict, prompt: str, timeout_seconds: float) -> tuple[str, str]:

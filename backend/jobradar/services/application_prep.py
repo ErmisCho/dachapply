@@ -47,11 +47,11 @@ import zipfile
 from functools import partial
 from datetime import datetime, timedelta
 from pathlib import Path
-from threading import Lock, RLock, Thread, Timer
+from threading import Event, Lock, RLock, Thread, Timer
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db import close_old_connections
+from django.db import close_old_connections, connection
 from django.db import OperationalError
 from django.db.models import Q
 from django.utils import timezone
@@ -61,7 +61,7 @@ from jobradar.services import cv_tasks, interview_prep, job_evaluator
 from jobradar.services.processing_control import accepting, durable, handoff_documents, store as processing_store
 from jobradar.services.access import accessible_jobs
 from jobradar.services.application_requirements import DOCUMENT_STATUSES, DOCUMENT_TYPES, POSTING_LANGUAGES, normalize_application_requirements
-from jobradar.services.cv_generator import _edit_sidecar, _filename_label, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
+from jobradar.services.cv_generator import GenerationCancelled, _edit_sidecar, _filename_label, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
 from jobradar.services.posting_fetch import PART_NAMES, fetch_missing_sources, posting_missing
 from jobradar.services.prompt_builder import APPLICATION_REQUIREMENTS_RULES, APPLICATION_REQUIREMENTS_SCHEMA_FIELD, build_candidate_profile_text, user_profile_settings
 
@@ -102,6 +102,11 @@ PRIORITY_ORDER = {'high': 0, 'medium': 1, 'low': 2}
 # TASK-340: seconds one automatic analysis takes before any run of it was measured (cv_tasks.measured_seconds
 # replaces it from the first recorded run) -- unmeasured guesses; the same model's CV generation call is ~110 s.
 ANALYSIS_SECONDS = {'fit': 120, 'requirements': 60}
+# TASK-357: one automatic analysis (fit or requirements) is given up (_bounded) once it ran this long (seconds), so a
+# hung run cannot hold _pipeline_lock and every analysis queued behind it. Not transient: a run this slow is likely
+# to be as slow again, so Retry is the owner's call, not another 10 minutes of the one lane.
+ANALYSIS_TIME_LIMIT = 600
+TIMED_OUT = f'Stopped after {ANALYSIS_TIME_LIMIT // 60} minutes, the time limit for one analysis'
 
 # ponytail: one process serves generation (threaded runserver); a DB claim if that changes. Re-entrant
 # because a task's on_finish can run in the thread that started it (a task that fails at once, tests).
@@ -394,7 +399,7 @@ def prepare(job_id, user, retry=False, inline=False):
     return public_state(job, user)
 
 
-def _analyse(job):
+def _analyse(job, cancelled=None):
     """TASK-308: the posting's application requirements from the CV default model, normalised as analysis."""
     option, effort = cv_default_choice(available_model_options())
     if not option:
@@ -406,12 +411,38 @@ def _analyse(job):
               + '\n\nReturn only a JSON object: {' + APPLICATION_REQUIREMENTS_SCHEMA_FIELD + '}\n\nJob posting:\n' + job.source_text)
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix='dachapply-requirements-') as workdir:
-        data = run_structured_model(prompt, REQUIREMENTS_SCHEMA, provider, model, effort, 'normal', workdir=workdir, model_option=model_option)
+        data = run_structured_model(prompt, REQUIREMENTS_SCHEMA, provider, model, effort, 'normal', workdir=workdir, model_option=model_option, cancelled=cancelled)
     requirements = normalize_application_requirements((data or {}).get('application_requirements'), job, source='analysis')
     if not requirements:
         raise RuntimeError('the model returned no application requirements')
     cv_tasks.record_duration('requirements', provider, model, effort, time.monotonic() - started)  # TASK-340
     return requirements
+
+
+def _bounded(work):
+    """TASK-357: work(cancelled) in a thread of its own, waited for at most ANALYSIS_TIME_LIMIT; then GenerationCancelled.
+    `cancelled` turns True at that point, so a model process tree is killed (cv_generator._run_command) and a model
+    answer arriving later is dropped before anything is written (run_structured_model checks it again on return). A
+    block inside this process (a socket, a lock: no child to kill) is left behind in its daemon thread; the caller,
+    which alone records the outcome, returns, so _pipeline_lock and the durable unit are released all the same."""
+    stop, outcome = Event(), {}
+
+    def run():
+        try:
+            outcome['value'] = work(stop.is_set)
+        except BaseException as exc:
+            outcome['error'] = exc
+        finally:
+            connection.close()  # this thread's own connection
+    worker = Thread(target=run, name='dachapply-analysis', daemon=True)
+    worker.start()
+    worker.join(ANALYSIS_TIME_LIMIT)
+    if worker.is_alive():
+        stop.set()
+        raise GenerationCancelled
+    if 'error' in outcome:
+        raise outcome['error']
+    return outcome['value']
 
 
 @durable('requirements')
@@ -424,9 +455,9 @@ def _analyse_then_prepare(job_id, user_id, retry):
         if not job or not user:
             return
         try:
-            requirements = _analyse(job)
+            requirements = _bounded(partial(_analyse, job))  # TASK-357
         except Exception as exc:  # AC2: the page says why, never a silent stop
-            error = str(getattr(exc, 'summary', '') or exc)[:300].rstrip('.')
+            error = TIMED_OUT if isinstance(exc, GenerationCancelled) else str(getattr(exc, 'summary', '') or exc)[:300].rstrip('.')
             with _lock:  # TASK-317: a usage limit is retried automatically once it resets
                 _save(job, user_id, lambda prep: prep.update(reason=f'Requirements analysis failed: {error}. Press Prepare to retry.',
                                                              retry_at=_retry_at(getattr(exc, 'usage_limit', False), getattr(exc, 'reset_at', None), prep)))
@@ -529,16 +560,21 @@ def _pipeline(job_id, user_id, reanalyse=''):
                 # TASK-340: the run's duration (fetch + analysis) is measured, and its start kept across both stages.
                 started, began = time.monotonic(), _now()
                 stage('fetching', started=began)
-                fetch_missing_sources([job])
-                stage('analysing', started=began)
-                option, effort = cv_default_choice(available_model_options())
-                result = (job_evaluator.evaluate_jobs([job.id], user, option['provider'], option['key'], effort, 'normal', commit=True) if option
-                          else {'ok': False, 'errors': ['No document model is available on this machine']})
+
+                def analyse(cancelled):  # TASK-357: under _bounded; it writes no sidecar once given up
+                    fetch_missing_sources([job])
+                    with _lock:
+                        if not cancelled():
+                            stage('analysing', started=began)
+                    option, effort = cv_default_choice(available_model_options())
+                    return option, effort, (job_evaluator.evaluate_jobs([job.id], user, option['provider'], option['key'], effort, 'normal', commit=True, cancelled=cancelled)
+                                            if option else {'ok': False, 'errors': ['No document model is available on this machine']})
+                option, effort, result = _bounded(analyse)
                 if result['ok']:
                     cv_tasks.record_duration('fit', option['provider'], option['key'], effort, time.monotonic() - started)
             except Exception as exc:  # the Queue says why, never a run stuck at Analysing
                 logger.exception('The automatic analysis of job %s failed', job_id)
-                result = {'ok': False, 'errors': [str(exc) or type(exc).__name__], 'transient': isinstance(exc, TRANSIENT_ERRORS)}
+                result = {'ok': False, 'errors': [TIMED_OUT if isinstance(exc, GenerationCancelled) else str(exc) or type(exc).__name__], 'transient': isinstance(exc, TRANSIENT_ERRORS)}
             with _lock:
                 if result['ok']:
                     _save(job, user_id, lambda prep: prep.pop('auto_retries', None))  # TASK-350: a later failure starts a new count
