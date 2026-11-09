@@ -100,12 +100,23 @@ def test_an_in_process_block_fails_with_retry_and_the_next_analysis_runs(owner, 
 @pytest.mark.django_db(transaction=True)
 def test_the_fit_analysis_kills_a_model_process_that_outlives_the_limit(owner, client, fetch, real_threads, sleeper, monkeypatch):  # noqa: F811
     monkeypatch.setattr(application_prep, 'available_model_options', lambda: OPTIONS)
+    model_started = lambda: [process for process in sleeper if process.args[0] == sys.executable]  # noqa: E731
+
+    class LimitFromModelStart(threading.Thread):
+        """Under full-suite load the work before the model call outlasted LIMIT, so the limit ran out before any model
+        process existed. The limit's clock starts once one does, so this always tests killing a running model process."""
+        def join(self, timeout=None):
+            deadline = time.monotonic() + HANG
+            while self.name == 'dachapply-analysis' and not model_started() and self.is_alive() and time.monotonic() < deadline:
+                time.sleep(.01)
+            super().join(timeout)
+    monkeypatch.setattr(application_prep, 'Thread', LimitFromModelStart)
     job = _link_job(owner)
     began = time.monotonic()
     assert application_prep._pipeline(job.id, owner.pk) is False
     assert time.monotonic() - began < 5 and not application_prep._pipeline_lock.locked()
     assert application_prep._state(job, owner)['reason'] == FIT_TIMED_OUT
-    [model] = [process for process in sleeper if process.args[0] == sys.executable]
+    [model] = model_started()
     assert model.wait(timeout=5) != 0, 'the model process ended on its own instead of being killed'
 
 

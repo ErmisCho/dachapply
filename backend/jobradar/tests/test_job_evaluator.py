@@ -220,6 +220,19 @@ def test_endpoint_reports_a_provider_failure_as_a_400_with_the_detail(owner, job
     assert not JobEvaluation.objects.exists()
 
 
+def test_the_manual_evaluation_never_promises_a_continuation_it_does_not_schedule(owner, job):
+    """TASK-359: nothing retries this endpoint, so a usage limit says when to try again, not that it continues."""
+    from jobradar.services.cv_generator import _provider_failure
+    api = APIClient(); api.force_authenticate(owner)
+    boom = _provider_failure("ERROR: You've hit your usage limit. Upgrade to Pro or try again at 7:27 PM.")
+
+    with patch('jobradar.services.job_evaluator.validate_model_capability', return_value=OLLAMA_OPTION), \
+         patch('jobradar.services.job_evaluator.run_structured_model', side_effect=boom):
+        r = api.post('/api/jobs/evaluate-with-model/', {'job_ids': [job.id], 'provider': 'openai', 'model': 'gpt-5', 'commit': True}, format='json')
+
+    assert r.status_code == 400 and r.data['errors'] == ['Codex limit reached. Try again after 19:27.']
+
+
 # TASK-314: a link-only job is named by its analysis, so its CV filename stops reading Unknown-Company-Untitled-Role-2.
 def link_only_job(owner, **fields):
     return JobLead.objects.create(url='https://jobs.example/314', title=fields.pop('title', 'Untitled role 2'), created_by=owner, **fields)

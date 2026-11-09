@@ -144,7 +144,7 @@ class Store:
             if state == 'completed':
                 db.execute("UPDATE units SET state='resolved',payload='{}' WHERE state='interrupted' "
                            "AND job_key=(SELECT job_key FROM units WHERE id=?)", (unit_id,))
-            db.execute("UPDATE units SET state=?, payload=CASE WHEN ? IN ('completed','failed','cancelled') THEN '{}' ELSE payload END WHERE id=?", (state, state, unit_id))
+            db.execute("UPDATE units SET state=?, payload=CASE WHEN ? IN ('completed','failed','cancelled','resolved') THEN '{}' ELSE payload END WHERE id=?", (state, state, unit_id))
             if state == 'completed':
                 db.execute("UPDATE units SET job_key=NULL WHERE id=? AND (kind='daily-document' OR ?=0)", (unit_id, count_job))
             # Retain bounded history, never delete pending or uncertain work.
@@ -166,11 +166,20 @@ class Store:
                     return True
         return False
 
+    def schedule(self, unit_id, snapshot):
+        """TASK-359: keep a usage-limited manual document, inputs and all, until its retry; the snapshot
+        carries its status, line and retry_at, so recover restores it waiting rather than running it."""
+        with self.connect() as db:
+            payload = json.loads(db.execute('SELECT payload FROM units WHERE id=?', (unit_id,)).fetchone()[0])
+            payload['snapshot'] = snapshot
+            db.execute("UPDATE units SET state='scheduled', payload=? WHERE id=?",
+                       (json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str), unit_id))
+
     def recover(self):
         with self.connect() as db:
             # An abrupt failure may have committed an external side effect. Never replay it blindly.
             db.execute("UPDATE units SET state='interrupted' WHERE state='running'")
-            return db.execute("SELECT id,kind,payload FROM units WHERE state='queued' ORDER BY created").fetchall()
+            return db.execute("SELECT id,kind,payload FROM units WHERE state IN ('queued','scheduled') ORDER BY created").fetchall()
 
     def status(self):
         with self.connect() as db:
@@ -286,10 +295,17 @@ def execute_document(control, unit_id, kind, payload, live):
             _handlers[kind](**values)
     finally:
         with cv_tasks._lock:
-            status = cv_tasks._tasks.get(task_id, {}).get('status')
-        outcome = 'completed' if status == 'ready' else 'cancelled' if status == 'cancelled' else 'failed'
-        control.finish(unit_id, outcome)
-        event('unit_' + outcome, 'documents')
+            task = cv_tasks._tasks.get(task_id, {})
+            status = task.get('status')
+            if status == 'scheduled':  # TASK-359: cv_tasks.rerun resolves this unit when it runs again
+                task['_unit'] = unit_id
+                snapshot = {name: value for name, value in task.items() if name not in ('_cancel', 'archive')}
+        if status == 'scheduled':
+            control.schedule(unit_id, snapshot)
+        else:
+            outcome = 'completed' if status == 'ready' else 'cancelled' if status == 'cancelled' else 'failed'
+            control.finish(unit_id, outcome)
+            event('unit_' + outcome, 'documents')
         _local.active = False
 
 
@@ -383,12 +399,15 @@ def recover_pending():
     control = store()
     if control is None:
         return
-    from jobradar.services import application_prep, interview_prep, mailbox  # registers allowlisted handlers
+    from jobradar.services import application_prep, cv_tasks, interview_prep, mailbox  # registers allowlisted handlers
     for unit_id, kind, payload in control.recover():
         data = json.loads(payload)
         if 'document' in data:
             # Register restored tasks before sidecar recovery can admit them a second time.
             live = restore_document(data)
+            if data['snapshot'].get('status') == 'scheduled':
+                cv_tasks._reruns[live['task_id']] = live  # TASK-359: resume_queue's retry_due runs it at retry_at
+                continue
             threading.Thread(target=execute_document, args=(control, unit_id, kind, data, live), daemon=True).start()
             continue
         if 'ephemeral' in data:

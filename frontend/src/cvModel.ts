@@ -50,6 +50,10 @@ export function stepText(task:any){
   return `${label||'Working'} · step ${completed}/${total}`
 }
 
+// TASK-359: a run waiting for its provider's usage limit to reset shows the server's one line
+// ("Codex limit reached. Continues automatically at 19:27."), not a step, percentage and ETA.
+export function scheduledLine(task:any){return task?.status==='scheduled'?task.error||task.stage||'':''}
+
 // TASK-271: the name the rename control starts from -- the file's own name without folder or extension.
 export function artifactStem(path?:string){return (path||'').split(/[\\/]/).pop()!.replace(/\.(tex|pdf)$/i,'')}
 

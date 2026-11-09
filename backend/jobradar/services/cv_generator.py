@@ -1909,30 +1909,48 @@ _USAGE_LIMIT=re.compile(r'usage limit|rate limit|(?:5-hour|weekly|session) limit
 _RESET_TIME=re.compile(r'(?:try again at|resets?(?: at)?)\s+(\d{1,2})(?::(\d{2}))?(?:\s*([ap])\.?m\b)?', re.I)
 
 
-def _provider_failure(detail, now=None):
+_PROVIDER_NAMES={'anthropic':'Claude','lmstudio':'LM Studio','ollama':'Ollama'}  # every other provider runs through the codex CLI
+
+
+def _provider_failure(detail, now=None, provider='openai'):
     """TASK-317: the RecoverableGenerationError for a failed provider run.
 
     A usage/rate limit -- codex "ERROR: You've hit your usage limit. ... try again at 6:51 PM.", claude
-    "Claude AI usage limit reached" / "5-hour limit reached - resets 7pm" -- gets a plain summary naming
-    when it resets, and that time as reset_at so the queue can retry then. The time is this machine's
-    local time (the CLI's own clock); one already past today is tomorrow's. Anything else keeps the
-    generic summary.
+    "Claude AI usage limit reached" / "5-hour limit reached - resets 7pm" -- gets one short line naming the
+    provider and when to try again, and that time as reset_at so it can be retried then; a caller that
+    really arms that retry rewrites the line with limit_line (TASK-359). The time is this machine's local
+    time (the CLI's own clock); one already past today is tomorrow's. Its diagnostics keep only the
+    provider's limit line(s), never the echoed prompt or the CLI banner. Anything else keeps the generic summary.
     """
     if not _USAGE_LIMIT.search(detail):
         # shortcut: every other failed run counts as transient, a bad key or missing model too (the cap bounds
         # those to a few refused runs); match permanent causes in `detail` once real stderr shows them.
         return RecoverableGenerationError('The selected model could not complete the request.', detail, transient=True)
+    name=_PROVIDER_NAMES.get(provider,'Codex')
     match=_RESET_TIME.search(detail)
+    detail='\n'.join(line for line in detail.splitlines() if _USAGE_LIMIT.search(line))[:2000] or detail[-500:]
     hour,minute=(int(match[1]),int(match[2] or 0)) if match else (24,0)
     if match and match[3]:
         hour=hour%12+(12 if match[3].lower() == 'p' else 0)
     if hour > 23 or minute > 59:
-        return RecoverableGenerationError('Usage limit reached; try again later.', detail, usage_limit=True)
+        return RecoverableGenerationError(f'{name} limit reached. Try again when the limit resets.', detail, usage_limit=True)
     now=now or datetime.now().astimezone()
     reset_at=now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if reset_at <= now:
         reset_at+=timedelta(days=1)
-    return RecoverableGenerationError(f'Usage limit reached; resets at {hour:02d}:{minute:02d}.', detail, usage_limit=True, reset_at=reset_at)
+    return RecoverableGenerationError(f'{name} limit reached. Try again after {hour:02d}:{minute:02d}.', detail, usage_limit=True, reset_at=reset_at)
+
+
+def limit_line(error, retry_at):
+    """TASK-359: _provider_failure's limit line, as it reads where a retry is really armed (`retry_at`, ISO):
+    it continues at the minute that retry runs (TASK-317's reset plus a minute), or, with no reset time
+    known, when the limit resets. Any other error, or no retry, is returned unchanged ("Try again ...")."""
+    head,found,tail=error.partition(' limit reached. Try again ')
+    if not found or not retry_at:
+        return error
+    if tail.startswith('when the limit resets'):
+        return f'{head} limit reached. Continues when the limit resets; check back later.'
+    return f'{head} limit reached. Continues automatically at {datetime.fromisoformat(retry_at):%H:%M}.'
 
 
 def run_structured_model(prompt, schema, provider, model, effort='default', speed='normal', *, workdir,
@@ -1984,7 +2002,7 @@ def run_structured_model(prompt, schema, provider, model, effort='default', spee
         except GenerationCancelled:
             raise
         except Exception as exc:
-            raise _provider_failure(_failure_detail(str(exc), '', prompt)) from None
+            raise _provider_failure(_failure_detail(str(exc), '', prompt), provider=provider) from None
     elif provider == 'anthropic':
         executable=shutil.which('claude') or shutil.which('claude.exe')
         if not executable:
@@ -2018,7 +2036,7 @@ def run_structured_model(prompt, schema, provider, model, effort='default', spee
     if provider not in ('lmstudio','ollama') and (result.returncode or provider != 'anthropic' and not result_path.is_file()):
         # Both streams, not the first non-empty one: which of them carries the cause and which
         # carries the transcript differs by CLI, and dropping a stream wholesale can drop the cause.
-        raise _provider_failure(_failure_detail(result.stderr, result.stdout, prompt))
+        raise _provider_failure(_failure_detail(result.stderr, result.stdout, prompt), provider=provider)
     _ensure_active(cancelled)
     try:
         if provider in ('lmstudio','ollama'):

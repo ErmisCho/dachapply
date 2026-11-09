@@ -40,8 +40,8 @@ Depends on TASK-357: both touch `_pipeline`, and parallel runs must keep its 10-
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Open questions for the owner before building: slider range (1-10 suggested), and whether the requirements
-analysis (`daily-document`) shares the same N or stays at one.
+Owner decided 2026-11-09: range 1-10, and one shared setting for the fit and the requirements analysis.
+Ships together with TASK-360 (same files). Adds a Profile field, so a migration: ask the owner before merging.
 
 Risks to check: concurrent model CLI runs hitting the provider's usage limit faster (TASK-317 retries),
 local models serving one request at a time, and database connections (Neon pooled).

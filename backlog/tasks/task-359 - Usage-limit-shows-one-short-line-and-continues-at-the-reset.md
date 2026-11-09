@@ -29,13 +29,13 @@ spare Claude tokens", added the same day), so reviews can use up the limit that 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 When any generation (Generate CV, cover letter, queue documents, analyses) hits a provider usage limit, the panel shows one short line, e.g. "Codex limit reached. Continues automatically at 19:27." No raw prompt, banner or log in the default view (Technical details may keep a short provider error, not the echoed prompt).
-- [ ] #2 The manual Generate CV / letter run is retried automatically at the reset time with the same inputs, without the owner pressing anything, and the line changes to running when it starts. It survives a runtime restart (like TASK-317's `retry_at`).
-- [ ] #3 The owner can cancel the scheduled continuation from the same panel.
-- [ ] #4 A limit with no parseable reset time says so ("continues when the limit resets; check back later") and retries on the existing TASK-317 schedule instead of guessing a time.
-- [ ] #5 Tests: a fake provider returning the real usage-limit text (as pasted above) yields the short line and a scheduled retry that runs at the reset (time patched); the echoed prompt never appears in the API response's error field.
+- [x] #1 When any generation (Generate CV, cover letter, queue documents, analyses) hits a provider usage limit, the panel shows one short line, e.g. "Codex limit reached. Continues automatically at 19:27." No raw prompt, banner or log in the default view (Technical details may keep a short provider error, not the echoed prompt).
+- [x] #2 The manual Generate CV / letter run is retried automatically at the reset time with the same inputs, without the owner pressing anything, and the line changes to running when it starts. It survives a runtime restart (like TASK-317's `retry_at`).
+- [x] #3 The owner can cancel the scheduled continuation from the same panel.
+- [x] #4 A limit with no parseable reset time says so ("continues when the limit resets; check back later") and retries on the existing TASK-317 schedule instead of guessing a time.
+- [x] #5 Tests: a fake provider returning the real usage-limit text (as pasted above) yields the short line and a scheduled retry that runs at the reset (time patched); the echoed prompt never appears in the API response's error field.
 - [ ] #6 Verified on localhost with the browser: the short line renders, and the retry fires (reset time patched or a real limit).
-- [ ] #7 Full backend and frontend suites and typecheck pass.
+- [x] #7 Full backend and frontend suites and typecheck pass.
 <!-- AC:END -->
 
 ## Implementation Notes

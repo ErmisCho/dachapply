@@ -60,7 +60,8 @@ export async function queueAction(item:QueueItem,action:QueueAction){
 const when=(iso:string|null)=>iso?new Date(iso).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):''
 const pad=(n:number)=>String(n).padStart(2,'0')
 // TASK-317: a usage-limited item the server re-queues by itself once the limit resets.
-const retries=(item:QueueItem)=>{if(!item.retry_at)return null;const d=new Date(item.retry_at)
+// TASK-359: not repeated when the error's one line already says when it continues.
+const retries=(item:QueueItem)=>{if(!item.retry_at||item.error?.includes(' limit reached. Continues '))return null;const d=new Date(item.retry_at)
   return <p className="text-xs text-slate-600">{`Retries automatically at ${pad(d.getHours())}:${pad(d.getMinutes())}`}</p>}
 
 function Job({item}:{item:QueueItem}){return <Link className="break-words text-slate-600 underline-offset-2 hover:underline" to={`/jobs/${item.job_id}`}>{item.company} — {item.title}</Link>}

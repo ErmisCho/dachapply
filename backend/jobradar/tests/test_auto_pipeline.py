@@ -148,11 +148,11 @@ def test_a_limit_of_zero_runs_nothing(owner, client, tasks, fetch, model, django
 
 def test_a_failure_blocks_with_retry_and_a_usage_limit_retries_after_the_reset(owner, client, tasks, fetch, model, timers, monkeypatch, django_capture_on_commit_callbacks):
     _at(monkeypatch, '2026-10-21T17:00:00+02:00')
-    model['answers'] = [RecoverableGenerationError('Usage limit reached; resets at 18:51.', usage_limit=True,
+    model['answers'] = [RecoverableGenerationError('Codex limit reached. Try again after 18:51.', usage_limit=True,
                                                    reset_at=datetime.fromisoformat('2026-10-21T18:51:00+02:00')), 'maybe']
     job = _add(client, django_capture_on_commit_callbacks)
     assert _pipeline(job, owner)['stage'] == 'failed' and not JobEvaluation.objects.filter(job=job).exists()
-    blocked = {**_blocked(job, 'Analysis failed: Usage limit reached; resets at 18:51. Press Retry.'), 'job_status': 'new', 'retry_at': '2026-10-21T18:52:00+02:00'}
+    blocked = {**_blocked(job, 'Analysis failed: Codex limit reached. Continues automatically at 18:52. Press Retry.'), 'job_status': 'new', 'retry_at': '2026-10-21T18:52:00+02:00'}
     assert _items(client) == [blocked]
     _at(monkeypatch, '2026-10-21T18:52:00+02:00')
     with django_capture_on_commit_callbacks(execute=True):
