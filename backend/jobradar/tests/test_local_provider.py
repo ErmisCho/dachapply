@@ -66,7 +66,8 @@ nomic-embed-text:latest    0a109f422b47    274 MB    10 months ago
 def test_ollama_only_marks_the_real_cv_verified_model_cv_capable():
     def fake_run(command, **kwargs):
         stdout=OLLAMA_LISTING if command[-1] == 'list' else '  Capabilities\n    completion\n' + ('    tools\n' if command[-1] in ('qwen3-coder:latest','gpt-oss:20b') else '')
-        return type('R', (), {'returncode':0,'stdout':stdout,'stderr':''})()
+        kwargs['stdout'].write(stdout)  # TASK-357: output arrives through a file
+        return type('R', (), {'returncode':0,'stderr':''})()
     with patch('jobradar.services.cv_generator.codex_model_options', return_value=[]), \
          patch('jobradar.services.cv_generator.claude_model_options', return_value=[]), \
          patch('jobradar.services.cv_generator.shutil.which', side_effect=lambda name: '/usr/bin/ollama' if 'ollama' in name else None), \
@@ -255,9 +256,11 @@ LMS_LISTING = json.dumps([
 
 
 def _with_lmstudio_models():
-    completed = type('R', (), {'returncode': 0, 'stdout': LMS_LISTING, 'stderr': ''})()
+    def run(command, **kwargs):  # TASK-357: discovery output arrives through the file it is handed
+        kwargs['stdout'].write(LMS_LISTING)
+        return type('R', (), {'returncode': 0, 'stderr': ''})()
     return patch('jobradar.services.cv_generator.shutil.which', side_effect=lambda name: '/usr/bin/lms' if 'lms' in name else None), \
-        patch('jobradar.services.cv_generator.subprocess.run', return_value=completed)
+        patch('jobradar.services.cv_generator.subprocess.run', side_effect=run)
 
 
 @pytest.mark.parametrize('phase', ['headers','body'])

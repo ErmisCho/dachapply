@@ -17,7 +17,7 @@ import tempfile
 
 from jobradar.models import JobEvaluation
 from jobradar.services.access import accessible_jobs
-from jobradar.services.cv_generator import RecoverableGenerationError, run_structured_model, validate_model_capability
+from jobradar.services.cv_generator import GenerationCancelled, RecoverableGenerationError, run_structured_model, validate_model_capability
 from jobradar.services.json_importer import REQ, LIST_FIELDS, import_evaluations, validate_eval
 from jobradar.services.posting_fetch import POSTING_PARTS
 from jobradar.services.prompt_builder import build_candidate_profile_text, build_prompt, user_profile_settings
@@ -152,6 +152,8 @@ def evaluate_jobs(job_ids, user, provider, model, effort='default', speed='norma
     if not commit:
         return {'ok': True, 'dry_run': True, 'preview': preview, 'created': 0, 'errors': []}
 
+    if cancelled and cancelled():  # TASK-357: a run given up after its model answered must not save over its failure
+        raise GenerationCancelled
     result = import_evaluations(data, user=user)
     if not result.get('ok'):
         return {'ok': False, 'errors': result.get('errors', []), 'detail': ''}

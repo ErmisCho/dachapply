@@ -91,7 +91,11 @@ def _stop_process(process):
 
 def _run_command(command, cancelled=None, **kwargs):
     if not cancelled:
-        return subprocess.run(command, **kwargs)
+        if not kwargs.get('timeout'):
+            return subprocess.run(command, **kwargs)
+        # TASK-357: run()'s own timeout kills only the child (a CLI's .cmd shim), then waits with no limit on pipes its
+        # still-running process tree holds; this loop kills the whole tree at the deadline instead.
+        cancelled=lambda: False
     _ensure_active(cancelled)
     timeout=kwargs.pop('timeout', None)
     check=kwargs.pop('check', False)
@@ -219,19 +223,30 @@ def cv_default_choice(options):
     return option,max(allowed,key=_EFFORT_ORDER.index,default=option.get('default_effort',''))
 
 
+def _discovery_run(command):
+    """subprocess.run(command, capture_output=True, text=True, timeout=2) without the pipe: stdout goes through a temp
+    file. TASK-357 (py-spy on the runtime): `ollama list` started a server that inherited the pipes, so run() -- after
+    the timeout too, which kills only the child -- waited on them forever, holding the whole analysis queue."""
+    with tempfile.TemporaryFile('w+') as out:
+        result=subprocess.run(command, stdout=out, stderr=subprocess.DEVNULL, timeout=2, check=False)
+        out.seek(0)
+        result.stdout=out.read()
+    return result
+
+
 def _discover_model_options():
     options=codex_model_options()
     options += claude_model_options()
     ollama=shutil.which('ollama') or shutil.which('ollama.exe')
     if ollama:
         try:
-            result=subprocess.run([ollama,'list'], capture_output=True, text=True, timeout=2, check=False)
+            result=_discovery_run([ollama,'list'])
             rows=result.stdout.splitlines()[1:] if not result.returncode else []
             for row in rows:
                 name=row.split()[0] if row.split() else ''
                 if not name or 'embed' in name.lower():
                     continue
-                shown=subprocess.run([ollama,'show',name], capture_output=True, text=True, timeout=2, check=False)
+                shown=_discovery_run([ollama,'show',name])
                 tools=not shown.returncode and bool(re.search(r'^\s+tools\s*$', shown.stdout, re.MULTILINE))
                 # ponytail: CV eligibility is evidence-based; widen this after another model completes a real package.
                 cv_capable=tools and name == 'qwen3-coder:latest'
@@ -241,7 +256,7 @@ def _discover_model_options():
     lms=shutil.which('lms') or shutil.which('lms.exe')
     if lms:
         try:
-            models=json.loads(subprocess.run([lms,'ls','--llm','--json'], capture_output=True, text=True, timeout=2, check=False).stdout or '[]')
+            models=json.loads(_discovery_run([lms,'ls','--llm','--json']).stdout or '[]')
             # Keep LM Studio's reported metadata for display, but CV generation does not depend on
             # tool training: that path sends the current TeX inline to the local HTTP endpoint.
             for model in models:

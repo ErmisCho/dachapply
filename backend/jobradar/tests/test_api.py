@@ -1109,9 +1109,10 @@ def test_cv_model_discovery_includes_anthropic_and_installed_local_models(monkey
 
     monkeypatch.setattr(cv_generator, 'codex_model_options', lambda: [{'provider':'openai','key':'gpt','label':'GPT','efforts':['low'],'default_effort':'low','fast_tier':''}])
     monkeypatch.setattr(cv_generator.shutil, 'which', lambda command: command if command in ('claude','ollama','lms') else None)
-    def run(command, **kwargs):
-        if command[0]=='ollama': return SimpleNamespace(returncode=0, stdout='NAME ID SIZE MODIFIED\nqwen:latest 1 1GB now\nnomic-embed-text 2 1GB now\n')
-        return SimpleNamespace(returncode=0, stdout=json.dumps([{'modelKey':'gemma','displayName':'Gemma'}]))
+    def run(command, **kwargs):  # TASK-357: discovery output arrives through the file it is handed
+        kwargs['stdout'].write('NAME ID SIZE MODIFIED\nqwen:latest 1 1GB now\nnomic-embed-text 2 1GB now\n' if command[0]=='ollama'
+                               else json.dumps([{'modelKey':'gemma','displayName':'Gemma'}]))
+        return SimpleNamespace(returncode=0)
     monkeypatch.setattr(cv_generator.subprocess, 'run', run)
     options=cv_generator.available_model_options()
     assert {'openai','anthropic','ollama','lmstudio'} <= {option['provider'] for option in options}
@@ -1677,10 +1678,10 @@ def test_optional_model_discovery_cannot_hold_the_popup_beyond_four_seconds(monk
     assert {option['provider'] for option in options} == {'openai','anthropic'}
 
     class Result:
-        def __init__(self, stdout): self.returncode=0; self.stdout=stdout
+        def __init__(self, stdout, file): self.returncode=0; file.write(stdout)  # TASK-357: output arrives through a file
     monkeypatch.setattr(cv_generator.subprocess, 'run', lambda command, **kwargs: Result(
         'NAME ID SIZE\nllama:latest abc 1 GB\n' if command[0] == 'ollama'
-        else '[{"modelKey":"local-model","displayName":"Local model"}]'
+        else '[{"modelKey":"local-model","displayName":"Local model"}]', kwargs['stdout']
     ))
     assert {'ollama','lmstudio'} <= {option['provider'] for option in cv_generator._discover_model_options()}
 
