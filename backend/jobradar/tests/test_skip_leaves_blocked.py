@@ -134,6 +134,19 @@ def test_the_owners_use_fetched_still_reanalyses_a_skip_job(owner, client, tasks
     assert _analysed(model) == [job.id]
 
 
+def test_the_owners_use_fetched_over_budget_runs_on_a_later_daily_run(owner, client, tasks, fetch, model, today, django_capture_on_commit_callbacks):
+    # Codex review: the deferred request must not be stranded by the skip verdict once there is budget again
+    _limits(owner, analyse=0)
+    job = _evaluated(owner, 'skip', recommendation='skip', text=SUBSTANTIAL)
+    with django_capture_on_commit_callbacks(execute=True):
+        assert client.patch(f'/api/jobs/{job.id}/source-text/', {'original_source_text': CHANGED_AD}, format='json').status_code == 200
+    assert model['calls'] == [] and application_prep._state(job, owner)['posting_changed'] == 'owner'
+    _limits(owner, analyse=None)
+    model['answers'] = ['maybe']
+    _run(owner, django_capture_on_commit_callbacks)
+    assert _analysed(model) == [job.id]
+
+
 # --- AC3: a new verdict brings it back --------------------------------------------------------------
 
 @pytest.mark.parametrize('recommendation', ['apply', 'maybe'])

@@ -712,7 +712,7 @@ def reanalyse_changed(job, user, by_owner=False):
         return False
     preps = {other.id: _state(other, user) for other in accessible_jobs(user).only('id')}
     if _left(user_profile_settings(user).daily_analyse_limit, preps, 'auto_analysed_on') == 0:
-        _save(job, user.pk, lambda prep: prep.update(posting_changed=True))
+        _save(job, user.pk, lambda prep: prep.update(posting_changed='owner' if by_owner else True))  # 'owner' outlives a skip verdict
         return False
     _counted_run(job, user, CHANGED)
     return True
@@ -737,7 +737,8 @@ def run_daily(user):
               .values('job_id', 'recommendation', 'fit_score', 'priority', 'created_at')}
     preps = {job.id: _state(job, user) for job in jobs}
     fresh = [job for job in jobs if job.status in JobLead.UNAPPLIED_STATUSES and job.id not in _piping
-             and not _passed_over(job.status, (latest.get(job.id) or {}).get('recommendation'))]  # TASK-361
+             and (preps[job.id].get('posting_changed') == 'owner'  # TASK-361: the owner asked, so a skip verdict does not hold it back
+                  or not _passed_over(job.status, (latest.get(job.id) or {}).get('recommendation')))]
     changed = [job for job in fresh if preps[job.id].get('posting_changed') and job.id in latest]
     waiting = sorted((job for job in fresh if job.status in PREPARE_STATUSES and job.url and job.id not in latest),
                      key=lambda job: job.created_at, reverse=True)
