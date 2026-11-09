@@ -119,6 +119,12 @@ describe('usage-limit retries (TASK-317)',()=>{
     expect(section(html,'Blocked')).toContain('Retries automatically at 18:52')
     expect(view({data:fixture()})).not.toContain('Retries automatically')
   })
+  it('shows a limit line that already says when it continues once, not twice (TASK-359)',()=>{
+    const data=fixture();data.items[4]={...data.items[4],error:'Codex limit reached. Continues automatically at 18:51.',retry_at:new Date(2026,9,19,18,52).toISOString()}
+    const failed=section(view({data}),'Failed / cancelled')
+    expect(failed).toContain('Failed: Codex limit reached. Continues automatically at 18:51.</p>')
+    expect(failed).not.toContain('Retries automatically')
+  })
 })
 
 const blocked=item({job_id:21,company:'Zeta',title:'Ops Engineer',key:'',label:'Documents',document:null,language:null,status:'blocked',position:null,error:'The job has no usable posting text yet.',queued_at:null})

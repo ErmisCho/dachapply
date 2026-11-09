@@ -134,7 +134,7 @@ def _limit(tmp_path, stdout, provider='openai'):
 
 def test_a_codex_usage_limit_names_its_reset_in_24h_local_time(tmp_path):
     exc = _limit(tmp_path, f'Reading prompt from stdin...\n{CODEX_LIMIT}')
-    assert exc.summary == 'Usage limit reached; resets at 18:51.' and exc.usage_limit
+    assert exc.summary == 'Codex limit reached. Try again after 18:51.' and exc.usage_limit
     assert (exc.reset_at.hour, exc.reset_at.minute) == (18, 51) and exc.reset_at.tzinfo
     assert CODEX_LIMIT in exc.diagnostics  # the provider's own words stay in Technical details
 
@@ -142,15 +142,15 @@ def test_a_codex_usage_limit_names_its_reset_in_24h_local_time(tmp_path):
 def test_a_reset_already_past_today_is_tomorrows_and_claude_wording_counts():
     from datetime import datetime, timedelta, timezone
     now = datetime(2026, 10, 19, 20, 0, tzinfo=timezone(timedelta(hours=2)))
-    exc = cv_generator._provider_failure('Claude usage limit reached. Your limit will reset at 7pm (Europe/Vienna).', now)
-    assert exc.summary == 'Usage limit reached; resets at 19:00.' and exc.reset_at == datetime(2026, 10, 20, 19, 0, tzinfo=now.tzinfo)
-    exc = cv_generator._provider_failure('5-hour limit reached ∙ resets 2am', now)
-    assert exc.summary == 'Usage limit reached; resets at 02:00.'
+    exc = cv_generator._provider_failure('Claude usage limit reached. Your limit will reset at 7pm (Europe/Vienna).', now, 'anthropic')
+    assert exc.summary == 'Claude limit reached. Try again after 19:00.' and exc.reset_at == datetime(2026, 10, 20, 19, 0, tzinfo=now.tzinfo)
+    exc = cv_generator._provider_failure('5-hour limit reached ∙ resets 2am', now, 'anthropic')
+    assert exc.summary == 'Claude limit reached. Try again after 02:00.'
 
 
-def test_a_usage_limit_without_a_time_says_try_again_later(tmp_path):
+def test_a_usage_limit_without_a_time_says_to_try_again_when_it_resets(tmp_path):
     exc = _limit(tmp_path, 'Claude AI usage limit reached|1760000000', provider='anthropic')
-    assert exc.summary == 'Usage limit reached; try again later.' and exc.usage_limit and exc.reset_at is None
+    assert exc.summary == 'Claude limit reached. Try again when the limit resets.' and exc.usage_limit and exc.reset_at is None
 
 
 def test_any_other_failure_keeps_the_generic_summary(tmp_path):

@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest'
-import {comboValid,modelEffort,modelSpeed,shortPath,stepText} from './cvModel'
+import {comboValid,modelEffort,modelSpeed,scheduledLine,shortPath,stepText} from './cvModel'
 
 // Shapes mirror what available_model_options() returns from the backend.
 const gpt={provider:'openai',key:'gpt-5.5',label:'GPT-5.5',efforts:['low','medium','high'],default_effort:'medium',fast_tier:'priority'}
@@ -76,5 +76,14 @@ describe('stepText',()=>{
     expect(stepText({step_label:'Working',step_completed:undefined,step_total:4})).toBe('Working · step 0/4')
     expect(stepText({stage:'Queued'})).toBe('Queued') // no step data yet: fall back to the raw stage
     expect(stepText(undefined)).toBe('')
+  })
+})
+
+describe('scheduledLine (TASK-359)',()=>{
+  it('is the one limit line while a run waits for its reset, and nothing otherwise',()=>{
+    const line='Codex limit reached. Continues automatically at 19:27.'
+    expect(scheduledLine({status:'scheduled',error:line,stage:line,step_label:line,step_completed:0,step_total:3})).toBe(line)
+    expect(scheduledLine({status:'running',error:'',step_label:'Generating documents'})).toBe('')
+    expect(scheduledLine(undefined)).toBe('')
   })
 })

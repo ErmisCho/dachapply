@@ -419,7 +419,7 @@ def test_a_usage_limit_fails_at_once_without_repair_attempts(db, workspace, monk
         returncode=1, stderr='', stdout="ERROR: You've hit your usage limit. Upgrade to Pro or try again at 6:51 PM."))
     with pytest.raises(cv_generator.GenerationFailed) as failure:
         cv_generator.generate_cv_package(job, 'profile', 'de', '', False, 'openai', 'gpt-5.5', 'medium', user_id=user.id)
-    assert failure.value.public_message == 'Usage limit reached; resets at 18:51.' and failure.value.repair_attempts == 0
+    assert failure.value.public_message == 'Codex limit reached. Try again after 18:51.' and failure.value.repair_attempts == 0
     assert failure.value.usage_limit and failure.value.reset_at.hour == 18 and len(runs) == 1
 
 # --- TASK-308: preparation analyses missing requirements itself --------------------------------

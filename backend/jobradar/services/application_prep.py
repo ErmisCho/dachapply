@@ -61,7 +61,7 @@ from jobradar.services import cv_tasks, interview_prep, job_evaluator
 from jobradar.services.processing_control import accepting, durable, handoff_documents, store as processing_store
 from jobradar.services.access import accessible_jobs
 from jobradar.services.application_requirements import DOCUMENT_STATUSES, DOCUMENT_TYPES, POSTING_LANGUAGES, normalize_application_requirements
-from jobradar.services.cv_generator import GenerationCancelled, _edit_sidecar, _filename_label, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
+from jobradar.services.cv_generator import GenerationCancelled, _edit_sidecar, _filename_label, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, limit_line, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
 from jobradar.services.posting_fetch import PART_NAMES, fetch_missing_sources, posting_missing
 from jobradar.services.prompt_builder import APPLICATION_REQUIREMENTS_RULES, APPLICATION_REQUIREMENTS_SCHEMA_FIELD, build_candidate_profile_text, user_profile_settings
 
@@ -320,8 +320,9 @@ def _finish(job_id, user_id, key, task_id):
                     return  # re-queued (retry, restart) meanwhile, or a newer run owns this variant
                 error = '' if status == 'ready' else CANCELLED if status == 'cancelled' else task.get('error') or 'Stopped before it finished.'
                 reset_at = task.get('reset_at') and datetime.fromisoformat(task['reset_at'])
-                variant.update(task_id=task_id, status=status, files=files if status == 'ready' else {}, error=error, finished_at=_now(),
-                               retry_at=_retry_at(status == 'failed' and task.get('usage_limit'), reset_at, variant))
+                retry_at = _retry_at(status == 'failed' and task.get('usage_limit'), reset_at, variant)
+                variant.update(task_id=task_id, status=status, files=files if status == 'ready' else {}, error=limit_line(error, retry_at),
+                               finished_at=_now(), retry_at=retry_at)  # TASK-359: "Continues" only when retry_at is armed
             if job:
                 _save(job, user_id, record)
         finally:
@@ -459,8 +460,10 @@ def _analyse_then_prepare(job_id, user_id, retry):
         except Exception as exc:  # AC2: the page says why, never a silent stop
             error = TIMED_OUT if isinstance(exc, GenerationCancelled) else str(getattr(exc, 'summary', '') or exc)[:300].rstrip('.')
             with _lock:  # TASK-317: a usage limit is retried automatically once it resets
-                _save(job, user_id, lambda prep: prep.update(reason=f'Requirements analysis failed: {error}. Press Prepare to retry.',
-                                                             retry_at=_retry_at(getattr(exc, 'usage_limit', False), getattr(exc, 'reset_at', None), prep)))
+                def failed(prep):
+                    retry_at = _retry_at(getattr(exc, 'usage_limit', False), getattr(exc, 'reset_at', None), prep)
+                    prep.update(reason=f'Requirements analysis failed: {limit_line(error, retry_at).rstrip(".")}. Press Prepare to retry.', retry_at=retry_at)
+                _save(job, user_id, failed)
             return False
         job.refresh_from_db()
         if not job.application_requirements:  # AC3: requirements stored meanwhile (an owner edit) win
@@ -582,8 +585,11 @@ def _pipeline(job_id, user_id, reanalyse=''):
                     error = '; '.join(result['errors'])[:300].rstrip('.')
                     # A failed re-analysis says so, so the Queue's Retry analyses it again (TASK-319's path).
                     failed = REANALYSIS_FAILED if reanalyse else 'Analysis failed'
-                    _save(job, user_id, lambda prep: prep.update(pipeline={'stage': 'failed', 'at': _now(), 'error': error, 'note': reanalyse}, reason=f'{failed}: {error}. Press Retry.',
-                                                                 retry_at=_retry_at(result.get('usage_limit'), result.get('reset_at'), prep, reanalyse and result.get('transient'))))
+                    def record(prep):
+                        retry_at = _retry_at(result.get('usage_limit'), result.get('reset_at'), prep, reanalyse and result.get('transient'))
+                        line = limit_line(error, retry_at).rstrip('.')  # TASK-359: "Continues" only when retry_at is armed
+                        prep.update(pipeline={'stage': 'failed', 'at': _now(), 'error': line, 'note': reanalyse}, reason=f'{failed}: {line}. Press Retry.', retry_at=retry_at)
+                    _save(job, user_id, record)
                 elif result['preview'][0]['recommendation'] == 'skip':
                     stage('skipped', recommendation='skip', fit_score=result['preview'][0]['fit_score'])
                 else:
@@ -1378,8 +1384,14 @@ def retry_due():
                             due.append((job, user, key))
                         else:
                             later.append(when)
-        if due and not accepting():
-            due, later = [], [*later, now + RETRY_POLL]
+        manual = []  # TASK-359: usage-limited manual Generate CV / letter runs, on this same timer
+        for task_id, when in cv_tasks.scheduled():
+            if when <= now:
+                manual.append(task_id)
+            else:
+                later.append(when)
+        if (due or manual) and not accepting():
+            due, manual, later = [], [], [*later, now + RETRY_POLL]
         for job, user, key in due:
             def spend(prep, key=key):
                 item = prep['variants'][key] if key else prep
@@ -1398,7 +1410,12 @@ def retry_due():
             pass  # cancelled, discarded or moved past To apply meanwhile
         except Exception:  # one job's retry must not lose the others, already spent above
             logger.exception('Retrying job %s failed', job.id)
-    return len(due)
+    for task_id in manual:
+        try:
+            cv_tasks.rerun(task_id)
+        except Exception:
+            logger.exception('Continuing CV task %s failed', task_id)
+    return len(due) + len(manual)
 
 
 def _retry_worker():

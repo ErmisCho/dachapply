@@ -157,3 +157,31 @@ def test_durable_cancel_is_owner_scoped_and_restores_event(tmp_path, monkeypatch
     restored = processing.restore_document(json.loads(control.recover()[0][2]))
     assert restored['cancel_event'].is_set()
     assert cv_tasks._tasks['queued-document']['status'] == 'cancelling'
+
+
+def test_a_usage_limited_manual_document_waits_through_a_restart_and_reruns_with_its_inputs(tmp_path, monkeypatch):
+    """TASK-359: the unit keeps its inputs while it waits; a restart restores it waiting, not running."""
+    from jobradar.services import cv_tasks
+    monkeypatch.setenv('DACHAPPLY_CONTROL_DB', str(tmp_path / 'control.sqlite3'))
+    monkeypatch.setattr(cv_tasks, '_tasks', {'manual': {'id': 'manual', 'user_id': 2, 'status': 'queued', 'updated_at': time.time(),
+                                                       '_cancel': threading.Event(), 'archive': None, '_estimate_key': ('fixture',)}})
+    monkeypatch.setattr(cv_tasks, '_reruns', {})
+    runs = []
+
+    def limited(task_id, profile, cancel_event, on_finish):
+        runs.append(profile)
+        cv_tasks._tasks[task_id].update(status='scheduled', retry_at='2026-10-19T19:28:00+02:00')
+    monkeypatch.setitem(processing._handlers, 'document-fixture', limited)
+    admitted = processing.admit_document(processing.store(), 'document-fixture', limited, ('manual', 'the same inputs', threading.Event(), None), {})
+    processing.execute_document(*admitted)
+    unit = admitted[1]
+    monkeypatch.setattr(cv_tasks, '_tasks', {})  # the restart
+    processing.recover_pending()
+    assert runs == ['the same inputs'] and cv_tasks._tasks['manual']['status'] == 'scheduled'
+    assert [(task_id, when.isoformat()) for task_id, when in cv_tasks.scheduled()] == [('manual', '2026-10-19T19:28:00+02:00')]
+    submitted = []
+    monkeypatch.setattr(cv_tasks._run, 'submit', lambda **inputs: submitted.append(inputs))
+    cv_tasks.rerun('manual')
+    assert submitted[0]['profile'] == 'the same inputs' and cv_tasks._tasks['manual']['status'] == 'queued'
+    with processing.store().connect() as db:
+        assert db.execute('SELECT state,payload FROM units WHERE id=?', (unit,)).fetchone() == ('resolved', '{}')

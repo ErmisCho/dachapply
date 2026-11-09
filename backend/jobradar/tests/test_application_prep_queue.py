@@ -307,7 +307,7 @@ def _at(monkeypatch, iso):
 
 
 def _limited(tasks, task_id, reset_at=RESET):
-    tasks['live'][task_id].update(status='failed', error='Usage limit reached; resets at 18:51.', usage_limit=True, reset_at=reset_at)
+    tasks['live'][task_id].update(status='failed', error='Codex limit reached. Try again after 18:51.', usage_limit=True, reset_at=reset_at)
     tasks['finish'][task_id](task_id)
 
 
@@ -319,7 +319,7 @@ def test_a_usage_limited_variant_is_retried_automatically_once_it_resets(owner, 
     assert _variant(job, owner, 'cv-de')['retry_at'] == '2026-10-19T18:52:00+02:00'
     assert application_prep._timer[0].isoformat() == '2026-10-19T18:52:00+02:00' and timers[-1].interval == 6720
     item = next(item for item in _items(client) if item['job_id'] == job.id)
-    assert item['status'] == 'failed' and item['retry_at'] == '2026-10-19T18:52:00+02:00' and item['error'] == 'Usage limit reached; resets at 18:51.'
+    assert item['status'] == 'failed' and item['retry_at'] == '2026-10-19T18:52:00+02:00' and item['error'] == 'Codex limit reached. Continues automatically at 18:52.'
     # Before retry_at nothing is re-queued; the timer is armed again for it.
     _at(monkeypatch, '2026-10-19T18:51:59+02:00')
     assert application_prep.retry_due() == 0 and len(tasks['started']) == 1 and application_prep._timer
@@ -347,6 +347,7 @@ def test_automatic_retries_stop_after_three(owner, tasks, timers, monkeypatch):
         assert application_prep.retry_due() == 1
     _limited(tasks, 'task-4')
     assert _variant(job, owner, 'cv-de')['retry_at'] is None and _variant(job, owner, 'cv-de')['auto_retries'] == 3
+    assert _variant(job, owner, 'cv-de')['error'] == 'Codex limit reached. Try again after 18:51.'  # TASK-359: nothing armed, no "Continues"
     assert application_prep.retry_due() == 0 and len(tasks['started']) == 4
 
 
@@ -380,10 +381,10 @@ def test_a_usage_limited_requirements_analysis_is_retried_automatically(owner, c
     _at(monkeypatch, '2026-10-19T17:00:00+02:00')
     monkeypatch.setattr(application_prep, 'fetch_missing_sources', lambda jobs: None)
     job = _job(owner, 'new', requirements={})
-    _model(monkeypatch, RecoverableGenerationError('Usage limit reached; resets at 18:51.', usage_limit=True, reset_at=datetime.fromisoformat(RESET)))
+    _model(monkeypatch, RecoverableGenerationError('Codex limit reached. Try again after 18:51.', usage_limit=True, reset_at=datetime.fromisoformat(RESET)))
     application_prep.prepare(job.id, owner)
     prep = application_prep._state(job, owner)
-    assert prep['reason'] == 'Requirements analysis failed: Usage limit reached; resets at 18:51. Press Prepare to retry.'
+    assert prep['reason'] == 'Requirements analysis failed: Codex limit reached. Continues automatically at 18:52. Press Prepare to retry.'
     assert prep['retry_at'] == '2026-10-19T18:52:00+02:00'
     assert next(item for item in _items(client) if item['job_id'] == job.id)['retry_at'] == '2026-10-19T18:52:00+02:00'
     _model(monkeypatch)
@@ -391,3 +392,67 @@ def test_a_usage_limited_requirements_analysis_is_retried_automatically(owner, c
     assert application_prep.retry_due() == 1
     assert tasks['started'] == [(job.id, 'cv-en'), (job.id, 'letter-en')][:len(tasks['started'])] and tasks['started']
     assert application_prep._state(job, owner)['retry_at'] is None
+
+
+# --- TASK-359: a manual Generate CV that hits the limit says so in one line and continues at the reset --
+
+BANNER = ('OpenAI Codex v0.162.1 (research preview)\n--------\nworkdir: C:/fixture\nmodel: gpt-6.1-sol\nprovider: openai\n'
+          'approval: never\nsandbox: read-only\nsession id: 019a0000-0000-7000-8000-000000000000\n--------\nuser')
+CODEX_LIMIT = ("ERROR: You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit "
+               'https://chatgpt.com/settings/usage to purchase more credits or try again at 7:27 PM.')
+
+
+def test_a_manual_generation_at_the_usage_limit_shows_one_line_and_continues_at_the_reset(owner, client, workspace, timers, monkeypatch):
+    from datetime import datetime, timedelta
+    from types import SimpleNamespace
+    from jobradar.services import cv_generator
+    from jobradar.tests.test_cv_assets import GENERATED, _fake_pdflatex
+    _fake_pdflatex(monkeypatch, GENERATED)
+    monkeypatch.setattr(cv_tasks, '_tasks', {})
+    monkeypatch.setattr(cv_tasks, '_reruns', {})
+    # jobradar.views binds get_cv_task at import, so a `tasks` fixture active then leaves its fake there for good.
+    monkeypatch.setattr('jobradar.views.get_cv_task', cv_tasks.get_cv_task)
+    monkeypatch.setattr(cv_tasks, 'Thread', lambda target, args=(), kwargs=None, **_: SimpleNamespace(start=lambda: target(*args, **(kwargs or {}))))
+    runs = []
+
+    def codex(command, cancelled=None, input='', **kwargs):  # the CLI as the owner saw it: banner, the prompt echoed (re-wrapped), the limit
+        runs.append((input, next(iter(cv_tasks._tasks.values()))['status']))
+        echoed = '\n'.join('> ' + line for line in input.splitlines() if line.strip())
+        return SimpleNamespace(returncode=1, stdout='', stderr=f'{BANNER}\n{echoed}\nERROR rmcp::transport::worker: worker quit\n{CODEX_LIMIT}')
+    monkeypatch.setattr(cv_generator, '_run_command', codex)
+    job = _job(owner, 'to_apply')
+    task_id = cv_tasks.start_cv_task(job.id, owner.pk, 'profile', 'de', '', False, 'openai', 'gpt-5.5', 'medium', 'normal')
+
+    task = client.get(f'/api/cv-generation/tasks/{task_id}/').data
+    # The minute the retry really runs: TASK-317's reset (19:27) plus one.
+    assert task['status'] == 'scheduled' and task['error'] == 'Codex limit reached. Continues automatically at 19:28.'
+    prompt_lines = [line for line in runs[0][0].splitlines() if len(line.strip()) > 20]
+    assert prompt_lines and not any(line in task['error'] or line in task['diagnostics'] for line in prompt_lines)
+    assert 'OpenAI Codex' not in task['diagnostics'] and CODEX_LIMIT in task['diagnostics']
+    retry_at = datetime.fromisoformat(task['retry_at'])
+    assert (retry_at.hour, retry_at.minute) == (19, 28) and application_prep._timer[0] == retry_at  # TASK-317's one timer
+    _at(monkeypatch, (retry_at - timedelta(seconds=1)).isoformat())
+    assert application_prep.retry_due() == 0 and len(runs) == 1
+    _at(monkeypatch, retry_at.isoformat())
+    assert application_prep.retry_due() == 1
+    assert len(runs) == 2 and runs[1] == (runs[0][0], 'running')  # the same task, the same inputs, running again
+    assert cv_tasks.get_cv_task(task_id, owner.pk)['status'] == 'scheduled'  # still limited: scheduled again
+    for _ in range(2):  # AUTO_RETRIES (3) continuations in all
+        _at(monkeypatch, cv_tasks.get_cv_task(task_id, owner.pk)['retry_at'])
+        assert application_prep.retry_due() == 1
+    task = cv_tasks.get_cv_task(task_id, owner.pk)
+    # Past the cap nothing is armed, so the line must not promise a continuation.
+    assert len(runs) == 4 and task['status'] == 'failed' and task['retry_at'] is None
+    assert task['error'] == 'Codex limit reached. Try again after 19:27.'
+
+
+def test_a_scheduled_continuation_can_be_cancelled(owner, timers, monkeypatch):
+    import time
+    monkeypatch.setattr(cv_tasks, '_tasks', {'waiting': {'id': 'waiting', 'user_id': owner.pk, 'status': 'scheduled', 'retry_at': '2026-10-19T19:28:00+02:00',
+                                                        'error': 'Codex limit reached. Continues automatically at 19:27.', 'updated_at': time.time()}})
+    monkeypatch.setattr(cv_tasks, '_reruns', {'waiting': {'task_id': 'waiting'}})
+    monkeypatch.setattr(cv_tasks, 'rerun', lambda task_id: pytest.fail('a cancelled continuation must not run'))
+    assert cv_tasks.cancel_cv_task('waiting', owner.pk) is True  # what the panel's Cancel posts to
+    assert cv_tasks._tasks['waiting']['status'] == 'cancelled' and cv_tasks._reruns == {}
+    _at(monkeypatch, '2026-10-19T19:30:00+02:00')
+    assert application_prep.retry_due() == 0

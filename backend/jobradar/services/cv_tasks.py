@@ -17,7 +17,7 @@ from django.db import close_old_connections, transaction
 from django.db.models import OuterRef, Q, Subquery
 
 from jobradar.models import ApplicationNote, JobEvaluation, JobLead, UserProfile
-from jobradar.services.cv_generator import GenerationCancelled, RecoverableGenerationError, _artifact_metadata_path, _filename_label, _is_sent, _letter_label, _sent_paths, applicant_name, generate_cv_package, latest_generated_sources, preference_exclusion, preferred_names, read_revision_sources, recompile_generated_package, rename_generated_artifact
+from jobradar.services.cv_generator import GenerationCancelled, RecoverableGenerationError, _artifact_metadata_path, _filename_label, _is_sent, _letter_label, _sent_paths, applicant_name, generate_cv_package, latest_generated_sources, limit_line, preference_exclusion, preferred_names, read_revision_sources, recompile_generated_package, rename_generated_artifact
 from jobradar.services.literal_edits import NotLiteral, gate_literal_edits, literal_report, translate_literal_edits
 from jobradar.services.posting_fetch import fetch_posting_text
 from jobradar.services.processing_control import tracked, store as processing_store
@@ -28,6 +28,7 @@ logger=logging.getLogger(__name__)
 _tasks={}
 _stage_history={}
 _lock=Lock()
+_reruns={}  # TASK-359: task_id -> _run's arguments, for a usage-limited manual run waiting for its retry_at
 
 BASE_TEMPLATE_NOTE_PREFIX='Base templates used: '
 
@@ -352,7 +353,7 @@ def _remaining_runtime(task, now):
 
 
 def _task_eta(task, now):
-    if task['status'] in ('ready','failed','cancelling','cancelled'):
+    if task['status'] in ('ready','failed','cancelling','cancelled','scheduled'):
         return 0
     if task['status'] == 'running':
         return _remaining_runtime(task,now)
@@ -512,7 +513,7 @@ def _update(task_id, **values):
 def _cleanup():
     cutoff=time.time()-3600
     with _lock:
-        for task_id in [key for key, task in _tasks.items() if task['updated_at'] < cutoff and task['status'] not in ('queued', 'running', 'cancelling')]:
+        for task_id in [key for key, task in _tasks.items() if task['updated_at'] < cutoff and task['status'] not in ('queued', 'running', 'cancelling', 'scheduled')]:
             del _tasks[task_id]
 
 
@@ -530,6 +531,7 @@ def _retry_missing_source(job):
 
 @tracked('documents')
 def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, cancel_event=None, auto_clipboard=True, route_reason='', generation_options=None, mark_ready=True, on_finish=None):
+    inputs=dict(locals())  # TASK-359: exactly the arguments, for a usage-limited run's automatic rerun
     close_old_connections()
     try:
         if cancel_event.is_set():
@@ -580,8 +582,20 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         error=getattr(exc,'public_message',str(exc).splitlines()[0][:500])
         # TASK-317: a usage limit and its reset (ISO, or None) for application_prep's automatic retry.
         reset_at=getattr(exc,'reset_at',None)
-        _update(task_id, status='failed', stage='Failed', error=error, diagnostics=getattr(exc,'diagnostics',str(exc)), repair_attempts=getattr(exc,'repair_attempts',0),
-                usage_limit=getattr(exc,'usage_limit',False), reset_at=reset_at.isoformat() if reset_at else None)
+        retry_at=None
+        if getattr(exc,'usage_limit',False) and not on_finish:
+            # TASK-359: a manual run (the queue's own runs have on_finish) continues by itself, same task and
+            # inputs, on TASK-317's one timer: application_prep.retry_due calls rerun at retry_at.
+            from jobradar.services import application_prep  # it imports this module
+            with _lock:
+                spent={'auto_retries':_tasks.get(task_id,{}).get('auto_retries',0)}
+            with application_prep._lock:
+                retry_at=application_prep._retry_at(True,reset_at,spent)
+            if retry_at:
+                _reruns[task_id]=inputs
+                error=limit_line(error,retry_at)
+        _update(task_id, status='scheduled' if retry_at else 'failed', stage=error if retry_at else 'Failed', error=error, diagnostics=getattr(exc,'diagnostics',str(exc)), repair_attempts=getattr(exc,'repair_attempts',0),
+                usage_limit=getattr(exc,'usage_limit',False), reset_at=reset_at.isoformat() if reset_at else None, retry_at=retry_at)
     finally:
         if on_finish:
             # TASK-280.2: persists the outcome of a prepared variant; must never mask the task's own result.
@@ -805,11 +819,45 @@ def cancel_cv_task(task_id, user_id):
         if task['status'] in ('ready','failed','cancelled'):
             return False
         control = processing_store()
+        if task['status'] == 'scheduled':  # TASK-359: nothing runs yet, so only the continuation is dropped
+            _reruns.pop(task_id,None)
+            task.update(status='cancelled', stage='Cancelled', error='', retry_at=None, updated_at=time.time())
+            if control and task.get('_unit'):
+                control.finish(task['_unit'], 'cancelled')
+            return True
         if control:
             control.cancel_document(task_id, user_id)
         task['_cancel'].set()
         task.update(status='cancelling', stage='Cancelling', _stage_key='cancelling', _stage_started_at=time.monotonic(), updated_at=time.time())
         return True
+
+
+def scheduled():
+    """TASK-359: (task_id, retry_at) of every usage-limited manual run waiting to continue."""
+    with _lock:
+        return [(task_id, datetime.fromisoformat(task['retry_at'])) for task_id, task in _tasks.items() if task['status'] == 'scheduled']
+
+
+def rerun(task_id):
+    """TASK-359: run a scheduled task again -- the same task id, so the panel polling it sees it start,
+    and the same inputs. Called by application_prep.retry_due once its retry_at passed."""
+    with _lock:
+        task=_tasks.get(task_id)
+        inputs=_reruns.pop(task_id,None)
+        if not task or task['status'] != 'scheduled' or not inputs:
+            return
+        now=time.monotonic()
+        task.update(status='queued', stage='Queued', progress=0, error='', diagnostics='', retry_at=None, usage_limit=False, reset_at=None,
+                    auto_retries=task.get('auto_retries',0)+1, _created_at=now, _started_at=None, _finished_at=None,
+                    _stage_key='queued', _stage_started_at=now, _stage_times={}, updated_at=time.time())
+        unit=task.pop('_unit',None)
+    control=processing_store()
+    if control:
+        if unit:
+            control.finish(unit, 'resolved')  # the waiting unit; submit admits the run as a new one
+        _run.submit(**inputs)
+    else:
+        Thread(target=_run,kwargs=inputs,name=f'cv-agent-{task_id[:8]}',daemon=True).start()
 
 
 def start_cv_revision(task_id, user_id, instructions, correction_image=None):
