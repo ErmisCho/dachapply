@@ -53,7 +53,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import close_old_connections, connection
 from django.db import OperationalError
-from django.db.models import Q
+from django.db.models import OuterRef, Q, Subquery
 from django.utils import timezone
 
 from jobradar.models import JobEvaluation, JobLead, UserProfile
@@ -80,6 +80,7 @@ ANALYSIS_INTERRUPTED = 'Requirements analysis stopped before it finished (the se
 CANCELLED = 'Cancelled from the queue. Retry to prepare it again.'
 FILES_EXIST = 'Generated files already exist for this job, so nothing was prepared automatically. Generate more from the CV section.'
 PREPARE_STATUSES = ('new', 'reviewed', 'to_apply')  # TASK-312 AC1; a retry also Ready to submit
+OWNER_CHOSEN = ('to_apply', 'ready_to_submit')  # TASK-361: past New/Reviewed, so a skip recommendation no longer rules
 FINISHED_LIMIT = 50  # TASK-312: finished items the queue lists, newest first
 AUTO_RETRIES = 3  # TASK-317: automatic retries of one usage-limited item
 TRANSIENT_RETRIES = 2  # TASK-350: of a transiently failed re-analysis; each one is a model run, hence below AUTO_RETRIES
@@ -608,6 +609,18 @@ def _pipeline(job_id, user_id, reanalyse=''):
         close_old_connections()
 
 
+def _passed_over(status, recommendation):
+    """TASK-361: the app recommends skipping this open job and the owner did not move it forward anyway, so it is
+    not listed as blocked and spends no automatic model run. Nothing is cleared: a new verdict brings it all back."""
+    return recommendation == 'skip' and status not in OWNER_CHOSEN
+
+
+def _with_recommendation(jobs):
+    """`jobs` with each one's latest recommendation, in the same query: queue_state runs on every poll."""
+    latest = JobEvaluation.objects.filter(job=OuterRef('pk')).order_by('-created_at', '-id').values('recommendation')[:1]
+    return jobs.annotate(latest_recommendation=Subquery(latest))
+
+
 def _outcome(job):
     """TASK-338: what a re-analysis may change -- the latest recommendation and the requirements' documents."""
     job.refresh_from_db(fields=['application_requirements'])
@@ -686,16 +699,20 @@ def _counted_run(job, user, note):
     start_pipeline(job.id, user, force=True, reanalyse=note)
 
 
-def reanalyse_changed(job, user):
+def reanalyse_changed(job, user, by_owner=False):
     """TASK-336: the automatic refresh accepted new text for an open, analysed job -- analyse it again
-    through the pipeline, within today's analysis budget (TASK-338: also the owner's Use fetched). Over the
-    budget the job is marked, and run_daily takes it first once there is budget again. True only when a
-    re-analysis was started, so a caller that would prepare otherwise still does."""
-    if job.status not in JobLead.UNAPPLIED_STATUSES or not is_cv_owner(user) or not JobEvaluation.objects.filter(job_id=job.id).exists():
+    through the pipeline, within today's analysis budget (TASK-338: also the owner's Use fetched, `by_owner`).
+    Over the budget the job is marked, and run_daily takes it first once there is budget again. True only when
+    a re-analysis was started, so a caller that would prepare otherwise still does. TASK-361: the refresh
+    spends nothing on a job the app recommends skipping."""
+    recommendation = _outcome(job)[0]
+    if job.status not in JobLead.UNAPPLIED_STATUSES or not is_cv_owner(user) or not recommendation:
+        return False
+    if not by_owner and _passed_over(job.status, recommendation):
         return False
     preps = {other.id: _state(other, user) for other in accessible_jobs(user).only('id')}
     if _left(user_profile_settings(user).daily_analyse_limit, preps, 'auto_analysed_on') == 0:
-        _save(job, user.pk, lambda prep: prep.update(posting_changed=True))
+        _save(job, user.pk, lambda prep: prep.update(posting_changed='owner' if by_owner else True))  # 'owner' outlives a skip verdict
         return False
     _counted_run(job, user, CHANGED)
     return True
@@ -719,7 +736,9 @@ def run_daily(user):
     latest = {row['job_id']: row for row in JobEvaluation.objects.filter(job__in=jobs).order_by('created_at', 'id')
               .values('job_id', 'recommendation', 'fit_score', 'priority', 'created_at')}
     preps = {job.id: _state(job, user) for job in jobs}
-    fresh = [job for job in jobs if job.status in JobLead.UNAPPLIED_STATUSES and job.id not in _piping]
+    fresh = [job for job in jobs if job.status in JobLead.UNAPPLIED_STATUSES and job.id not in _piping
+             and (preps[job.id].get('posting_changed') == 'owner'  # TASK-361: the owner asked, so a skip verdict does not hold it back
+                  or not _passed_over(job.status, (latest.get(job.id) or {}).get('recommendation')))]
     changed = [job for job in fresh if preps[job.id].get('posting_changed') and job.id in latest]
     waiting = sorted((job for job in fresh if job.status in PREPARE_STATUSES and job.url and job.id not in latest),
                      key=lambda job: job.created_at, reverse=True)
@@ -1101,6 +1120,7 @@ def queue_state(user):
     FINISHED_LIMIT finished ones. Read-only, like board_summary. TASK-340: each running or queued item's
     eta_seconds is when it should finish, from measured durations, and 'summary' is {done (ready or skipped today),
     total, analyses_left, documents_left, seconds_left} for the navbar.
+    TASK-361: a job the app recommends skipping is not listed as blocked (_passed_over).
 
     ponytail: one sidecar read per unapplied job per poll, as application_prep_active does; an index
     of jobs with a preparation if the board grows into thousands of open jobs.
@@ -1110,10 +1130,11 @@ def queue_state(user):
     expected = {route: cv_tasks.measured_seconds(route) or seconds for route, seconds in ANALYSIS_SECONDS.items()}
     items, blocked, fits, requirements = [], [], [], []
     today, done = timezone.localdate(), 0
-    for job in accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES).only('id', 'company', 'title', 'status', 'source_fetch_error'):
+    for job in _with_recommendation(accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES)).only('id', 'company', 'title', 'status', 'source_fetch_error'):
         prep = _state(job, user)
         done += _done_today(prep, today)
-        if prep.get('reason') and not prep.get('variants') and prep['reason'] not in (ANALYSING, FILES_EXIST):
+        passed_over = _passed_over(job.status, job.latest_recommendation)  # TASK-361
+        if prep.get('reason') and not prep.get('variants') and prep['reason'] not in (ANALYSING, FILES_EXIST) and not passed_over:
             # TASK-313 AC2: a job whose preparation was refused shows why, instead of vanishing. TASK-318: a
             # missing text says why its link could not be read (e.g. the paste hint), the _gate wording otherwise.
             error = job.source_fetch_error if prep['reason'] == 'The job has no usable posting text yet.' and job.source_fetch_error else prep['reason']
@@ -1160,7 +1181,7 @@ def queue_state(user):
                           'eta_seconds': live['estimated_seconds_remaining'] if live else _document_seconds(prep, variant) if status == 'queued' else None, 'error': error,
                           'files': [Path(path).name for path in (variant.get('files') or {}).values()],
                           'queued_at': variant.get('queued_at'), 'started_at': variant.get('started_at'), 'finished_at': variant.get('finished_at'),
-                          'retry_at': variant.get('retry_at') if variant.get('status') == 'failed' else None, 'incomplete': False})
+                          'retry_at': variant.get('retry_at') if variant.get('status') == 'failed' and not passed_over else None, 'incomplete': False})
     items += interview_prep.queue_items(user)  # TASK-355: its own runs, for jobs past UNAPPLIED_STATUSES
     running = sorted((item for item in items if item['status'] == 'running'), key=lambda item: item['started_at'] or '')
     queued = sorted((item for item in items if item['status'] == 'queued'), key=lambda item: (item['position'] is None, item['position'] or 0, item['queued_at'] or ''))
@@ -1365,7 +1386,8 @@ def retry_due():
     a failed variant, or a preparation whose requirements analysis hit the limit -- and arm the timer
     for the next one. The sidecars are the truth, so a retry the owner already made is not repeated.
     TASK-350: a failed re-analysis runs again as it was, also beside documents, which queue_action's retry
-    cannot reach. While processing is not accepting, nothing is spent and it looks again after RETRY_POLL."""
+    cannot reach. While processing is not accepting, nothing is spent and it looks again after RETRY_POLL.
+    TASK-361: a passed-over job is left out with its retry_at intact, so a new verdict can still use it."""
     global _timer
     now, due, later = timezone.now(), [], []
     with _lock:
@@ -1373,7 +1395,9 @@ def retry_due():
             _timer[1].cancel()
             _timer = None
         for user in _owners():
-            for job in accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES).only('id'):
+            for job in _with_recommendation(accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES)).only('id', 'status'):
+                if _passed_over(job.status, job.latest_recommendation):
+                    continue
                 prep = _state(job, user)
                 variants = prep.get('variants') or {}
                 pending = [('', prep), *((key, variant) for key, variant in variants.items() if variant.get('status') == 'failed')]

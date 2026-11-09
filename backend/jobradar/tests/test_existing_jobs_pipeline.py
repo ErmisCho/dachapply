@@ -287,9 +287,9 @@ def test_redone_documents_count_against_the_prepare_cap_and_wait_for_the_next_da
 
 def test_evaluations_older_than_n_days_are_reanalysed_oldest_first(owner, tasks, fetch, model, today, django_capture_on_commit_callbacks):
     _limits(owner, analyse=None, days=7)
-    older, old = _evaluated(owner, 'older', recommendation='skip', days=10), _evaluated(owner, 'old', recommendation='skip', days=8)
-    _evaluated(owner, 'recent', recommendation='skip', days=3)
-    _evaluated(owner, 'closed', recommendation='skip', days=30, status='archived')
+    older, old = _evaluated(owner, 'older', days=10), _evaluated(owner, 'old', days=8)
+    _evaluated(owner, 'recent', days=3)
+    _evaluated(owner, 'closed', days=30, status='archived')
     model['answers'] = ['skip', 'skip']
     _run(owner, django_capture_on_commit_callbacks)
     assert _analysed(model) == [older.id, old.id]
@@ -306,7 +306,7 @@ def test_off_reanalyses_nothing(owner, tasks, fetch, model, today, django_captur
 
 def test_stale_and_waiting_jobs_share_the_daily_analysis_cap(owner, tasks, fetch, model, today, django_capture_on_commit_callbacks):
     _limits(owner, analyse=2, days=7)
-    older, _ = _evaluated(owner, 'older', recommendation='skip', days=10), _evaluated(owner, 'old', recommendation='skip', days=8)
+    older, _ = _evaluated(owner, 'older', days=10), _evaluated(owner, 'old', days=8)
     waiting = _job(owner, 'waiting')
     model['answers'] = ['skip', 'skip']
     _run(owner, django_capture_on_commit_callbacks)

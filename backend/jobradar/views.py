@@ -1035,7 +1035,7 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             # TASK-338: a changed text (Use fetched, or a pasted posting) analyses an evaluated open job again,
             # and that re-analysis decides about its documents. Otherwise TASK-306: the choice may have been
             # all that held preparation back; retry as the transition does.
-            if not (changed and reanalyse_changed(job, request.user)) and job.status == 'to_apply':
+            if not (changed and reanalyse_changed(job, request.user, by_owner=True)) and job.status == 'to_apply':
                 prepare_on_to_apply(job.pk, request.user.pk)
         transaction.on_commit(after, robust=True)
         return Response({'company':company,'original_source_text':text})
