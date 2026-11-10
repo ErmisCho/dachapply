@@ -9,7 +9,7 @@ import re
 import unicodedata
 from difflib import SequenceMatcher
 
-from django.db.models import BooleanField, ExpressionWrapper, Q
+from django.db.models import BooleanField, Case, ExpressionWrapper, IntegerField, Q, Value, When
 
 POSTING_FIELDS = ('original_source_text', 'raw_description', 'url')
 FUZZY_MIN_LEN = 4  # shorter words ("data", "ai", "sap") only match exactly
@@ -56,10 +56,14 @@ def search_jobs(qs, query):
         return qs
     posting = {f'search_posting_{i}': ExpressionWrapper(_posting_q(w), output_field=BooleanField()) for i, w in enumerate(words)}
     folded_words = [fold(w) for w in words]
-    ids = set()
+    exact, typo = set(), set()
     for pk, company, title, location, *in_posting in qs.prefetch_related(None).annotate(**posting).values_list('id', 'company', 'title', 'location', *posting):
         fields = fold(f'{company}\n{title}\n{location}')
         tokens = re.findall(r'\w+', fold(f'{company} {title}'))
-        if all(w in fields or hit or _is_typo_of(w, tokens) for w, hit in zip(folded_words, in_posting)):
-            ids.add(pk)
-    return qs.filter(id__in=ids)
+        plain = [w in fields or hit for w, hit in zip(folded_words, in_posting)]
+        if all(plain):
+            exact.add(pk)
+        elif all(ok or _is_typo_of(w, tokens) for w, ok in zip(folded_words, plain)):
+            typo.add(pk)
+    # search_typo: 0 exact, 1 typo-only; the board orders by it first, then by the owner's chosen order
+    return qs.filter(id__in=exact | typo).annotate(search_typo=Case(When(id__in=typo, then=Value(1)), default=Value(0), output_field=IntegerField()))

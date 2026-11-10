@@ -85,6 +85,17 @@ def test_typo_queries_find_exactly_the_intended_jobs(owner, jobs, query, expecte
     assert found(owner, query) == expected
 
 
+def test_exact_matches_come_before_typo_matches_then_the_chosen_order(owner, jobs):
+    # the typo-only job is the newest, so -created_at alone would list it first
+    JobLead.objects.create(company='Acme', title='Enginer Lead', location='Graz', created_by=owner, url='https://jobs.example.test/typo')
+    client = APIClient(); client.force_authenticate(owner)
+    rows = client.get('/api/jobs/', {'search': 'engineer', 'board': '1', 'ordering': '-created_at'}).data
+    titles = [row['title'] for row in rows]
+    assert titles[-1] == 'Enginer Lead' and len(titles) > 2
+    exact = [row['created_at'] for row in rows[:-1]]
+    assert exact == sorted(exact, reverse=True)  # the owner's order still holds among the exact matches
+
+
 def test_words_shorter_than_four_letters_are_never_fuzzy(owner, jobs):
     assert found(owner, 'jva') == set()
     assert found(owner, 'BWM') == set()
