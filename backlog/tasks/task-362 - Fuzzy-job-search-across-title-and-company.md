@@ -1,7 +1,7 @@
 ---
 id: TASK-362
 title: Fuzzy job search across title and company
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-09 19:30'
 labels:
@@ -42,4 +42,5 @@ Not yet measured: whether the Zühlke job exists under that exact title on the o
 if it is missing rather than unfindable, that is a separate finding.
 2026-11-10: merged #378 and #379. Measured on localhost (179 board jobs): "zuelhle advanced data Engineer" returns only job 1533 (Zühlke Engineering Austria GmbH, Advanced Data Engineer) in 114 ms; the search adds one query, not one per job (test). The job was archived, which the board hid even when searching: #379 (owner decision) makes a search with the default status filter include archived jobs. Open: AC3 "ranked below exact matches" is not implemented, because the board always sends an explicit ordering that wins; typo tolerance and the no-false-hit test are done. Needs the owner to drop or reword that clause (TW-005).
 2026-11-10: AC3 built by owner decision (#382): while searching, exact matches come first, then the chosen order. On localhost it then returned 500 for an exact-only search on Postgres (constant rank became ORDER BY 0; sqlite accepted it); fixed in #383 with a test. Re-measured on localhost, all statuses: zühlke, the owner query, enginer, "engineer enginr", data and a no-match query all 200. Warm timings over 3 runs: searches 180-360 ms vs 279-604 ms for the same board request without a search. The first, cold requests took 600-900 ms with or without a search. All ACs met; Done waits for the next Azure deploy (#382/#383) and a production check (TW-00A).
+2026-11-10: deployed in b9f35f4 (health ok). Production check: "zühlke" and the owner query return 200 with job 1533 only; "enginer" 200 with 123 rows. Done.
 <!-- SECTION:NOTES:END -->
