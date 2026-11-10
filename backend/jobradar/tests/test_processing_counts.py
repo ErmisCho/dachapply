@@ -115,7 +115,7 @@ def test_daily_request_counts_pending_after_restart_and_hands_off_once(tmp_path,
         assert control.status()['running_jobs'] == 1
         control.finish(child)
     monkeypatch.setitem(processing._handlers, 'daily-document', prepare)
-    processing.execute(control, unit, 'daily-document', [1, 2], {})
+    processing.execute(control, unit, 'daily-document', [1, 2], {}, 1)  # TASK-358: else the account's lanes, read from the database
     assert control.status()['completed_jobs'] == 1
 
 

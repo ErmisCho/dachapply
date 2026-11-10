@@ -1,11 +1,13 @@
 """TASK-340: the Queue's time estimate -- analysis durations measured into cv-benchmarks.jsonl, a median per
-route and model with a named fallback, and the lanes (fit analyses one at a time, requirements analyses
-beside them, documents PREP_QUEUE_CONCURRENCY at a time) that give each item's finish time and the total.
+route and model with a named fallback, and the lanes (fit analyses analysis_concurrency at a time -- TASK-358 --,
+requirements analyses beside them, documents PREP_QUEUE_CONCURRENCY at a time) that give each item's finish time and
+the total.
 """
 from datetime import datetime, timedelta
 
 import pytest
 
+from jobradar.models import UserProfile
 from jobradar.services import application_prep, cv_tasks
 from jobradar.tests.test_application_prep import _job, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
 from jobradar.tests.test_application_prep_queue import _at, tasks  # noqa: F401 -- fixtures
@@ -108,8 +110,13 @@ def _etas(owner, board):
     return {(ids[item['job_id']], item['key']): item['eta_seconds'] for item in state['items']}, state['summary']
 
 
+def _one_fit_lane(owner):
+    UserProfile.objects.filter(user=owner).update(analysis_concurrency=1)
+
+
 def test_without_history_the_fallback_defaults_are_used_and_lanes_run_side_by_side(owner, board, settings):
     settings.PREP_QUEUE_CONCURRENCY = 1
+    _one_fit_lane(owner)
     etas, summary = _etas(owner, board)
     fit, requirements = application_prep.ANALYSIS_SECONDS['fit'], application_prep.ANALYSIS_SECONDS['requirements']
     # Fit lane: the running one has 120 - 30 left, the waiting one follows it; requirements beside them.
@@ -125,6 +132,7 @@ def test_without_history_the_fallback_defaults_are_used_and_lanes_run_side_by_si
 
 def test_measured_history_and_more_document_slots_change_the_lanes(owner, board, settings):
     settings.PREP_QUEUE_CONCURRENCY = 2
+    _one_fit_lane(owner)
     for seconds in (190, 200, 210):
         cv_tasks.record_duration('fit', 'openai', 'gpt-6.1-sol', 'high', seconds)
     cv_tasks.record_duration('requirements', 'openai', 'gpt-6.1-sol', 'high', 45)
@@ -154,6 +162,7 @@ def test_a_skipped_pipeline_row_keeps_the_done_count_a_number(owner, workspace):
 
 def test_a_fit_run_counts_its_fetch_and_an_old_sidecar_its_stage(owner, workspace, monkeypatch):
     _at(monkeypatch, NOW)
+    _one_fit_lane(owner)
     fetching, legacy = _job(owner, 'new'), _job(owner, 'new')
     application_prep._save(fetching, owner.pk, lambda prep: prep.update(pipeline={'stage': 'fetching', 'at': _ago(40), 'started': _ago(40)}))
     application_prep._save(legacy, owner.pk, lambda prep: prep.update(pipeline={'stage': 'analysing', 'at': _ago(70)}))
@@ -184,3 +193,19 @@ def test_a_short_message_is_estimated_as_cv_tasks_runs_it_a_letter_document(monk
     for document in ('message', 'letter'):
         application_prep._document_seconds({'model': {'provider': 'openai', 'model': 'm', 'effort': 'high', 'speed': 'normal'}}, {'document': document})
     assert calls[0] == calls[1] == (('openai', 'm', 'high', 'normal'), {'create_cv': False, 'create_letter': True})
+
+
+def test_fit_analyses_run_in_as_many_lanes_as_the_profile_sets(owner, workspace, monkeypatch):
+    """TASK-358 AC4: with analysis_concurrency N the Queue schedules N fit analyses side by side, so three waiting
+    runs end after one run's time with N=3 and after two with N=2 (the third waits for the first lane to free)."""
+    _at(monkeypatch, NOW)
+    jobs = [_job(owner, 'new') for _ in range(3)]
+    for job in jobs:
+        application_prep._save(job, owner.pk, lambda prep: prep.update(pipeline={'stage': 'queued', 'at': NOW}))
+    fit = application_prep.ANALYSIS_SECONDS['fit']
+    for lanes, expected in ((3, [fit] * 3), (2, [fit, fit, 2 * fit]), (1, [fit, 2 * fit, 3 * fit])):
+        UserProfile.objects.filter(user=owner).update(analysis_concurrency=lanes)
+        application_prep._concurrencies.clear()  # read again at once, not after LANE_POLL
+        state = application_prep.queue_state(owner)
+        assert sorted(item['eta_seconds'] for item in state['items']) == expected
+        assert state['summary']['seconds_left'] == expected[-1]

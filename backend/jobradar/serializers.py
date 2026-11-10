@@ -111,6 +111,11 @@ class CandidateProfileSerializer(serializers.ModelSerializer):
     # TASK-321: what an unset (null) reanalyse_late_text falls back to, so the Profile toggle shows it.
     reanalyse_late_text_default=serializers.SerializerMethodField()
     def get_reanalyse_late_text_default(self, _profile): return settings.REANALYSE_LATE_TEXT
+    # TASK-360 AC5: whether "Use cloud models only" has a cloud model (the Codex or Claude CLI) to use.
+    cloud_models_available=serializers.SerializerMethodField()
+    def get_cloud_models_available(self, _profile):
+        from .services.cv_generator import cloud_model_options  # cv_generator imports this module (job_replace)
+        return bool(cloud_model_options())
     class Meta:
         model=UserProfile
         # TASK-125 AC1/AC2: mailbox_check_enabled/window_start/window_end sit next to the existing
@@ -128,7 +133,7 @@ class CandidateProfileSerializer(serializers.ModelSerializer):
         # identify must not share one setting).
         # TASK-293: draft_provider/draft_model/draft_effort/draft_auto_replies_with_model are
         # Settings -> Drafts (services.draft_chat.profile_draft_choice resolves them).
-        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','posting_refresh_cadence','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_check_enabled','mailbox_check_window_start','mailbox_check_window_end','mailbox_lookback_months','mailbox_identify_window_months','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ids','board_sort_keys','board_status_order','board_column_order','reanalyse_late_text','reanalyse_late_text_default','auto_pipeline_daily_limit','daily_analyse_limit','daily_prepare_limit','reanalyse_after_days','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template','draft_provider','draft_model','draft_effort','draft_auto_replies_with_model')
+        fields=('candidate_profile','candidate_evidence','target_roles','preferred_locations','salary_expectations','language_levels','preferred_stack','red_flags','selling_points','learned_application_preferences','follow_up_digest_enabled','posting_refresh_cadence','mailbox_check_cadence_minutes','mailbox_check_calendar_aware','mailbox_check_enabled','mailbox_check_window_start','mailbox_check_window_end','mailbox_lookback_months','mailbox_identify_window_months','mailbox_salary_floor_eur','mailbox_do_not_disclose','mailbox_calendar_ids','board_sort_keys','board_status_order','board_column_order','reanalyse_late_text','reanalyse_late_text_default','auto_pipeline_daily_limit','daily_analyse_limit','daily_prepare_limit','reanalyse_after_days','analysis_concurrency','analysis_time_limit_minutes','use_cloud_models_only','cloud_models_available','evaluation_prompt_template','combined_prompt_template','enrichment_prompt_template','bulk_links_prompt_template','draft_provider','draft_model','draft_effort','draft_auto_replies_with_model')
     # The profile codec is a text codec: it JSON-wraps values for drifted SQLite schemas and
     # coerces falsy values to ''. Running a boolean through it would store '' in a
     # BooleanField and serialise False as ''. Booleans (and mailbox_check_cadence_minutes, an int

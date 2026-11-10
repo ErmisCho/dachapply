@@ -48,7 +48,7 @@ from .services.followup_digest import owned_jobs, record_job_followup_sent
 from .services.draft_chat import ChatTurn, generate_followup_draft, profile_draft_choice, run_chat_turn
 from .services.analytics import record_demo_click
 from .services.db_usage import is_owner as db_usage_is_owner
-from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, rename_generated_artifact, reveal_artifact_folder, validate_model_capability
+from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, cloud_models_only, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, rename_generated_artifact, reveal_artifact_folder, uses_cloud_only, validate_model_capability
 from .services import cv_tasks
 from .services.cv_tasks import _clipboard_parts, _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, rename_task_paths, start_cv_compile_task, start_cv_literal_task, start_cv_noop_task, start_cv_revision, start_cv_task, with_expected_seconds
 from .services.literal_edits import deterministic_edit_pairs, local_literal_model, looks_like_swap
@@ -2342,8 +2342,9 @@ def generate_cv_documents(request, job_id):
         return Response({'detail':'Generated files already exist for this job. Confirm replacement before generating.','existing_files':True,'sent_documents':False},status=409)
     try:
         # needs_tools: both endpoints generate or readjust LaTeX, whose prompt tells the model to read
-        # the copied source files (TASK-221 AC3).
-        validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', needs_tools=True)
+        # the copied source files (TASK-221 AC3). TASK-360: cloud only when the account says so.
+        with cloud_models_only(uses_cloud_only(request.user.pk)):
+            validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', needs_tools=True)
     except ValueError as exc:
         return Response({'detail':str(exc)}, status=400)
     cv_profile=user_profile_settings(request.user)
@@ -2435,8 +2436,9 @@ def revise_latest_cv_documents(request, job_id):
     literal_model=None if correction_image or literal_pairs or not looks_like_swap(instructions) else local_literal_model()  # TASK-326
     try:
         # needs_tools: both endpoints generate or readjust LaTeX, whose prompt tells the model to read
-        # the copied source files (TASK-221 AC3).
-        validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', needs_tools=True)
+        # the copied source files (TASK-221 AC3). TASK-360: cloud only when the account says so.
+        with cloud_models_only(uses_cloud_only(request.user.pk)):
+            validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', needs_tools=True)
     except ValueError as exc:
         return Response({'detail':str(exc)}, status=400)
     cv_profile=user_profile_settings(request.user)

@@ -1,7 +1,7 @@
 from datetime import time
 
 from django.conf import settings
-from django.core.validators import MaxValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
 from django.db.models.fields.related_descriptors import ReverseOneToOneDescriptor
@@ -194,6 +194,12 @@ class UserProfile(models.Model):
     # TASK-337: an open job whose latest evaluation is older than this many days is analysed again, within
     # daily_analyse_limit. 0 is Off.
     reanalyse_after_days=models.PositiveSmallIntegerField(default=7, validators=[MaxValueValidator(60)])
+    # TASK-358: how many automatic analyses (fit and requirements alike) run at once (application_prep._lane).
+    analysis_concurrency=models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(10)])
+    # TASK-360: one automatic analysis is given up after this many minutes (application_prep._bounded), and
+    # with use_cloud_models_only no local model (ollama, LM Studio) is looked for by analyses or generation.
+    analysis_time_limit_minutes=models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(30)])
+    use_cloud_models_only=models.BooleanField(default=False)
     # TASK-83: the capability that gates the nine CV endpoints. Off by default -- generation shells
     # out to a model CLI and LaTeX on the server, so it is granted per account in the admin, never
     # by signing up. services.cv_generator.is_cv_owner still honours CODEX_CV_OWNER_EMAIL as a

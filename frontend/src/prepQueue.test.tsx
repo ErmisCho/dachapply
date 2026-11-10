@@ -6,7 +6,7 @@ import {MemoryRouter} from 'react-router-dom'
 import {Nav} from './App'
 import {about,timeLeft} from './applicationPrep'
 import {pollWhileVisible} from './appUtils'
-import {QueueView,queueAction,queueProgress,queueSnapshot,watchQueue,type QueueData,type QueueItem,type QueueSnapshot} from './PrepQueue'
+import {QueueView,elapsed,queueAction,queueProgress,queueSnapshot,watchQueue,type QueueData,type QueueItem,type QueueSnapshot} from './PrepQueue'
 
 const item=(extra:Partial<QueueItem>):QueueItem=>({job_id:7,company:'Acme GmbH',title:'Backend Developer',job_status:'to_apply',key:'cv-de',label:'German CV',document:'cv',language:'de',status:'queued',position:1,progress:0,eta_seconds:null,error:'',files:[],queued_at:'2026-10-19T08:00:00Z',started_at:null,finished_at:null,retry_at:null,...extra})
 const fixture=():QueueData=>({concurrency:2,summary:{done:1,total:4,analyses_left:0,documents_left:3,seconds_left:1500},items:[
@@ -327,5 +327,30 @@ describe('pipeline steps (TASK-325)',()=>{
     expect(listed.match(/>Retry</g)?.length).toBe(1)
     await queueAction(held,'retry')
     expect(calls).toEqual([{method:'POST',url:'/api/jobs/application-prep/queue/action/',body:{job_id:40,key:'',action:'retry'}}])
+  })
+})
+
+// TASK-360: model discovery as its own stage with its elapsed time, and the one-time cloud retry on analyses.
+describe('finding models and the cloud retry (TASK-360)',()=>{
+  const step=(extra:Partial<QueueItem>)=>item({job_id:50,company:'Lambda',title:'ML Engineer',key:'',document:null,language:null,position:null,queued_at:null,...extra})
+  it('shows Finding models with how long it has run, and Use cloud models only this time on a running analysis',()=>{
+    const started=new Date(Date.now()-75_000).toISOString()
+    const html=view({data:{concurrency:2,items:[step({label:'Finding models',stage:'models',status:'running',started_at:started,eta_seconds:300,cloud_retry:true}),
+      step({job_id:51,label:'Fetching posting',stage:'fetching',status:'running',started_at:started,eta_seconds:200})]}})
+    const running=section(html,'Running')
+    expect(running).toMatch(/Finding models.*1:1[5-6] so far · about 5 min left/)
+    expect(running.match(/so far/g)?.length).toBe(1)   // only the models stage counts its own time
+    expect(running.match(/Use cloud models only this time/g)?.length).toBe(1)
+    expect(elapsed('2026-11-10T10:00:00Z',Date.parse('2026-11-10T10:02:05Z'))).toBe('2:05')
+  })
+  it('offers it on a failed analysis, posting the job with an empty key, and shows a refusal',async()=>{
+    const failed=step({label:'Documents',status:'blocked',error:'Analysis failed: Stopped after 5 minutes, the time limit for one analysis. Press Retry.',cloud_retry:true})
+    const held=step({job_id:52,label:'Documents',status:'blocked',error:'Daily limit of 50 automatic runs reached.'})
+    const blocked=section(view({data:{concurrency:2,items:[failed,held]}}),'Blocked')
+    expect(blocked.match(/Use cloud models only this time/g)?.length).toBe(1)
+    reply=()=>({status:400,body:{detail:'No cloud model is available: neither the Codex nor the Claude CLI is installed on this machine.'}})
+    await queueAction(failed,'cloud')
+    expect(calls).toEqual([{method:'POST',url:'/api/jobs/application-prep/queue/action/',body:{job_id:50,key:'',action:'cloud'}}])
+    expect(section(view({data:{concurrency:2,items:[failed]},failed:queueSnapshot().failed}),'Blocked')).toContain('No cloud model is available')
   })
 })

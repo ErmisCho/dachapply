@@ -47,7 +47,8 @@ import zipfile
 from functools import partial
 from datetime import datetime, timedelta
 from pathlib import Path
-from threading import Event, Lock, RLock, Thread, Timer
+from contextlib import contextmanager
+from threading import Condition, Event, RLock, Thread, Timer
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -61,7 +62,7 @@ from jobradar.services import cv_tasks, interview_prep, job_evaluator
 from jobradar.services.processing_control import accepting, durable, handoff_documents, store as processing_store
 from jobradar.services.access import accessible_jobs
 from jobradar.services.application_requirements import DOCUMENT_STATUSES, DOCUMENT_TYPES, POSTING_LANGUAGES, normalize_application_requirements
-from jobradar.services.cv_generator import GenerationCancelled, _edit_sidecar, _filename_label, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cv_default_choice, is_cv_owner, latest_generated_sources, limit_line, load_candidate_evidence, run_structured_model, user_templates, validate_model_capability
+from jobradar.services.cv_generator import GenerationCancelled, _edit_sidecar, _filename_label, _package_filename, _read_artifact_metadata, applicant_name, available_model_options, cloud_model_options, cloud_models_only, cv_default_choice, is_cv_owner, latest_generated_sources, limit_line, load_candidate_evidence, run_structured_model, user_templates, uses_cloud_only, validate_model_capability
 from jobradar.services.posting_fetch import PART_NAMES, fetch_missing_sources, posting_missing
 from jobradar.services.prompt_builder import APPLICATION_REQUIREMENTS_RULES, APPLICATION_REQUIREMENTS_SCHEMA_FIELD, build_candidate_profile_text, user_profile_settings
 
@@ -93,8 +94,8 @@ REANALYSIS_FAILED = 'Re-analysis failed'  # TASK-319: the prefix of a failed lat
 INCOMPLETE = 'Posting incomplete'  # TASK-322: the prefix of _gate's reason for a posting lacking a required part
 SALARY_ONLY = f'{INCOMPLETE}: missing salary.'  # TASK-350: such a hold, stored before a missing salary stopped holding
 # TASK-324/325: the automatic pipeline's in-progress stages, as the Queue labels them.
-PIPELINE_RUNNING = {'queued': 'Waiting to analyse', 'fetching': 'Fetching posting', 'analysing': 'Analysing fit',
-                    'requirements': 'Analysing requirements'}  # 'requirements' is derived in queue_state, never stored
+PIPELINE_RUNNING = {'queued': 'Waiting to analyse', 'models': 'Finding models', 'fetching': 'Fetching posting',  # TASK-360: models
+                    'analysing': 'Analysing fit', 'requirements': 'Analysing requirements'}  # 'requirements' is derived in queue_state, never stored
 PIPELINE_INTERRUPTED = 'Analysis stopped before it finished (the server restarted). Press Retry.'
 DAILY_LIMIT = 'Daily limit of {} automatic runs reached. Press Retry to run it now, or raise the limit on the Profile page.'
 CHANGED = 'Posting changed since these documents were made'  # TASK-336: the note documents the owner reviewed keep
@@ -103,20 +104,33 @@ PRIORITY_ORDER = {'high': 0, 'medium': 1, 'low': 2}
 # TASK-340: seconds one automatic analysis takes before any run of it was measured (cv_tasks.measured_seconds
 # replaces it from the first recorded run) -- unmeasured guesses; the same model's CV generation call is ~110 s.
 ANALYSIS_SECONDS = {'fit': 120, 'requirements': 60}
-# TASK-357: one automatic analysis (fit or requirements) is given up (_bounded) once it ran this long (seconds), so a
-# hung run cannot hold _pipeline_lock and every analysis queued behind it. Not transient: a run this slow is likely
-# to be as slow again, so Retry is the owner's call, not another 10 minutes of the one lane.
-ANALYSIS_TIME_LIMIT = 600
-TIMED_OUT = f'Stopped after {ANALYSIS_TIME_LIMIT // 60} minutes, the time limit for one analysis'
+# TASK-357/360: one automatic analysis (fit or requirements) is given up (_bounded) once it ran the account's
+# analysis_time_limit_minutes, so a hung run cannot hold its lane while analyses queue behind it. Not transient: a run
+# this slow is likely to be as slow again, so Retry is the owner's call, not another limit's worth of a lane.
+MINUTE = 60  # seconds; a test shortens it
+TIMED_OUT = 'Stopped after {} minutes, the time limit for one analysis'
+ANALYSIS_FAILED = 'Analysis failed'
+REQUIREMENTS_FAILED = 'Requirements analysis failed'
+NO_MODEL = 'No document model is available on this machine'
+NO_CLOUD = 'No cloud model is available: neither the Codex nor the Claude CLI is installed on this machine'  # TASK-360 AC5
+STOPPED_FOR_CLOUD = 'Stopped to run again with cloud models only'
+LANE_POLL = 10  # TASK-358: seconds until a waiting analysis reads its account's analysis_concurrency again
 
 # ponytail: one process serves generation (threaded runserver); a DB claim if that changes. Re-entrant
 # because a task's on_finish can run in the thread that started it (a task that fails at once, tests).
 _lock = RLock()
 _analysing = set()  # TASK-308: job ids whose requirements analysis is running; guarded by _lock
 _piping = set()  # TASK-324: job ids whose pipeline thread is waiting or running; guarded by _lock
-# ponytail: one pipeline run at a time across all accounts (the rest wait on this lock, in no strict order),
-# so a bulk add of 20 links never starts 20 model processes; a worker pool if 50 a day get too slow.
-_pipeline_lock = Lock()
+# TASK-358: at most analysis_concurrency automatic analyses (fit or requirements) at once across all accounts (_lane;
+# the rest wait, in no strict order), so a bulk add of 20 links never starts 20 model processes at once.
+_lanes = Condition()  # guards _in_lane; notified when an analysis leaves its lane
+_in_lane = 0
+_concurrencies = {}  # user id -> (monotonic time read, analysis_concurrency); see _concurrency
+# TASK-360: the Queue's "Use cloud models only this time". _stops: job id -> (Event that stops its running analysis,
+# whether that run already uses cloud models only); _cloud_rerun: job ids to run again (or, waiting, run) cloud only.
+# Both guarded by _lock.
+_stops = {}
+_cloud_rerun = set()
 # TASK-312: (job_id, user_id, key) waiting for a slot, front first, and the number of prepared tasks
 # started and not yet finished. Guarded by _lock; the sidecar is the durable copy (resume_queue).
 # ponytail: "Move to front" lives only here, so after a restart the queue is back in queued_at order.
@@ -230,12 +244,15 @@ def _gate(job, user):
                 variant.update(letter_label=letters[recommended].label or recommended, recommended=True)
                 variants += [{**variant, 'key': f"{variant['key']}-{key}", 'letter_template': key, 'letter_label': asset.label or key, 'recommended': False}
                              for key, asset in letters.items() if key != recommended]
-    option, effort = cv_default_choice(available_model_options())  # TASK-303 AC1
+    cloud = uses_cloud_only(user.pk)  # TASK-360
+    with cloud_models_only(cloud):
+        option, effort = cv_default_choice(available_model_options())  # TASK-303 AC1
     if not option:
-        return 'No document model is available on this machine.', [], '', None
+        return f'{NO_CLOUD if cloud else NO_MODEL}.', [], '', None
     choice = {'provider': option['provider'], 'model': option['key'], 'effort': effort, 'speed': 'normal'}
     try:
-        validate_model_capability(*choice.values(), needs_tools=True)
+        with cloud_models_only(cloud):
+            validate_model_capability(*choice.values(), needs_tools=True)
         profile = user_profile_settings(user)
         context = load_candidate_evidence(build_candidate_profile_text(user), profile.learned_application_preferences, profile.candidate_evidence)
     except (RuntimeError, ValueError) as exc:
@@ -331,10 +348,11 @@ def _finish(job_id, user_id, key, task_id):
             _pump()
 
 
-def prepare(job_id, user, retry=False, inline=False):
+def prepare(job_id, user, retry=False, inline=False, cloud=False):
     """Queue preparation for a New, Reviewed or To-apply job, or with retry, re-queue only its failed
     (or cancelled) variants. TASK-312: variants join the back of the shared queue rather than starting.
     `inline` (TASK-335's daily batch) analyses missing requirements in the calling thread, not a new one.
+    `cloud` (TASK-360) analyses them with cloud models only.
 
     Returns the public state, or None when this account/server cannot generate at all. Concurrency
     safe: a second call (a double transition) finds the variants already recorded and starts nothing.
@@ -393,21 +411,23 @@ def prepare(job_id, user, retry=False, inline=False):
             _pump()
     if analyse:
         if inline:
-            _analyse_then_prepare(job.id, user.pk, retry)
+            _analyse_then_prepare(job.id, user.pk, retry, cloud)
         elif processing_store():
-            _analyse_then_prepare.submit(job.id, user.pk, retry)
+            _analyse_then_prepare.submit(job.id, user.pk, retry, cloud)
         else:
-            Thread(target=_analyse_then_prepare, args=(job.id, user.pk, retry), daemon=True).start()
+            Thread(target=_analyse_then_prepare, args=(job.id, user.pk, retry, cloud), daemon=True).start()
     return public_state(job, user)
 
 
-def _analyse(job, cancelled=None):
-    """TASK-308: the posting's application requirements from the CV default model, normalised as analysis."""
-    option, effort = cv_default_choice(available_model_options())
-    if not option:
-        raise RuntimeError('No document model is available on this machine')
-    provider, model = option['provider'], option['key']
-    model_option = validate_model_capability(provider, model, effort, 'normal')
+def _analyse(job, cancelled=None, cloud=False):
+    """TASK-308: the posting's application requirements from the CV default model, normalised as analysis.
+    TASK-360: `cloud` looks for cloud models only."""
+    with cloud_models_only(cloud):
+        option, effort = cv_default_choice(available_model_options())
+        if not option:
+            raise RuntimeError(NO_CLOUD if cloud else NO_MODEL)
+        provider, model = option['provider'], option['key']
+        model_option = validate_model_capability(provider, model, effort, 'normal')
     prompt = ('Read the job posting below and classify how to apply to it. The posting below is the original_source_text; '
               'quote from it.\n\n' + APPLICATION_REQUIREMENTS_RULES
               + '\n\nReturn only a JSON object: {' + APPLICATION_REQUIREMENTS_SCHEMA_FIELD + '}\n\nJob posting:\n' + job.source_text)
@@ -421,13 +441,14 @@ def _analyse(job, cancelled=None):
     return requirements
 
 
-def _bounded(work):
-    """TASK-357: work(cancelled) in a thread of its own, waited for at most ANALYSIS_TIME_LIMIT; then GenerationCancelled.
+def _bounded(work, seconds, stop=None):
+    """TASK-357: work(cancelled) in a thread of its own, waited for at most `seconds`; then GenerationCancelled.
     `cancelled` turns True at that point, so a model process tree is killed (cv_generator._run_command) and a model
     answer arriving later is dropped before anything is written (run_structured_model checks it again on return). A
     block inside this process (a socket, a lock: no child to kill) is left behind in its daemon thread; the caller,
-    which alone records the outcome, returns, so _pipeline_lock and the durable unit are released all the same."""
-    stop, outcome = Event(), {}
+    which alone records the outcome, returns, so its lane and the durable unit are released all the same.
+    TASK-360: `stop` set from outside (the Queue's cloud retry) gives up the same way, at once."""
+    stop, outcome = stop or Event(), {}
 
     def run():
         try:
@@ -438,7 +459,9 @@ def _bounded(work):
             connection.close()  # this thread's own connection
     worker = Thread(target=run, name='dachapply-analysis', daemon=True)
     worker.start()
-    worker.join(ANALYSIS_TIME_LIMIT)
+    deadline = time.monotonic() + seconds
+    while worker.is_alive() and not stop.is_set() and (left := deadline - time.monotonic()) > 0:
+        worker.join(min(left, .5))
     if worker.is_alive():
         stop.set()
         raise GenerationCancelled
@@ -447,25 +470,96 @@ def _bounded(work):
     return outcome['value']
 
 
-@durable('requirements')
-def _analyse_then_prepare(job_id, user_id, retry):
-    """TASK-308 worker: analyse, store, then prepare as usual. A failure becomes the panel's reason."""
+def _profile_value(user_id, field):
+    """One UserProfile setting, its default when the account has no profile yet."""
+    value = UserProfile.objects.filter(user_id=user_id).values_list(field, flat=True).first()
+    return UserProfile._meta.get_field(field).default if value is None else value
+
+
+def _concurrency(user_id):
+    """TASK-358: the account's analysis_concurrency, read again once LANE_POLL passed: a change applies to the next run
+    that starts, and raising it lets waiting runs start within LANE_POLL, without a restart."""
+    read, value = _concurrencies.get(user_id, (None, None))
+    if read is None or time.monotonic() - read >= LANE_POLL:
+        value = _profile_value(user_id, 'analysis_concurrency')
+        _concurrencies[user_id] = (time.monotonic(), value)
+        if not connection.in_atomic_block:
+            connection.close()  # a waiting run (or a durable unit waiting to be claimed) holds no pooled connection
+    return value
+
+
+@contextmanager
+def _lane(user_id):
+    """TASK-358: one of the analysis_concurrency lanes for an automatic analysis, waited for while all are taken.
+    Lowering the setting stops no run already in a lane; it only keeps the next ones waiting."""
+    global _in_lane
+    while True:
+        limit = _concurrency(user_id)
+        with _lanes:
+            if _in_lane < limit:
+                _in_lane += 1
+                break
+            _lanes.wait(LANE_POLL)
+    try:
+        yield
+    finally:
+        with _lanes:
+            _in_lane -= 1
+            _lanes.notify_all()
+
+
+def _stoppable(job_id, cloud):
+    """TASK-360: register a starting analysis of `job_id` with the Queue's cloud retry, under _lock. A cloud retry asked
+    while it waited makes this run cloud only. (Event, cloud) -- give the Event to _bounded and to _released."""
+    with _lock:
+        cloud = cloud or job_id in _cloud_rerun
+        _cloud_rerun.discard(job_id)
+        _stops[job_id] = (Event(), cloud)
+        return _stops[job_id]
+
+
+def _released(job_id, stop):
+    """TASK-360: an analysis of `job_id` ended; True when the Queue's cloud retry asked for it to run again. Under _lock."""
+    if _stops.get(job_id, (None,))[0] is stop:
+        del _stops[job_id]
+    again = job_id in _cloud_rerun
+    _cloud_rerun.discard(job_id)
+    return again
+
+
+def _limit_error(exc, user_id, job_id):
+    """The failure line of an analysis _bounded gave up: the owner's cloud retry stopped it, or it ran out of time."""
+    if not isinstance(exc, GenerationCancelled):
+        return None
+    with _lock:
+        return STOPPED_FOR_CLOUD if job_id in _cloud_rerun else TIMED_OUT.format(_profile_value(user_id, 'analysis_time_limit_minutes'))
+
+
+# TASK-358: a durable analysis unit's admission limit (processing_control.claim), its account's lanes; args[1] is user_id.
+@durable('requirements', limit=lambda *args, **_: _concurrency(args[1]))
+def _analyse_then_prepare(job_id, user_id, retry, cloud=False):
+    """TASK-308 worker: analyse, store, then prepare as usual. A failure becomes the panel's reason.
+    TASK-358: in a lane of its own; TASK-360: `cloud` (or the account's switch) uses cloud models only."""
     close_old_connections()
+    stop, again, user = None, False, None
     try:
         job = JobLead.objects.filter(pk=job_id).first()
         user = get_user_model().objects.filter(pk=user_id).first()
         if not job or not user:
             return
-        try:
-            requirements = _bounded(partial(_analyse, job))  # TASK-357
-        except Exception as exc:  # AC2: the page says why, never a silent stop
-            error = TIMED_OUT if isinstance(exc, GenerationCancelled) else str(getattr(exc, 'summary', '') or exc)[:300].rstrip('.')
-            with _lock:  # TASK-317: a usage limit is retried automatically once it resets
-                def failed(prep):
-                    retry_at = _retry_at(getattr(exc, 'usage_limit', False), getattr(exc, 'reset_at', None), prep)
-                    prep.update(reason=f'Requirements analysis failed: {limit_line(error, retry_at).rstrip(".")}. Press Prepare to retry.', retry_at=retry_at)
-                _save(job, user_id, failed)
-            return False
+        with _lane(user_id):
+            stop, cloud = _stoppable(job_id, cloud)
+            try:
+                minutes = _profile_value(user_id, 'analysis_time_limit_minutes')
+                requirements = _bounded(partial(_analyse, job, cloud=cloud or uses_cloud_only(user_id)), minutes * MINUTE, stop)  # TASK-357
+            except Exception as exc:  # AC2: the page says why, never a silent stop
+                error = _limit_error(exc, user_id, job_id) or str(getattr(exc, 'summary', '') or exc)[:300].rstrip('.')
+                with _lock:  # TASK-317: a usage limit is retried automatically once it resets
+                    def failed(prep):
+                        retry_at = _retry_at(getattr(exc, 'usage_limit', False), getattr(exc, 'reset_at', None), prep)
+                        prep.update(reason=f'{REQUIREMENTS_FAILED}: {limit_line(error, retry_at).rstrip(".")}. Press Prepare to retry.', retry_at=retry_at)
+                    _save(job, user_id, failed)
+                return False
         job.refresh_from_db()
         if not job.application_requirements:  # AC3: requirements stored meanwhile (an owner edit) win
             job.application_requirements = requirements
@@ -478,6 +572,9 @@ def _analyse_then_prepare(job_id, user_id, retry):
     finally:
         with _lock:
             _analysing.discard(job_id)
+            again = stop is not None and _released(job_id, stop)
+        if again:
+            prepare(job_id, user, retry, cloud=True)  # TASK-360: the Queue's "Use cloud models only this time"
         close_old_connections()
 
 
@@ -507,14 +604,15 @@ def reanalyse_late_text(job, user):
     return start_pipeline(job.id, user, force=True, reanalyse=CHANGED)
 
 
-def start_pipeline(job_id, user, force=False, reanalyse=''):
+def start_pipeline(job_id, user, force=False, reanalyse='', cloud=False):
     """TASK-324: a job added with a link is fetched, checked and analysed off the request thread with the
     automatic paths' model, and the evaluation is saved at once (a new job has nothing to overwrite); an
     apply/maybe result then queues documents through json_importer.create_evaluation's TASK-312 hook.
     Only for an account that can generate and a job with no evaluation. `force` (the Queue's Retry) runs
     past the daily limit. True when a run was started or is already under way.
     TASK-336/337: `reanalyse` (the note documents the owner reviewed get) analyses a job that has an
-    evaluation again, committed; _after_reanalysis then decides what happens to its documents."""
+    evaluation again, committed; _after_reanalysis then decides what happens to its documents.
+    TASK-360: `cloud` runs it with cloud models only (the Queue's "Use cloud models only this time")."""
     job = JobLead.objects.filter(pk=job_id).first()
     if not job or not is_cv_owner(user) or not reanalyse and (not job.url or JobEvaluation.objects.filter(job_id=job_id).exists()):
         return False
@@ -534,21 +632,23 @@ def start_pipeline(job_id, user, force=False, reanalyse=''):
         _piping.add(job_id)
         _save(job, user.pk, lambda prep: prep.update(pipeline={'stage': 'queued', 'at': _now()}, reason='', retry_at=None))
     if processing_store():
-        _pipeline.submit(job_id, user.pk, reanalyse)
+        _pipeline.submit(job_id, user.pk, reanalyse, cloud)
     else:
-        Thread(target=_pipeline, args=(job_id, user.pk, reanalyse), name='dachapply-pipeline', daemon=True).start()
+        Thread(target=_pipeline, args=(job_id, user.pk, reanalyse, cloud), name='dachapply-pipeline', daemon=True).start()
     return True
 
 
-@durable('pipeline')
-def _pipeline(job_id, user_id, reanalyse=''):
-    """TASK-324 worker, one run at a time (_pipeline_lock), modelled on _reanalyse: fetch, then the fit
-    analysis committed (it reads whatever posting exists; _gate then holds an incomplete one as today).
-    Each stage is recorded in prep['pipeline'] for the Queue (TASK-325); a failure becomes the blocked
-    reason Retry re-runs, and a usage limit is retried after its reset (TASK-317)."""
+@durable('pipeline', limit=lambda *args, **_: _concurrency(args[1]))
+def _pipeline(job_id, user_id, reanalyse='', cloud=False):
+    """TASK-324 worker, modelled on _reanalyse: find the models, fetch, then the fit analysis committed (it reads
+    whatever posting exists; _gate then holds an incomplete one as today). TASK-358: analysis_concurrency runs at a
+    time (_lane). Each stage is recorded in prep['pipeline'] for the Queue (TASK-325); a failure becomes the blocked
+    reason Retry re-runs, and a usage limit is retried after its reset (TASK-317). TASK-360: `cloud` (or the account's
+    switch) looks for cloud models only, and the Queue's cloud retry stops a run and starts it again so."""
     close_old_connections()
+    stop, again, user = None, False, None
     try:
-        with _pipeline_lock:
+        with _lane(user_id):
             job = JobLead.objects.filter(pk=job_id).first()
             user = get_user_model().objects.filter(pk=user_id).first()
             if not job or not user:
@@ -560,32 +660,37 @@ def _pipeline(job_id, user_id, reanalyse=''):
                 _save(job, user_id, lambda prep: prep.pop('pipeline', None))  # analysed by hand while it waited
                 return
             before = _outcome(job)  # TASK-338: what a re-analysis is compared with
+            stop, cloud = _stoppable(job_id, cloud or uses_cloud_only(user_id))
             try:
-                # TASK-340: the run's duration (fetch + analysis) is measured, and its start kept across both stages.
+                # TASK-340: the run's duration (models, fetch, analysis) is measured, and its start kept across the stages.
                 started, began = time.monotonic(), _now()
-                stage('fetching', started=began)
+                stage('models', started=began)
 
                 def analyse(cancelled):  # TASK-357: under _bounded; it writes no sidecar once given up
-                    fetch_missing_sources([job])
-                    with _lock:
-                        if not cancelled():
-                            stage('analysing', started=began)
-                    option, effort = cv_default_choice(available_model_options())
-                    return option, effort, (job_evaluator.evaluate_jobs([job.id], user, option['provider'], option['key'], effort, 'normal', commit=True, cancelled=cancelled)
-                                            if option else {'ok': False, 'errors': ['No document model is available on this machine']})
-                option, effort, result = _bounded(analyse)
+                    def next_stage(name):
+                        with _lock:
+                            if not cancelled():
+                                stage(name, started=began)
+                    with cloud_models_only(cloud):
+                        option, effort = cv_default_choice(available_model_options())
+                        next_stage('fetching')
+                        fetch_missing_sources([job])
+                        next_stage('analysing')
+                        return option, effort, (job_evaluator.evaluate_jobs([job.id], user, option['provider'], option['key'], effort, 'normal', commit=True, cancelled=cancelled)
+                                                if option else {'ok': False, 'errors': [NO_CLOUD if cloud else NO_MODEL]})
+                option, effort, result = _bounded(analyse, _profile_value(user_id, 'analysis_time_limit_minutes') * MINUTE, stop)
                 if result['ok']:
                     cv_tasks.record_duration('fit', option['provider'], option['key'], effort, time.monotonic() - started)
             except Exception as exc:  # the Queue says why, never a run stuck at Analysing
                 logger.exception('The automatic analysis of job %s failed', job_id)
-                result = {'ok': False, 'errors': [TIMED_OUT if isinstance(exc, GenerationCancelled) else str(exc) or type(exc).__name__], 'transient': isinstance(exc, TRANSIENT_ERRORS)}
+                result = {'ok': False, 'errors': [_limit_error(exc, user_id, job_id) or str(exc) or type(exc).__name__], 'transient': isinstance(exc, TRANSIENT_ERRORS)}
             with _lock:
                 if result['ok']:
                     _save(job, user_id, lambda prep: prep.pop('auto_retries', None))  # TASK-350: a later failure starts a new count
                 if not result['ok']:
                     error = '; '.join(result['errors'])[:300].rstrip('.')
                     # A failed re-analysis says so, so the Queue's Retry analyses it again (TASK-319's path).
-                    failed = REANALYSIS_FAILED if reanalyse else 'Analysis failed'
+                    failed = REANALYSIS_FAILED if reanalyse else ANALYSIS_FAILED
                     def record(prep):
                         retry_at = _retry_at(result.get('usage_limit'), result.get('reset_at'), prep, reanalyse and result.get('transient'))
                         line = limit_line(error, retry_at).rstrip('.')  # TASK-359: "Continues" only when retry_at is armed
@@ -595,17 +700,21 @@ def _pipeline(job_id, user_id, reanalyse=''):
                     stage('skipped', recommendation='skip', fit_score=result['preview'][0]['fit_score'])
                 else:
                     stage('analysed')  # the documents (or their hold) take over; queue_state lists their requirements analysis
+                replaced = job_id in _cloud_rerun  # TASK-360: the owner stopped it to run it again with cloud models
             if reanalyse and result['ok']:
                 _after_reanalysis(job, user, result['preview'][0]['recommendation'] == 'skip', reanalyse, before)
             # TASK-350: None counts no job on the dashboard (processing_control.execute), so an attempt its automatic
-            # retry replaces is not a failed job; the last attempt, retry_at empty, counts once.
-            return result['ok'] or (None if _state(job, user).get('retry_at') else False)
+            # retry (or TASK-360's cloud retry) replaces is not a failed job; the last attempt, retry_at empty, counts once.
+            return result['ok'] or (None if replaced or _state(job, user).get('retry_at') else False)
     except Exception:
         logger.exception('The automatic pipeline for job %s failed', job_id)
         return False
     finally:
         with _lock:
             _piping.discard(job_id)
+            again = stop is not None and _released(job_id, stop)
+        if again:
+            start_pipeline(job_id, user, force=True, reanalyse=reanalyse, cloud=True)  # TASK-360
         close_old_connections()
 
 
@@ -773,8 +882,7 @@ def run_daily(user):
 
 
 def _prepare_batch(job_ids, user_id):
-    """TASK-335: one job at a time under _pipeline_lock, so the batch's requirements analyses never run
-    beside each other or beside a pipeline analysis."""
+    """TASK-335: one job at a time; each requirements analysis takes a lane (_lane) beside the pipeline's analyses."""
     close_old_connections()
     try:
         for job_id in job_ids:
@@ -785,12 +893,11 @@ def _prepare_batch(job_ids, user_id):
         close_old_connections()
 
 
-@durable('daily-document')
+@durable('daily-document', limit=lambda *args, **_: _concurrency(args[1]))  # TASK-358: shares the analyses' admission
 def _prepare_one(job_id, user_id):
     user = get_user_model().objects.filter(pk=user_id).first()
     if user:
-        with _pipeline_lock:
-            prepare(job_id, user, inline=True)
+        prepare(job_id, user, inline=True)
 
 
 @durable('daily-tick')
@@ -984,7 +1091,8 @@ def adjust(job, user, key, instructions, choice=None):
     stored = _state(job, user).get('model') or {}
     choice = {field: (choice or {}).get(field) or stored.get(field) or default
               for field, default in (('provider', ''), ('model', ''), ('effort', ''), ('speed', 'normal'))}
-    validate_model_capability(*choice.values(), needs_tools=True)
+    with cloud_models_only(uses_cloud_only(user.pk)):  # TASK-360
+        validate_model_capability(*choice.values(), needs_tools=True)
     profile = user_profile_settings(user)
     context = load_candidate_evidence(build_candidate_profile_text(user), profile.learned_application_preferences, profile.candidate_evidence)
     document, files = variant['document'], variant['files']
@@ -1142,7 +1250,8 @@ def queue_state(user):
                             'label': 'Documents', 'document': None, 'language': None, 'status': 'blocked', 'position': None,
                             'progress': 0, 'eta_seconds': None, 'error': error, 'files': [],
                             'queued_at': None, 'started_at': None, 'finished_at': None, 'retry_at': prep.get('retry_at'),
-                            'incomplete': prep['reason'].startswith(INCOMPLETE)})  # TASK-322: offers Continue anyway
+                            'incomplete': prep['reason'].startswith(INCOMPLETE),  # TASK-322: offers Continue anyway
+                            'cloud_retry': _failed_analysis(prep)})  # TASK-360
         pipeline = prep.get('pipeline') or {}
         # An analysed job stays listed while its application requirements are analysed (TASK-308) -- TASK-340: only
         # while that run is alive (public_state's test), so one a restart stopped never shows as running, and not
@@ -1159,7 +1268,8 @@ def queue_state(user):
                     'label': 'Not applying' if skipped else PIPELINE_RUNNING[stage], 'document': None, 'language': None,
                     'status': 'skipped' if skipped else 'running', 'position': None, 'progress': 0, 'eta_seconds': None,
                     'error': f"Skip · fit {pipeline.get('fit_score')}" if skipped else '', 'files': [], 'queued_at': None,
-                    'started_at': pipeline.get('at'), 'finished_at': pipeline.get('at') if skipped else None, 'retry_at': None, 'incomplete': False}
+                    'started_at': pipeline.get('at'), 'finished_at': pipeline.get('at') if skipped else None, 'retry_at': None, 'incomplete': False,
+                    'stage': stage, 'cloud_retry': not skipped}  # TASK-360
             items.append(item)
             # TASK-340: eta_seconds is the run's expected duration here (what is left of it once running); _schedule
             # turns the fit analyses' into finish times. A requirements analysis runs in a thread of its own.
@@ -1186,15 +1296,14 @@ def queue_state(user):
     running = sorted((item for item in items if item['status'] == 'running'), key=lambda item: item['started_at'] or '')
     queued = sorted((item for item in items if item['status'] == 'queued'), key=lambda item: (item['position'] is None, item['position'] or 0, item['queued_at'] or ''))
     finished = sorted((item for item in items if item['status'] not in ('running', 'queued')), key=lambda item: item['finished_at'] or '', reverse=True)
-    # TASK-340: the lanes run side by side, so the time left is the latest one's end: fit analyses one at a time
-    # under _pipeline_lock (the one holding it first, then the waiting ones as queued -- the lock keeps no strict
-    # order); each requirements analysis in its own thread (a pipeline job's runs beside the next fit; the daily
-    # batch's holds the lock, so a fit waiting behind it ends up to one requirements analysis later than shown);
-    # documents PREP_QUEUE_CONCURRENCY at a time in queue order, independent of the lock.
+    # TASK-340: the lanes run side by side, so the time left is the latest one's end: fit analyses analysis_concurrency
+    # at a time (TASK-358's _lane: the running ones first, then the waiting ones as queued -- _lane keeps no strict
+    # order); each requirements analysis on its own (it takes a lane too, so a fit waiting behind one ends up to one
+    # requirements analysis later than shown); documents PREP_QUEUE_CONCURRENCY at a time in queue order.
     # ponytail: documents an analysis will yield are unknown until it ends, so they are not counted yet.
     fits.sort(key=lambda fit: fit[:2])
     documents = [item for item in running + queued if item['document']]
-    lanes = [_schedule([item for *_, item in fits], 1), _schedule(documents, settings.PREP_QUEUE_CONCURRENCY),
+    lanes = [_schedule([item for *_, item in fits], _concurrency(user.pk)) if fits else 0, _schedule(documents, settings.PREP_QUEUE_CONCURRENCY),  # no query on an idle poll
              *(item['eta_seconds'] for item in requirements)]
     # A job moved past To apply today left the list above, but what was done for it today still counts.
     for job in accessible_jobs(user).exclude(status__in=JobLead.UNAPPLIED_STATUSES).filter(updated_at__date=today).only('id'):
@@ -1251,13 +1360,17 @@ def queue_action(user, job_id, key, action):
     """AC5: cancel (queued or running; a running one's task is stopped), retry (failed or cancelled, to
     the back of the queue) or first (queued, to the front). TASK-322: continue (key '', a job blocked as
     Posting incomplete) prepares despite the gaps and remembers that for the job. Raises ValueError;
-    returns queue_state."""
-    if action not in ('cancel', 'retry', 'first', 'continue'):
+    returns queue_state. TASK-360: cloud (key '') runs a job's running or failed analysis again with cloud models
+    only (_cloud_once)."""
+    if action not in ('cancel', 'retry', 'first', 'continue', 'cloud'):
         raise ValueError('Unknown action.')
     try:
         job = accessible_jobs(user).filter(pk=int(job_id), status__in=JobLead.UNAPPLIED_STATUSES).first()
     except (TypeError, ValueError):
         job = None
+    if action == 'cloud':
+        _cloud_once(job, user)
+        return queue_state(user)
     prep = _state(job, user) if job and key == '' and action in ('retry', 'continue') else {}
     if (action == 'retry' and (prep.get('pipeline') or {}).get('stage') in ('limit', 'failed') and not prep.get('variants')
             and not JobEvaluation.objects.filter(job_id=job.id).exists()):
@@ -1309,6 +1422,42 @@ def queue_action(user, job_id, key, action):
             _queue.insert(0, entry)
             _pump()
     return queue_state(user)
+
+
+def _failed_analysis(prep):
+    """TASK-360: the job's last automatic analysis (fit or requirements) failed and nothing was prepared since."""
+    stage = (prep.get('pipeline') or {}).get('stage')
+    return not prep.get('variants') and (stage == 'failed' or (prep.get('reason') or '').startswith(REQUIREMENTS_FAILED))
+
+
+def _cloud_once(job, user):
+    """TASK-360 AC4: "Use cloud models only this time" -- a running (or waiting) analysis of the job is stopped and run
+    again with cloud models only (_stoppable, _released), a failed one is started so; the account's switch stays as it
+    is. Raises ValueError, also when there is no cloud model to run it with (AC5)."""
+    if not job:
+        raise ValueError('That job is not in the queue.')
+    if not cloud_model_options():
+        raise ValueError(f'{NO_CLOUD}.')
+    with _lock:
+        running = job.id in _piping or job.id in _analysing
+        stop, cloud = _stops.get(job.id, (None, False))
+        if running and cloud:
+            raise ValueError('This analysis already uses cloud models only.')
+        if running:
+            _cloud_rerun.add(job.id)
+            if stop:
+                stop.set()
+            return
+    prep = _state(job, user)
+    if not _failed_analysis(prep):
+        raise ValueError('Only a running or failed analysis can run again with cloud models.')
+    if (prep.get('pipeline') or {}).get('stage') == 'failed':
+        # A re-analysis runs as one again (retry_due's rule); a restart's PIPELINE_INTERRUPTED kept no note.
+        note = prep['pipeline'].get('note') or (CHANGED if JobEvaluation.objects.filter(job_id=job.id).exists() else '')
+        if not start_pipeline(job.id, user, force=True, reanalyse=note, cloud=True):
+            raise ValueError('This job cannot be analysed again automatically.')
+    else:
+        prepare(job.id, user, cloud=True)
 
 
 def _owners():

@@ -88,7 +88,7 @@ def test_bulk_add_runs_each_link_one_after_the_other(owner, client, tasks, fetch
         response = client.post('/api/jobs/bulk-create/', {'raw_description': 'https://jobs.example.test/a\nhttps://jobs.example.test/b'}, format='json')
     assert response.status_code == 201, response.content
     ids = [row['id'] for row in response.data['created']]
-    assert model['calls'] == [([ids[0]], True), ([ids[1]], True)] and not application_prep._pipeline_lock.locked()
+    assert model['calls'] == [([ids[0]], True), ([ids[1]], True)] and application_prep._in_lane == 0
 
 
 def test_a_skip_queues_nothing_and_shows_as_done_with_its_score(owner, client, tasks, fetch, model, django_capture_on_commit_callbacks):
