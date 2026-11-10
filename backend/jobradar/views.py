@@ -956,7 +956,7 @@ class JobLeadViewSet(viewsets.ModelViewSet):
             # a job still being worked on whose latest evaluation has no verdict on its current text.
             # ponytail: other rows show no flag; widen the status filter if the board ever needs it there.
             posting_check_text=Case(When(Q(posting_ai__isnull=False, posting_ai_chars=F('posting_chars')) | ~Q(status__in=JobLead.UNAPPLIED_STATUSES), then=Value(None)), default=source_text),
-        ).order_by(*parse_board_ordering(raw_ordering))
+        ).order_by(*(['search_typo'] if 'search_typo' in qs.query.annotations else []), *parse_board_ordering(raw_ordering))  # TASK-362: exact matches first
         return qs.distinct()
     def _board_rows(self, qs, cache=None):
         """Serialize `qs` into the rows list() returns, in its order; store each with its stamp."""
