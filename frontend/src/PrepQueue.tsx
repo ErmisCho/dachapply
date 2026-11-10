@@ -9,16 +9,18 @@ import {about,timeLeft} from './applicationPrep'
 
 // TASK-325: 'skipped' is the automatic pipeline's skip verdict (document null), listed under Done.
 export type QueueStatus='queued'|'running'|'blocked'|'ready'|'skipped'|'failed'|'cancelled'
-export type QueueItem={job_id:number;company:string;title:string;job_status:string;key:string;label:string;document:'cv'|'letter'|'message'|null;language:string|null;status:QueueStatus;position:number|null;progress:number;eta_seconds:number|null;error:string;files:string[];queued_at:string|null;started_at:string|null;finished_at:string|null;retry_at:string|null;incomplete?:boolean}
+export type QueueItem={job_id:number;company:string;title:string;job_status:string;key:string;label:string;document:'cv'|'letter'|'message'|null;language:string|null;status:QueueStatus;position:number|null;progress:number;eta_seconds:number|null;error:string;files:string[];queued_at:string|null;started_at:string|null;finished_at:string|null;retry_at:string|null;incomplete?:boolean;stage?:string;cloud_retry?:boolean}
+// TASK-360: stage is a pipeline row's step ('models' = Finding models); cloud_retry offers "Use cloud models only this time".
 // TASK-340: the server's estimate from measured durations -- finished today of the total, and the time left.
 export type QueueSummary={done:number;total:number;analyses_left:number;documents_left:number;seconds_left:number}
 export type QueueData={concurrency:number;summary?:QueueSummary;items:QueueItem[]}
 // TASK-322: 'continue' releases a job held for an incomplete posting; it acts on the whole job, so its key is ''.
-export type QueueAction='cancel'|'retry'|'first'|'continue'
+// TASK-360: 'cloud' runs a running or failed analysis again with cloud models only, also on the whole job.
+export type QueueAction='cancel'|'retry'|'first'|'continue'|'cloud'
 export type QueueSnapshot={data:QueueData|null;error:string;busy:string[];failed:{id:string;detail:string}|null}
 
 const PATH='/jobs/application-prep/queue/'
-const ACTIONS:Record<QueueAction,string>={first:'Move to front',cancel:'Cancel',retry:'Retry',continue:'Continue anyway'}
+const ACTIONS:Record<QueueAction,string>={first:'Move to front',cancel:'Cancel',retry:'Retry',continue:'Continue anyway',cloud:'Use cloud models only this time'}
 const actionId=(item:QueueItem,action:QueueAction)=>`${item.job_id}:${item.key}:${action}`
 
 let snap:QueueSnapshot={data:null,error:'',busy:[],failed:null}
@@ -51,7 +53,7 @@ export function useQueue(page=false){return useSyncExternalStore(page?watchPage:
 
 export async function queueAction(item:QueueItem,action:QueueAction){
   const id=actionId(item,action);set({busy:[...snap.busy,id],failed:null})
-  try{set({data:await api(PATH+'action/',{method:'POST',body:{job_id:item.job_id,key:action==='continue'?'':item.key,action}})})}
+  try{set({data:await api(PATH+'action/',{method:'POST',body:{job_id:item.job_id,key:action==='continue'||action==='cloud'?'':item.key,action}})})}
   catch(e:any){set({failed:{id,detail:e?.detail||'The action failed.'}})}
   finally{set({busy:snap.busy.filter(b=>b!==id)})}
   schedule()   // a retry can start the fast poll, a cancel can end it
@@ -59,6 +61,8 @@ export async function queueAction(item:QueueItem,action:QueueAction){
 
 const when=(iso:string|null)=>iso?new Date(iso).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):''
 const pad=(n:number)=>String(n).padStart(2,'0')
+// TASK-360: how long a stage has run, m:ss, from its start.
+export const elapsed=(iso:string|null,now=Date.now())=>{const s=iso?Math.max(0,Math.floor((now-new Date(iso).getTime())/1000)):0;return `${Math.floor(s/60)}:${pad(s%60)}`}
 // TASK-317: a usage-limited item the server re-queues by itself once the limit resets.
 // TASK-359: not repeated when the error's one line already says when it continues.
 const retries=(item:QueueItem)=>{if(!item.retry_at||item.error?.includes(' limit reached. Continues '))return null;const d=new Date(item.retry_at)
@@ -87,12 +91,13 @@ export function QueueView({snap,onAction=queueAction}:{snap:QueueSnapshot;onActi
       <div className="flex flex-wrap items-baseline gap-x-2"><span className="font-medium">{item.label}</span><Job item={item}/></div>
       {item.document&&<><progress className="mt-1 block h-2 w-full appearance-none overflow-hidden rounded-full bg-slate-200 dark:bg-white/10 [&::-moz-progress-bar]:bg-blue-500 [&::-webkit-progress-bar]:bg-transparent [&::-webkit-progress-value]:bg-blue-500" max={100} value={item.progress} aria-label={`${item.label} progress`}/>
       <p className="text-xs text-slate-500">{Math.round(item.progress)}%{item.eta_seconds?` · ${timeLeft(item.eta_seconds)}`:''}</p></>}
-      {!item.document&&item.eta_seconds!=null&&<p className="text-xs text-slate-500">{about(item.eta_seconds)} left</p>}</>}</Section>
+      {!item.document&&item.eta_seconds!=null&&<p className="text-xs text-slate-500">{item.stage==='models'&&item.started_at?`${elapsed(item.started_at)} so far · `:''}{about(item.eta_seconds)} left</p>}
+      {item.cloud_retry&&<div className="mt-1">{button(item,'cloud')}</div>}{failure(item)}</>}</Section>
     <Section title="Queued" items={of('queued')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">#{item.position} {item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{button(item,'first')}{button(item,'cancel')}</span></div>
       {item.eta_seconds!=null&&<p className="text-xs text-slate-500">Ready in {about(item.eta_seconds)}</p>}{failure(item)}</>}</Section>
     <Section title="Blocked" items={of('blocked')}>{item=><>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{button(item,'retry')}{item.incomplete&&button(item,'continue')}</span></div>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{button(item,'retry')}{item.incomplete&&button(item,'continue')}{item.cloud_retry&&button(item,'cloud')}</span></div>
       <p className="text-xs text-red-700">{item.error}</p>{retries(item)}{failure(item)}</>}</Section>
     <Section title="Done" items={of('ready','skipped')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><Link className="btn-muted ml-auto" to={`/jobs/${item.job_id}`}>Review</Link></div>

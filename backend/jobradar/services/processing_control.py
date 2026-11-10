@@ -14,6 +14,10 @@ from contextlib import contextmanager
 
 _local = threading.local()
 _handlers = {}
+_limits = {}  # kind -> durable()'s limit: a number, or a function of the unit's args read at each claim (TASK-358)
+# TASK-358: automatic analyses share one admission limit, the account's analysis_concurrency
+# (application_prep._lane): a daily-document unit runs its requirements analysis inline.
+ANALYSES = ('pipeline', 'requirements', 'daily-document')
 
 
 def event(name, kind='runtime'):
@@ -121,10 +125,10 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             if db.execute('SELECT mode FROM control WHERE id=1').fetchone()[0] != 'running':
                 return False
-            # These workers share application_prep._pipeline_lock. A waiting worker is queued,
-            # so Pause must prevent it becoming the next safe unit after that lock is released.
-            if kind in ('pipeline', 'daily-document'):
-                active = db.execute("SELECT count(*) FROM units WHERE kind IN ('pipeline','daily-document') AND state='running'").fetchone()[0]
+            # These workers share application_prep's analysis lanes. A waiting worker is queued,
+            # so Pause must prevent it becoming the next safe unit after a lane is released.
+            if kind in ANALYSES:
+                active = db.execute(f"SELECT count(*) FROM units WHERE kind IN ({','.join('?' * len(ANALYSES))}) AND state='running'", ANALYSES).fetchone()[0]
             else:
                 active = db.execute("SELECT count(*) FROM units WHERE kind=? AND state='running'", (kind,)).fetchone()[0]
             if active >= limit:
@@ -335,9 +339,11 @@ def active_unit(kind):
 
 
 def durable(kind, limit=1):
-    """Only JSON IDs/flags are persisted; never candidate text, credentials or callables."""
+    """Only JSON IDs/flags are persisted; never candidate text, credentials or callables. `limit`: how many units of
+    this kind run at once, or a function of the unit's args giving that (TASK-358)."""
     def decorate(function):
         _handlers[kind] = function
+        _limits[kind] = limit
 
         @functools.wraps(function)
         def wrapped(*args, **kwargs):
@@ -361,8 +367,9 @@ def durable(kind, limit=1):
     return decorate
 
 
-def execute(control, unit_id, kind, args, kwargs, limit=1):
-    while not control.claim(unit_id, kind, limit):
+def execute(control, unit_id, kind, args, kwargs, limit=None):
+    limit = _limits.get(kind, 1) if limit is None else limit  # recover_pending passes none: the kind's own
+    while not control.claim(unit_id, kind, limit(*args, **kwargs) if callable(limit) else limit):
         time.sleep(.1)
     event('unit_started', kind)
     _local.active = True

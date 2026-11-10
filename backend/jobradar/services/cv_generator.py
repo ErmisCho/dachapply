@@ -15,15 +15,16 @@ import tempfile
 import time
 import urllib.parse
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, local
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.utils.text import slugify
 
-from jobradar.models import CvAsset
+from jobradar.models import CvAsset, UserProfile
 from jobradar.services import cv_workspace
 from jobradar.services.json_importer import parse_json_object
 
@@ -191,7 +192,36 @@ def _fallback_codex_options():
 _model_options_cache={'at':0.0,'options':None}
 
 
+_cloud=local()
+
+
+def cloud_model_options():
+    """TASK-360: the cloud models (the Codex and Claude CLIs) and nothing local, so no ollama/lms process starts.
+    [] when neither CLI is installed: the built-in Codex list stands in for a missing cache, never for a missing CLI."""
+    codex=codex_model_options() if shutil.which('codex') or shutil.which('codex.cmd') else []
+    return codex+claude_model_options()
+
+
+@contextmanager
+def cloud_models_only(on=True):
+    """TASK-360: inside this, in this thread, available_model_options() (and so validate_model_capability) lists
+    cloud models only. Off leaves an outer `on` standing."""
+    before=getattr(_cloud,'on',False)
+    _cloud.on=bool(on) or before
+    try:
+        yield
+    finally:
+        _cloud.on=before
+
+
+def uses_cloud_only(user_id):
+    """TASK-360: the account's "Use cloud models only" switch."""
+    return bool(user_id) and UserProfile.objects.filter(user_id=user_id, use_cloud_models_only=True).exists()
+
+
 def available_model_options():
+    if getattr(_cloud,'on',False):
+        return cloud_model_options()
     # ponytail: 60s TTL. Every call shells out to `ollama list` and `lms ls` (~0.45s measured), and
     # the preview endpoint runs on each popup open, but installed models rarely change mid-session.
     now=time.monotonic()
@@ -630,7 +660,9 @@ def generation_preview(job, user=None):
     # one language only, the other language is not an option to land on.
     selected_cv=language if language in templates else next(iter(templates), '')
     selected_letter=next(iter(templates[selected_cv]['letters']), '') if selected_cv else ''
-    default_option,default_effort=cv_default_choice(available_model_options())
+    with cloud_models_only(uses_cloud_only(getattr(user, 'pk', None))):  # TASK-360
+        models=available_model_options()
+    default_option,default_effort=cv_default_choice(models)
     return {
         'language': language,
         'language_label': 'German' if language == 'de' else 'English',
@@ -648,7 +680,7 @@ def generation_preview(job, user=None):
         'selected_letter': selected_letter,
         'cvs': cvs,
         'letters': letters,
-        'models': available_model_options(),
+        'models': models,
         # TASK-303 AC1: what the pickers start on when this browser has no remembered pick.
         'default_pick': {'provider':default_option['provider'],'model':default_option['key'],'effort':default_effort} if default_option else None,
         'configured': bool(settings.CODEX_CV_ENABLED and workspace and workspace.is_dir() and templates),
@@ -2089,7 +2121,8 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
         raise RuntimeError('Current target TeX files are unavailable for readjustment.')
     if not create_cv and not create_letter:
         raise ValueError('Select at least a CV or a letter.')
-    model_option=validate_model_capability(provider, model, effort, speed, needs_tools=True)
+    with cloud_models_only(uses_cloud_only(user_id)):  # TASK-360
+        model_option=validate_model_capability(provider, model, effort, speed, needs_tools=True)
 
     # Resolved here rather than passed as a name, so the running task cannot be told to use
     # somebody else's templates or write their name onto a document: only the id of the user the

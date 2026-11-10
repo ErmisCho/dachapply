@@ -27,7 +27,7 @@ if sys.argv[1] == 'seed':
     (root / 'block').touch()
     print(json.dumps({'job': job.pk, 'owner': user.pk}), flush=True)
 else:
-    def analyse(job, cancelled=None):  # TASK-357: application_prep._analyse's signature
+    def analyse(job, cancelled=None, cloud=False):  # TASK-357/360: application_prep._analyse's signature
         if (root / 'block').exists():
             (root / 'analysis-started').touch()
             threading.Event().wait()  # Parent kills this disposable runtime at this boundary.

@@ -177,4 +177,8 @@ describe('daily-run slider',()=>{
     const unlimited=slider(null);expect(unlimited).toContain('aria-valuetext="Unlimited"');expect(unlimited).toContain('max="51"');expect(unlimited).toContain('value="51"')
     const days=slider(7,false,'day');expect(days).toContain('max="50"');expect(days).toContain('7 days')
   })
+  it('starts at 1 for a setting with no Off (TASK-358/360)',()=>{
+    const lanes=renderToStaticMarkup(<DailySlider id="n" label="Jobs analysed at the same time" help="" unit="job" min={1} max={10} value={5} onChange={()=>{}}/>)
+    expect(lanes).toContain('min="1"');expect(lanes).toContain('max="10"');expect(lanes).toContain('aria-valuetext="5 jobs"')
+  })
 })

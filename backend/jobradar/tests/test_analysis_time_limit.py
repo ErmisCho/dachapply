@@ -25,14 +25,14 @@ from jobradar.tests.test_link_only_prep import LINK, _blocked, fetch  # noqa: F4
 
 HANG = 20  # seconds a "never returning" call lasts at most; every assertion below wants far less
 LIMIT = 0.3
-FIT_TIMED_OUT = 'Analysis failed: Stopped after 10 minutes, the time limit for one analysis. Press Retry.'
-REQUIREMENTS_TIMED_OUT = 'Requirements analysis failed: Stopped after 10 minutes, the time limit for one analysis. Press Prepare to retry.'
+FIT_TIMED_OUT = 'Analysis failed: Stopped after 5 minutes, the time limit for one analysis. Press Retry.'
+REQUIREMENTS_TIMED_OUT = 'Requirements analysis failed: Stopped after 5 minutes, the time limit for one analysis. Press Prepare to retry.'
 OPTIONS = [{'provider': 'openai', 'key': 'gpt-6.1', 'efforts': ['medium'], 'default_effort': 'medium'}]
 
 
 @pytest.fixture
 def real_threads(monkeypatch, tasks):  # noqa: F811 -- after the generator's SyncThread, which runs work inline
-    monkeypatch.setattr(application_prep, 'ANALYSIS_TIME_LIMIT', LIMIT)
+    monkeypatch.setattr(application_prep, 'MINUTE', LIMIT / 5)  # TASK-360: the default 5 minutes last LIMIT seconds
     monkeypatch.setattr(application_prep, 'Thread', threading.Thread)
     monkeypatch.setattr(application_prep, '_piping', set())
     monkeypatch.setattr(job_evaluator, 'validate_model_capability', lambda *a, **k: OLLAMA_OPTION)
@@ -80,7 +80,7 @@ def test_an_in_process_block_fails_with_retry_and_the_next_analysis_runs(owner, 
     monkeypatch.setattr(application_prep, 'available_model_options', discover)
     began = time.monotonic()
     assert application_prep._pipeline(first.id, owner.pk) is False
-    assert time.monotonic() - began < 5 and not application_prep._pipeline_lock.locked()
+    assert time.monotonic() - began < 5 and application_prep._in_lane == 0
     # The second job's analysis then runs to the end (its model answers at once).
     monkeypatch.setattr(job_evaluator, 'run_structured_model', lambda *a, **k: {'evaluations': [evaluation_for(second, recommendation='skip', fit_score=44)]})
     assert application_prep._pipeline(second.id, owner.pk) is True
@@ -114,7 +114,7 @@ def test_the_fit_analysis_kills_a_model_process_that_outlives_the_limit(owner, c
     job = _link_job(owner)
     began = time.monotonic()
     assert application_prep._pipeline(job.id, owner.pk) is False
-    assert time.monotonic() - began < 5 and not application_prep._pipeline_lock.locked()
+    assert time.monotonic() - began < 5 and application_prep._in_lane == 0
     assert application_prep._state(job, owner)['reason'] == FIT_TIMED_OUT
     [model] = model_started()
     assert model.wait(timeout=5) != 0, 'the model process ended on its own instead of being killed'
