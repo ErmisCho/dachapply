@@ -2433,7 +2433,7 @@ def revise_latest_cv_documents(request, job_id):
     # TASK-278: free-form literal edits -- parsed deterministically, else translated by the installed
     # local model. Both are gated in the task, which falls back to the full optimization below.
     literal_pairs=None if correction_image else deterministic_edit_pairs(instructions)
-    literal_model=None if correction_image or literal_pairs or not looks_like_swap(instructions) else local_literal_model()  # TASK-326
+    literal_model=None if correction_image or literal_pairs or not looks_like_swap(instructions) or uses_cloud_only(request.user.pk) else local_literal_model()  # TASK-326; TASK-360: never local when cloud only
     try:
         # needs_tools: both endpoints generate or readjust LaTeX, whose prompt tells the model to read
         # the copied source files (TASK-221 AC3). TASK-360: cloud only when the account says so.

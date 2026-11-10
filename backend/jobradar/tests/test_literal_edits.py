@@ -153,6 +153,14 @@ def test_local_model_edit_is_applied_and_named_in_the_report(env):
     assert '"edits"' in env.model_calls[0][2] and 'jane.example@example.com' in env.model_calls[0][2]
 
 
+def test_cloud_models_only_never_reaches_the_local_literal_model(env, owner):
+    # TASK-360 (Codex review): the literal-edit route picked its local model before the cloud-only switch applied
+    UserProfile.objects.filter(user=owner).update(use_cloud_models_only=True)
+    env.use_model({'literal':True,'edits':[{'old':'+49 170 1234567','new':'+49 151 7654321'}]})
+    env.revise('My phone number is now +49 151 7654321')
+    assert env.model_calls==[] and env.generated==['My phone number is now +49 151 7654321']
+
+
 def test_duplicate_match_writes_nothing_and_falls_back(env):
     task=env.revise('replace "Python" with "Go"')   # Python occurs twice in the fixture
     _assert_fell_back(env,task)
