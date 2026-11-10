@@ -51,6 +51,13 @@ describe('recommended token (TASK-277)',()=>{
     expect(new URLSearchParams(boardJobsQuery({ordering:'',status:'new'})).has('ordering')).toBe(false)
     expect(new URLSearchParams(boardJobsQuery({})).get('board')).toBe('1')
   })
+  it('TASK-362: a search with the default status filter also finds archived jobs, a narrowed filter stays narrow',()=>{
+    const all='new,applied,skipped',status=(f:Record<string,any>)=>new URLSearchParams(boardJobsQuery(f,all)).get('status')
+    expect(status({status:all,search:'zuehlke'})).toBe('new,applied,skipped,archived')
+    expect(status({status:all,search:'  '})).toBe(all)
+    expect(status({status:all})).toBe(all)
+    expect(status({status:'new',search:'zuehlke'})).toBe('new')
+  })
 })
 
 describe('TASK-267 section headers under TASK-277',()=>{
