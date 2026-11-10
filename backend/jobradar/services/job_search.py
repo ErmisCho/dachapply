@@ -66,4 +66,7 @@ def search_jobs(qs, query):
         elif all(ok or _is_typo_of(w, tokens) for w, ok in zip(folded_words, plain)):
             typo.add(pk)
     # search_typo: 0 exact, 1 typo-only; the board orders by it first, then by the owner's chosen order
-    return qs.filter(id__in=exact | typo).annotate(search_typo=Case(When(id__in=typo, then=Value(1)), default=Value(0), output_field=IntegerField()))
+    found = qs.filter(id__in=exact | typo)
+    if not (exact and typo):  # one group: nothing to rank, and Postgres reads a constant ORDER BY 0 as a column position
+        return found
+    return found.annotate(search_typo=Case(When(id__in=typo, then=Value(1)), default=Value(0), output_field=IntegerField()))

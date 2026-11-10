@@ -96,6 +96,12 @@ def test_exact_matches_come_before_typo_matches_then_the_chosen_order(owner, job
     assert exact == sorted(exact, reverse=True)  # the owner's order still holds among the exact matches
 
 
+@pytest.mark.parametrize('query', ['zühlke', 'zuelhle', 'nothing-matches'])
+def test_a_search_with_one_kind_of_match_adds_no_rank(owner, jobs, query):
+    # live Postgres 500 on 2026-11-10: a rank that is constant became ORDER BY 0, which Postgres reads as a column position
+    assert 'search_typo' not in search_jobs(JobLead.objects.all(), query).query.annotations
+
+
 def test_words_shorter_than_four_letters_are_never_fuzzy(owner, jobs):
     assert found(owner, 'jva') == set()
     assert found(owner, 'BWM') == set()
