@@ -1,7 +1,7 @@
 ---
 id: TASK-358
 title: Choose how many jobs are analysed at the same time
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-09 16:40'
 labels:
@@ -28,13 +28,13 @@ Depends on TASK-357: both touch `_pipeline`, and parallel runs must keep its 10-
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The Profile page has a slider "Jobs analysed at the same time", 1 to 10 (range to confirm with the owner), default 5, saved per account like the existing daily limits.
-- [ ] #2 With the setting at N and more than N jobs waiting, exactly N automatic analyses run at once and the rest wait; measured with a test that counts concurrent runs, not argued from code.
-- [ ] #3 Lowering the setting never cancels runs already going; it applies to the next run that starts. Raising it starts waiting runs without a restart.
-- [ ] #4 The Queue's time estimates (TASK-340 `_schedule`, currently one fit lane) use N lanes, so "about X min left" stays correct.
-- [ ] #5 Daily budgets still hold: no more than `daily_analyse_limit` analyses a day whatever N is, and two runs never analyse the same job at once.
+- [x] #1 The Profile page has a slider "Jobs analysed at the same time", 1 to 10 (range to confirm with the owner), default 5, saved per account like the existing daily limits.
+- [x] #2 With the setting at N and more than N jobs waiting, exactly N automatic analyses run at once and the rest wait; measured with a test that counts concurrent runs, not argued from code.
+- [x] #3 Lowering the setting never cancels runs already going; it applies to the next run that starts. Raising it starts waiting runs without a restart.
+- [x] #4 The Queue's time estimates (TASK-340 `_schedule`, currently one fit lane) use N lanes, so "about X min left" stays correct.
+- [x] #5 Daily budgets still hold: no more than `daily_analyse_limit` analyses a day whatever N is, and two runs never analyse the same job at once.
 - [ ] #6 Measured on the owner's machine: with N=5, the real CPU/memory load and the model provider's usage-limit errors stay acceptable over a batch of at least 10 jobs, numbers recorded in the notes. If a local model (ollama/LM Studio) cannot serve 5 at once, the task says so and proposes the fix rather than shipping a default that fails.
-- [ ] #7 Full backend and frontend suites and typecheck pass.
+- [x] #7 Full backend and frontend suites and typecheck pass.
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -45,4 +45,5 @@ Ships together with TASK-360 (same files). Adds a Profile field, so a migration:
 
 Risks to check: concurrent model CLI runs hitting the provider's usage limit faster (TASK-317 retries),
 local models serving one request at a time, and database connections (Neon pooled).
+2026-11-10: merged #380, deployed 64812d1 (migration 0062 applied: health ok), localhost updated. Profile shows the slider (1-10, default 5). Open: AC6, the N=5 CPU/memory/usage-limit measurement over 10+ real analyses; no batch had run yet. Automatic analyses use Codex first (cv_default_choice skips Ollama), so the load is up to 5 Codex CLI processes.
 <!-- SECTION:NOTES:END -->
