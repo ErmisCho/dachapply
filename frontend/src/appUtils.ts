@@ -652,7 +652,8 @@ export function boardSortChoice(ordering?:string|null,savedKeys?:string|null):{v
 // or no ordering with nothing saved (which the server answers with the same default).
 export function boardGroupedByStatus(ordering?:string|null,savedKeys?:string|null):boolean{return effectiveOrdering(ordering,savedKeys)===RECOMMENDED_ORDERING}
 // The /jobs/ query the board sends: empty filters are omitted (so an empty ordering stays absent).
-export function boardJobsQuery(f:Record<string,any>):string{const q=new URLSearchParams(Object.fromEntries(Object.entries(f).filter(([,v])=>v).map(([k,v])=>[k,String(v)])));q.set('board','1');return String(q)}
+// TASK-362: a search with the default status filter (`defaultStatus`, everything but archived) also finds archived jobs.
+export function boardJobsQuery(f:Record<string,any>,defaultStatus=''):string{const q=new URLSearchParams(Object.fromEntries(Object.entries(f).filter(([,v])=>v).map(([k,v])=>[k,String(v)])));if(f.search?.trim()&&defaultStatus&&f.status===defaultStatus)q.set('status',defaultStatus+',archived');q.set('board','1');return String(q)}
 
 // TASK-146 AC1/AC2/AC3. Splits GET /jobs/feedback-due/'s rows into overdue (< today) and
 // today-or-later, in the two groups the pane renders - a pure function so the grouping has a test
