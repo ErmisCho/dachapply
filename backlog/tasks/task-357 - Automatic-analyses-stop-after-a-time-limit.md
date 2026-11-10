@@ -1,7 +1,7 @@
 ---
 id: TASK-357
 title: Automatic analyses stop after a time limit
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-09 16:10'
 labels:
@@ -95,4 +95,5 @@ limit; on Linux `_stop_process` kills only the direct child (pre-existing).
 
 Out of scope: the owner's manual "Analyse with model" from the board, and document generation, which
 have their own cancel paths.
+2026-11-10: deployed to production in image 64812d1 (health ok). Done.
 <!-- SECTION:NOTES:END -->

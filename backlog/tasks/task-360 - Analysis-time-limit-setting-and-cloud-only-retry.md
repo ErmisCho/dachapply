@@ -1,7 +1,7 @@
 ---
 id: TASK-360
 title: Analysis time limit setting and cloud-only retry
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-09 17:45'
 labels:
@@ -28,12 +28,12 @@ Couple with TASK-358 (same files: application_prep, Profile settings, Queue) and
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The Profile page has "Time limit for one analysis" in minutes, default 5, saved per account; both automatic analyses (fit, requirements) use it instead of the fixed 600 s, and the timeout wording shows the configured minutes.
-- [ ] #2 The Queue shows the model-finding step as its own stage ("Finding models") for a running analysis, before Fetching/Analysing, with its elapsed time.
-- [ ] #3 The Profile page has a switch "Use cloud models only": when on, automatic analyses and generation skip local model discovery entirely (no `ollama`/`lms` process is started) and use the cloud default.
-- [ ] #4 A stuck (running) or failed analysis in the Queue offers "Use cloud models only this time": it stops the current run if any, and re-runs that one job with cloud models without changing the switch.
-- [ ] #5 If no cloud model is available, both cloud options say so plainly instead of failing silently.
-- [ ] #6 Tests cover each AC above; each new test fails with its change reverted. Full backend and frontend suites and typecheck pass.
+- [x] #1 The Profile page has "Time limit for one analysis" in minutes, default 5, saved per account; both automatic analyses (fit, requirements) use it instead of the fixed 600 s, and the timeout wording shows the configured minutes.
+- [x] #2 The Queue shows the model-finding step as its own stage ("Finding models") for a running analysis, before Fetching/Analysing, with its elapsed time.
+- [x] #3 The Profile page has a switch "Use cloud models only": when on, automatic analyses and generation skip local model discovery entirely (no `ollama`/`lms` process is started) and use the cloud default.
+- [x] #4 A stuck (running) or failed analysis in the Queue offers "Use cloud models only this time": it stops the current run if any, and re-runs that one job with cloud models without changing the switch.
+- [x] #5 If no cloud model is available, both cloud options say so plainly instead of failing silently.
+- [x] #6 Tests cover each AC above; each new test fails with its change reverted. Full backend and frontend suites and typecheck pass.
 - [ ] #7 Verified on localhost in the browser: the setting saves, the stage shows, and the one-time cloud retry runs.
 <!-- AC:END -->
 
@@ -41,4 +41,5 @@ Couple with TASK-358 (same files: application_prep, Profile settings, Queue) and
 
 <!-- SECTION:NOTES:BEGIN -->
 Adds Profile fields, so a migration: per CLAUDE.md, ask the owner before merging.
+2026-11-10: merged #380 (Codex review: literal-edit route also honours cloud-only, test shown failing without the fix). On localhost: the three settings render; a PATCH of the time limit to 7 read back 7 and was restored to 5. Open (AC7): the Finding models stage and the one-time cloud retry were not seen live, because no analysis was running or failed at the time.
 <!-- SECTION:NOTES:END -->

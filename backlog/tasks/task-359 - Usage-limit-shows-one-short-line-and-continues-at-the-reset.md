@@ -1,7 +1,7 @@
 ---
 id: TASK-359
 title: Usage limit shows one short line and continues at the reset
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-09 17:20'
 labels:
@@ -43,4 +43,5 @@ spare Claude tokens", added the same day), so reviews can use up the limit that 
 <!-- SECTION:NOTES:BEGIN -->
 Start from cv_tasks' failure path (usage_limit/reset_at) and application_prep's TASK-317 retry_due; reuse
 them rather than adding a second scheduler. Do not change which provider/model runs.
+2026-11-10: deployed in 64812d1. Open: AC6 browser check needs a real or simulated usage limit.
 <!-- SECTION:NOTES:END -->

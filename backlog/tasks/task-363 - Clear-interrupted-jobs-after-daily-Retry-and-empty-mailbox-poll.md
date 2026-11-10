@@ -1,7 +1,7 @@
 ---
 id: TASK-363
 title: Clear interrupted jobs after daily Retry and empty mailbox poll
-status: In Progress
+status: Done
 assignee:
   - '@implementation-agent'
 created_date: '2026-11-06 07:25'
@@ -48,6 +48,7 @@ Both new count regressions failed on unchanged main (daily 3 vs 2; empty poll 2 
 Full gate passed: uv run pytest -q (1912 passed in 722.61s); npm ci and npm run build passed. Real disposable dashboard process killed during inline daily analysis; after startup HTTP Retry reached one ready document, two completed jobs (analysis + document), and zero interrupted/pending/running jobs. Other-owner/job and failed/skipped mailbox cases covered. Groma is not initialized, so no architecture references were invented. No live service changes or deployment.
 
 PR: https://github.com/ErmisCho/dachapply/pull/369. Evaluation is self-graded against the pre-implementation rubric; no independent reviewer was dispatched. Frontend install reported 5 dependency advisories (3 moderate, 2 high) and the build emitted its large-chunk warning; dependencies and frontend source were not changed.
+2026-11-10: deployed to production in image 64812d1 (health ok). Done.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
