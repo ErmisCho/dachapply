@@ -35,9 +35,11 @@ vcs: github
 persistence: true
 enforcement: warn
 waves: 5
-agents-per-wave: 6
-test-command: cd backend && uv run pytest -q
-typecheck-command: cd frontend && npm run build
+agents-per-wave: 4
+isolation: worktree
+max-turns: 15
+test-command: cd backend && uv run pytest -q --tb=line
+typecheck-command: cd frontend && npx tsc --noEmit
 lint-command: skip
 recent-commits: 20
 stale-branch-days: 7
