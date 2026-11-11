@@ -1,11 +1,11 @@
 ---
 id: TASK-360
 title: Analysis time limit setting and cloud-only retry
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-11-09 17:45'
-updated_date: '2026-11-11 09:14'
+updated_date: '2026-11-11 09:25'
 labels:
   - owner-request
 dependencies:
@@ -14,6 +14,7 @@ modified_files:
   - .pi/STATE.md
   - .orchestrator/debug/01a1c9b7-takeover-baseline-1.md
   - docs/verification-2026-11-11-analysis-queue.md
+  - .orchestrator/metrics/sessions.jsonl
 priority: medium
 ---
 
@@ -64,3 +65,9 @@ Final clean browser replay: one replacement provider entry; one-time cloud retry
 
 Asian Dad takeover evaluation: PERFECT (self-graded; rubric and verdict share an author). Codex read-only commit review returned no findings and confirmed the local evidence/limitations. Existing production health 200 and deployed settings/cloud-action labels verified. No new application changes, migrations or deployment needed. Keep In Progress until evidence PR merges.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Verified visible localhost settings save/reload (5->7->5), Finding models plus elapsed time, and real one-time cloud retry endpoint replacing a simulated stuck discovery run in 3.069 s without changing the Profile cloud switch. Existing cloud-only/no-cloud/time-limit tests passed. Backend 2122, frontend 520, builds/typechecks and localhost render passed. Asian Dad PERFECT (self-graded), Codex review no findings. Evidence squash-merged as c87674a via PR #387 after green CI; completion recorded in this post-merge administrative change. No migrations or new deployment.
+<!-- SECTION:FINAL_SUMMARY:END -->

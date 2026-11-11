@@ -1,11 +1,11 @@
 ---
 id: TASK-358
 title: Choose how many jobs are analysed at the same time
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-11-09 16:40'
-updated_date: '2026-11-11 09:14'
+updated_date: '2026-11-11 09:25'
 labels:
   - owner-request
 dependencies:
@@ -14,6 +14,7 @@ modified_files:
   - .pi/STATE.md
   - .orchestrator/debug/01a1c9b7-takeover-baseline-1.md
   - docs/verification-2026-11-11-analysis-queue.md
+  - .orchestrator/metrics/sessions.jsonl
 priority: medium
 ---
 
@@ -71,3 +72,9 @@ Final resource-sample count correction: 163 samples in the completed raw report,
 
 Asian Dad takeover evaluation: PERFECT (self-graded; rubric and verdict share an author). Codex read-only commit review: no findings; evidence/limitations matched local artifacts. Additional visible-browser check saved concurrency 3, reloaded 3, restored/reloaded 5. Queue estimate rerun: 11 passed. Existing production health 200 and deployed UI markers verified; no deployment needed for this evidence-only change. Keep In Progress until evidence PR merges.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Verified the existing implementation rather than rewriting it. Ten real GPT-6.1-Sol/high analyses completed in 165.33 s at measured peak concurrency five, zero provider errors, CPU mean/peak 16.38/43.46%, minimum free RAM 52.025 GiB. Profile concurrency save/reload and lane/budget/estimate tests passed. Backend 2122, frontend 520, builds/typechecks and localhost render passed. Asian Dad PERFECT (self-graded), Codex review no findings. Evidence squash-merged as c87674a via PR #387 after green CI; this post-merge administrative change completes the task. No production writes or new deployment.
+<!-- SECTION:FINAL_SUMMARY:END -->
