@@ -1,27 +1,28 @@
 # Default Task Workflow (Always-on)
 
-Backlog work in this repo is done with **session-orchestrator agents in waves** and graded with the
-**asian-dad-eval** skill. This is the default, not something to be asked for each time. It exists
+Backlog work in this repo is graded with the **asian-dad-eval** skill, and Full-tier work (TW-000)
+runs as **session-orchestrator agents in waves**. This is the default, not something to be asked for each time. It exists
 because this session repeatedly found that unverified claims — from agents and from earlier passes —
 were wrong in ways only measurement caught.
 
-## TW-000: This applies to every request, not only to "backlog work"
+## TW-000: Every request gets a tier; only the Full tier runs waves
 
-Owner instruction, 2026-08-18, stated after it had to be repeated: **whenever the owner asks for
-something to be done, use session-orchestrator agents and the asian-dad-eval skill.** Do not wait to
-be asked for them by name, and do not treat them as a heavyweight mode reserved for large features.
+Owner instruction, 2026-11-11, replacing the 2026-08-18 "orchestrate every request" rule to spend
+fewer tokens without losing effectiveness. Pick a tier for each request and name it in the reply:
 
-The trigger is the owner asking for work, not the size of the work. In practice that means:
+- **Inline** — a question, a config tweak, or a change of a few lines. Just do it, then verify it.
+- **Standard** — a normal feature or fix. File a task in `backlog/tasks/` with acceptance criteria
+  sharp enough to fail, write the asian-dad rubric before any code (TW-001), implement directly or
+  with **one** agent, verify (TW-003, TW-004), grade, report.
+- **Full** — migrations, production data, several file territories at once, or risky/unclear work.
+  The Standard steps plus session-orchestrator agents in waves, one per file territory (TW-002).
 
-1. File the request as a task in `backlog/tasks/` with acceptance criteria sharp enough to fail.
-2. Write the asian-dad rubric from those criteria **before** any implementation exists (TW-001).
-3. Dispatch session-orchestrator agents in waves, one agent per file territory (TW-002).
-4. Verify the agents' load-bearing claims yourself, in the real thing (TW-003, TW-004).
-5. Grade against the sealed rubric at the eval step and report the verdict.
+When torn between two tiers, take the higher. Verification against reality (TW-004, TW-00A step 3)
+applies to every tier: it is what catches bugs, and it is not the overhead this rule removes.
 
-The only work exempt is a question that is answered rather than built, and a change so small that
-filing it would cost more than doing it — and even then, say which exemption was used rather than
-silently skipping the workflow.
+Dispatch agents with an explicit `model`: `sonnet` for implementers, test-writers and docs, `haiku`
+for read-only sweeps; Opus stays the coordinator and grader. Brief each agent with the exact files and
+the facts already established, so it does not re-derive them.
 
 ## TW-00A: What "Done" means
 
