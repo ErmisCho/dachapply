@@ -31,7 +31,7 @@ Local-model concurrency was not exercised: the existing default selected Codex, 
 
 Visible Chrome over CDP, `http://localhost:8011`, real built frontend and real Django routes, using disposable SQLite/workspace. Only the model-discovery block and provider answer were simulated.
 
-1. Profile slider read 5 jobs, minimum 1 / maximum 10. Time limit read 5 minutes.
+1. Profile slider read 5 jobs, minimum 1 / maximum 10. A separate visible-browser persistence check saved 3, reloaded at 3, then restored and reloaded at 5 in the synthetic account. Time limit read 5 minutes.
 2. Used keyboard input to change the time limit to 7, clicked **Save profile**, reloaded and observed 7. Restored 5 and verified the API readback.
 3. Cleared the model-discovery cache and blocked discovery in an actual pipeline worker. Queue rendered **Finding models**, **0:29 so far**, and the one-time cloud button.
 4. Clicked **Use cloud models only this time**. The real action endpoint returned 200; the replacement cloud analysis reached Done in **3.069 seconds**, rather than waiting for the configured timeout.
@@ -56,6 +56,7 @@ Same disposable visible-browser runtime; real generation endpoint, task runner, 
 | --- | --- |
 | `cd backend && ERROR_ALERT_EMAILS='' uv run pytest -q -o faulthandler_timeout=120` | **2,122 passed**, 749.80 seconds |
 | Focused analysis-lanes, time-limit, queue, processing-control and reproduced email test | **57 passed**, 30.42 seconds |
+| Separate full `test_queue_estimate.py` rerun | **11 passed**, 5.67 seconds |
 | `cd frontend && npm test` | **520 passed**, 45 files |
 | `cd frontend && npm run build` in development checkout | Passed; includes TypeScript check |
 | `npm run build` in owner's dedicated `main-runtime/frontend` checkout | Passed; includes TypeScript check |
@@ -82,4 +83,10 @@ Harness-only setup corrections: created Django's configured cache table; explici
 
 Existing acceptance criteria remain unchanged. Prior mutation-test evidence belongs to the original implementation; this takeover reran the existing suites and did not add or modify tests. Separate takeover rubrics were sealed before these measurements/fixes, not retroactively presented as pre-implementation rubrics for Claude's work.
 
-Evaluation and merge disposition are recorded in the Backlog task notes.
+## Evaluation
+
+Separate sealed takeover rubrics: **TASK-358 PERFECT, TASK-359 PERFECT, TASK-360 PERFECT** — each seven explicit acceptance criteria plus the measured-claims floor passed. The evaluator rechecked raw batch outcomes/samples, browser events/input fingerprints, served-byte hashes and test logs, rather than accepting a worker's success summary.
+
+**Self-graded: the criteria and these verdicts share an author.** These verification-only rubrics were sealed before new measurements but after Claude's existing implementation; they are not represented as independent pre-implementation grading. Repeated PERFECT results here do not establish sensitivity to future defects. A separate `codex review --commit` returned no findings and confirmed the evidence/limitations; it did not implement changes or rerun suites.
+
+Merge disposition is recorded in the Backlog task notes; tasks remain In Progress until the evidence merge, then their completion is merged separately.

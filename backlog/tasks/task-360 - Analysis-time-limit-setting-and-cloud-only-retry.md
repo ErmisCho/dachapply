@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-11-09 17:45'
-updated_date: '2026-11-11 09:08'
+updated_date: '2026-11-11 09:14'
 labels:
   - owner-request
 dependencies:
@@ -61,4 +61,6 @@ Adds Profile fields, so a migration: per CLAUDE.md, ask the owner before merging
 2026-11-11 Pi takeover: visible Chrome at localhost:8011 passed: Profile time limit 5 -> 7, saved/reloaded at 7, restored 5; default concurrency slider 5, bounds 1-10. Forced uncached model discovery to block in disposable runtime: Queue displayed Finding models and 0:29 elapsed. Clicked Use cloud models only this time; real queue endpoint cancelled/replaced the run, canned cloud analysis completed in 3.074 s, Profile cloud switch remained false. Provider model answer/discovery block were simulated; real pipeline/importer/endpoints/UI were exercised. Focused shared tests: 57 passed. Full-suite/evaluation/merge pending.
 
 Final clean browser replay: one replacement provider entry; one-time cloud retry completed in 3.069 s, time limit restored to 5. Complete backend 2122 tests, frontend 520 tests and build/typecheck passed. Durable evidence: docs/verification-2026-11-11-analysis-queue.md. Remains In Progress pending review/evaluation and evidence merge.
+
+Asian Dad takeover evaluation: PERFECT (self-graded; rubric and verdict share an author). Codex read-only commit review returned no findings and confirmed the local evidence/limitations. Existing production health 200 and deployed settings/cloud-action labels verified. No new application changes, migrations or deployment needed. Keep In Progress until evidence PR merges.
 <!-- SECTION:NOTES:END -->
