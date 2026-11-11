@@ -3,7 +3,7 @@ id: doc-1
 title: Application pipeline efficiency opportunities - 2026-11-11
 type: other
 created_date: '2026-11-11 14:54'
-updated_date: '2026-11-11 14:56'
+updated_date: '2026-11-11 15:28'
 ---
 # Application pipeline: spend less work to reach useful applications sooner
 
@@ -57,3 +57,22 @@ Track usable, accepted application packages per unit of model work, not merely j
 Recommended order: establish first-package latency and call counts; test package-aware scheduling and existing combined-generation capability; then assess fit+requirements consolidation and modest document concurrency. Preserve the owner's TASK-303 default of GPT-6.1-Sol/high until a labelled quality comparison supports changing it. Do not lower effort or raise concurrency simply because it looks cheaper.
 
 No paid model calls, new real workload, production writes or pipeline configuration changes were made for this investigation. The opportunities above need owner selection and controlled verification before implementation; no percentage speedup is claimed.
+
+
+## Tracked follow-up work
+
+- TASK-367: useful application packages before fallback variants.
+- TASK-368: benchmark fit plus requirements in fewer requests.
+- TASK-369: benchmark a combined recommended CV and letter request.
+- TASK-370: measure safe document concurrency independently of fit concurrency.
+- TASK-371: avoid repeated unsuccessful posting fetches.
+
+## Error evidence to future Backlog bugs
+
+TASK-372 is the high-priority error-feedback feature, delivered as TASK-372.1 (durable private capture/redaction), TASK-372.2 (incremental unresolved-only grouping and Backlog linkage), and TASK-372.3 (verified resolution, old-evidence suppression and regression detection).
+
+Lifecycle: capture occurrence -> triage/group -> link bug task -> verify fix -> complete bug task -> mark linked occurrence IDs resolved. Resolved occurrences remain auditable but are not analysed again, including after restart or old-log replay. A genuinely new post-fix occurrence is not silently discarded: it is handled as a regression, distinguished from the same failure on an unfixed old build. New arrivals during closure must not be bulk-marked done.
+
+This extends existing alerting and private adjustment/compile evidence, not another logging framework. Technical summaries are sanitized before shared/public Backlog; sensitive raw evidence stays owner-only and outside git. Operational quota/transient failures are classified without creating a bug for every log line. No new always-running paid-agent loop or error dashboard is requested.
+
+All these records are To Do. The collector/triage/resolution feature is not implemented or running yet.
