@@ -1,11 +1,11 @@
 ---
 id: TASK-359
 title: Usage limit shows one short line and continues at the reset
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-11-09 17:20'
-updated_date: '2026-11-11 09:14'
+updated_date: '2026-11-11 09:25'
 labels:
   - owner-request
 dependencies: []
@@ -13,6 +13,7 @@ modified_files:
   - .pi/STATE.md
   - .orchestrator/debug/01a1c9b7-takeover-baseline-1.md
   - docs/verification-2026-11-11-analysis-queue.md
+  - .orchestrator/metrics/sessions.jsonl
 priority: high
 ---
 
@@ -66,3 +67,9 @@ Final clean browser replay passed, with cancelled worker/model boundary honored.
 
 Asian Dad takeover evaluation: PERFECT (self-graded; rubric and verdict share an author). Codex read-only commit review returned no findings and confirmed the local evidence/limitations. Existing production health 200 and deployed scheduled-task UI support verified. No new application changes/deployment needed. Keep In Progress until evidence PR merges.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Verified localhost short-line usage-limit recovery with a simulated provider and accelerated reset through the real endpoints/task runner/shared scheduler. Same task automatically resumed with identical inputs; Cancel worked. Persistence/sanitization/missing-reset tests passed. Backend 2122, frontend 520, builds/typechecks and localhost render passed. Asian Dad PERFECT (self-graded), Codex review no findings. Evidence squash-merged as c87674a via PR #387 after green CI; completion recorded in this post-merge administrative change. No application-code changes or production failure injection.
+<!-- SECTION:FINAL_SUMMARY:END -->

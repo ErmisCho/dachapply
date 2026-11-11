@@ -2,10 +2,10 @@
 schema-version: 1
 session: 01a1c9b7-26c3-7492-a252-735314e098f5
 session-type: feature
-branch: verify/tasks-358-359-360
+branch: backlog/complete-tasks-358-359-360
 issues: [TASK-358, TASK-359, TASK-360]
 started_at: 2026-11-11T08:31:24Z
-status: active
+status: completed
 current-wave: 3
 total-waves: 3
 mission-status:
@@ -20,12 +20,12 @@ mission-status:
   - id: m-3
     task: Run full gates, evaluate, merge and finalize verified tasks
     wave: 3
-    status: testing
+    status: completed
 ---
 
 ## Current Wave
 
-Wave 3 — Full gates passed; review, evaluation and merges pending.
+Wave 3 — Verification/evaluation complete and evidence merged; post-merge administrative completion prepared.
 
 ## Session Plan
 
@@ -48,17 +48,22 @@ Wave 3 — Full gates passed; review, evaluation and merges pending.
 - Visible disposable localhost: Profile 5 -> 7 -> reload -> 7 -> restore 5; Finding models with elapsed time; one-time cloud retry completed in 3.069 seconds with Profile switch unchanged.
 - Simulated provider limit: same manual task automatically scheduled -> running with identical inputs, panel short line, cancellation worked, no browser exceptions.
 
-### Wave 3 — In progress
+### Wave 3 — Complete
 - Full backend: 2122 passed in 749.80 seconds. Frontend: 520 tests, build/typecheck passed.
 - Built both owner checkouts; exact served JS bytes match each build. Normal localhost sign-in rendered with no JavaScript exceptions.
 - Existing production health returned 200; deployed bundle contains settings/action/scheduled-task support. No production deployment or data writes.
 - Durable evidence: docs/verification-2026-11-11-analysis-queue.md.
+- TASK-358, TASK-359 and TASK-360: separate Asian Dad PERFECT verdicts, explicitly self-graded. Codex implementation-evidence review: no findings. Addendum review: no actionable discrepancies; reviewer disclosed it could inspect published documents but not private temporary artifacts.
+- Evidence PR #387 passed CI and was squash-merged as c87674ab9e9a990e3c0822b053aa588614985342. All implementation/evidence commits were pushed before merge.
+- Post-merge completion marks all three tasks Done on backlog/complete-tasks-358-359-360; the administrative PR is to be squash-merged after its own green CI. No application changes, migrations, production writes or deployment.
+- Zero new application tests or source changes. Existing unrelated Claude changes remain untouched and unstaged.
 
 ## Deviations
 
 - Pi exposes no subagent dispatch tool here. Work is coordinator-direct and sequential using session-orchestrator role/checkpoint discipline; no independent subagent claims will be fabricated.
 - Existing unrelated metrics, debug and temporary files are preserved, unstaged.
-- Prior combined TASK-358/360 rubric is historical. Separate takeover verification rubrics sealed before new measurements/fixes; evaluation will disclose self-grading.
+- Prior combined TASK-358/360 rubric is historical. Separate takeover verification rubrics sealed before new measurements/fixes; evaluation discloses self-grading.
+- Remote PR #386 updated workflow instructions during verification. It touched instructions/history only, no backend/frontend code; it was preserved and the new Standard tier applies to this verification-only closeout. Full-tier role/checkpoint discipline had already been used for the takeover.
 
 ## What Not To Retry
 
