@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import subprocess
 from contextlib import closing
+from datetime import datetime, timezone  # TASK-372.3
 from pathlib import Path
 
 from . import error_occurrences as errors
@@ -34,7 +35,7 @@ def triage(*, dry_run=False, list_only=False):
 
     Checkpoints commit after CLI success. A deterministic title marker recovers a task
     written by a CLI call that failed/was interrupted before its response was persisted.
-    Existing links are retained even if someone closes a task; resolution is TASK-372.3.
+    TASK-372.3: closure is explicit; Done alone never resolves local evidence.
     """
     with closing(errors._connect()) as db, db:
         db.row_factory = sqlite3.Row
@@ -43,6 +44,21 @@ def triage(*, dry_run=False, list_only=False):
         for row in db.execute('SELECT o.*, COALESCE(c.build, \'unknown\') AS build, COALESCE(c.classification, \'unknown\') AS classification FROM occurrences o LEFT JOIN occurrence_context c ON c.id=o.id WHERE o.resolved=0 ORDER BY o.at,o.id'):
             row = dict(row)
             signature = errors._digest(tuple(row[k] for k in ('source', 'environment', 'build', 'operation', 'error_type')))
+            # TASK-372.3: new IDs always survive closure; successor markers recover interrupted creates.
+            family = errors._digest(tuple(row[k] for k in ('source', 'environment', 'operation', 'error_type')))
+            # review: the closure in effect when the occurrence happened, so a later closure cannot re-key a pending successor
+            closure = (db.execute('SELECT * FROM error_resolutions WHERE family=? AND closed_at<? ORDER BY closed_at DESC, rowid DESC LIMIT 1', (family, row['at'])).fetchone()
+                       or db.execute('SELECT * FROM error_resolutions WHERE family=? ORDER BY rowid DESC LIMIT 1', (family,)).fetchone())
+            if closure:
+                row['recurrence'] = ('post-fix regression' if row['build'] != 'unknown' and row['build'] == closure['fixed_build']
+                                     else 'unfixed or unknown runtime/build; regression unverified')
+                if row['at'] <= closure['closed_at']:  # TASK-372.3: collection boundary, not replay time.
+                    row['recurrence'] = 'pre-fix evidence; regression unverified'
+                row['previous_task'] = closure['task_id']
+                signature = errors._digest((signature, closure['signature'], row['recurrence']))
+            linked = db.execute('SELECT signature FROM error_group_links WHERE occurrence_id=?', (row['id'],)).fetchone()
+            if linked:  # TASK-372.3: another incident closing cannot move existing evidence.
+                signature = linked['signature']
             groups.setdefault(signature, []).append(row)
         proposals = []
         for signature, rows in groups.items():
@@ -53,6 +69,8 @@ def triage(*, dry_run=False, list_only=False):
             classes = {r['classification'] for r in rows}
             classification = next((c for c in ('retry_exhausted', 'actionable', 'unknown', 'transient', 'quota', 'cancelled') if c in classes), 'unknown')
             disposition = DISPOSITIONS[classification]
+            if rows[0].get('recurrence'):  # TASK-372.3
+                disposition += '; ' + rows[0]['recurrence'] + '; follows ' + rows[0]['previous_task']
             task_id = previous['task_id'] if previous else None
             actionable = classification in ('actionable', 'retry_exhausted')
             action = ('update' if task_id else 'create') if actionable else 'classify'
@@ -100,3 +118,36 @@ def _time(value):
         return datetime.fromisoformat(value).isoformat()
     except (ValueError, TypeError):
         return 'unknown'
+
+
+# TASK-372.3: caller attests completion with reviewable references, not a status-only claim.
+def resolve(task_id, *, fix, tests, evaluation, merge, fixed_build):
+    """References attest passing tests, PERFECT evaluation and the squash merge.
+
+    Inspect linked IDs before external status I/O. New/unlinked arrivals are never closed.
+    No CLI writes: interruption rolls back locally and retry is idempotent.
+    """
+    references = dict(fix=fix, tests=tests, evaluation=evaluation, merge=merge)
+    if not re.fullmatch(r'TASK-\d+(?:\.\d+)*', task_id) or not fixed_build.strip() or any(not v.strip() for v in references.values()):
+        raise ValueError('completion references and fixed build required')
+    with closing(errors._connect()) as db, db:
+        db.row_factory = sqlite3.Row
+        db.execute('BEGIN IMMEDIATE')
+        groups = db.execute('SELECT * FROM error_groups WHERE task_id=? AND signature NOT IN (SELECT signature FROM error_resolutions)', (task_id,)).fetchall()
+        if not groups:
+            return []
+        task = json.loads(_cli('task', 'view', task_id, '--json'))['task']
+        if task['id'] != task_id or task['status'] != 'Done' or task.get('type') != 'bug':
+            raise ValueError('linked bug must be Done after verified completion')
+        resolved = []
+        for group in groups:
+            rows = db.execute('SELECT o.* FROM occurrences o JOIN error_group_links l ON l.occurrence_id=o.id WHERE l.signature=? AND o.resolved=0', (group['signature'],)).fetchall()
+            if not rows:
+                continue
+            family = errors._digest(tuple(rows[0][k] for k in ('source', 'environment', 'operation', 'error_type')))
+            db.execute('INSERT INTO error_resolutions VALUES (?,?,?,?,?,?)',
+                       (group['signature'], family, task_id, errors._digest(fixed_build), datetime.now(timezone.utc).isoformat(), json.dumps(references, sort_keys=True)))
+            for row in rows:
+                db.execute('UPDATE occurrences SET resolved=1 WHERE id=?', (row['id'],))
+                resolved.append(row['id'])
+        return resolved

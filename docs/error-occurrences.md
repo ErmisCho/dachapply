@@ -71,7 +71,7 @@ replaying an upstream source; live hooks have no durable retry queue.
 
 `unresolved(limit=100)` returns only unresolved sanitized records, with a hard
 100-record limit. It and stable occurrence ids are the seams for triage and
-TASK-372.3. No resolution, public endpoint or migration is included.
+TASK-372.3. Resolution is described below; no public endpoint or migration is included. <!-- TASK-372.3 -->
 
 ## Bounds, retention and health
 
@@ -87,8 +87,7 @@ it resets on restart and is not a durable audit of collector outages.
 
 At saturation retain the store, inspect `health()`, and provision capacity or
 archive it privately before restarting intake. Do not delete unresolved records
-to make room. No deletion/resolution command is provided in this collection-only
-task. New failures during saturation are not persisted; the explicit degraded
+to make room. No deletion command is provided. <!-- TASK-372.3 --> New failures during saturation are not persisted; the explicit degraded
 signal is the warning that coverage is incomplete. SQL rollback, bounded batches,
 concurrency, restart/replay, generation rotation and failure isolation have
 hermetic tests. No network or production database is needed.
@@ -142,11 +141,63 @@ safe error. A SQLite write transaction serializes cooperating triagers across
 processes; it includes CLI calls (60-second timeout each), so intake can report
 degraded while that lock is held. Run maintenance when intake is quiet.
 The marker must remain in task titles for crash recovery; manual marker removal
-before a pending link is recovered cannot be deduplicated. Linked tasks are
-updated in place, including closed tasks: reopening, resolution and regression
-policy belong to TASK-372.3. Nothing here resolves occurrences or closes tasks.
+before a pending link is recovered cannot be deduplicated. Linked tasks are updated in place until explicitly resolved under the policy below.
+<!-- TASK-372.3 --> Done alone never resolves occurrences.
 
 Tests: `backend/jobradar/tests/test_error_triage.py` fakes subprocess.run for
 all Backlog access, including interrupted creation, update failures, concurrent
 triage, restart idempotence, legacy rows, grouping, redaction and maintenance
 commands. It never creates real task files or invokes providers.
+
+
+<!-- TASK-372.3 -->
+## Verified resolution and regression policy
+
+An authorized maintainer first verifies the existing completion policy: passing
+required tests, an Asian Dad PERFECT evaluation, and the implementation squash
+merge to the default branch. Then run, from `backend`:
+
+```powershell
+uv run python manage.py triage_errors --resolve TASK-123 --fix commit-reference --tests passing-test-report-reference --evaluation PERFECT-report-reference --merge squash-merge-reference --fixed-build deployed-build-identity
+```
+
+All five arguments are required and nonblank. They are explicit maintainer
+attestations with reviewable references, not automatically fetched reports:
+the tool cannot independently verify CI, evaluator output or GitHub merges and
+must not be used by an agent to certify its own unsupported claim. The fixed
+build is the same producer build identity supplied to ingest, not its digest.
+The CLI checks the linked task id, bug type and exact Done status via Backlog
+JSON; Done without these completion references is insufficient. References stay
+private in SQLite. No task status is changed by this operation.
+
+`error_resolutions` retains task, signature, operation family (signature without
+build), fixed-build digest, UTC closure time and fix/tests/evaluation/merge
+references. Resolution marks only occurrence IDs already linked to that incident;
+all occurrence rows, context and private links remain. A single write transaction
+covers status lookup, closure and those exact IDs, serializing intake/triage.
+A failed lookup or interrupted transaction leaves everything retryable. Repeating
+a completed resolution is a no-op. Arrivals after closure remain unresolved;
+lock contention retains the collector's existing degraded/retry behavior.
+
+Policy: create a **new successor incident**, never reopen the closed bug. Its
+deterministic marker includes the original signature, preceding closure and
+recurrence category. The shared disposition links the predecessor task and says:
+
+- Post-fix regression: newly collected after closure on the explicitly fixed build.
+- Pre-fix evidence: collected before closure but not linked to the resolved incident.
+- Unfixed or unknown runtime/build; regression unverified: later evidence on a
+  different build or without build identity. Build digests have no version order;
+  a different build cannot reliably be called a newer regression.
+
+Existing unresolved links retain their incident even when another incident
+closes. Unknown/transient dispositions still follow the normal triage policy;
+only actionable/retry-exhausted evidence creates tasks. Old resolved IDs are
+skipped on restart/replay/rotation, regardless of cursor changes. Producers must
+preserve stable source event IDs through rotation: changed IDs denote new
+observations. Collection time is the only trusted time available here; delayed
+historical imports with new IDs cannot establish original failure time and need
+manual review. No signature-wide filter hides new evidence. Interrupted successor
+creation recovers by the marker, and replays do not create additional incidents.
+
+Hermetic lifecycle, status failure/retry, concurrent arrival and interrupted
+regression creation tests live in `backend/jobradar/tests/test_error_triage.py`.
