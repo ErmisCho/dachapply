@@ -30,10 +30,10 @@ Fix the reported queue screenshot: cloud retry must not be offered for active cl
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Running fit and requirements analyses already using cloud-only mode do not offer cloud retry; local-capable and failed analyses still offer it.
-- [ ] #2 A posting-text-choice block offers Choose job text instead of a non-resolving Retry, linking to the existing editor; unrelated blocked states retain their controls.
-- [ ] #3 Navigation preserves both texts; Keep current and Use fetched resume through the existing path.
-- [ ] #4 Focused regressions fail before the fix and pass afterwards; disposable browser and backend/frontend checks pass without paid model calls or production data changes.
+- [x] #1 Running fit and requirements analyses already using cloud-only mode do not offer cloud retry; local-capable and failed analyses still offer it.
+- [x] #2 A posting-text-choice block offers Choose job text instead of a non-resolving Retry, linking to the existing editor; unrelated blocked states retain their controls.
+- [x] #3 Navigation preserves both texts; Keep current and Use fetched resume through the existing path.
+- [x] #4 Focused regressions fail before the fix and pass afterwards; disposable browser and backend/frontend checks pass without paid model calls or production data changes.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -50,4 +50,5 @@ Execution moved to the user-approved isolated worktree. This record replaces unc
 Red baseline: 14 backend cases and one frontend regression failed as intended. Initial green: 101 backend / 521 frontend. Visible browser found async CV panel growth shifted the job-text anchor below the viewport; added a focus-guarded resize observer so the chooser stays visible until the user moves focus. Text remains unchanged until an explicit choice.
 
 Full suite found a real poll-query regression: eager account lookup increased idle polls from two to three queries. Corrected to read the fallback mode lazily only for an active unregistered row. Also observed a Windows process-cancellation timing failure; the unchanged test passed in the independent fetch worktree, and a direct owned-process tree-kill check succeeded in 0.85 seconds. No assertion or production cancellation behavior weakened.
+2026-11-12: deployed (image e79884c, rollback b9f35f4). /api/health/ ok, live bundle serves "Choose job text".
 <!-- SECTION:NOTES:END -->
