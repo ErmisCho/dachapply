@@ -281,3 +281,29 @@ def test_regression_create_interruption_recovers_one_successor(store, cli, monke
     monkeypatch.setattr(subprocess, 'run', original)
     assert triage.triage()[0]['task_id'] == 'TASK-1000'
     assert len(cli[0]) == 2 and triage.triage() == []
+
+
+def test_later_family_closure_cannot_duplicate_an_interrupted_successor(store, cli, monkeypatch):
+    # TASK-372.3 review: a closure made after the regression arrived must not change its successor marker.
+    tasks = cli[0]
+    ingest('first', build='old')
+    ingest('other', build='other')
+    triage.triage()
+    first, other = (t['id'] for t in tasks)
+    tasks[0]['status'] = 'Done'
+    complete(first)
+    ingest('regression', build='fixed')
+    original = subprocess.run
+    def interrupted(args, **kwargs):
+        result = original(args, **kwargs)
+        if args[2] == 'create':
+            raise subprocess.TimeoutExpired(args, 60)
+        return result
+    monkeypatch.setattr(subprocess, 'run', interrupted)
+    with pytest.raises(subprocess.TimeoutExpired):
+        triage.triage()
+    monkeypatch.setattr(subprocess, 'run', original)
+    tasks[1]['status'] = 'Done'
+    complete(other)
+    triage.triage()
+    assert len(tasks) == 3 and triage.triage() == []

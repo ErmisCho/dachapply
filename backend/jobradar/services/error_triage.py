@@ -46,7 +46,9 @@ def triage(*, dry_run=False, list_only=False):
             signature = errors._digest(tuple(row[k] for k in ('source', 'environment', 'build', 'operation', 'error_type')))
             # TASK-372.3: new IDs always survive closure; successor markers recover interrupted creates.
             family = errors._digest(tuple(row[k] for k in ('source', 'environment', 'operation', 'error_type')))
-            closure = db.execute('SELECT * FROM error_resolutions WHERE family=? ORDER BY rowid DESC LIMIT 1', (family,)).fetchone()
+            # review: the closure in effect when the occurrence happened, so a later closure cannot re-key a pending successor
+            closure = (db.execute('SELECT * FROM error_resolutions WHERE family=? AND closed_at<? ORDER BY closed_at DESC, rowid DESC LIMIT 1', (family, row['at'])).fetchone()
+                       or db.execute('SELECT * FROM error_resolutions WHERE family=? ORDER BY rowid DESC LIMIT 1', (family,)).fetchone())
             if closure:
                 row['recurrence'] = ('post-fix regression' if row['build'] != 'unknown' and row['build'] == closure['fixed_build']
                                      else 'unfixed or unknown runtime/build; regression unverified')
