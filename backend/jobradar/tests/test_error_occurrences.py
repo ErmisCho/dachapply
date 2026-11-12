@@ -150,3 +150,17 @@ def test_coverage_matrix_is_explicit():
         assert any(source in row and 'Connected:' in row for row in text.splitlines())
     for source in ('Browser exceptions', 'Failing CI / deploy runs', 'Historical benchmark', 'Azure production'):
         assert any(source in row and 'Unavailable:' in row and ('Requires' in row or 'Needs' in row or 'needs' in row) for row in text.splitlines())
+
+
+def test_pipeline_retry_bookkeeping_is_not_a_new_failure(store, monkeypatch):
+    # TASK-372.1 review: spending retry budget on a failed prep must not record another occurrence.
+    from jobradar.services import application_prep
+    data = {}
+    monkeypatch.setattr(application_prep, '_edit_sidecar', lambda job, user_id, edit: edit(data))
+    job = SimpleNamespace(pk=1)
+    application_prep._save(job, 1, lambda prep: prep.update(reason='Analysis failed: x. Press Retry.', retry_at='T'))
+    application_prep._save(job, 1, lambda prep: prep.update(retry_at=None, auto_retries=1))
+    assert len(errors.unresolved()) == 1
+    application_prep._save(job, 1, lambda prep: prep.update(reason=application_prep.ANALYSING))
+    application_prep._save(job, 1, lambda prep: prep.update(reason='Analysis failed: x. Press Retry.'))
+    assert len(errors.unresolved()) == 2  # a genuine repeat failure after a new run is still captured

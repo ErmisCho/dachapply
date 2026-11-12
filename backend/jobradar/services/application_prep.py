@@ -215,7 +215,8 @@ def _save(job, user_id, change):
         before = copy.deepcopy(data.get('preparation', {}))  # TASK-372.1
         change(data.setdefault('preparation', {}))
         prep = data['preparation']  # TASK-372.1
-        if prep != before and ((prep.get('pipeline') or {}).get('stage') == 'failed' or (prep.get('reason') or '').startswith((ANALYSIS_FAILED, REANALYSIS_FAILED, REQUIREMENTS_FAILED))):  # TASK-372.1
+        failure = lambda p: ((p.get('pipeline') or {}).get('stage') == 'failed' or (p.get('reason') or '').startswith((ANALYSIS_FAILED, REANALYSIS_FAILED, REQUIREMENTS_FAILED))) and ((p.get('pipeline') or {}).get('stage'), p.get('reason'))  # TASK-372.1
+        if failure(prep) and failure(prep) != failure(before):  # only a newly recorded failure, not retry bookkeeping
             capture('pipeline', operation=job.pk)  # TASK-372.1
     return _edit_sidecar(job, user_id, edit)
 
