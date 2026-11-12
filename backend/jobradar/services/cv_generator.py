@@ -1657,6 +1657,8 @@ def _compile_pdf(output, filename, is_cv, cancelled=None):
                 cwd=output, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
             )
             if result.returncode:
+                from jobradar.services.error_occurrences import capture  # TASK-372.1
+                capture('compile', operation=filename)  # TASK-372.1: capture the failed attempt even if repair succeeds.
                 log=output/Path(filename).with_suffix('.log')
                 text=log.read_text(encoding='utf-8', errors='replace') if log.is_file() else (result.stdout or result.stderr or '')
                 reason, block=latex_error(text, result.returncode)
@@ -1954,6 +1956,8 @@ def _provider_failure(detail, now=None, provider='openai'):
     time (the CLI's own clock); one already past today is tomorrow's. Its diagnostics keep only the
     provider's limit line(s), never the echoed prompt or the CLI banner. Anything else keeps the generic summary.
     """
+    from jobradar.services.error_occurrences import capture  # TASK-372.1
+    capture('provider', operation=provider)  # TASK-372.1: do not pass diagnostics, prompt or provider output.
     if not _USAGE_LIMIT.search(detail):
         # shortcut: every other failed run counts as transient, a bad key or missing model too (the cap bounds
         # those to a few refused runs); match permanent causes in `detail` once real stderr shows them.
