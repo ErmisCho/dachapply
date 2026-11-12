@@ -48,8 +48,10 @@ Consequences worth stating, because they have already bitten in this repo:
 - A stacked PR whose base branch is deleted gets **auto-closed by GitHub** and cannot be reopened or
   retargeted. Rebase the child onto `main`, force-push with `--force-with-lease`, and open a
   replacement PR referencing the closed one.
-- Merging to `main` does NOT deploy (TASK-275). Deploys are manual, and since 2026-11-12 an agent
-  may run them without asking: `gh workflow run deploy-container-apps.yml --ref main`. `scripts/start-container.sh` runs
+- Merging to `main` does NOT deploy (TASK-275). Deploys are manual and batched (owner, 2026-11-12):
+  once a lot of features have changed, ask the owner, then run
+  `gh workflow run deploy-container-apps.yml --ref main`. Until that batch deploy, step 6 is
+  replaced by verification on localhost, and the task may be marked Done. `scripts/start-container.sh` runs
   `migrate --noinput` under `set -e`, so that deploy is the moment any migration reaches the
   production database, and a live 200 afterwards is what proves the migration applied. Record the
   rollback image before deploying (TW-006).
@@ -123,7 +125,7 @@ suite had never been portable — several tests depended on an untracked persona
 on the author's machine.
 
 Production deploys only when `gh workflow run deploy-container-apps.yml --ref main` is run
-(TASK-275); pushing to `main` runs tests only. Owner instruction, 2026-11-12: agents may run it
-without asking. Record the
+(TASK-275); pushing to `main` runs tests only. Owner instruction, 2026-11-12: deploy in batches,
+asking the owner once a lot of features have changed. Record the
 rollback image before deploying, and verify the live health endpoint afterwards rather than trusting the
 workflow's own check.

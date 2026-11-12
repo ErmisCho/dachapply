@@ -50,8 +50,10 @@ Ask first, with options, when the PR:
 - deletes or rewrites owner data or files (CV workspace, evidence file, sidecars);
 - needs a force-push or history rewrite, or touches secrets, auth or CI gates.
 
-Merging does not deploy (TASK-275). Owner instruction, 2026-11-12: agents may deploy without asking
-(`gh workflow run deploy-container-apps.yml --ref main`), recording the rollback image first and
+Merging does not deploy (TASK-275). Owner instruction, 2026-11-12: the owner uses the app mainly
+locally, so deploy in batches, not per task. Once a lot of features have changed since the last
+deploy, ask the owner whether to deploy. When they agree, run
+`gh workflow run deploy-container-apps.yml --ref main`, recording the rollback image first and
 verifying production afterwards (TW-006).
 
 ## Use Codex to spare Claude tokens
