@@ -54,6 +54,9 @@ CODEX_CV_WORKSPACE = tempfile.mkdtemp(prefix='dachapply-test-workspace-')
 # untracked-personal-file dependency CI caught once before, so it is neutralised here rather than
 # left to each test to remember. Any test that wants the feature configured sets these itself via
 # the `settings` fixture.
+# Host alert recipients must not add unexpected messages to the test outbox; alert tests set their own.
+ADMINS = []
+
 GMAIL_IMAP_USER = ''
 GMAIL_IMAP_APP_PASSWORD = ''
 GMAIL_OAUTH_CLIENT_ID = ''

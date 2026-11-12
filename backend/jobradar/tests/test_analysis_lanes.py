@@ -191,6 +191,23 @@ def test_finding_models_is_its_own_stage_before_fetching_and_analysing(owner, cl
     assert lanes['entered'] == [job.id] and application_prep._state(job, owner)['pipeline']['stage'] == 'skipped'
 
 
+@pytest.mark.parametrize('stage', ['analysing', 'requirements', 'queued'])
+@pytest.mark.parametrize('account_cloud,run_cloud,rerun,offered', [
+    (False, False, False, True), (True, True, False, False),
+    (False, True, False, False), (True, False, False, True),
+    (False, False, True, False), (True, None, False, False),
+])
+def test_queue_cloud_retry_matches_the_active_run(owner, client, workspace, monkeypatch, stage, account_cloud, run_cloud, rerun, offered):
+    [job] = _jobs(owner, 1)
+    _profile(owner, use_cloud_models_only=account_cloud)
+    application_prep._save(job, owner.pk, lambda prep: prep.update(
+        pipeline={'stage': stage, 'at': application_prep._now()}, reason=''))
+    monkeypatch.setattr(application_prep, '_stops', {} if run_cloud is None else {job.id: (threading.Event(), run_cloud)})
+    monkeypatch.setattr(application_prep, '_cloud_rerun', {job.id} if rerun else set())
+    [item] = _items(client)
+    assert item['cloud_retry'] is offered
+
+
 # --- TASK-360: cloud models only ------------------------------------------------------------------------------------
 
 @pytest.fixture
