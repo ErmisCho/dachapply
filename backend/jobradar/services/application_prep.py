@@ -210,7 +210,13 @@ def _state(job, user):
 
 def _save(job, user_id, change):
     def edit(data):
+        from jobradar.services.error_occurrences import capture  # TASK-372.1
+        import copy  # TASK-372.1
+        before = copy.deepcopy(data.get('preparation', {}))  # TASK-372.1
         change(data.setdefault('preparation', {}))
+        prep = data['preparation']  # TASK-372.1
+        if prep != before and ((prep.get('pipeline') or {}).get('stage') == 'failed' or (prep.get('reason') or '').startswith((ANALYSIS_FAILED, REANALYSIS_FAILED, REQUIREMENTS_FAILED))):  # TASK-372.1
+            capture('pipeline', operation=job.pk)  # TASK-372.1
     return _edit_sidecar(job, user_id, edit)
 
 

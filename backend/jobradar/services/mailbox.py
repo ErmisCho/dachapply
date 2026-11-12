@@ -4755,6 +4755,10 @@ def run_check(force=False, transport=None) -> MailboxRun | None:
         # TASK-124 AC4: released on every exit from the try above -- every early `return run` for a
         # skip, the normal completion, and the exception path all go through this one finally, so a
         # claimed run is never left marked "in progress" after run_check has actually returned.
+        if run.error:  # TASK-372.1: also capture calendar errors on an otherwise skipped run.
+            from jobradar.services.error_occurrences import capture  # TASK-372.1
+            run_id = getattr(run, 'pk', None)  # TASK-372.1: permit adapters without a persisted run identity.
+            capture('mailbox', f'run:{run_id}' if run_id is not None else None, run_id)  # TASK-372.1
         _release_run()
     _alert_on_failure_transition(run)  # TASK-289: skipped runs returned above and never get here
     return run

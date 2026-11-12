@@ -763,6 +763,7 @@ class ErrorAlertCooldown:
         return True
 
 
+ERROR_OCCURRENCE_LOCAL_DB = os.environ.get('ERROR_OCCURRENCE_LOCAL_DB', '')  # TASK-372.1: local-only opt-in outside checkout.
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -777,6 +778,7 @@ LOGGING = {
         # No require_debug_true filter, unlike Django's default console handler: production stdout
         # is where the traceback has to land when the email channel is not configured.
         'console': {'class': 'logging.StreamHandler', 'formatter': 'app'},
+        'occurrences': {'class': 'jobradar.services.error_occurrences.OccurrenceHandler', 'level': 'ERROR'},  # TASK-372.1
         'mail_admins': {
             'level': 'ERROR',
             'class': 'django.utils.log.AdminEmailHandler',
@@ -789,14 +791,14 @@ LOGGING = {
         # than assumed. These loggers keep propagate=True: the parent 'django' handler prints them,
         # and pytest's caplog needs records to reach the root logger.
         'django': {'handlers': ['console'], 'level': 'INFO'},
-        'django.request': {'handlers': ['mail_admins'], 'level': 'INFO'},
+        'django.request': {'handlers': ['mail_admins', 'occurrences'], 'level': 'INFO'},  # TASK-372.1
         # django.security.* logs SuspiciousOperation at ERROR -- including DisallowedHost, which any
         # bot probing the container by IP triggers. No handler of its own, so it propagates to
         # 'django' above and lands on the console only: that is log noise, not a page.
         'django.security': {'level': 'INFO'},
         # Application logger.exception() sites are the silent-breakage class this task exists for:
         # a password-reset mail that fails to send returns 200 to the user and 500s nothing.
-        'jobradar': {'handlers': ['console', 'mail_admins'], 'level': 'INFO'},
+        'jobradar': {'handlers': ['console', 'mail_admins', 'occurrences'], 'level': 'INFO'},  # TASK-372.1
         # The pool logs why it could not open a connection only here; a getconn timeout says nothing.
         'psycopg.pool': {'handlers': ['console'], 'level': 'WARNING'},
     },

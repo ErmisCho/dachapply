@@ -44,6 +44,7 @@ DATABASES = {
         'NAME': ':memory:',
     }
 }
+ERROR_OCCURRENCE_LOCAL_DB = ''  # TASK-372.1: never touch an owner's occurrence store in tests.
 
 CODEX_CV_WORKSPACE = tempfile.mkdtemp(prefix='dachapply-test-workspace-')
 

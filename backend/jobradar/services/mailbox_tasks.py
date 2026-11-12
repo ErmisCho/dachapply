@@ -34,6 +34,10 @@ def _cleanup():
 
 
 def _update(task_id, **values):
+    if values.get('status') == 'failed':  # TASK-372.1
+        from jobradar.services.error_occurrences import capture  # TASK-372.1
+        if not values.get('run_id'):  # TASK-372.1: run_check already captures persisted run failures.
+            capture('mailbox', task_id, task_id)  # TASK-372.1
     with _lock:
         task = _tasks.get(task_id)
         if task is None:

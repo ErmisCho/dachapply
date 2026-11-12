@@ -483,6 +483,9 @@ def _learn_application_preference(user_id, instructions, create_cv, create_lette
 
 
 def _update(task_id, **values):
+    if values.get('status') == 'failed':  # TASK-372.1: includes caught/returned failures without ERROR logging.
+        from jobradar.services.error_occurrences import capture  # TASK-372.1
+        capture('document', task_id, task_id)  # TASK-372.1
     with _lock:
         task=_tasks.get(task_id)
         if not task:
