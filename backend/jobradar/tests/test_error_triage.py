@@ -161,3 +161,15 @@ def test_parallel_triagers_create_one_task(store, cli):
         results = list(pool.map(lambda _: triage.triage(), range(2)))
     assert sorted(len(r) for r in results) == [0, 1]
     assert len(cli[0]) == 1
+
+
+def test_update_appends_evidence_and_keeps_the_description(store, cli):
+    # TASK-372.2 review: an investigator's description must survive later triage runs.
+    tasks, calls = cli
+    ingest('1')
+    triage.triage()
+    ingest('2')
+    assert triage.triage()[0]['action'] == 'update'
+    edit = [c for c in calls if c[2] == 'edit'][-1]
+    assert '--description' not in edit and '--append-notes' in edit
+    assert '2 unresolved failures' in edit[edit.index('--append-notes') + 1]

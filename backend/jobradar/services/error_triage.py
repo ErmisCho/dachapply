@@ -80,7 +80,8 @@ def triage(*, dry_run=False, list_only=False):
                     if not task_id:
                         raise ValueError('created task not found; retry to recover')
                 else:
-                    _cli('task', 'edit', task_id, '--description', description)
+                    # review: never overwrite an investigator's description; append dated evidence instead
+                    _cli('task', 'edit', task_id, '--append-notes', f'Error triage: {len(rows)} unresolved failures, last {_time(rows[-1]["at"])} UTC; {disposition}.')
                 proposal['task_id'] = task_id
             db.execute('INSERT OR REPLACE INTO error_groups VALUES (?,?,?,?)', (signature, task_id, checkpoint, disposition))
             for row in rows:
