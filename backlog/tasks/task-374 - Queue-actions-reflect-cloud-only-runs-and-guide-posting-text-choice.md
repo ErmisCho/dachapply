@@ -1,7 +1,7 @@
 ---
 id: TASK-374
 title: Queue actions reflect cloud-only runs and guide posting-text choice
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-11-12 08:45'
