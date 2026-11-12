@@ -1395,7 +1395,7 @@ def queue_action(user, job_id, key, action):
         # TASK-319: a posting that just replaced its link (or a failed or running re-analysis) is analysed
         # again first; the re-analysis prepares, not this.
         before = job.source_text
-        fetch_missing_sources([job])
+        fetch_missing_sources([job], force=True)
         late = job.source_text != before or prep['reason'].startswith(REANALYSIS_FAILED) or job.id in _piping
         if not (late and reanalyse_late_text(job, user)):
             prepare(job.id, user)

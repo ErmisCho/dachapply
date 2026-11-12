@@ -21,7 +21,9 @@ import socket
 import threading
 import time
 import zlib
-from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
+from time import monotonic
 from html.parser import HTMLParser
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit
@@ -42,6 +44,10 @@ ALLOWED_CONTENT_TYPES = ('text/html', 'text/plain')
 NEEDS_JAVASCRIPT = 'The page needs JavaScript and could not be read automatically. Paste the posting text on the job page.'
 RENDER_SECONDS = 20
 _render_lock = threading.Lock()
+_fetch_lock = threading.Lock()
+_fetches = OrderedDict()
+FETCH_FAILURE_SECONDS = 600
+FETCH_CACHE_LIMIT = 256
 _CSOD_CONTEXT = re.compile(r'csod\.context\s*=\s*(?=\{)')
 _CSOD_REQUISITION = re.compile(r'/requisition/(\d+)')
 CSOD_COMPANIES = {'oebb': 'ÖBB'}  # TASK-320: Cornerstone corps whose name is not the title-cased corp id
@@ -533,33 +539,70 @@ def replaces_thin_source(job, text):
     return bool(stored) and len(missing_parts(text)) < len(stored)
 
 
+def fetch_job_posting(job, force=False):
+    """Share concurrent fetches and cool down failures; explicit Retry bypasses completed results."""
+    key = (job.created_by_id, job.pk, job.url, _source_hash(job.source_text), _source_hash(job.pending_source_text))
+    with _fetch_lock:
+        now = monotonic()
+        for old, (expires, pending) in list(_fetches.items()):
+            if pending.done() and expires <= now:
+                del _fetches[old]
+        cached = _fetches.get(key)
+        stale = cached and cached[1].done() and job.source_checked_at and cached[1].result()['checked_at'] < job.source_checked_at
+        if cached and not (stale or force and cached[1].done()):
+            future, own = cached[1], False
+        else:
+            while len(_fetches) >= FETCH_CACHE_LIMIT:
+                old = next((old for old, (_, pending) in _fetches.items() if pending.done()), None)
+                if old is None:
+                    return _failed('Too many posting fetches are running. Retry in a moment or paste the text.')
+                del _fetches[old]
+            future, own = Future(), True
+            _fetches[key] = (float('inf'), future)
+    if not own:
+        return future.result(timeout=120)
+    try:
+        result = {**fetch_posting_text(job.url), 'checked_at': timezone.now()}
+    except BaseException as exc:
+        with _fetch_lock:
+            future.set_exception(exc)
+            _fetches.pop(key, None)
+        raise
+    with _fetch_lock:
+        _fetches[key] = (monotonic() + (0 if result['ok'] else FETCH_FAILURE_SECONDS), future)
+        future.set_result(result)
+    return result
+
+
+# ponytail: the local worker is one process; use a shared lease before running fetch workers in multiple processes.
 def _worth_fetching(job):
     """TASK-313/323: a job with a URL whose text is thin or lacks a required part."""
-    return bool((job.url or '').strip()) and (JobLead.is_thin_source(job.source_text) or bool(missing_parts(job.source_text)))
+    return not job.pending_source_text and bool((job.url or '').strip()) and (JobLead.is_thin_source(job.source_text) or bool(missing_parts(job.source_text)))
 
 
-def fetch_missing_sources(jobs):
+def fetch_missing_sources(jobs, *, force=False):
     """TASK-313 AC1: before analysis, read the posting behind each thin job's URL.
 
     Only jobs with a URL and a thin text are fetched; a page that replaces_thin_source becomes the
     accepted text, a failure is kept in source_fetch_error. Never raises: a fetch must not fail the analysis.
     """
-    # ponytail: an incomplete job is re-read before every analysis (render up to RENDER_SECONDS each, one at
-    # a time); remember a failed re-read per job if batch analyses of many incomplete jobs get slow.
     jobs=[job for job in jobs if _worth_fetching(job)]
     if not jobs: return
+    before=[{field:getattr(job,field) for field in ('url','original_source_text','raw_description','pending_source_text','source_checked_at')} for job in jobs]
     try:
         # Network work is independent; database writes stay in the caller's thread.
         with ThreadPoolExecutor(max_workers=min(4,len(jobs))) as pool:
-            results=list(pool.map(fetch_posting_text,[job.url for job in jobs]))
+            results=list(pool.map(lambda job: fetch_job_posting(job, force=force),jobs))
         checked_at=timezone.now()
-        for job,result in zip(jobs,results):
-            values={'source_checked_at':checked_at}
+        for job,result,snapshot in zip(jobs,results,before):
+            values={'source_checked_at':result.get('checked_at',checked_at)}
             if not result['ok']:
                 values['source_fetch_error']=result['error']
             elif replaces_thin_source(job,result['text']):
                 values.update(_accepted_source(job,result['text'],result.get('company','')))
-            JobLead.objects.filter(pk=job.pk).update(**values)
-            for key,value in values.items(): setattr(job,key,value)
+            if JobLead.objects.filter(pk=job.pk,**snapshot).update(**values):
+                for key,value in values.items(): setattr(job,key,value)
+            else:
+                job.refresh_from_db()  # An owner edit or pending choice won while the fetch was in flight.
     except Exception:
         logger.exception('Fetching posting text before analysis failed')
