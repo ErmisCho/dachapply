@@ -38,7 +38,7 @@ from .services.user_data_portability import APP_NAME, SCHEMA_VERSION, build_user
 from .local_cache import board_settings
 from .services.access import accessible_jobs, job_create_defaults, owned_by, submitted_away_jobs
 from .services.cleaning import clean_job_location
-from .services.posting_fetch import _accepted_source, _source_hash, fetch_missing_sources, fetch_posting_text, missing_parts, normalized, replaces_thin_source
+from .services.posting_fetch import _accepted_source, _source_hash, fetch_job_posting, fetch_missing_sources, fetch_posting_text, missing_parts, normalized, replaces_thin_source
 from .services.job_replace import replace_job_with_supplied_data
 from .services.demo_data import DEMO_MAIL_PREFIX, DEMO_PASSWORD, DEMO_USERNAME, ensure_demo_user, is_demo_user
 from .services.interview_coach import analyze_answer, suggest_questions
@@ -2252,7 +2252,7 @@ def _refresh_job_sources(jobs, user=None):
     if not jobs: return []
     # Network work is independent; database writes stay in this request thread.
     with ThreadPoolExecutor(max_workers=min(4,len(jobs))) as pool:
-        results=list(pool.map(fetch_posting_text,[job.url for job in jobs]))
+        results=list(pool.map(lambda job: fetch_job_posting(job,force=True,fetcher=fetch_posting_text),jobs))  # TASK-371
     return [(job,result,_stage_source_fetch(job,result,skip_dismissed=True,stage_only_applying=True,user=user)) for job,result in zip(jobs,results)]
 
 
@@ -2280,7 +2280,7 @@ def job_source_text_live(request, job_id):
         return Response({'detail':'Job not found.'}, status=404)
     if not (job.url or '').strip():
         return Response({'detail':'This job has no original listing URL.'}, status=400)
-    result=fetch_posting_text(job.url)
+    result=fetch_job_posting(job,force=True,fetcher=fetch_posting_text)  # TASK-371: manual Refresh
     staged=False
     if request.method == 'POST':
         staged=_stage_source_fetch(job,result,user=request.user)=='staged'

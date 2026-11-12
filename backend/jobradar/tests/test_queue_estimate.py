@@ -46,10 +46,10 @@ def test_both_analyses_record_their_duration_the_fit_run_with_its_fetch(owner, c
 
     fetch_sources = application_prep.fetch_missing_sources
 
-    def fetching(jobs):  # 30 s of fetching, under a stage that already carries the run's start
+    def fetching(jobs, **kw):  # 30 s of fetching, under a stage that already carries the run's start
         seen.append(application_prep._state(jobs[0], owner)['pipeline'])
         clock[0] += 30
-        return fetch_sources(jobs)
+        return fetch_sources(jobs, **kw)
     monkeypatch.setattr(application_prep, 'fetch_missing_sources', fetching)
     evaluate = application_prep.job_evaluator.evaluate_jobs
 

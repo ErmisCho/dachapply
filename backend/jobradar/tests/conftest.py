@@ -120,3 +120,11 @@ def cv_assets(db):
         return created
 
     return seed
+
+
+@pytest.fixture(autouse=True)
+def _reset_posting_fetch_decisions():
+    from jobradar.services import posting_fetch  # TASK-371: decisions belong to one test's jobs
+    posting_fetch._fetch_decisions.clear()
+    yield
+    posting_fetch._fetch_decisions.clear()

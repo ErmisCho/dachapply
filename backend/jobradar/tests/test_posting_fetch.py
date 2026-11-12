@@ -518,7 +518,7 @@ def test_failed_post_preserves_active_and_pending_text(client, job, net):
     assert data['ok'] is False
     assert job.original_source_text == SUMMARY
     assert job.pending_source_text == 'Earlier readable candidate'
-    assert job.source_fetch_error == 'The site answered 403 Forbidden.'
+    assert job.source_fetch_error.startswith('The site answered 403 Forbidden.')  # TASK-371: retry time follows
 
 
 def test_saving_either_reviewed_version_clears_the_candidate(client, job):
@@ -680,7 +680,7 @@ def test_due_refresh_clears_an_identical_candidate_but_preserves_one_on_failure(
     assert failed == {'disabled':False,'checked':1,'staged':0,'failed':1,'remaining':0}
     assert job.original_source_text == SUMMARY
     assert job.pending_source_text == 'Last readable candidate'
-    assert job.source_fetch_error == 'The site answered 403 Forbidden.'
+    assert job.source_fetch_error.startswith('The site answered 403 Forbidden.')  # TASK-371: retry time follows
 
 
 def _refresh(job, status, saved=SUMMARY, pending=''):
