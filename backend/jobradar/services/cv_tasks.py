@@ -19,7 +19,7 @@ from django.db.models import OuterRef, Q, Subquery
 from jobradar.models import ApplicationNote, JobEvaluation, JobLead, UserProfile
 from jobradar.services.cv_generator import GenerationCancelled, RecoverableGenerationError, _artifact_metadata_path, _filename_label, _is_sent, _letter_label, _sent_paths, applicant_name, generate_cv_package, latest_generated_sources, limit_line, preference_exclusion, preferred_names, read_revision_sources, recompile_generated_package, rename_generated_artifact
 from jobradar.services.literal_edits import NotLiteral, gate_literal_edits, literal_report, translate_literal_edits
-from jobradar.services.posting_fetch import fetch_posting_text
+from jobradar.services.posting_fetch import fetch_job_posting
 from jobradar.services.processing_control import tracked, store as processing_store
 
 
@@ -518,13 +518,13 @@ def _cleanup():
 
 
 def _retry_missing_source(job):
-    if job.is_meaningful_source(job.original_source_text) or not job.url:
+    if job.is_meaningful_source(job.original_source_text) or not job.url or job.pending_source_text:
         return
     original=job.original_source_text
-    result=fetch_posting_text(job.url)
+    result=fetch_job_posting(job)
     text=result.get('text','') if result.get('ok') else ''
     if job.is_meaningful_source(text):
-        JobLead.objects.filter(pk=job.pk,original_source_text=original).update(original_source_text=text)
+        JobLead.objects.filter(pk=job.pk,original_source_text=original,url=job.url,pending_source_text='').update(original_source_text=text)
     # A popup save can win while the network request is in flight; generation uses that newer text.
     job.refresh_from_db()
 

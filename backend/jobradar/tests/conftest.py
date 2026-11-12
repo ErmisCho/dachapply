@@ -1,6 +1,6 @@
 import pytest
 
-from jobradar.services import application_prep, cv_generator, demo_scheduler, draft_chat, mailbox_loop
+from jobradar.services import application_prep, cv_generator, demo_scheduler, draft_chat, mailbox_loop, posting_fetch
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +74,7 @@ def _reset_model_options_cache():
     that patches discovery silently asserts against the earlier test's result.
     """
     cv_generator._model_options_cache.update(at=0.0, options=None)
+    posting_fetch._fetches.clear()  # TASK-371: reused fixture job IDs must not inherit another test's cooldown.
     application_prep._concurrencies.clear()  # TASK-358: the same for the analysis_concurrency read, keyed by reused pks
     yield
     cv_generator._model_options_cache.update(at=0.0, options=None)
