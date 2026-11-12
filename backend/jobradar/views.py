@@ -2252,7 +2252,7 @@ def _refresh_job_sources(jobs, user=None):
     if not jobs: return []
     # Network work is independent; database writes stay in this request thread.
     with ThreadPoolExecutor(max_workers=min(4,len(jobs))) as pool:
-        results=list(pool.map(lambda job: fetch_job_posting(job,force=True,fetcher=fetch_posting_text),jobs))  # TASK-371
+        results=list(pool.map(lambda job: fetch_job_posting(job,fetcher=fetch_posting_text),jobs))  # TASK-371: scheduled refreshes keep the cooldown
     return [(job,result,_stage_source_fetch(job,result,skip_dismissed=True,stage_only_applying=True,user=user)) for job,result in zip(jobs,results)]
 
 

@@ -73,3 +73,15 @@ def test_analysis_and_document_variants_share_failure(db,monkeypatch):
     assert len(calls)==1
     current.refresh_from_db()
     assert 'Next automatic try after' in current.source_fetch_error
+
+
+def test_scheduled_refresh_keeps_the_cooldown(monkeypatch):
+    # TASK-371 review: the scheduled posting refresh must not bypass a recent automatic failure.
+    from jobradar import views
+    calls=[]
+    monkeypatch.setattr(views,'fetch_posting_text',lambda url: calls.append(url) or fetch._failed('Unavailable.'))
+    monkeypatch.setattr(views,'_stage_source_fetch',lambda job,result,**kw: None)
+    current=job()
+    fetch.fetch_job_posting(current,fetcher=views.fetch_posting_text)
+    views._refresh_job_sources([current])
+    assert len(calls)==1
