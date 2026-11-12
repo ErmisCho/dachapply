@@ -57,9 +57,10 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Frontend typecheck
+      # TASK-365: the production build (tsc && vite build) is the typecheck and catches bundling failures.
+      - name: Frontend production build
         working-directory: frontend
-        run: npx tsc --noEmit
+        run: npm run build
 
       - name: Frontend tests
         working-directory: frontend
