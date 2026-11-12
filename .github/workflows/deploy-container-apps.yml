@@ -57,9 +57,9 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Frontend typecheck
+      - name: Frontend production build and typecheck
         working-directory: frontend
-        run: npx tsc --noEmit
+        run: npm run build
 
       - name: Frontend tests
         working-directory: frontend
