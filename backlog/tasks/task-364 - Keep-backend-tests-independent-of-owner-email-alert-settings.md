@@ -42,4 +42,5 @@ Reproduce the existing digest-send test with a safe non-empty inherited alert re
 
 <!-- SECTION:NOTES:BEGIN -->
 Inherited fixture-recipient baseline failure was reproduced. After isolating ADMINS in test settings, the digest and existing alert tests passed with inherited ERROR_ALERT_EMAILS present. Full suite initially had unrelated poll-query and Windows timing failures; those are now passing in the 56-test focused correction run. Canonical rerun pending.
+2026-11-12: re-verified on main: 36 alert tests pass with ERROR_ALERT_EMAILS=owner@example.invalid inherited; CI green on PR 393.
 <!-- SECTION:NOTES:END -->
