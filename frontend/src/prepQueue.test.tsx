@@ -354,3 +354,12 @@ describe('finding models and the cloud retry (TASK-360)',()=>{
     expect(section(view({data:{concurrency:2,items:[failed]},failed:queueSnapshot().failed}),'Blocked')).toContain('No cloud model is available')
   })
 })
+
+
+// TASK-373: navigation leaves the explicit text decision on the existing job page.
+it('links posting-choice blocks to the job without posting a retry or text choice',()=>{
+  const listed=section(view({data:{concurrency:2,items:[{...blocked,posting_choice:true}]}}),'Blocked')
+  expect(listed).toMatch(/href="\/jobs\/21"[^>]*>Choose job text<\/a>/)
+  expect(listed).not.toContain('>Retry<')
+  expect(calls).toEqual([])
+})

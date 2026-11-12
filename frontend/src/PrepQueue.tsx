@@ -9,7 +9,7 @@ import {about,timeLeft} from './applicationPrep'
 
 // TASK-325: 'skipped' is the automatic pipeline's skip verdict (document null), listed under Done.
 export type QueueStatus='queued'|'running'|'blocked'|'ready'|'skipped'|'failed'|'cancelled'
-export type QueueItem={job_id:number;company:string;title:string;job_status:string;key:string;label:string;document:'cv'|'letter'|'message'|null;language:string|null;status:QueueStatus;position:number|null;progress:number;eta_seconds:number|null;error:string;files:string[];queued_at:string|null;started_at:string|null;finished_at:string|null;retry_at:string|null;incomplete?:boolean;stage?:string;cloud_retry?:boolean}
+export type QueueItem={job_id:number;company:string;title:string;job_status:string;key:string;label:string;document:'cv'|'letter'|'message'|null;language:string|null;status:QueueStatus;position:number|null;progress:number;eta_seconds:number|null;error:string;files:string[];queued_at:string|null;started_at:string|null;finished_at:string|null;retry_at:string|null;incomplete?:boolean;stage?:string;cloud_retry?:boolean;posting_choice?:boolean} // TASK-373
 // TASK-360: stage is a pipeline row's step ('models' = Finding models); cloud_retry offers "Use cloud models only this time".
 // TASK-340: the server's estimate from measured durations -- finished today of the total, and the time left.
 export type QueueSummary={done:number;total:number;analyses_left:number;documents_left:number;seconds_left:number}
@@ -96,8 +96,9 @@ export function QueueView({snap,onAction=queueAction}:{snap:QueueSnapshot;onActi
     <Section title="Queued" items={of('queued')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">#{item.position} {item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{button(item,'first')}{button(item,'cancel')}</span></div>
       {item.eta_seconds!=null&&<p className="text-xs text-slate-500">Ready in {about(item.eta_seconds)}</p>}{failure(item)}</>}</Section>
+    {/* TASK-373: resolve competing texts on the existing job page. */}
     <Section title="Blocked" items={of('blocked')}>{item=><>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{button(item,'retry')}{item.incomplete&&button(item,'continue')}{item.cloud_retry&&button(item,'cloud')}</span></div>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{item.posting_choice?<Link className="btn-muted" to={`/jobs/${item.job_id}`}>Choose job text</Link>:button(item,'retry')}{item.incomplete&&button(item,'continue')}{item.cloud_retry&&button(item,'cloud')}</span></div>
       <p className="text-xs text-red-700">{item.error}</p>{retries(item)}{failure(item)}</>}</Section>
     <Section title="Done" items={of('ready','skipped')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><Link className="btn-muted ml-auto" to={`/jobs/${item.job_id}`}>Review</Link></div>

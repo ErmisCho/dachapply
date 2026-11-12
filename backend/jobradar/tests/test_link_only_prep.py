@@ -108,6 +108,7 @@ def _blocked(job, error):
     return {'job_id': job.id, 'company': 'ACME', 'title': 'Python Engineer', 'job_status': job.status, 'key': '', 'label': 'Documents',
             'document': None, 'language': None, 'status': 'blocked', 'position': None, 'progress': 0, 'eta_seconds': None,
             'error': error, 'files': [], 'queued_at': None, 'started_at': None, 'finished_at': None, 'retry_at': None, 'incomplete': False,
+            'posting_choice': bool(job.pending_source_text),  # TASK-373
             # TASK-360: a failed analysis offers "Use cloud models only this time"
             'cloud_retry': error.startswith(('Analysis failed', 'Re-analysis failed', 'Analysis stopped', 'Requirements analysis failed'))}
 

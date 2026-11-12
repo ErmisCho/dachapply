@@ -297,6 +297,7 @@ def test_cloud_only_this_time_reruns_a_failed_requirements_analysis(owner, clien
 
     def run(prompt, schema, provider, *args, **kwargs):  # stops right after the model choice: no documents follow
         providers.append(provider)
+        assert application_prep.queue_state(owner)['items'][0]['cloud_retry'] is False  # TASK-373: effective requirements mode is published
         raise RuntimeError('canned stop')
     monkeypatch.setattr(application_prep, 'run_structured_model', run)
     job = JobLead.objects.create(company='ACME', title='Python Engineer', status='to_apply', created_by=owner, original_source_text=POSTING, application_requirements={})
@@ -323,3 +324,39 @@ def test_with_no_cloud_model_both_cloud_options_say_so(owner, client, workspace,
     assert application_prep._pipeline(job.id, owner.pk) is False
     assert application_prep._state(job, owner)['reason'] == f'Analysis failed: {application_prep.NO_CLOUD}. Press Retry.'
     assert machine['discovered'] == [] and cloud_model['providers'] == []
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('stage', ['models', 'analysing', 'requirements'])
+@pytest.mark.parametrize('account,once,expected', [(False, False, True), (True, False, False), (False, True, False)])
+def test_running_analysis_cloud_retry_uses_effective_run_mode(owner, client, workspace, monkeypatch, stage, account, once, expected):
+    # TASK-373: both lanes hide a redundant retry, including a one-time cloud run.
+    [job] = _jobs(owner, 1)
+    _profile(owner, use_cloud_models_only=account)
+    monkeypatch.setattr(application_prep, '_analysing', {job.id} if stage == 'requirements' else set())
+    application_prep._save(job, owner.pk, lambda prep: prep.update(analysing_cloud=account or once, pipeline={} if stage == 'requirements' else {'stage': stage, 'at': 'T', 'cloud': account or once}))
+    [item] = _items(client)
+    assert item['cloud_retry'] is expected
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('cloud', [False, True])
+def test_failed_cloud_analysis_still_offers_cloud_retry(owner, client, workspace, cloud):
+    # TASK-373: failures may retry even when the account uses cloud only.
+    [job] = _jobs(owner, 1)
+    _profile(owner, use_cloud_models_only=cloud)
+    application_prep._save(job, owner.pk, lambda prep: prep.update(pipeline={'stage': 'failed'}, reason='Analysis failed: x. Press Retry.'))
+    [item] = _items(client)
+    assert item['cloud_retry'] is True
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize('account,once', [(True, False), (False, True)])
+def test_running_cloud_fit_publishes_mode(owner, client, lanes, account, once):
+    # TASK-373: real pipeline writes its mode for the queue, including a separate web process.
+    _profile(owner, use_cloud_models_only=account)
+    [job] = _jobs(owner, 1)
+    application_prep.start_pipeline(job.id, owner, force=True, cloud=once)
+    _until(lambda: job.id in lanes['running'])
+    assert application_prep._state(job, owner)['pipeline']['cloud'] is True
+    assert application_prep.queue_state(owner)['items'][0]['cloud_retry'] is False

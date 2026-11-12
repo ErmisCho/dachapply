@@ -383,7 +383,7 @@ def prepare(job_id, user, retry=False, inline=False, cloud=False):
             analyse = job.id not in _analysing
             if analyse:
                 _analysing.add(job.id)
-                _save(job, user.pk, lambda prep: prep.update(reason=ANALYSING, variants={}, retry_at=None, analysing_at=_now()))
+                _save(job, user.pk, lambda prep: prep.update(reason=ANALYSING, variants={}, retry_at=None, analysing_at=_now(), analysing_cloud=cloud or uses_cloud_only(user.pk)))  # TASK-373
         elif reason:
             if not state['variants']:
                 _save(job, user.pk, lambda prep: prep.update(reason=reason, variants={}, retry_at=None))
@@ -548,10 +548,11 @@ def _analyse_then_prepare(job_id, user_id, retry, cloud=False):
         if not job or not user:
             return
         with _lane(user_id):
-            stop, cloud = _stoppable(job_id, cloud)
+            stop, cloud = _stoppable(job_id, cloud or uses_cloud_only(user_id))  # TASK-373: record the effective requirements mode
+            _save(job, user_id, lambda prep: prep.update(analysing_cloud=cloud))  # TASK-373
             try:
                 minutes = _profile_value(user_id, 'analysis_time_limit_minutes')
-                requirements = _bounded(partial(_analyse, job, cloud=cloud or uses_cloud_only(user_id)), minutes * MINUTE, stop)  # TASK-357
+                requirements = _bounded(partial(_analyse, job, cloud=cloud), minutes * MINUTE, stop)  # TASK-373
             except Exception as exc:  # AC2: the page says why, never a silent stop
                 error = _limit_error(exc, user_id, job_id) or str(getattr(exc, 'summary', '') or exc)[:300].rstrip('.')
                 with _lock:  # TASK-317: a usage limit is retried automatically once it resets
@@ -630,7 +631,7 @@ def start_pipeline(job_id, user, force=False, reanalyse='', cloud=False):
         if job_id in _piping:
             return True
         _piping.add(job_id)
-        _save(job, user.pk, lambda prep: prep.update(pipeline={'stage': 'queued', 'at': _now()}, reason='', retry_at=None))
+        _save(job, user.pk, lambda prep: prep.update(pipeline={'stage': 'queued', 'at': _now(), 'cloud': cloud or uses_cloud_only(user.pk)}, reason='', retry_at=None))  # TASK-373
     if processing_store():
         _pipeline.submit(job_id, user.pk, reanalyse, cloud)
     else:
@@ -655,7 +656,7 @@ def _pipeline(job_id, user_id, reanalyse='', cloud=False):
                 return
 
             def stage(name, **extra):
-                _save(job, user_id, lambda prep: prep.update(pipeline={'stage': name, 'at': _now(), **extra}))
+                _save(job, user_id, lambda prep: prep.update(pipeline={'stage': name, 'at': _now(), 'cloud': cloud, **extra}))  # TASK-373
             if not reanalyse and JobEvaluation.objects.filter(job_id=job_id).exists():
                 _save(job, user_id, lambda prep: prep.pop('pipeline', None))  # analysed by hand while it waited
                 return
@@ -1238,7 +1239,7 @@ def queue_state(user):
     expected = {route: cv_tasks.measured_seconds(route) or seconds for route, seconds in ANALYSIS_SECONDS.items()}
     items, blocked, fits, requirements = [], [], [], []
     today, done = timezone.localdate(), 0
-    for job in _with_recommendation(accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES)).only('id', 'company', 'title', 'status', 'source_fetch_error'):
+    for job in _with_recommendation(accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES)).only('id', 'company', 'title', 'status', 'source_fetch_error', 'pending_source_text'):  # TASK-373
         prep = _state(job, user)
         done += _done_today(prep, today)
         passed_over = _passed_over(job.status, job.latest_recommendation)  # TASK-361
@@ -1251,6 +1252,7 @@ def queue_state(user):
                             'progress': 0, 'eta_seconds': None, 'error': error, 'files': [],
                             'queued_at': None, 'started_at': None, 'finished_at': None, 'retry_at': prep.get('retry_at'),
                             'incomplete': prep['reason'].startswith(INCOMPLETE),  # TASK-322: offers Continue anyway
+                            'posting_choice': bool(job.pending_source_text),  # TASK-373
                             'cloud_retry': _failed_analysis(prep)})  # TASK-360
         pipeline = prep.get('pipeline') or {}
         # An analysed job stays listed while its application requirements are analysed (TASK-308) -- TASK-340: only
@@ -1269,7 +1271,7 @@ def queue_state(user):
                     'status': 'skipped' if skipped else 'running', 'position': None, 'progress': 0, 'eta_seconds': None,
                     'error': f"Skip · fit {pipeline.get('fit_score')}" if skipped else '', 'files': [], 'queued_at': None,
                     'started_at': pipeline.get('at'), 'finished_at': pipeline.get('at') if skipped else None, 'retry_at': None, 'incomplete': False,
-                    'stage': stage, 'cloud_retry': not skipped}  # TASK-360
+                    'stage': stage, 'cloud_retry': not skipped and not (prep.get('analysing_cloud', uses_cloud_only(user.pk)) if stage == 'requirements' else pipeline.get('cloud', uses_cloud_only(user.pk)))}  # TASK-373
             items.append(item)
             # TASK-340: eta_seconds is the run's expected duration here (what is left of it once running); _schedule
             # turns the fit analyses' into finish times. A requirements analysis runs in a thread of its own.
