@@ -1590,6 +1590,8 @@ def test_cv_worker_retries_missing_posting_text_before_generation(db,job,owner,m
         JobLead.objects.filter(pk=job.pk).update(original_source_text=corrected)
         return {'ok':True,'text':fetched}
     monkeypatch.setattr(cv_tasks,'fetch_posting_text',raced_fetch)
+    from jobradar.services import posting_fetch  # TASK-371: the next automatic retry is due
+    posting_fetch._fetch_decisions.clear()
     run()
     job.refresh_from_db()
     assert job.original_source_text==corrected and generated[-1]==corrected

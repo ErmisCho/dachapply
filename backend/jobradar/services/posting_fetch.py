@@ -538,20 +538,65 @@ def _worth_fetching(job):
     return bool((job.url or '').strip()) and (JobLead.is_thin_source(job.source_text) or bool(missing_parts(job.source_text)))
 
 
-def fetch_missing_sources(jobs):
+# TASK-371: bounded, process-local decisions; a restart permits recovery immediately.
+FETCH_COOLDOWN_SECONDS = 15 * 60
+_fetch_lock = threading.Lock()
+_fetch_decisions = {}
+_fetch_running = {}
+
+
+def fetch_job_posting(job, force=False, fetcher=None):
+    """TASK-371: share equivalent in-flight reads; automatic failures expire after 15 minutes."""
+    from concurrent.futures import Future
+    key=(job.pk, job.created_by_id, job.url, _source_hash(job.source_text), _source_hash(job.pending_source_text))
+    with _fetch_lock:
+        now=time.monotonic()
+        for stale in [k for k, (until, _) in _fetch_decisions.items() if until <= now]:
+            del _fetch_decisions[stale]
+        running=_fetch_running.get(key)
+        if not running and not force and key in _fetch_decisions:
+            return dict(_fetch_decisions[key][1])
+        if not running:
+            running=Future()
+            _fetch_running[key]=running
+            leader=True
+        else:
+            leader=False
+    if not leader:
+        return dict(running.result())
+    try:
+        result=(fetcher or fetch_posting_text)(job.url)
+        with _fetch_lock:
+            _fetch_decisions.pop(key,None)
+            if not result['ok']:
+                waiting={**result,'error':result['error']+f" Next automatic try after {timezone.localtime(timezone.now()+timezone.timedelta(seconds=FETCH_COOLDOWN_SECONDS)):%H:%M}; Retry fetches now."}
+                if len(_fetch_decisions) >= 1024:
+                    del _fetch_decisions[next(iter(_fetch_decisions))]
+                _fetch_decisions[key]=(time.monotonic()+FETCH_COOLDOWN_SECONDS,dict(waiting))
+                if not force:  # a manual Retry/Refresh reports the plain failure
+                    result=waiting
+        running.set_result(result)
+        return dict(result)
+    except BaseException as exc:
+        running.set_exception(exc)
+        raise
+    finally:
+        with _fetch_lock:
+            _fetch_running.pop(key,None)
+
+
+def fetch_missing_sources(jobs, force=False):  # TASK-371: explicit Retry bypasses cooldown
     """TASK-313 AC1: before analysis, read the posting behind each thin job's URL.
 
     Only jobs with a URL and a thin text are fetched; a page that replaces_thin_source becomes the
     accepted text, a failure is kept in source_fetch_error. Never raises: a fetch must not fail the analysis.
     """
-    # ponytail: an incomplete job is re-read before every analysis (render up to RENDER_SECONDS each, one at
-    # a time); remember a failed re-read per job if batch analyses of many incomplete jobs get slow.
     jobs=[job for job in jobs if _worth_fetching(job)]
     if not jobs: return
     try:
         # Network work is independent; database writes stay in the caller's thread.
         with ThreadPoolExecutor(max_workers=min(4,len(jobs))) as pool:
-            results=list(pool.map(fetch_posting_text,[job.url for job in jobs]))
+            results=list(pool.map(lambda job: fetch_job_posting(job,force=force),jobs))  # TASK-371
         checked_at=timezone.now()
         for job,result in zip(jobs,results):
             values={'source_checked_at':checked_at}

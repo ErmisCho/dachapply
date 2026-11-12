@@ -184,7 +184,7 @@ def test_finding_models_is_its_own_stage_before_fetching_and_analysing(owner, cl
         return OPTIONS
     monkeypatch.setattr(application_prep, 'available_model_options', discover)
     fetch_sources = application_prep.fetch_missing_sources
-    monkeypatch.setattr(application_prep, 'fetch_missing_sources', lambda jobs: (seen.append(application_prep._state(job, owner)['pipeline']['stage']), fetch_sources(jobs))[1])
+    monkeypatch.setattr(application_prep, 'fetch_missing_sources', lambda jobs, **kw: (seen.append(application_prep._state(job, owner)['pipeline']['stage']), fetch_sources(jobs, **kw))[1])
     lanes['gate'](job.id).set()
     application_prep._pipeline(job.id, owner.pk)
     assert seen == [('Finding models', 'models', 'running', True, True), 'fetching']

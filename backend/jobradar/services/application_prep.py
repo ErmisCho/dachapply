@@ -1370,7 +1370,7 @@ def _schedule(items, slots):
     return max(free)
 
 
-def queue_action(user, job_id, key, action):
+def queue_action(user, job_id, key, action, manual=True):  # TASK-371: automatic retries keep the fetch cooldown
     """AC5: cancel (queued or running; a running one's task is stopped), retry (failed or cancelled, to
     the back of the queue) or first (queued, to the front). TASK-322: continue (key '', a job blocked as
     Posting incomplete) prepares despite the gaps and remembers that for the job. Raises ValueError;
@@ -1402,7 +1402,7 @@ def queue_action(user, job_id, key, action):
         # TASK-319: a posting that just replaced its link (or a failed or running re-analysis) is analysed
         # again first; the re-analysis prepares, not this.
         before = job.source_text
-        fetch_missing_sources([job])
+        fetch_missing_sources([job],force=manual)  # TASK-371: only the owner's Retry bypasses the cooldown
         late = job.source_text != before or prep['reason'].startswith(REANALYSIS_FAILED) or job.id in _piping
         if not (late and reanalyse_late_text(job, user)):
             prepare(job.id, user)
@@ -1592,7 +1592,7 @@ def retry_due():
             if not key and (prep.get('reason') or '').startswith(REANALYSIS_FAILED):
                 start_pipeline(job.id, user, force=True, reanalyse=(prep.get('pipeline') or {}).get('note') or CHANGED)
             else:
-                queue_action(user, job.id, key, 'retry')
+                queue_action(user, job.id, key, 'retry', manual=False)
         except ValueError:
             pass  # cancelled, discarded or moved past To apply meanwhile
         except Exception:  # one job's retry must not lose the others, already spent above

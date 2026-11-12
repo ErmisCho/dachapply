@@ -99,7 +99,8 @@ def test_a_failed_fetch_is_recorded_and_the_analysis_still_runs(owner, client, f
     job = _link_only(owner)
     assert LINK in _evaluate(client, job)
     job.refresh_from_db()
-    assert job.source_fetch_error == FAILED['error'] and job.original_source_text == LINK and job.source_checked_at
+    assert job.source_fetch_error.startswith(FAILED['error'])  # TASK-371
+    assert job.original_source_text == LINK and job.source_checked_at
 
 
 # --- AC2/AC3: blocked in the queue, and its retry ------------------------------------------------
@@ -135,9 +136,11 @@ def test_retry_when_the_fetch_fails_keeps_the_job_blocked(owner, client, tasks, 
     application_prep.prepare(job.id, owner)
     response = client.post(ACTION, {'job_id': job.id, 'key': '', 'action': 'retry'}, format='json')
     # TASK-318: the queue says why the link could not be read, not only that the text is missing.
-    assert response.status_code == 200 and fetch['calls'] == [LINK] and response.json()['items'] == [_blocked(job, FAILED['error'])]
+    job.refresh_from_db()  # TASK-371: failure includes the next permitted automatic retry
+    assert response.status_code == 200 and fetch['calls'] == [LINK] and response.json()['items'] == [_blocked(job, job.source_fetch_error)]
     job.refresh_from_db()
-    assert job.source_fetch_error == FAILED['error'] and tasks['started'] == []
+    assert job.source_fetch_error.startswith(FAILED['error'])  # TASK-371
+    assert tasks['started'] == []
     assert client.post(ACTION, {'job_id': job.id, 'key': '', 'action': 'cancel'}, format='json').status_code == 400
 
 

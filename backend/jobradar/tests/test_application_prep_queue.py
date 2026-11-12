@@ -378,8 +378,9 @@ def test_a_usage_limited_requirements_analysis_is_retried_automatically(owner, c
     from datetime import datetime
     from jobradar.services.cv_generator import RecoverableGenerationError
     from jobradar.tests.test_application_prep import _model
+    forced = []  # TASK-371: an automatic retry must keep the posting-fetch cooldown
     _at(monkeypatch, '2026-10-19T17:00:00+02:00')
-    monkeypatch.setattr(application_prep, 'fetch_missing_sources', lambda jobs: None)
+    monkeypatch.setattr(application_prep, 'fetch_missing_sources', lambda jobs, **kw: forced.append(kw.get('force')))
     job = _job(owner, 'new', requirements={})
     _model(monkeypatch, RecoverableGenerationError('Codex limit reached. Try again after 18:51.', usage_limit=True, reset_at=datetime.fromisoformat(RESET)))
     application_prep.prepare(job.id, owner)
@@ -390,6 +391,7 @@ def test_a_usage_limited_requirements_analysis_is_retried_automatically(owner, c
     _model(monkeypatch)
     _at(monkeypatch, '2026-10-19T18:52:00+02:00')
     assert application_prep.retry_due() == 1
+    assert forced and not any(forced)  # TASK-371
     assert tasks['started'] == [(job.id, 'cv-en'), (job.id, 'letter-en')][:len(tasks['started'])] and tasks['started']
     assert application_prep._state(job, owner)['retry_at'] is None
 
