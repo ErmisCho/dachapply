@@ -38,6 +38,7 @@ waves: 5
 agents-per-wave: 4
 isolation: worktree
 max-turns: 15
+allow-destructive-ops: true
 test-command: cd backend && uv run pytest -q --tb=line
 typecheck-command: cd frontend && npx tsc --noEmit
 lint-command: skip
