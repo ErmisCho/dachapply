@@ -70,8 +70,8 @@ fails while collection is disabled/degraded cannot be reconstructed without
 replaying an upstream source; live hooks have no durable retry queue.
 
 `unresolved(limit=100)` returns only unresolved sanitized records, with a hard
-100-record limit. It and stable occurrence ids are the seams for TASK-372.2 and
-372.3. No task creation, resolution, public endpoint or migration is included.
+100-record limit. It and stable occurrence ids are the seams for triage and
+TASK-372.3. No resolution, public endpoint or migration is included.
 
 ## Bounds, retention and health
 
@@ -92,3 +92,61 @@ task. New failures during saturation are not persisted; the explicit degraded
 signal is the warning that coverage is incomplete. SQL rollback, bounded batches,
 concurrency, restart/replay, generation rotation and failure isolation have
 hermetic tests. No network or production database is needed.
+
+<!-- TASK-372.2 -->
+## Incremental maintenance triage
+
+From `backend`, run `uv run python manage.py triage_errors --dry-run` before
+`uv run python manage.py triage_errors`. Maintenance sessions can request
+`uv run python manage.py triage_errors --list` for every currently unresolved
+group, its classification, disposition, count and linked task id, including
+unchanged groups. These commands use the opt-in local store and never call a
+model. Dry-run and list do not invoke Backlog or advance checkpoints; opening
+an older store may create the additive triage tables.
+
+The producer may supply `classification` and `build` to `ingest`. Build is
+hashed; classification accepts only `cancelled`, `quota`, `transient`,
+`actionable`, `retry_exhausted`; anything else becomes `unknown`. Legacy rows
+and current hooks that cannot reliably classify a failure remain `unknown`.
+No cause is inferred from discarded messages. Unknown groups require manual
+review and are always available through `--list`; they do not create bugs.
+Cancellation is expected, quota requires operator review, transient failures
+require operational retry. Only actionable or retry-exhausted groups create
+product bugs. These dispositions are persisted, not silently dropped. A trusted
+local reviewer/adapter can update `occurrence_context.classification` to one of
+these values after examining private evidence; the next triage detects it.
+There is no automatic escalation by count and no new classification UI.
+
+Signature = SHA-256 of source, environment, build digest (or unknown), operation
+digest and technical error type. Existing intake retains only `OperationFailed`,
+so this groups by the known technical boundary, not exception text. Different
+operations/builds remain separate; unknown builds cannot be distinguished.
+For each group, the fingerprint of its unresolved rows/context is the persistent
+checkpoint. Only changed groups reach the CLI; resolved rows never participate.
+The bounded store (10,000 rows) is scanned locally to detect changes, rather than
+assuming insertion order catches later evidence edits.
+
+`error_groups` keeps signature, task_id, checkpoint and disposition;
+`error_group_links` maps occurrence ids to groups and private evidence references.
+These tables are the queryable handoff to TASK-372.3. Shared bug descriptions
+contain fixed symptoms, counts, collection times, operation/build digests,
+unknown reproduction/root cause and verification AC. Private occurrence links
+stay in SQLite. No raw logs or local paths are sent to Backlog.
+
+Backlog is invoked with argument arrays from the repository root. A full
+`error-group:<signature>` title marker is searched before creation and after
+creation, recovering a task even if creation succeeded but the process/CLI
+failed before the local link committed. Ambiguous matches fail closed.
+CLI errors retain checkpoints for retry and the command emits only a fixed
+safe error. A SQLite write transaction serializes cooperating triagers across
+processes; it includes CLI calls (60-second timeout each), so intake can report
+degraded while that lock is held. Run maintenance when intake is quiet.
+The marker must remain in task titles for crash recovery; manual marker removal
+before a pending link is recovered cannot be deduplicated. Linked tasks are
+updated in place, including closed tasks: reopening, resolution and regression
+policy belong to TASK-372.3. Nothing here resolves occurrences or closes tasks.
+
+Tests: `backend/jobradar/tests/test_error_triage.py` fakes subprocess.run for
+all Backlog access, including interrupted creation, update failures, concurrent
+triage, restart idempotence, legacy rows, grouping, redaction and maintenance
+commands. It never creates real task files or invokes providers.

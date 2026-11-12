@@ -43,6 +43,10 @@ def _connect():
         db.execute('PRAGMA max_page_count=4096')  # 16 MiB at SQLite's default page size
         db.execute('CREATE TABLE IF NOT EXISTS occurrences (id TEXT PRIMARY KEY, at TEXT NOT NULL, source TEXT NOT NULL, environment TEXT NOT NULL, operation TEXT NOT NULL, error_type TEXT NOT NULL, summary TEXT NOT NULL, evidence TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0)')
         db.execute('CREATE TABLE IF NOT EXISTS intake (source TEXT PRIMARY KEY, cursor TEXT NOT NULL)')
+        # TASK-372.2: bounded producer context; no raw diagnostic text.
+        db.execute('CREATE TABLE IF NOT EXISTS occurrence_context (id TEXT PRIMARY KEY, build TEXT NOT NULL, classification TEXT NOT NULL)')
+        db.execute('CREATE TABLE IF NOT EXISTS error_groups (signature TEXT PRIMARY KEY, task_id TEXT, checkpoint TEXT NOT NULL, disposition TEXT NOT NULL)')
+        db.execute('CREATE TABLE IF NOT EXISTS error_group_links (occurrence_id TEXT PRIMARY KEY, signature TEXT NOT NULL, evidence TEXT NOT NULL)')
     except Exception:
         db.close()
         raise
@@ -81,6 +85,12 @@ def ingest(source, events, *, cursor=None):
                 db.execute('INSERT INTO occurrences VALUES (?,?,?,?,?,?,?,?,0)',
                            (event_id, at, source, 'local', _digest(event.get('operation', event['id'])),
                             'OperationFailed', SOURCES[source], 'occurrence:' + event_id))
+                # TASK-372.2: adapters opt into fixed classifications; unknown failures need review.
+                classification = event.get('classification', 'unknown')
+                if classification not in ('cancelled', 'quota', 'transient', 'actionable', 'retry_exhausted'):
+                    classification = 'unknown'
+                db.execute('INSERT INTO occurrence_context VALUES (?,?,?)',
+                           (event_id, _digest(event['build']) if event.get('build') else 'unknown', classification))
                 ids.append(event_id)
             if cursor is not None:
                 db.execute('INSERT OR REPLACE INTO intake VALUES (?,?)', (source, _digest(cursor)))
