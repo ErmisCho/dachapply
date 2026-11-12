@@ -1,7 +1,7 @@
 ---
 id: TASK-364
 title: Keep backend tests independent of owner email-alert settings
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-11-11 14:46'
@@ -26,10 +26,10 @@ During TASK-358/359/360 verification, the standard backend suite failed because 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The previously failing test_one_failing_send_does_not_stop_the_rest_of_the_batch passes with a non-empty inherited ERROR_ALERT_EMAILS, using the normal test command and no manual environment workaround.
-- [ ] #2 Tests cannot send or collect unintended emails to real owner-alert recipients; tests deliberately exercising alert delivery can configure explicit fixture recipients.
-- [ ] #3 Production error-alert configuration and existing error-alerting tests remain unchanged in behavior.
-- [ ] #4 The canonical backend suite passes with inherited owner-alert settings present, and the existing CI configuration without owner secrets remains green; regression evidence shows the host-configuration failure before the fix.
+- [x] #1 The previously failing test_one_failing_send_does_not_stop_the_rest_of_the_batch passes with a non-empty inherited ERROR_ALERT_EMAILS, using the normal test command and no manual environment workaround.
+- [x] #2 Tests cannot send or collect unintended emails to real owner-alert recipients; tests deliberately exercising alert delivery can configure explicit fixture recipients.
+- [x] #3 Production error-alert configuration and existing error-alerting tests remain unchanged in behavior.
+- [x] #4 The canonical backend suite passes with inherited owner-alert settings present, and the existing CI configuration without owner secrets remains green; regression evidence shows the host-configuration failure before the fix.
 <!-- AC:END -->
 
 ## Implementation Plan
