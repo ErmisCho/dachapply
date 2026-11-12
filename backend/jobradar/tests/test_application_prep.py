@@ -356,6 +356,10 @@ def test_choosing_the_job_text_on_a_to_apply_job_starts_preparation(client, owne
     JobLead.objects.filter(pk=job.pk).update(pending_source_text=fetched)
     _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
     assert generator['calls'] == [] and CHOOSE in _state(client, job)[1]['reason']
+    [blocked] = client.get('/api/jobs/application-prep/queue/').json()['items']
+    assert blocked['needs_source_choice'] is True and blocked['cloud_retry'] is False
+    job.refresh_from_db()
+    assert job.original_source_text == POSTING and job.pending_source_text == fetched
     _resolve(client, job, POSTING if choice == 'current' else fetched, django_capture_on_commit_callbacks)
     variants, payload = _state(client, job)
     assert [call['key'] for call in generator['calls']] == ['cv-de'] and set(variants) == {'cv-de'}

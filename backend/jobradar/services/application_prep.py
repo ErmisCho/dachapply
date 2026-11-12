@@ -75,6 +75,7 @@ DOCUMENT_NAMES = {'cv': 'CV', 'letter': 'Full letter', 'message': 'Short message
 WANT = ('required', 'preferred')
 FULL_LETTER_TYPES = ('cover_letter', 'motivation_letter')
 INTERRUPTED = 'Stopped before it finished (the server restarted). Retry to prepare it again.'
+CHOOSE_SOURCE = 'Choose which job text to use (Keep current or Use fetched) before documents are prepared.'
 NOT_ANALYSED = 'Application requirements are not analysed yet. Analyse the job, then move it to To apply again or press Prepare.'
 ANALYSING = 'Analysing application requirements…'
 ANALYSIS_INTERRUPTED = 'Requirements analysis stopped before it finished (the server restarted). Press Prepare to retry.'
@@ -216,7 +217,7 @@ def _save(job, user_id, change):
 def _gate(job, user):
     """(reason, variants, context, choice). A non-empty reason means nothing may start (AC1)."""
     if job.pending_source_text:
-        return 'Choose which job text to use (Keep current or Use fetched) before documents are prepared.', [], '', None
+        return CHOOSE_SOURCE, [], '', None
     if not job.is_meaningful_source(job.source_text):
         return 'The job has no usable posting text yet.', [], '', None
     prep, missing = _state(job, user), posting_missing(job)
@@ -548,10 +549,10 @@ def _analyse_then_prepare(job_id, user_id, retry, cloud=False):
         if not job or not user:
             return
         with _lane(user_id):
-            stop, cloud = _stoppable(job_id, cloud)
+            stop, cloud = _stoppable(job_id, cloud or uses_cloud_only(user_id))
             try:
                 minutes = _profile_value(user_id, 'analysis_time_limit_minutes')
-                requirements = _bounded(partial(_analyse, job, cloud=cloud or uses_cloud_only(user_id)), minutes * MINUTE, stop)  # TASK-357
+                requirements = _bounded(partial(_analyse, job, cloud=cloud), minutes * MINUTE, stop)  # TASK-357
             except Exception as exc:  # AC2: the page says why, never a silent stop
                 error = _limit_error(exc, user_id, job_id) or str(getattr(exc, 'summary', '') or exc)[:300].rstrip('.')
                 with _lock:  # TASK-317: a usage limit is retried automatically once it resets
@@ -1235,6 +1236,9 @@ def queue_state(user):
     """
     with _lock:
         positions = {entry: index for index, entry in enumerate(_queue, 1)}
+        cloud_runs = {job_id: cloud for job_id, (_, cloud) in _stops.items()}
+        cloud_runs.update(dict.fromkeys(_cloud_rerun, True))
+    account_cloud = None
     expected = {route: cv_tasks.measured_seconds(route) or seconds for route, seconds in ANALYSIS_SECONDS.items()}
     items, blocked, fits, requirements = [], [], [], []
     today, done = timezone.localdate(), 0
@@ -1251,6 +1255,7 @@ def queue_state(user):
                             'progress': 0, 'eta_seconds': None, 'error': error, 'files': [],
                             'queued_at': None, 'started_at': None, 'finished_at': None, 'retry_at': prep.get('retry_at'),
                             'incomplete': prep['reason'].startswith(INCOMPLETE),  # TASK-322: offers Continue anyway
+                            'needs_source_choice': prep['reason'] == CHOOSE_SOURCE,
                             'cloud_retry': _failed_analysis(prep)})  # TASK-360
         pipeline = prep.get('pipeline') or {}
         # An analysed job stays listed while its application requirements are analysed (TASK-308) -- TASK-340: only
@@ -1264,12 +1269,14 @@ def queue_state(user):
             # TASK-325: the automatic pipeline's step -- running, or finished as a skip; limit and failed are
             # blocked above through prep['reason']. Variants replace it (the documents' own rows).
             skipped = stage == 'skipped'  # TASK-344: not `done`, which is the summary's counter
+            if not skipped and job.id not in cloud_runs and account_cloud is None:
+                account_cloud = uses_cloud_only(user.pk)
             item = {'job_id': job.id, 'company': job.company, 'title': job.title, 'job_status': job.status, 'key': '',
                     'label': 'Not applying' if skipped else PIPELINE_RUNNING[stage], 'document': None, 'language': None,
                     'status': 'skipped' if skipped else 'running', 'position': None, 'progress': 0, 'eta_seconds': None,
                     'error': f"Skip · fit {pipeline.get('fit_score')}" if skipped else '', 'files': [], 'queued_at': None,
                     'started_at': pipeline.get('at'), 'finished_at': pipeline.get('at') if skipped else None, 'retry_at': None, 'incomplete': False,
-                    'stage': stage, 'cloud_retry': not skipped}  # TASK-360
+                    'stage': stage, 'cloud_retry': not skipped and not cloud_runs.get(job.id, account_cloud)}  # TASK-374
             items.append(item)
             # TASK-340: eta_seconds is the run's expected duration here (what is left of it once running); _schedule
             # turns the fit analyses' into finish times. A requirements analysis runs in a thread of its own.
