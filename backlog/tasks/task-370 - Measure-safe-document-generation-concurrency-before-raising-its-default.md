@@ -4,6 +4,7 @@ title: Measure safe document generation concurrency before raising its default
 status: To Do
 assignee: []
 created_date: '2026-11-11 15:24'
+updated_date: '2026-11-12 17:37'
 labels:
   - pipeline
   - performance
@@ -27,3 +28,15 @@ Grounded opportunity from Backlog doc-1, Application pipeline efficiency opportu
 - [ ] #4 Keep existing quota retry, pause/resume and daily-budget behavior; stop or recommend a lower value if failures or resource pressure make the higher value unsuitable.
 - [ ] #5 Do not raise a default without measured throughput/user-wait benefit and no quality/data-safety regression; document the selected limit or why the experiment rejected a change.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add read-only fixture export and isolated sqlite runner with an extensible experiment registry. 2. Instrument real queue/model services and validate artifacts and metrics. 3. Add hermetic boundary-fake tests, commands documentation, and run required checks. Real measurements remain for coordinator; defaults unchanged.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Built a shared benchmark service and benchmark_export / benchmark_run management commands. Export uses owner-scoped values/get SELECTs in a rolled-back transaction, an input-file allowlist, and repository-output rejection. Runner requires empty scratch sqlite, copies inputs to a fresh system-temp workspace, preserves model/effort and all document variants, and registers concurrency through an extensible experiment dict. Added request/repair/error timing, CPU/RAM sampling, artifact hashes/pages and ownership/overwrite checks, JSON/Markdown reports, hermetic queue and real-generator boundary tests, and docs/benchmarks.md commands. Production defaults and task acceptance/status remain unchanged; real matched measurements and manual quality review are for the coordinator.
+<!-- SECTION:NOTES:END -->
