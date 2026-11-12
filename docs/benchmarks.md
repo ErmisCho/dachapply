@@ -17,6 +17,8 @@ uv run python manage.py benchmark_export --email owner@example.com --jobs 6 --ou
 # Explicit IDs instead: --jobs 12,34,56 (one explicit ID: --jobs ids:12).
 ```
 
+When the owner keeps evidence in the file fallback (not pasted in settings), run the export from the checkout that holds that file, or set `DACHAPPLY_SOURCE_REPO` to it; otherwise the fixture has no evidence and every job blocks with "Candidate evidence is empty".
+
 Export reads the currently configured DB. No real model calls occur during export. For the
 benchmark, clear DATABASE_URL and use a NEW scratch sqlite database for EACH run. Never use
 the owner's DB or workspace. Install the usual local generation tools (including TeX/pdfinfo)
