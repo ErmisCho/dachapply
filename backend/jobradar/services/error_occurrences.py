@@ -46,6 +46,8 @@ def _connect():
         # TASK-372.2: bounded producer context; no raw diagnostic text.
         db.execute('CREATE TABLE IF NOT EXISTS occurrence_context (id TEXT PRIMARY KEY, build TEXT NOT NULL, classification TEXT NOT NULL)')
         db.execute('CREATE TABLE IF NOT EXISTS error_groups (signature TEXT PRIMARY KEY, task_id TEXT, checkpoint TEXT NOT NULL, disposition TEXT NOT NULL)')
+        # TASK-372.3: immutable closure history and explicit verification evidence.
+        db.execute('CREATE TABLE IF NOT EXISTS error_resolutions (signature TEXT PRIMARY KEY, family TEXT NOT NULL, task_id TEXT NOT NULL, fixed_build TEXT NOT NULL, closed_at TEXT NOT NULL, verification TEXT NOT NULL)')
         db.execute('CREATE TABLE IF NOT EXISTS error_group_links (occurrence_id TEXT PRIMARY KEY, signature TEXT NOT NULL, evidence TEXT NOT NULL)')
     except Exception:
         db.close()

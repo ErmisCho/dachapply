@@ -21,9 +21,11 @@ def cli(monkeypatch):
         calls.append(args)
         assert kwargs['cwd'] == triage.ROOT and kwargs['check']
         if args[1:3] == ['task', 'list']:
-            return SimpleNamespace(stdout=json.dumps({'tasks': tasks}))
+            return SimpleNamespace(stdout=json.dumps({'tasks': [t for t in tasks if args[args.index('--search') + 1] in t['title']]}))
+        if args[2] == 'view':  # TASK-372.3
+            return SimpleNamespace(stdout=json.dumps({'task': next(t for t in tasks if t['id'] == args[3])}))
         if args[2] == 'create':
-            tasks.append({'id': 'TASK-999', 'title': args[3]})
+            tasks.append({'id': 'TASK-' + str(999 + len(tasks)), 'title': args[3], 'type': 'bug', 'status': 'To Do'})
         return SimpleNamespace(stdout='')
     monkeypatch.setattr(subprocess, 'run', run)
     return tasks, calls
@@ -90,6 +92,8 @@ def test_cli_failure_and_partial_creation_recovery(store, cli, monkeypatch, part
     ingest('1')
     original = subprocess.run
     def fail(args, **kwargs):
+        if args[2] == 'view':  # TASK-372.3
+            return SimpleNamespace(stdout=json.dumps({'task': next(t for t in tasks if t['id'] == args[3])}))
         if args[2] == 'create':
             if partial:
                 original(args, **kwargs)
@@ -173,3 +177,107 @@ def test_update_appends_evidence_and_keeps_the_description(store, cli):
     edit = [c for c in calls if c[2] == 'edit'][-1]
     assert '--description' not in edit and '--append-notes' in edit
     assert '2 unresolved failures' in edit[edit.index('--append-notes') + 1]
+
+
+# TASK-372.3: all completion/status calls are hermetic; references attest the policy gates.
+def complete(task_id='TASK-999'):
+    return triage.resolve(task_id, fix='commit:abc', tests='report:passed',
+                          evaluation='report:PERFECT', merge='squash:abc', fixed_build='fixed')
+
+
+def test_resolution_lifecycle_interrupted_sync_and_regression(store, cli, monkeypatch):
+    first = ingest('old', build='old')
+    triage.triage()
+    with pytest.raises(ValueError):
+        complete()
+    cli[0][0]['status'] = 'Done'
+    late = ingest('during-closure', build='fixed')  # Unlinked, even though already collected.
+    original = subprocess.run
+    def interrupted(args, **kwargs):
+        if args[2] == 'view':
+            raise subprocess.TimeoutExpired(args, 60)
+        return original(args, **kwargs)
+    monkeypatch.setattr(subprocess, 'run', interrupted)
+    with pytest.raises(subprocess.TimeoutExpired):
+        complete()
+    assert {r['id'] for r in errors.unresolved()} == {first, late}
+    monkeypatch.setattr(subprocess, 'run', original)
+    assert complete() == [first]
+    assert complete() == []
+    with closing(errors._connect()) as db:
+        assert db.execute('SELECT count(*) FROM error_group_links').fetchone()[0] == 1
+        assert json.loads(db.execute('SELECT verification FROM error_resolutions').fetchone()[0])['evaluation'] == 'report:PERFECT'
+        assert db.execute('SELECT evidence FROM occurrences WHERE id=?', (first,)).fetchone()[0] == 'occurrence:' + first
+    importlib.reload(errors)
+    importlib.reload(triage)
+    assert ingest('old', build='old') == first
+    rows = triage.triage()
+    assert len(rows) == 1 and 'pre-fix evidence' in rows[0]['disposition']
+    regression = ingest('new-generation:1', build='fixed')
+    row = triage.triage()[0]
+    assert 'post-fix regression' in row['disposition'] and row['task_id'] != 'TASK-999'
+    assert regression in {r['id'] for r in errors.unresolved()}
+    calls = len(cli[1])
+    assert ingest('new-generation:1', build='fixed') == regression
+    assert triage.triage() == [] and len(cli[1]) == calls
+    ingest('old-runtime-new-event', build='old')
+    assert 'unfixed or unknown' in triage.triage()[0]['disposition']
+
+
+def test_resolved_replay_has_no_analysis_and_command_requires_references(store, cli):
+    first = ingest('old')
+    triage.triage()
+    cli[0][0]['status'] = 'Done'
+    with pytest.raises(CommandError):
+        call_command('triage_errors', '--resolve', 'TASK-999')
+    call_command('triage_errors', '--resolve', 'TASK-999', '--fix', 'commit', '--tests', 'passed',
+                 '--evaluation', 'PERFECT', '--merge', 'squash', '--fixed-build', 'fixed', stdout=io.StringIO())
+    importlib.reload(triage)
+    assert ingest('old') == first
+    count = len(cli[1])
+    assert triage.triage() == [] and len(cli[1]) == count
+
+
+# TASK-372.3: intake that races status lookup commits after closure and stays unresolved.
+def test_resolution_serializes_concurrent_arrival(store, cli, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    first = ingest('first', build='old')
+    triage.triage()
+    cli[0][0]['status'] = 'Done'
+    original, started = subprocess.run, Event()
+    def arrival():
+        started.set()
+        return ingest('concurrent', build='fixed')
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        futures = []
+        def status(args, **kwargs):
+            if args[2] == 'view':
+                futures.append(pool.submit(arrival))
+                assert started.wait(1)
+            return original(args, **kwargs)
+        monkeypatch.setattr(subprocess, 'run', status)
+        assert complete() == [first]
+        later = futures[0].result()
+    assert [r['id'] for r in errors.unresolved()] == [later]
+    assert 'post-fix regression' in triage.triage()[0]['disposition']
+
+
+def test_regression_create_interruption_recovers_one_successor(store, cli, monkeypatch):
+    ingest('first', build='old')
+    triage.triage()
+    cli[0][0]['status'] = 'Done'
+    complete()
+    ingest('regression', build='fixed')
+    original = subprocess.run
+    def interrupted(args, **kwargs):
+        result = original(args, **kwargs)
+        if args[2] == 'create':
+            raise subprocess.TimeoutExpired(args, 60)
+        return result
+    monkeypatch.setattr(subprocess, 'run', interrupted)
+    with pytest.raises(subprocess.TimeoutExpired):
+        triage.triage()
+    monkeypatch.setattr(subprocess, 'run', original)
+    assert triage.triage()[0]['task_id'] == 'TASK-1000'
+    assert len(cli[0]) == 2 and triage.triage() == []
