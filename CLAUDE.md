@@ -59,3 +59,9 @@ Owner instruction, 2026-11-09. Use Codex CLI for work that does not need Claude'
 - **Read-only sweeps:** `codex exec` for broad greps, audits and "where is X used" questions.
 
 Codex output is evidence, not proof: TW-003 applies to it as to any agent.
+
+## Session Config
+
+The full Session Config is in `AGENTS.md`. This key is repeated here because the session-orchestrator hooks read only CLAUDE.md under Claude Code (owner decision 2026-11-12).
+
+allow-destructive-ops: true
