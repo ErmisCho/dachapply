@@ -143,6 +143,7 @@ class Recorder:  # TASK-370: wrappers retain the real service boundary, includin
             row = {k: bound.arguments[k] for k in ('provider', 'model', 'effort', 'speed')}
             row.update(getattr(self.context, 'identity', {}), start=time.time(), status='success', error_class=None,
                        repair='AUTOMATIC REPAIR ATTEMPT' in str(bound.arguments.get('prompt', '')))
+            row['package_arm'] = Path(settings.CODEX_CV_WORKSPACE).name  # TASK-369
             try:
                 return original(*args, **kwargs)
             except BaseException as exc:
@@ -256,6 +257,7 @@ def concurrency(jobs, user, workers, variant):  # TASK-370: all variants, origin
 
 EXPERIMENTS = {'concurrency': concurrency}  # TASK-370: 368/369 add name -> (jobs, user, workers, variant) functions.
 EXPERIMENTS['fit_requirements'] = __import__('jobradar.services.benchmark_fit_requirements', fromlist=['run']).run  # TASK-368
+from jobradar.services.benchmark_package import package; EXPERIMENTS['package'] = package  # TASK-369
 
 
 def run_fixture(fixture, experiment, variant, workers, output):
@@ -335,6 +337,8 @@ def run_fixture(fixture, experiment, variant, workers, output):
     write_json(output / 'results.json', result)
     if review := getattr(EXPERIMENTS[experiment], 'write_review', None):  # TASK-368: experiment-specific owner review.
         review([result], output)
+    elif review := getattr(EXPERIMENTS[experiment], 'review', None):  # TASK-369
+        review(result, output)  # TASK-369
     summary = result['metrics']
     (output / 'summary.md').write_text(f"# Document benchmark: {experiment}\n\nWorkers: {workers}; exported document limit: {data['conditions']['document_limit']}. Jobs: {len(jobs)}.\n\n"
         f"First useful package: {summary['time_to_first_useful_package_seconds']} seconds. Total: {summary['total_seconds']:.2f} seconds. "

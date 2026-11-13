@@ -102,3 +102,21 @@ postings to be exported. Labels remain pending until the owner checks semantic a
 against the original postings, particularly omissions and ambiguous/missing text. Fakes prove
 execution and validation only; they establish no real latency or quality advantage. Retain
 the separate production path until measured runs and owner labels support a decision.
+
+<!-- TASK-369 -->
+For the package experiment use `--experiment package` with the same exported fixture
+and a fresh scratch database/output directory as above. Omitting `--variant` runs
+`separate` and `combined` sequentially in isolated workspaces and writes `review.md`
+with both arms side by side. `--variant separate` or `--variant combined` runs just
+that arm (the other report column remains unrun). Workers do not affect this sequential
+experiment. Model/effort, candidate evidence, template selection and all alternative
+letters are matched; only the recommended CV/letter request is combined. Mixed-language
+pairs use each document's own template language. Short messages remain separate.
+Existing generator validation, compilation and repair apply to both arms; repairs
+may increase request count beyond the one initial combined request. Ready unrelated
+variants are reused on retry. Failures retain independently usable files.
+
+Review PDF paths/pages, required language, page/layout checklist and factual accuracy
+per job; record manual corrections and the owner decision in `review.md`. Counts,
+elapsed seconds, failures and repairs are reported, with request details in results.json.
+This experiment does not establish a quality win automatically or change production defaults.
