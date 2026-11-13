@@ -1436,6 +1436,8 @@ def queue_action(user, job_id, key, action, manual=True):  # TASK-371: automatic
                         queue_action(user, job.id, variant_key, 'cancel')
                     else:
                         _save(job, user.pk, lambda prep, key=variant_key: prep['variants'][key].update(status='cancelled', retry_at=None))
+                elif variant.get('retry_at'):  # review: a failed variant's scheduled retry must not fire after the stop
+                    _save(job, user.pk, lambda prep, key=variant_key: prep['variants'][key].update(retry_at=None))
             _cloud_rerun.discard(job.id)
             if job.id in _stops:
                 _stops[job.id][0].set()
@@ -1454,7 +1456,7 @@ def queue_action(user, job_id, key, action, manual=True):  # TASK-371: automatic
                 raise ValueError('Only cancelled work can be restarted.')
             if job.id in _piping or job.id in _analysing:
                 raise ValueError('The analysis is still stopping. Try again shortly.')
-            if variant and variant.get('task_id') and (cv_tasks.get_cv_task(variant['task_id'], user.pk) or {}).get('status') == 'running':  # TASK-376
+            if variant and variant.get('task_id') and (cv_tasks.get_cv_task(variant['task_id'], user.pk) or {}).get('status') in ('running', 'cancelling'):  # TASK-376; review: cancelling still owns its slot
                 raise ValueError('The document is still stopping. Try again shortly.')
             if job.pending_source_text:  # TASK-376
                 raise ValueError(CHOOSE_SOURCE)
