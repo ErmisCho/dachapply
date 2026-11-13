@@ -299,7 +299,7 @@ def _start(job_id, user_id, key):
     prep = _state(job, user) if job and user else {}
     variants = prep.get('variants') or {}
     variant = variants.get(key)
-    if not variant or variant.get('status') != 'queued':
+    if not variant or variant.get('status') != 'queued' or job.status not in JobLead.UNAPPLIED_STATUSES or _queue_stopped(prep):  # TASK-375 TASK-376
         return  # cancelled, re-prepared or its job deleted while it waited
     document, choice = variant['document'], prep.get('model') or {}
     options = {'short_message': True} if document == 'message' else {}
@@ -344,6 +344,8 @@ def _finish(job_id, user_id, key, task_id):
                 variant = prep.get('variants', {}).get(key)
                 if variant is None or variant.get('status') not in ('running', 'cancelled') or variant.get('task_id') not in ('', None, task_id):
                     return  # re-queued (retry, restart) meanwhile, or a newer run owns this variant
+                if variant.get('status') == 'cancelled':  # TASK-376: a late completion cannot undo the owner's cancel.
+                    return
                 error = '' if status == 'ready' else CANCELLED if status == 'cancelled' else task.get('error') or 'Stopped before it finished.'
                 reset_at = task.get('reset_at') and datetime.fromisoformat(task['reset_at'])
                 retry_at = _retry_at(status == 'failed' and task.get('usage_limit'), reset_at, variant)
@@ -370,6 +372,10 @@ def prepare(job_id, user, retry=False, inline=False, cloud=False):
     job = JobLead.objects.filter(pk=job_id).first()
     if not job:
         return None
+    if _queue_stopped(_state(job, user)):  # TASK-375 TASK-376
+        if not retry or job.status not in JobLead.UNAPPLIED_STATUSES:
+            return public_state(job, user)
+        _save(job, user.pk, lambda prep: prep.pop('pipeline', None))  # explicit Prepare after undoing Skip
     analyse = False
     with _lock:
         state = public_state(job, user)
@@ -556,19 +562,26 @@ def _analyse_then_prepare(job_id, user_id, retry, cloud=False):
         if not job or not user:
             return
         with _lane(user_id):
-            stop, cloud = _stoppable(job_id, cloud or uses_cloud_only(user_id))
+            with _lock:  # TASK-375 TASK-376: admission and registering the stop are atomic with queue actions.
+                if _queue_stopped(_state(job, user)):
+                    return
+                stop, cloud = _stoppable(job_id, cloud or uses_cloud_only(user_id))
             try:
                 minutes = _profile_value(user_id, 'analysis_time_limit_minutes')
                 requirements = _bounded(partial(_analyse, job, cloud=cloud), minutes * MINUTE, stop)  # TASK-357
             except Exception as exc:  # AC2: the page says why, never a silent stop
                 error = _limit_error(exc, user_id, job_id) or str(getattr(exc, 'summary', '') or exc)[:300].rstrip('.')
                 with _lock:  # TASK-317: a usage limit is retried automatically once it resets
+                    if _queue_stopped(_state(job, user)):  # TASK-375 TASK-376
+                        return
                     def failed(prep):
                         retry_at = _retry_at(getattr(exc, 'usage_limit', False), getattr(exc, 'reset_at', None), prep)
                         prep.update(reason=f'{REQUIREMENTS_FAILED}: {limit_line(error, retry_at).rstrip(".")}. Press Prepare to retry.', retry_at=retry_at)
                     _save(job, user_id, failed)
                 return False
         job.refresh_from_db()
+        if _queue_stopped(_state(job, user)):  # TASK-375 TASK-376
+            return
         if not job.application_requirements:  # AC3: requirements stored meanwhile (an owner edit) win
             job.application_requirements = requirements
             job.save(update_fields=['application_requirements', 'updated_at'])
@@ -622,6 +635,8 @@ def start_pipeline(job_id, user, force=False, reanalyse='', cloud=False):
     evaluation again, committed; _after_reanalysis then decides what happens to its documents.
     TASK-360: `cloud` runs it with cloud models only (the Queue's "Use cloud models only this time")."""
     job = JobLead.objects.filter(pk=job_id).first()
+    if job and (job.status not in JobLead.UNAPPLIED_STATUSES or _queue_stopped(_state(job, user))):  # TASK-375 TASK-376
+        return False
     if not job or not is_cv_owner(user) or not reanalyse and (not job.url or JobEvaluation.objects.filter(job_id=job_id).exists()):
         return False
     if not force:
@@ -661,24 +676,33 @@ def _pipeline(job_id, user_id, reanalyse='', cloud=False):
             user = get_user_model().objects.filter(pk=user_id).first()
             if not job or not user:
                 return
+            if _queue_stopped(_state(job, user)):  # TASK-375 TASK-376
+                return
 
             def stage(name, **extra):
-                _save(job, user_id, lambda prep: prep.update(pipeline={'stage': name, 'at': _now(), **extra}))
+                _save(job, user_id, lambda prep: prep.update(pipeline={'stage': name, 'at': _now(), 'note': reanalyse, **extra}))  # TASK-376: retain why it ran across cancellation/restart.
             if not reanalyse and JobEvaluation.objects.filter(job_id=job_id).exists():
                 _save(job, user_id, lambda prep: prep.pop('pipeline', None))  # analysed by hand while it waited
                 return
             before = _outcome(job)  # TASK-338: what a re-analysis is compared with
-            stop, cloud = _stoppable(job_id, cloud or uses_cloud_only(user_id))
+            with _lock:  # TASK-375 TASK-376: a cancel while this worker waited must win admission.
+                if _queue_stopped(_state(job, user)):
+                    return
+                stop, cloud = _stoppable(job_id, cloud or uses_cloud_only(user_id))
             try:
                 # TASK-340: the run's duration (models, fetch, analysis) is measured, and its start kept across the stages.
                 started, began = time.monotonic(), _now()
-                stage('models', started=began)
+                with _lock:  # TASK-375 TASK-376
+                    if stop.is_set():
+                        return
+                    stage('models', started=began)
 
                 def analyse(cancelled):  # TASK-357: under _bounded; it writes no sidecar once given up
                     def next_stage(name):
                         with _lock:
-                            if not cancelled():
-                                stage(name, started=began)
+                            if cancelled():  # TASK-375 TASK-376: no fetch or model call after a stop.
+                                raise GenerationCancelled()
+                            stage(name, started=began)
                     with cloud_models_only(cloud):
                         option, effort = cv_default_choice(available_model_options())
                         next_stage('fetching')
@@ -693,6 +717,8 @@ def _pipeline(job_id, user_id, reanalyse='', cloud=False):
                 logger.exception('The automatic analysis of job %s failed', job_id)
                 result = {'ok': False, 'errors': [_limit_error(exc, user_id, job_id) or str(exc) or type(exc).__name__], 'transient': isinstance(exc, TRANSIENT_ERRORS)}
             with _lock:
+                if _queue_stopped(_state(job, user)):  # TASK-375 TASK-376
+                    return
                 if result['ok']:
                     _save(job, user_id, lambda prep: prep.pop('auto_retries', None))  # TASK-350: a later failure starts a new count
                 if not result['ok']:
@@ -724,6 +750,11 @@ def _pipeline(job_id, user_id, reanalyse='', cloud=False):
         if again:
             start_pipeline(job_id, user, force=True, reanalyse=reanalyse, cloud=True)  # TASK-360
         close_old_connections()
+
+
+def _queue_stopped(prep):  # TASK-375 TASK-376: automatic skip verdicts retain their existing retry behavior.
+    pipeline = prep.get('pipeline') or {}
+    return pipeline.get('stage') == 'cancelled' or pipeline.get('stage') == 'skipped' and 'resume_stage' in pipeline
 
 
 def _passed_over(status, recommendation):
@@ -854,6 +885,7 @@ def run_daily(user):
               .values('job_id', 'recommendation', 'fit_score', 'priority', 'created_at')}
     preps = {job.id: _state(job, user) for job in jobs}
     fresh = [job for job in jobs if job.status in JobLead.UNAPPLIED_STATUSES and job.id not in _piping
+             and not _queue_stopped(preps[job.id])  # TASK-375 TASK-376
              and (preps[job.id].get('posting_changed') == 'owner'  # TASK-361: the owner asked, so a skip verdict does not hold it back
                   or not _passed_over(job.status, (latest.get(job.id) or {}).get('recommendation')))]
     changed = [job for job in fresh if preps[job.id].get('posting_changed') and job.id in latest]
@@ -1253,7 +1285,7 @@ def queue_state(user):
         prep = _state(job, user)
         done += _done_today(prep, today)
         passed_over = _passed_over(job.status, job.latest_recommendation)  # TASK-361
-        if prep.get('reason') and not prep.get('variants') and prep['reason'] not in (ANALYSING, FILES_EXIST) and not passed_over:
+        if prep.get('reason') and not prep.get('variants') and prep['reason'] not in (ANALYSING, FILES_EXIST) and not passed_over and (prep.get('pipeline') or {}).get('stage') != 'cancelled':  # TASK-376
             # TASK-313 AC2: a job whose preparation was refused shows why, instead of vanishing. TASK-318: a
             # missing text says why its link could not be read (e.g. the paste hint), the _gate wording otherwise.
             error = job.source_fetch_error if prep['reason'] == 'The job has no usable posting text yet.' and job.source_fetch_error else prep['reason']
@@ -1269,28 +1301,28 @@ def queue_state(user):
         # while that run is alive (public_state's test), so one a restart stopped never shows as running, and not
         # over a fit analysis queued or running again for the job, which stays in the fit lane.
         stage = pipeline.get('stage')
-        if job.id in _analysing and stage not in PIPELINE_RUNNING:
+        if job.id in _analysing and stage not in (*PIPELINE_RUNNING, 'cancelled', 'skipped'):  # TASK-376
             stage = 'requirements'
         # TASK-336/337: a re-analysis under way also shows beside the job's documents.
-        if (stage in PIPELINE_RUNNING or stage == 'skipped') and (not prep.get('variants') or stage in PIPELINE_RUNNING and job.id in _piping):
+        if (stage in PIPELINE_RUNNING or stage in ('skipped', 'cancelled')) and (stage == 'cancelled' or not prep.get('variants') or stage in PIPELINE_RUNNING and job.id in _piping):  # TASK-376
             # TASK-325: the automatic pipeline's step -- running, or finished as a skip; limit and failed are
             # blocked above through prep['reason']. Variants replace it (the documents' own rows).
             skipped = stage == 'skipped'  # TASK-344: not `done`, which is the summary's counter
-            if not skipped and job.id not in cloud_runs and account_cloud is None:
+            if stage in PIPELINE_RUNNING and job.id not in cloud_runs and account_cloud is None:  # TASK-376
                 account_cloud = uses_cloud_only(user.pk)
             item = {'job_id': job.id, 'company': job.company, 'title': job.title, 'job_status': job.status, 'key': '',
-                    'label': 'Not applying' if skipped else PIPELINE_RUNNING[stage], 'document': None, 'language': None,
-                    'status': 'skipped' if skipped else 'running', 'position': None, 'progress': 0, 'eta_seconds': None,
+                    'label': 'Not applying' if skipped else PIPELINE_RUNNING.get(stage, 'Analysis'), 'document': None, 'language': None,  # TASK-376
+                    'status': stage if stage in ('skipped', 'cancelled') else 'running', 'position': None, 'progress': 0, 'eta_seconds': None,  # TASK-376
                     'error': f"Skip · fit {pipeline.get('fit_score')}" if skipped else '', 'files': [], 'queued_at': None,
                     'started_at': pipeline.get('at'), 'finished_at': pipeline.get('at') if skipped else None, 'retry_at': None, 'incomplete': False,
-                    'stage': stage, 'cloud_retry': not skipped and not cloud_runs.get(job.id, account_cloud)}  # TASK-374
+                    'stage': stage, 'cloud_retry': stage in PIPELINE_RUNNING and not cloud_runs.get(job.id, account_cloud)}  # TASK-376
             items.append(item)
             # TASK-340: eta_seconds is the run's expected duration here (what is left of it once running); _schedule
             # turns the fit analyses' into finish times. A requirements analysis runs in a thread of its own.
             if stage == 'requirements':
                 item['eta_seconds'] = round(max(0, expected['requirements'] - _elapsed(prep.get('analysing_at') or pipeline.get('at'))))
                 requirements.append(item)
-            elif not skipped:
+            elif stage in PIPELINE_RUNNING:  # TASK-376
                 # The run's start (fetch included); a sidecar from before TASK-340 has only the stage's.
                 item['eta_seconds'] = expected['fit'] - (0 if stage == 'queued' else _elapsed(pipeline.get('started') or pipeline.get('at')))
                 fits.append((stage == 'queued', pipeline.get('at') or '', item))
@@ -1376,12 +1408,76 @@ def queue_action(user, job_id, key, action, manual=True):  # TASK-371: automatic
     Posting incomplete) prepares despite the gaps and remembers that for the job. Raises ValueError;
     returns queue_state. TASK-360: cloud (key '') runs a job's running or failed analysis again with cloud models
     only (_cloud_once)."""
-    if action not in ('cancel', 'retry', 'first', 'continue', 'cloud'):
+    if action not in ('cancel', 'retry', 'first', 'continue', 'cloud', 'skip', 'restart'):  # TASK-375 TASK-376
         raise ValueError('Unknown action.')
     try:
         job = accessible_jobs(user).filter(pk=int(job_id), status__in=JobLead.UNAPPLIED_STATUSES).first()
     except (TypeError, ValueError):
         job = None
+    # TASK-375 TASK-376: persist the stop before signalling workers, so late results cannot start more work.
+    if action == 'skip' or action == 'cancel' and key == '':
+        if not job:
+            raise ValueError('That job is not in the queue.')
+        with _lock:
+            prep = _state(job, user)
+            pipeline = prep.get('pipeline') or {}
+            if action == 'cancel' and pipeline.get('stage') not in PIPELINE_RUNNING and job.id not in _analysing:
+                raise ValueError('Only a running analysis can be cancelled.')
+            _save(job, user.pk, lambda prep: prep.update(pipeline={**pipeline, 'stage': 'skipped' if action == 'skip' else 'cancelled',  # TASK-375 TASK-376
+                        'resume_stage': 'requirements' if job.id in _analysing else pipeline.get('stage') or 'requirements', 'at': _now()}, reason='', retry_at=None))
+            for variant_key, variant in (prep.get('variants') or {}).items():
+                if variant.get('status') in ('queued', 'running'):
+                    if _live(variant, user)[0] in ('queued', 'running'):  # TASK-375: a server restart may have interrupted it.
+                        queue_action(user, job.id, variant_key, 'cancel')
+                    else:
+                        _save(job, user.pk, lambda prep, key=variant_key: prep['variants'][key].update(status='cancelled', retry_at=None))
+            _cloud_rerun.discard(job.id)
+            if job.id in _stops:
+                _stops[job.id][0].set()
+            if action == 'skip':
+                job.status = 'skipped'
+                job.save(update_fields=['status', 'updated_at'])
+        return queue_state(user)
+    if action == 'restart':  # TASK-376: explicit, durable restart; current gates and budgets still apply.
+        if not job:
+            raise ValueError('That job is not in the queue.')
+        with _lock:
+            prep = _state(job, user)
+            pipeline = prep.get('pipeline') or {}
+            variant = (prep.get('variants') or {}).get(key) if key else None
+            if (variant or pipeline).get('status' if key else 'stage') != 'cancelled':
+                raise ValueError('Only cancelled work can be restarted.')
+            if job.id in _piping or job.id in _analysing:
+                raise ValueError('The analysis is still stopping. Try again shortly.')
+            if variant and variant.get('task_id') and (cv_tasks.get_cv_task(variant['task_id'], user.pk) or {}).get('status') == 'running':  # TASK-376
+                raise ValueError('The document is still stopping. Try again shortly.')
+            if job.pending_source_text:  # TASK-376
+                raise ValueError(CHOOSE_SOURCE)
+            profile = user_profile_settings(user)
+            preps = {other.id: _state(other, user) for other in accessible_jobs(user).only('id')}
+            field = 'auto_prepared_on' if key else 'auto_analysed_on'
+            limit = profile.daily_prepare_limit if key else profile.daily_analyse_limit
+            if _left(limit, preps, field) == 0:
+                raise ValueError('Daily limit reached. Restart after the limit resets.')
+            if key:
+                if pipeline.get('stage') == 'cancelled':  # review: the job-wide stop would leave it queued forever
+                    raise ValueError("The job's analysis was cancelled. Restart the analysis first.")
+                if variant.get('cancelled_source') is not None and variant['cancelled_source'] != job.source_text:  # TASK-376
+                    raise ValueError('The posting changed. Analyse it again before restarting this document.')
+                reason, _, _, _ = _gate(job, user)
+                if reason:
+                    raise ValueError(reason)
+                if _stale_reason(prep):
+                    raise ValueError(_stale_reason(prep))
+            _save(job, user.pk, lambda prep: prep.update(**{field: timezone.localdate().isoformat()}))
+            if key:
+                return queue_action(user, job.id, key, 'retry')
+            _save(job, user.pk, lambda prep: prep.pop('pipeline', None))
+            if pipeline.get('resume_stage') == 'requirements':
+                prepare(job.id, user)
+            else:
+                start_pipeline(job.id, user, force=True, reanalyse=pipeline.get('note') or (CHANGED if JobEvaluation.objects.filter(job=job).exists() else ''))
+        return queue_state(user)
     if action == 'cloud':
         _cloud_once(job, user)
         return queue_state(user)
@@ -1417,7 +1513,7 @@ def queue_action(user, job_id, key, action, manual=True):  # TASK-371: automatic
                 raise ValueError(f'{_label(variant)} is {status}; only a queued or running document can be cancelled.')
             if entry in _queue:
                 _queue.remove(entry)
-            _save(job, user.pk, lambda prep: prep['variants'][key].update(status='cancelled', error=CANCELLED, finished_at=_now()))
+            _save(job, user.pk, lambda prep: prep['variants'][key].update(status='cancelled', error=CANCELLED, finished_at=_now(), retry_at=None, cancelled_source=job.source_text))  # TASK-376
             if status == 'running' and variant.get('task_id'):
                 # Its slot is given back when the task's thread actually stops (_finish), not now.
                 cv_tasks.cancel_cv_task(variant['task_id'], user.pk)

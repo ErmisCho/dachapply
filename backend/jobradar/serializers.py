@@ -316,7 +316,7 @@ class JobLeadSerializer(serializers.ModelSerializer):
         return super().create(attrs)
     def update(self, instance, attrs):
         new_status=attrs.get('status')
-        entering_to_apply=new_status == 'to_apply' and instance.status != 'to_apply'
+        entering_to_apply=new_status == 'to_apply' and instance.status not in ('to_apply', 'skipped')  # TASK-375: undoing Skip starts nothing.
         entering_interview=new_status == 'interview' and instance.status != 'interview'
         if new_status in JobLead.DATED_STATUSES and instance.status != new_status and not attrs.get('status_date'):
             attrs['status_date']=timezone.localdate()
