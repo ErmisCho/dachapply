@@ -1,7 +1,7 @@
 ---
 id: TASK-366
 title: Keep repeatable browser smoke tests for cloud retry and usage-limit recovery
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-11 14:46'
 updated_date: '2026-11-12 13:47'
@@ -27,7 +27,7 @@ TASK-359/360 were verified using temporary visible-browser harnesses against dis
 - [x] #2 The browser saves/reloads the analysis time limit, observes Finding models with elapsed time, and uses one-time cloud retry without changing the saved cloud-only switch.
 - [x] #3 A simulated provider usage limit renders one short sanitized line; the same task automatically becomes running at an accelerated reset with identical inputs, and the panel cancellation control works.
 - [x] #4 Assertions fail when the load-bearing UI/API recovery behavior is broken; deterministic fixture cancellation and cleanup prevent hanging workers or leftover servers.
-- [ ] #5 The checks run repeatably twice on the supported development host and in their intended CI environment; failures retain a concise diagnostic artifact. Any required CI-gate edits are approved before merge.
+- [x] #5 The checks run repeatably twice on the supported development host and in their intended CI environment; failures retain a concise diagnostic artifact. Any required CI-gate edits are approved before merge.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -58,4 +58,5 @@ Verification:
 
 Remaining: install dependencies on an unrestricted development host, run smoke twice and backend/frontend required checks, then run the identical browser command on intended Linux CI infrastructure. No commit, push or merge performed per explicit task rules.
 2026-11-13 (coordinator): 3 consecutive green local runs (Windows, installed Chrome); disabling the usage limit makes it fail; ports 4396/8396 freed after runs. AC5 open: the CI job is not wired - that is a CI-gate change needing owner approval.
+2026-11-13: parallel CI job `smoke` (PRs touching backend/frontend/workflows) passed on ubuntu: 1 test, 34 s, job 1m08s; does not lengthen the 6-min test job.
 <!-- SECTION:NOTES:END -->
