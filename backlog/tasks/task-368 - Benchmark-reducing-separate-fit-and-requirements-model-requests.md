@@ -4,6 +4,7 @@ title: Benchmark reducing separate fit and requirements model requests
 status: To Do
 assignee: []
 created_date: '2026-11-11 15:24'
+updated_date: '2026-11-13 07:12'
 labels:
   - pipeline
   - performance
@@ -27,3 +28,15 @@ Grounded opportunity from Backlog doc-1, Application pipeline efficiency opportu
 - [ ] #4 No request is repeated just because valid requirements are already stored; retained or rejected combinations are documented with measured evidence, not a promised percentage saving.
 - [ ] #5 Do not change the current production default unless the measured benefit and labelled quality comparison support it; any approved change leaves regression coverage.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Add an isolated fit_requirements experiment using existing fit/requirements services, strict validation and matched settings. 2. Add per-job review output and paired-result review command. 3. Verify with hermetic fakes, backend suite and frontend checks; document owner measurement handoff without changing defaults or task status.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Built benchmark_fit_requirements as an isolated registered experiment with separate/combined variants, original fit importer validation and requirements schemas/quote normalisation, matched CV model settings, stored-owner requirements reuse, late-change discard, cancellation and per-job failure isolation. Added harness review hook and signature-preserving request wrappers, benchmark_fit_review to pair runs into side-by-side review.md, hermetic fake-provider coverage, and coordinator/owner run and quality-labelling instructions. No production path/default changes; no task status or acceptance checkbox changes.
+<!-- SECTION:NOTES:END -->
