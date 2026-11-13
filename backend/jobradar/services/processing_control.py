@@ -369,8 +369,17 @@ def durable(kind, limit=1):
 
 def execute(control, unit_id, kind, args, kwargs, limit=None):
     limit = _limits.get(kind, 1) if limit is None else limit  # recover_pending passes none: the kind's own
-    while not control.claim(unit_id, kind, limit(*args, **kwargs) if callable(limit) else limit):
-        time.sleep(.1)
+    logged = False
+    while True:
+        try:
+            if control.claim(unit_id, kind, limit(*args, **kwargs) if callable(limit) else limit):
+                break
+            time.sleep(.1)
+        except Exception:  # TASK-378: a transient error (e.g. the DB read behind the limit) must not strand the unit
+            if not logged:
+                logging.getLogger(__name__).exception('Waiting %s unit %s hit an error; retrying', kind, unit_id)
+                logged = True
+            time.sleep(1)
     event('unit_started', kind)
     _local.active = True
     _local.unit_id = unit_id

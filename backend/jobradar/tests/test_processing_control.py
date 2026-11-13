@@ -185,3 +185,26 @@ def test_a_usage_limited_manual_document_waits_through_a_restart_and_reruns_with
     assert submitted[0]['profile'] == 'the same inputs' and cv_tasks._tasks['manual']['status'] == 'queued'
     with processing.store().connect() as db:
         assert db.execute('SELECT state,payload FROM units WHERE id=?', (unit,)).fetchone() == ('resolved', '{}')
+
+
+def test_a_transient_error_while_waiting_for_a_slot_does_not_strand_the_unit(tmp_path, monkeypatch):
+    # TASK-378: four pipeline units stayed queued for ~37 h after their waiting threads died.
+    monkeypatch.setenv('DACHAPPLY_CONTROL_DB', str(tmp_path / 'control.sqlite3'))
+    control = processing.store()
+    calls, results = [], []
+
+    def flaky_limit(*args):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError('connection lost')  # e.g. the profile read for the lane limit
+        return 1
+
+    @processing.durable('test-flaky', limit=flaky_limit)
+    def work(number):
+        results.append(number)
+
+    worker = threading.Thread(target=work, args=(7,), daemon=True)
+    worker.start()
+    worker.join(5)
+    assert results == [7]
+    assert control.status()['completed_jobs'] == 1 and control.status()['remaining_jobs'] == 0
