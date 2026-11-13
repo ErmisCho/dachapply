@@ -1460,6 +1460,8 @@ def queue_action(user, job_id, key, action, manual=True):  # TASK-371: automatic
             if _left(limit, preps, field) == 0:
                 raise ValueError('Daily limit reached. Restart after the limit resets.')
             if key:
+                if pipeline.get('stage') == 'cancelled':  # review: the job-wide stop would leave it queued forever
+                    raise ValueError("The job's analysis was cancelled. Restart the analysis first.")
                 if variant.get('cancelled_source') is not None and variant['cancelled_source'] != job.source_text:  # TASK-376
                     raise ValueError('The posting changed. Analyse it again before restarting this document.')
                 reason, _, _, _ = _gate(job, user)

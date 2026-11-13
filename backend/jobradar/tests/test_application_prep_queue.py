@@ -555,3 +555,16 @@ def test_document_restart_waits_for_cancelled_worker(owner, client, tasks, setti
     response = client.post(ACTION, {'job_id':job.id, 'key':'cv-de', 'action':'restart'}, format='json')
     assert response.status_code == 400 and 'still stopping' in response.data['detail']
     assert len(tasks['started']) == 1
+
+
+# TASK-376 review: a document cancelled together with its job's analysis must not restart into a stuck "queued".
+def test_document_restart_waits_for_a_cancelled_analysis(owner, client, tasks):
+    job = _job(owner, requirements=_req('de'))
+    application_prep.prepare(job.id, owner)
+    application_prep._save(job, owner.pk, lambda prep: prep.update(pipeline={'stage': 'models', 'at': 'T'}))
+    application_prep.queue_action(owner, job.id, '', 'cancel')
+    tasks['end']('task-1', status='cancelled')
+    started = list(tasks['started'])
+    response = client.post(ACTION, {'job_id': job.id, 'key': 'cv-de', 'action': 'restart'}, format='json')
+    assert response.status_code == 400 and 'analysis' in str(response.data).lower()
+    assert _variant(job, owner, 'cv-de')['status'] == 'cancelled' and tasks['started'] == started
