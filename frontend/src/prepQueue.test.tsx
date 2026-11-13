@@ -376,3 +376,15 @@ it('offers Skip and Cancel on active rows and Restart on cancelled analyses',()=
   expect(section(html,'Running')).toContain('>Cancel<')
   expect(section(html,'Failed / cancelled')).toContain('>Restart<')
 })
+
+
+// TASK-377: one account notice, even when several jobs await the provider reset.
+it('shows one provider limit notice with the resume time for all jobs',()=>{
+  const data=fixture()
+  data.paused={reason:'provider_limit',resume_at:'2026-11-13T18:30:00Z'}
+  const html=view({data})
+  expect(html.match(/Provider limit affecting all jobs/g)).toHaveLength(1)
+  expect(html).toContain('Resumes ')
+  expect(html).toContain(new Date(data.paused.resume_at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}))
+  expect(view({data:fixture()})).not.toContain('Provider limit affecting all jobs')
+})

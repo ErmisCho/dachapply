@@ -568,3 +568,25 @@ def test_document_restart_waits_for_a_cancelled_analysis(owner, client, tasks):
     response = client.post(ACTION, {'job_id': job.id, 'key': 'cv-de', 'action': 'restart'}, format='json')
     assert response.status_code == 400 and 'analysis' in str(response.data).lower()
     assert _variant(job, owner, 'cv-de')['status'] == 'cancelled' and tasks['started'] == started
+
+
+# TASK-376 review: a document whose worker is still cancelling owns its slot; Restart must wait.
+def test_document_restart_waits_while_the_task_is_cancelling(owner, client, tasks):
+    job = _job(owner, requirements=_req('de'))
+    application_prep.prepare(job.id, owner)
+    application_prep.queue_action(owner, job.id, 'cv-de', 'cancel')
+    tasks['live']['task-1']['status'] = 'cancelling'
+    started = list(tasks['started'])
+    response = client.post(ACTION, {'job_id': job.id, 'key': 'cv-de', 'action': 'restart'}, format='json')
+    assert response.status_code == 400 and tasks['started'] == started
+
+
+# TASK-375 review: Skip disarms a failed document's scheduled provider-limit retry.
+def test_skip_clears_a_failed_documents_scheduled_retry(owner, client, tasks, timers, monkeypatch):
+    _at(monkeypatch, '2026-10-19T17:00:00+02:00')
+    job = _job(owner, 'new', requirements=_req('de'))
+    application_prep.prepare(job.id, owner)
+    _limited(tasks, 'task-1')
+    assert _variant(job, owner, 'cv-de')['retry_at']
+    assert client.post(ACTION, {'job_id': job.id, 'key': '', 'action': 'skip'}, format='json').status_code == 200
+    assert not _variant(job, owner, 'cv-de').get('retry_at')
