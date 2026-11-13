@@ -1280,9 +1280,13 @@ def queue_state(user):
     account_cloud = None
     expected = {route: cv_tasks.measured_seconds(route) or seconds for route, seconds in ANALYSIS_SECONDS.items()}
     items, blocked, fits, requirements = [], [], [], []
+    provider_waits = []  # TASK-377: aggregate only actual provider-limit waits.
     today, done = timezone.localdate(), 0
     for job in _with_recommendation(accessible_jobs(user).filter(status__in=JobLead.UNAPPLIED_STATUSES)).only('id', 'company', 'title', 'status', 'source_fetch_error'):
         prep = _state(job, user)
+        for waiting in [prep, *(prep.get('variants') or {}).values()]:  # TASK-377
+            if waiting.get('usage_limit') and (resume := _when(waiting.get('retry_at'))) and resume > timezone.now():
+                provider_waits.append(resume)
         done += _done_today(prep, today)
         passed_over = _passed_over(job.status, job.latest_recommendation)  # TASK-361
         if prep.get('reason') and not prep.get('variants') and prep['reason'] not in (ANALYSING, FILES_EXIST) and not passed_over and (prep.get('pipeline') or {}).get('stage') != 'cancelled':  # TASK-376
@@ -1357,7 +1361,8 @@ def queue_state(user):
     pending = len(running) + len(queued)
     summary = {'done': done, 'total': done + pending, 'analyses_left': pending - len(documents), 'documents_left': len(documents),
                'seconds_left': round(max(lanes, default=0))}
-    return {'concurrency': settings.PREP_QUEUE_CONCURRENCY, 'summary': summary, 'items': running + queued + blocked + finished[:FINISHED_LIMIT]}
+    paused = {'reason': 'provider_limit', 'resume_at': min(provider_waits).isoformat()} if provider_waits and not pending else None  # TASK-377
+    return {'paused': paused, 'concurrency': settings.PREP_QUEUE_CONCURRENCY, 'summary': summary, 'items': running + queued + blocked + finished[:FINISHED_LIMIT]}
 
 
 def _done_today(prep, today):
@@ -1617,6 +1622,7 @@ def _retry_at(usage_limit, reset_at, item, transient=False):
     """When a usage-limit or transient failure is retried automatically (ISO), arming the timer for it;
     None for any other failure or once `item` spent its AUTO_RETRIES or TRANSIENT_RETRIES (one count, so
     the two together never exceed AUTO_RETRIES). Caller holds _lock."""
+    item['usage_limit'] = bool(usage_limit)  # TASK-377: distinguish provider waits from transient retries.
     spent = item.get('auto_retries', 0)
     if usage_limit and spent < AUTO_RETRIES:
         when = reset_at + timedelta(minutes=1) if reset_at else timezone.now() + timedelta(minutes=30)

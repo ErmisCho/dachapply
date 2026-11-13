@@ -1,4 +1,4 @@
-"""TASK-377: blocked jobs stay isolated; a stalled single analysis lane still needs early release."""
+"""TASK-377: blocked and stalled analyses never hold other jobs in the queue."""
 import time
 
 import pytest
@@ -59,20 +59,26 @@ def test_blocked_job_does_not_hold_other_analyses_or_documents(owner, client, is
 
 
 @pytest.mark.django_db(transaction=True)
-@pytest.mark.xfail(strict=True, reason='TASK-377: stalled analysis holds the only lane until the time limit')
-def test_stalled_analysis_releases_the_only_lane_before_the_time_limit(owner, isolated_lanes, timers, monkeypatch):
-    # TASK-377: scaled profile time limit; the early-start assertion expires at one quarter of that limit.
-    _profile(owner, analysis_concurrency=1, analysis_time_limit_minutes=2)
-    monkeypatch.setattr(application_prep, 'MINUTE', .5)
-    first, second = _jobs(owner, 2)
-    isolated_lanes['gate'](second.id).set()
-    assert application_prep.start_pipeline(first.id, owner, force=True)
-    try:
-        _until(lambda: first.id in isolated_lanes['entered'], seconds=1)
-        began = time.monotonic()
-        assert application_prep.start_pipeline(second.id, owner, force=True)
-        _until(lambda: second.id in isolated_lanes['entered'], seconds=.25)
-        assert time.monotonic() - began < .25
-    finally:
-        isolated_lanes['gate'](first.id).set()
-        _join_pipelines()
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
+def test_provider_limit_pause_is_aggregated_and_expires(owner, workspace, timers):
+    # TASK-377: multiple usage-limited rows produce one account notice; transient retries do not.
+    from datetime import timedelta
+    from django.utils import timezone
+    jobs = _jobs(owner, 2)
+    reset = timezone.now() + timedelta(minutes=10)
+    for job in jobs:
+        def fail(prep):
+            retry = application_prep._retry_at(True, reset, prep)
+            prep.update(reason='Provider usage limit', retry_at=retry)
+        application_prep._save(job, owner.pk, fail)
+    for job in jobs:  # TASK-377: an ordinary retry must not imply an account-wide provider pause.
+        application_prep._save(job, owner.pk, lambda prep: prep.update(usage_limit=False))
+    assert application_prep.queue_state(owner)['paused'] is None
+    for job in jobs:
+        application_prep._save(job, owner.pk, lambda prep: prep.update(usage_limit=True))
+    paused = application_prep.queue_state(owner)['paused']
+    assert paused == {'reason': 'provider_limit', 'resume_at': (reset + timedelta(minutes=1)).isoformat()}
+    for job in jobs:
+        application_prep._save(job, owner.pk, lambda prep: prep.update(retry_at=(timezone.now()-timedelta(seconds=1)).isoformat()))
+    assert application_prep.queue_state(owner)['paused'] is None

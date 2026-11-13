@@ -13,7 +13,8 @@ export type QueueItem={job_id:number;company:string;title:string;job_status:stri
 // TASK-360: stage is a pipeline row's step ('models' = Finding models); cloud_retry offers "Use cloud models only this time".
 // TASK-340: the server's estimate from measured durations -- finished today of the total, and the time left.
 export type QueueSummary={done:number;total:number;analyses_left:number;documents_left:number;seconds_left:number}
-export type QueueData={concurrency:number;summary?:QueueSummary;items:QueueItem[]}
+// TASK-377: a provider pause is shown once for the whole queue.
+export type QueueData={paused?:{reason:'provider_limit';resume_at:string}|null;concurrency:number;summary?:QueueSummary;items:QueueItem[]}
 // TASK-322: 'continue' releases a job held for an incomplete posting; it acts on the whole job, so its key is ''.
 // TASK-360: 'cloud' runs a running or failed analysis again with cloud models only, also on the whole job.
 // TASK-375 TASK-376: job-wide skip and durable restart.
@@ -85,6 +86,7 @@ export function QueueView({snap,onAction=queueAction}:{snap:QueueSnapshot;onActi
   const failure=(item:QueueItem)=>snap.failed?.id.startsWith(`${item.job_id}:${item.key}:`)?<div className="field-error-message mt-1" role="alert"><span className="field-error-icon" aria-hidden="true">!</span><span>{snap.failed.detail}</span></div>:null
   return <main className="mx-auto max-w-4xl space-y-4 px-4 py-6">
     <div><h1 className="text-xl font-semibold">Document queue</h1>{snap.data&&<p className="text-sm text-slate-500">Up to {snap.data.concurrency} document{snap.data.concurrency===1?' is':'s are'} prepared at a time.</p>}</div>
+    {/* TASK-377 */}{snap.data?.paused&&<p role="status" className="text-sm text-amber-800">Provider limit affecting all jobs. Resumes {when(snap.data.paused.resume_at)}.</p>}
     {snap.error&&<div className="field-error-message" role="alert"><span className="field-error-icon" aria-hidden="true">!</span><span>{snap.error}</span></div>}
     {!snap.data&&!snap.error&&<p className="text-slate-500">Loading…</p>}
     {snap.data&&!items.length&&<p className="text-sm text-slate-600">Nothing in the queue. Documents are queued automatically once a job is analysed as apply or maybe.</p>}
