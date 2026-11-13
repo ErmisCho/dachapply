@@ -63,7 +63,7 @@ def package(jobs, user, workers, variant):  # TASK-369
 
 
 def review(result, output):  # TASK-369: no generated evidence dumps; owner judges PDFs.
-    lines = ['# Package comparison', '', 'Keep production defaults pending owner quality review. Unrun arms have no documents.', '',
+    lines = ['# Package comparison', '', 'Keep production defaults pending owner quality review. Unrun arms have no documents.', 'When both arms run in one invocation, summary.md metrics span both arms; use the per-arm figures here.', '',
              '| Measure | separate | combined |', '|---|---|---|']
     for label, measure in [('Requests', lambda rows: len(rows)), ('Elapsed request seconds', lambda rows: round(sum(r['end']-r['start'] for r in rows), 3)),
                            ('Failures', lambda rows: sum(r['status'] != 'success' for r in rows)), ('Repairs', lambda rows: sum(r['repair'] for r in rows))]:
