@@ -6620,11 +6620,14 @@ def test_task_291_293_migration_applies_and_reverts_on_sqlite():
     def columns(table):
         with connection.cursor() as cursor:
             return {c.name for c in connection.introspection.get_table_description(cursor, table)}
-    call_command('migrate', 'jobradar', '0057', verbosity=0)
-    assert 'auto_attached_at' not in columns('jobradar_mailboxmessage')
-    call_command('migrate', 'jobradar', '0058', verbosity=0)
-    assert {'auto_attached_at', 'detached_at'} <= columns('jobradar_mailboxmessage')
-    assert {'draft_provider', 'draft_model', 'draft_effort', 'draft_auto_replies_with_model'} <= columns('jobradar_userprofile')
+    try:
+        call_command('migrate', 'jobradar', '0057', verbosity=0)
+        assert 'auto_attached_at' not in columns('jobradar_mailboxmessage')
+        call_command('migrate', 'jobradar', '0058', verbosity=0)
+        assert {'auto_attached_at', 'detached_at'} <= columns('jobradar_mailboxmessage')
+        assert {'draft_provider', 'draft_model', 'draft_effort', 'draft_auto_replies_with_model'} <= columns('jobradar_userprofile')
+    finally:  # TASK-377: later transactional tests need the latest schema, not 0058
+        call_command('migrate', 'jobradar', verbosity=0)
 
 
 # --- TASK-293 D: mailbox-check reply drafts written by the Settings -> Drafts model ---------------
