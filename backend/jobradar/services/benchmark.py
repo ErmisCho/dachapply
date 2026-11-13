@@ -9,6 +9,7 @@ import shutil
 import tempfile
 import time
 import uuid
+from functools import wraps  # TASK-368: nested experiment recorders retain the provider signature.
 from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
@@ -135,6 +136,7 @@ class Recorder:  # TASK-370: wrappers retain the real service boundary, includin
 
     def model(self, original):
         signature = inspect.signature(original)
+        @wraps(original)  # TASK-368
         def call(*args, **kwargs):
             bound = signature.bind(*args, **kwargs)
             bound.apply_defaults()
@@ -253,6 +255,7 @@ def concurrency(jobs, user, workers, variant):  # TASK-370: all variants, origin
 
 
 EXPERIMENTS = {'concurrency': concurrency}  # TASK-370: 368/369 add name -> (jobs, user, workers, variant) functions.
+EXPERIMENTS['fit_requirements'] = __import__('jobradar.services.benchmark_fit_requirements', fromlist=['run']).run  # TASK-368
 
 
 def run_fixture(fixture, experiment, variant, workers, output):
@@ -330,6 +333,8 @@ def run_fixture(fixture, experiment, variant, workers, output):
             result['overwrite_check']['errors'].append({'path': artifact['path'], 'reason': 'artifact absent from owning job preparation'})
     result['overwrite_check']['ok'] = not result['overwrite_check']['errors']
     write_json(output / 'results.json', result)
+    if review := getattr(EXPERIMENTS[experiment], 'write_review', None):  # TASK-368: experiment-specific owner review.
+        review([result], output)
     summary = result['metrics']
     (output / 'summary.md').write_text(f"# Document benchmark: {experiment}\n\nWorkers: {workers}; exported document limit: {data['conditions']['document_limit']}. Jobs: {len(jobs)}.\n\n"
         f"First useful package: {summary['time_to_first_useful_package_seconds']} seconds. Total: {summary['total_seconds']:.2f} seconds. "

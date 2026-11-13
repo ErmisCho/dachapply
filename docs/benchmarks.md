@@ -64,5 +64,41 @@ Keep the current default until measured benefit and quality/data-safety review s
 
 `jobradar.services.benchmark.EXPERIMENTS` maps names to functions accepting
 `(jobs, user, workers, variant)` and returning preparation states in job order. TASK-368/369 can
-add modes using the same fixture, request recorder and results contract; no modes for those
-experiments are implemented here. `--variant` is reserved for those modes.
+add modes using the same fixture, request recorder and results contract. `--variant` selects
+their comparison mode; fit/requirements usage follows below. <!-- TASK-368 -->
+
+<!-- TASK-368 -->
+## Fit and requirements
+
+`--experiment fit_requirements --variant separate` runs today's `evaluate_jobs` dry run
+and, for apply/maybe jobs without stored requirements, `_analyse`. `--variant combined`
+requests both answers once, using the original strict schemas, fit importer validation and
+source-quote normalisation. Both use the exported CV provider/model/effort and normal speed.
+Valid stored requirements (including owner edits) are reused: either variant then makes only
+the fit request. Skip jobs outside the owner's To apply/Ready to submit states do not need
+requirements. The combined response still includes requirements, but skip-job requirements
+are discarded. Neither variant saves answers or generates documents, and neither invokes
+the scheduler or consumes automatic daily budgets. Pending source choices block analysis;
+posting/requirements changes during a request discard its result. Cancellation stops the run;
+other failures remain per job. Production defaults are unchanged.
+
+Use the same private fixture and a fresh migrated scratch sqlite DB for EACH run, as above:
+
+```powershell
+uv run python manage.py benchmark_run --fixture $fixture --experiment fit_requirements --variant separate --out (Join-Path $env:TEMP 'fit-separate')
+# Switch DB_NAME to another fresh system-temp database and migrate before the combined run.
+uv run python manage.py benchmark_run --fixture $fixture --experiment fit_requirements --variant combined --out (Join-Path $env:TEMP 'fit-combined')
+uv run python manage.py benchmark_fit_review --separate (Join-Path $env:TEMP 'fit-separate') --combined (Join-Path $env:TEMP 'fit-combined') --out (Join-Path $env:TEMP 'fit-review')
+```
+
+Each run writes `review.md` with its measured column; pairing writes both variants side by
+side in `fit-review/review.md`, refusing mismatched fixture/model conditions. `results.json`
+retains full fit output, normalised requirements, planning/skip decisions and per-job request
+metrics. Review includes request counts, elapsed time, failures, repairs, fit/score/skip,
+missing parts and language/letter quotes, without CV text. Use a representative fixture with
+explicit German/English applications, required and unwanted letters, ambiguous instructions,
+missing postings and skip jobs, plus stored owner requirements. Explicit IDs allow missing
+postings to be exported. Labels remain pending until the owner checks semantic accuracy
+against the original postings, particularly omissions and ambiguous/missing text. Fakes prove
+execution and validation only; they establish no real latency or quality advantage. Retain
+the separate production path until measured runs and owner labels support a decision.
