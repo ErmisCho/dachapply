@@ -1,7 +1,7 @@
 ---
 id: TASK-372.2
 title: Turn only unresolved error groups into linked Backlog bugs
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-11 15:26'
 updated_date: '2026-11-12 16:55'
@@ -25,12 +25,12 @@ Implement the triage part of TASK-372 after durable error intake exists. A repea
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Triage uses only unresolved new/changed occurrences; persisting a cursor/checkpoint and task linkage prevents unchanged evidence from being re-analysed after every session or restart.
-- [ ] #2 Equivalent failures are grouped by a stable technical signature with environment/build context; one unresolved group links to at most one active bug task, including retries after a partially failed task-creation attempt.
-- [ ] #3 Created bugs contain a sanitized symptom, source/time/affected operation, observed evidence, occurrence count and verification-oriented acceptance criteria; unknown reproduction steps and root causes are labelled unknown rather than fabricated.
-- [ ] #4 Expected user cancellations, quota limits and transient operational failures are captured/classified without automatically flooding the product-bug backlog; actionable/retry-exhausted failures have a documented disposition, not silent suppression.
-- [ ] #5 A dry-run shows proposed new/updated tasks and classifications; normal operation uses the Backlog CLI and stores private evidence links without copying raw sensitive logs into shared task files.
-- [ ] #6 The agreed maintenance/session entrypoint can request the unresolved-only list; tests demonstrate idempotence, grouping, redaction and recovery from CLI failure without paid model calls.
+- [x] #1 Triage uses only unresolved new/changed occurrences; persisting a cursor/checkpoint and task linkage prevents unchanged evidence from being re-analysed after every session or restart.
+- [x] #2 Equivalent failures are grouped by a stable technical signature with environment/build context; one unresolved group links to at most one active bug task, including retries after a partially failed task-creation attempt.
+- [x] #3 Created bugs contain a sanitized symptom, source/time/affected operation, observed evidence, occurrence count and verification-oriented acceptance criteria; unknown reproduction steps and root causes are labelled unknown rather than fabricated.
+- [x] #4 Expected user cancellations, quota limits and transient operational failures are captured/classified without automatically flooding the product-bug backlog; actionable/retry-exhausted failures have a documented disposition, not silent suppression.
+- [x] #5 A dry-run shows proposed new/updated tasks and classifications; normal operation uses the Backlog CLI and stores private evidence links without copying raw sensitive logs into shared task files.
+- [x] #6 The agreed maintenance/session entrypoint can request the unresolved-only list; tests demonstrate idempotence, grouping, redaction and recovery from CLI failure without paid model calls.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -71,4 +71,5 @@ $env:UV_CACHE_DIR = Join-Path $env:TEMP 'dachapply-3722-uv'; $env:PYTHONDONTWRIT
 $env:UV_CACHE_DIR = Join-Path $env:TEMP 'dachapply-3722-uv'; $env:PYTHONDONTWRITEBYTECODE='1'; uv run python -c "import os,pytest; original=os.mkdir; os.mkdir=lambda path,mode=0o777,**kw: original(path,0o777,**kw); raise SystemExit(pytest.main(['-q','--tb=line','-p','no:cacheprovider','--basetemp',os.path.join(os.environ['TEMP'],'dachapply-3722-timing-1'),'jobradar/tests/test_analysis_time_limit.py::test_the_fit_analysis_kills_a_model_process_that_outlives_the_limit','jobradar/tests/test_analysis_time_limit.py::test_model_discovery_returns_although_a_server_it_started_holds_the_output']))"
 - No PERFECT evaluation claimed: full validation is not green and frontend checks cannot execute with missing offline dependencies. Resolution/regression (TASK-372.3) remains deliberately unimplemented.
 - Final code-only follow-up made the new-file TASK-372.2 markers explicit hash comments; behavior unchanged. All changes remain uncommitted, task status/AC unchanged.
+2026-11-13 (coordinator): 34 tests (CLI faked); review fix: updates append notes instead of replacing descriptions (PR 405).
 <!-- SECTION:NOTES:END -->

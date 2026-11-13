@@ -1,7 +1,7 @@
 ---
 id: TASK-372.1
 title: Collect durable sanitized Dachapply error occurrences
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-11 15:26'
 updated_date: '2026-11-12 14:07'
@@ -24,12 +24,12 @@ Implement the capture part of TASK-372. Existing errors are split between Django
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An explicit tested coverage matrix accounts for backend exceptions/500s, pipeline/document/provider/compile/mailbox failures, browser exceptions and failing CI/deploy runs; unavailable sources report why and how they become available, never silently appear covered.
-- [ ] #2 Each captured occurrence has a stable ID, time, source/environment, operation/run/build identity when available, sanitized error type/summary and safe local evidence reference; ordinary successful or warning-only logs do not become errors.
-- [ ] #3 Occurrence records and intake progress survive restarts and normal source rotation; replay does not create duplicates, while two genuinely separate identical failures are retained as separate occurrences.
-- [ ] #4 Secrets, auth/session data, provider prompts, candidate/CV contents, mail bodies and unsafe filesystem/connection details stay out of safe summaries; retained private evidence is owner-restricted and excluded from git/public exports.
-- [ ] #5 Collection has bounded storage/work and documented retention without silently dropping unresolved evidence; a collector failure neither breaks application work nor causes recursive logging storms, and exposes a safe degraded-health signal.
-- [ ] #6 Hermetic tests exercise source intake, caught failures, redaction, repeated ingestion, concurrent writes, restart/rotation and collection failure; no production access or real provider failure is needed.
+- [x] #1 An explicit tested coverage matrix accounts for backend exceptions/500s, pipeline/document/provider/compile/mailbox failures, browser exceptions and failing CI/deploy runs; unavailable sources report why and how they become available, never silently appear covered.
+- [x] #2 Each captured occurrence has a stable ID, time, source/environment, operation/run/build identity when available, sanitized error type/summary and safe local evidence reference; ordinary successful or warning-only logs do not become errors.
+- [x] #3 Occurrence records and intake progress survive restarts and normal source rotation; replay does not create duplicates, while two genuinely separate identical failures are retained as separate occurrences.
+- [x] #4 Secrets, auth/session data, provider prompts, candidate/CV contents, mail bodies and unsafe filesystem/connection details stay out of safe summaries; retained private evidence is owner-restricted and excluded from git/public exports.
+- [x] #5 Collection has bounded storage/work and documented retention without silently dropping unresolved evidence; a collector failure neither breaks application work nor causes recursive logging storms, and exposes a safe degraded-health signal.
+- [x] #6 Hermetic tests exercise source intake, caught failures, redaction, repeated ingestion, concurrent writes, restart/rotation and collection failure; no production access or real provider failure is needed.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -73,4 +73,5 @@ Baseline proof (same environment, plus DJANGO_SETTINGS_MODULE=config.settings_te
 uv run python -c "import os,subprocess,pytest,django; mkdir=os.mkdir; os.mkdir=lambda path,mode=511,*,dir_fd=None: mkdir(path,511,dir_fd=dir_fd); django.setup(); from jobradar.services import application_prep,cv_generator; [(exec(compile(subprocess.check_output(['git','show','HEAD:backend/jobradar/services/'+name+'.py']).decode(),'<baseline '+name+'>','exec'),module.__dict__)) for name,module in [('cv_generator',cv_generator),('application_prep',application_prep)]]; raise SystemExit(pytest.main(['-q','--tb=line','-p','no:cacheprovider','jobradar/tests/test_analysis_time_limit.py::test_the_fit_analysis_kills_a_model_process_that_outlives_the_limit']))"
 Baseline result: 1 failed in 7.55s, identical subprocess.TimeoutExpired while waiting for the sleeping child. Initial isolated changed-code repro: 2 passed, 2 failed (timeout + mailbox adapter), before mailbox fix.
 No migration, commit, push, branch operation, AC check or status change. No browser/CI/deploy/historical-file adapter, Backlog task creation, or resolution implementation. Azure production remains explicitly unavailable under this documented local-only store design.
+2026-11-13 (coordinator): 17+1 hermetic tests, full suite green in CI; local-only opt-in store (ERROR_OCCURRENCE_LOCAL_DB), production listed as unavailable in the coverage matrix; review fix: capture a pipeline failure once (PR 401).
 <!-- SECTION:NOTES:END -->

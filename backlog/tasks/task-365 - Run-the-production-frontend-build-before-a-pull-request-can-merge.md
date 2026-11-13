@@ -1,7 +1,7 @@
 ---
 id: TASK-365
 title: Run the production frontend build before a pull request can merge
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-11 14:46'
 labels:
@@ -21,8 +21,14 @@ The PR test job currently runs npm ci, npx tsc --noEmit and npm test, but not np
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The required pull-request check runs the real production frontend build from the committed lockfile, and a bundling failure fails that required check.
-- [ ] #2 Existing frontend tests and TypeScript validation remain covered; avoid redundant separate typechecking if the canonical production build already performs it.
-- [ ] #3 No deployment is triggered by opening/merging a PR and manual deployment gates remain intact.
-- [ ] #4 A known-invalid bundling input is demonstrated to fail the check, while the normal project build passes; owner approval is obtained before merging any CI-gate change.
+- [x] #1 The required pull-request check runs the real production frontend build from the committed lockfile, and a bundling failure fails that required check.
+- [x] #2 Existing frontend tests and TypeScript validation remain covered; avoid redundant separate typechecking if the canonical production build already performs it.
+- [x] #3 No deployment is triggered by opening/merging a PR and manual deployment gates remain intact.
+- [x] #4 A known-invalid bundling input is demonstrated to fail the check, while the normal project build passes; owner approval is obtained before merging any CI-gate change.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-13 (coordinator): verified: PR CI runs npm run build; a throwaway missing-CSS import failed run 43229343068 at "Frontend production build", clean branch passed; deploy stays workflow_dispatch; owner approved before merge (PR 400).
+<!-- SECTION:NOTES:END -->
