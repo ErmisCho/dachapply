@@ -66,3 +66,21 @@ Keep the current default until measured benefit and quality/data-safety review s
 `(jobs, user, workers, variant)` and returning preparation states in job order. TASK-368/369 can
 add modes using the same fixture, request recorder and results contract; no modes for those
 experiments are implemented here. `--variant` is reserved for those modes.
+
+<!-- TASK-369 -->
+For the package experiment use `--experiment package` with the same exported fixture
+and a fresh scratch database/output directory as above. Omitting `--variant` runs
+`separate` and `combined` sequentially in isolated workspaces and writes `review.md`
+with both arms side by side. `--variant separate` or `--variant combined` runs just
+that arm (the other report column remains unrun). Workers do not affect this sequential
+experiment. Model/effort, candidate evidence, template selection and all alternative
+letters are matched; only the recommended CV/letter request is combined. Mixed-language
+pairs use each document's own template language. Short messages remain separate.
+Existing generator validation, compilation and repair apply to both arms; repairs
+may increase request count beyond the one initial combined request. Ready unrelated
+variants are reused on retry. Failures retain independently usable files.
+
+Review PDF paths/pages, required language, page/layout checklist and factual accuracy
+per job; record manual corrections and the owner decision in `review.md`. Counts,
+elapsed seconds, failures and repairs are reported, with request details in results.json.
+This experiment does not establish a quality win automatically or change production defaults.
