@@ -458,3 +458,100 @@ def test_a_scheduled_continuation_can_be_cancelled(owner, timers, monkeypatch):
     assert cv_tasks._tasks['waiting']['status'] == 'cancelled' and cv_tasks._reruns == {}
     _at(monkeypatch, '2026-10-19T19:30:00+02:00')
     assert application_prep.retry_due() == 0
+
+
+# TASK-375: Skip stops every row for the job and remains dormant after a status undo.
+@pytest.mark.parametrize('state', ['queued', 'running', 'blocked', 'analysis'])
+def test_queue_skip_stops_job_and_undo_starts_nothing(owner, client, tasks, monkeypatch, state, django_capture_on_commit_callbacks):
+    from threading import Event
+    job = _job(owner, requirements=_req('de'))
+    stop = Event()
+    if state in ('queued', 'running'):
+        if state == 'queued':
+            application_prep.prepare(_job(owner, requirements=_req('de')).id, owner)
+        application_prep.prepare(job.id, owner)
+    else:
+        application_prep._save(job, owner.pk, lambda prep: prep.update(reason='Blocked' if state == 'blocked' else '', pipeline={'stage': 'analysing'} if state == 'analysis' else {}))
+    monkeypatch.setattr(application_prep, '_stops', {job.id: (stop, False)})
+    started = list(tasks['started'])
+    response = client.post(ACTION, {'job_id':job.id, 'key':'', 'action':'skip'}, format='json')
+    assert response.status_code == 200, response.data
+    job.refresh_from_db()
+    assert job.status == 'skipped' and stop.is_set()
+    assert not [row for row in response.data['items'] if row['job_id'] == job.id]
+    application_prep.prepare(job.id, owner)
+    application_prep.start_pipeline(job.id, owner, force=True)
+    with django_capture_on_commit_callbacks(execute=True):
+        assert client.patch(f'/api/jobs/{job.id}/', {'status':'to_apply'}, format='json').status_code == 200
+    application_prep.run_daily(owner)
+    assert tasks['started'] == started
+    assert not any(entry[0] == job.id for entry in application_prep._queue)
+
+
+# TASK-376: cancelled documents survive process-state loss, preserve completed siblings, and restart explicitly.
+def test_cancelled_document_restart_after_server_restart(owner, client, tasks, monkeypatch):
+    job = _job(owner, requirements=_req('de', cover_letter='required'))
+    application_prep.prepare(job.id, owner)
+    tasks['end']('task-1', artifacts={'cv_pdf':'finished.pdf'})
+    ready = dict(_variant(job, owner, 'cv-de'))
+    assert client.post(ACTION, {'job_id':job.id, 'key':'letter-de', 'action':'cancel'}, format='json').status_code == 200
+    tasks['end']('task-2', status='cancelled')
+    monkeypatch.setattr(application_prep, '_queue', [])
+    tasks['live'].clear()
+    application_prep.resume_queue()
+    assert _variant(job, owner, 'letter-de')['status'] == 'cancelled'
+    response = client.post(ACTION, {'job_id':job.id, 'key':'letter-de', 'action':'restart'}, format='json')
+    assert response.status_code == 200, response.data
+    assert _variant(job, owner, 'cv-de') == ready
+    assert tasks['started'] == [(job.id,'cv-de'), (job.id,'letter-de'), (job.id,'letter-de')]
+
+
+# TASK-376: restart validates the current posting and daily document budget.
+@pytest.mark.parametrize('changed', [False, True])
+def test_document_restart_rechecks_state_and_limit(owner, client, tasks, changed):
+    from jobradar.models import UserProfile
+    job = _job(owner, requirements=_req('de'))
+    application_prep.prepare(job.id, owner)
+    application_prep.queue_action(owner, job.id, 'cv-de', 'cancel')
+    if changed:
+        JobLead.objects.filter(pk=job.pk).update(original_source_text=POSTING+' Changed responsibilities.')
+    else:
+        UserProfile.objects.filter(user=owner).update(daily_prepare_limit=0)
+    response = client.post(ACTION, {'job_id':job.id, 'key':'cv-de', 'action':'restart'}, format='json')
+    assert response.status_code == 400
+    assert len(tasks['started']) == 1
+
+
+# TASK-376: requirements cancellation records its own step even after fit analysis finished.
+def test_cancelled_requirements_restart_reuses_fit_and_checks_budget(owner, client, tasks, monkeypatch):
+    from jobradar.models import UserProfile
+    from threading import Event
+    job = _job(owner, requirements={})
+    application_prep._save(job, owner.pk, lambda prep: prep.update(pipeline={'stage':'analysed'}, reason=application_prep.ANALYSING))
+    monkeypatch.setattr(application_prep, '_analysing', {job.id})
+    monkeypatch.setattr(application_prep, '_stops', {job.id:(Event(),False)})
+    application_prep.queue_action(owner, job.id, '', 'cancel')
+    monkeypatch.setattr(application_prep, '_analysing', set())
+    monkeypatch.setattr(application_prep, '_stops', {})
+    application_prep.resume_queue()
+    assert application_prep._state(job, owner)['pipeline']['resume_stage'] == 'requirements'
+    UserProfile.objects.filter(user=owner).update(daily_analyse_limit=0)
+    assert client.post(ACTION, {'job_id':job.id, 'action':'restart'}, format='json').status_code == 400
+    assert application_prep._state(job, owner)['pipeline']['stage'] == 'cancelled'
+    UserProfile.objects.filter(user=owner).update(daily_analyse_limit=None)
+    prepared=[]
+    monkeypatch.setattr(application_prep, 'prepare', lambda *args, **kwargs: prepared.append(args))
+    monkeypatch.setattr(application_prep, 'start_pipeline', lambda *args, **kwargs: pytest.fail('finished fit must be reused'))
+    assert client.post(ACTION, {'job_id':job.id, 'action':'restart'}, format='json').status_code == 200
+    assert prepared == [(job.id,owner)]
+
+
+# TASK-376: a cancelled model must release its old run before Restart can take another slot.
+def test_document_restart_waits_for_cancelled_worker(owner, client, tasks, settings):
+    settings.PREP_QUEUE_CONCURRENCY = 2
+    job = _job(owner, requirements=_req('de'))
+    application_prep.prepare(job.id, owner)
+    application_prep.queue_action(owner, job.id, 'cv-de', 'cancel')
+    response = client.post(ACTION, {'job_id':job.id, 'key':'cv-de', 'action':'restart'}, format='json')
+    assert response.status_code == 400 and 'still stopping' in response.data['detail']
+    assert len(tasks['started']) == 1

@@ -16,11 +16,12 @@ export type QueueSummary={done:number;total:number;analyses_left:number;document
 export type QueueData={concurrency:number;summary?:QueueSummary;items:QueueItem[]}
 // TASK-322: 'continue' releases a job held for an incomplete posting; it acts on the whole job, so its key is ''.
 // TASK-360: 'cloud' runs a running or failed analysis again with cloud models only, also on the whole job.
-export type QueueAction='cancel'|'retry'|'first'|'continue'|'cloud'
+// TASK-375 TASK-376: job-wide skip and durable restart.
+export type QueueAction='cancel'|'retry'|'first'|'continue'|'cloud'|'skip'|'restart'
 export type QueueSnapshot={data:QueueData|null;error:string;busy:string[];failed:{id:string;detail:string}|null}
 
 const PATH='/jobs/application-prep/queue/'
-const ACTIONS:Record<QueueAction,string>={first:'Move to front',cancel:'Cancel',retry:'Retry',continue:'Continue anyway',cloud:'Use cloud models only this time'}
+const ACTIONS:Record<QueueAction,string>={skip:'Skip',restart:'Restart',first:'Move to front',cancel:'Cancel',retry:'Retry',continue:'Continue anyway',cloud:'Use cloud models only this time'}
 const actionId=(item:QueueItem,action:QueueAction)=>`${item.job_id}:${item.key}:${action}`
 
 let snap:QueueSnapshot={data:null,error:'',busy:[],failed:null}
@@ -92,12 +93,12 @@ export function QueueView({snap,onAction=queueAction}:{snap:QueueSnapshot;onActi
       {item.document&&<><progress className="mt-1 block h-2 w-full appearance-none overflow-hidden rounded-full bg-slate-200 dark:bg-white/10 [&::-moz-progress-bar]:bg-blue-500 [&::-webkit-progress-bar]:bg-transparent [&::-webkit-progress-value]:bg-blue-500" max={100} value={item.progress} aria-label={`${item.label} progress`}/>
       <p className="text-xs text-slate-500">{Math.round(item.progress)}%{item.eta_seconds?` · ${timeLeft(item.eta_seconds)}`:''}</p></>}
       {!item.document&&item.eta_seconds!=null&&<p className="text-xs text-slate-500">{item.stage==='models'&&item.started_at?`${elapsed(item.started_at)} so far · `:''}{about(item.eta_seconds)} left</p>}
-      {item.cloud_retry&&<div className="mt-1">{button(item,'cloud')}</div>}{failure(item)}</>}</Section>
+      {/* TASK-375 TASK-376 */}{item.key!=='interview-prep'&&<div className="mt-1 flex gap-1">{button(item,'cancel')}{button(item,'skip')}</div>}{item.cloud_retry&&<div className="mt-1">{button(item,'cloud')}</div>}{failure(item)}</>}</Section>
     <Section title="Queued" items={of('queued')}>{item=><>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">#{item.position} {item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{button(item,'first')}{button(item,'cancel')}</span></div>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">#{item.position} {item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{/* TASK-375 */}{button(item,'first')}{button(item,'cancel')}{button(item,'skip')}</span></div>
       {item.eta_seconds!=null&&<p className="text-xs text-slate-500">Ready in {about(item.eta_seconds)}</p>}{failure(item)}</>}</Section>
     <Section title="Blocked" items={of('blocked')}>{item=><>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{item.needs_source_choice?<Link className="btn-muted" to={`/jobs/${item.job_id}#job-text`}>Choose job text</Link>:button(item,'retry')}{item.incomplete&&button(item,'continue')}{item.cloud_retry&&button(item,'cloud')}</span></div>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><span className="ml-auto flex gap-1">{item.needs_source_choice?<Link className="btn-muted" to={`/jobs/${item.job_id}#job-text`}>Choose job text</Link>:button(item,'retry')}{item.incomplete&&button(item,'continue')}{item.cloud_retry&&button(item,'cloud')}{/* TASK-375 */}{button(item,'skip')}</span></div>
       <p className="text-xs text-red-700">{item.error}</p>{retries(item)}{failure(item)}</>}</Section>
     <Section title="Done" items={of('ready','skipped')}>{item=><>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><Link className="btn-muted ml-auto" to={`/jobs/${item.job_id}`}>Review</Link></div>
@@ -105,7 +106,7 @@ export function QueueView({snap,onAction=queueAction}:{snap:QueueSnapshot;onActi
       {item.files.length>0&&<ul className="mt-1 break-all text-xs text-slate-600">{item.files.map(f=><li key={f}>{f}</li>)}</ul>}
       {item.finished_at&&<p className="text-xs text-slate-500">Finished {when(item.finished_at)}</p>}</>}</Section>
     <Section title="Failed / cancelled" items={of('failed','cancelled')}>{item=><>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><span className="ml-auto">{button(item,'retry')}</span></div>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{item.label}</span><Job item={item}/><span className="ml-auto">{/* TASK-376 */}{button(item,item.status==='cancelled'?'restart':'retry')}</span></div>
       <p className={item.status==='cancelled'?'text-xs text-slate-600':'text-xs text-red-700'}>{item.status==='cancelled'?'Cancelled':`Failed: ${item.error||'unknown error'}`}</p>{retries(item)}{failure(item)}</>}</Section>
   </main>
 }

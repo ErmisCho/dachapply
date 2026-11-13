@@ -11,7 +11,7 @@ import {test} from 'node:test'
 const frontend=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..')
 const backend=path.resolve(frontend,'../backend')
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))
-test('cloud retry and usage-limit recovery through real routes',{timeout:120000},async()=>{
+function fixtureTest(name,scenario){test(name,{timeout:120000},async()=>{
   const temp=await mkdtemp(path.join(tmpdir(),'dachapply-recovery-'))
   const servers=[];let browser,page,log='',passed=false,django
   const origin='http://127.0.0.1:4396'
@@ -51,6 +51,39 @@ test('cloud retry and usage-limit recovery through real routes',{timeout:120000}
     assert.equal(login.status(),200,await login.text())
     const user=await (await context.request.get(origin+'/api/auth/me/')).json()
     await page.addInitScript(user=>{localStorage.setItem('dachapply_user',JSON.stringify(user));localStorage.setItem('dachapply_tour_done','true')},user)
+    await scenario({page,context,origin,command,messages,until,errors,jobs})
+    passed=true
+  }catch(error){
+    if(page)await page.screenshot({path:path.join(temp,'failure.png')}).catch(()=>{})
+    await writeFile(path.join(temp,'failure.txt'),`${error.stack}\n${log.slice(-16000)}`)
+    console.error(`TASK-366 diagnostics: ${temp}`)
+    throw error
+  }finally{
+    const cleanupErrors=[]
+    await browser?.close().catch(()=>{})
+    for(const child of servers.reverse()){
+      if(child.exitCode!==null){if(child===django&&child.exitCode!==0)cleanupErrors.push(`Backend exited ${child.exitCode}`);continue}
+      try{
+        child.stdin.write('{"command":"stop"}\n')
+        for(let i=0;i<50&&child.exitCode===null;i++)await sleep(100)
+        if(child.exitCode===null){
+          if(process.platform==='win32')execFileSync('taskkill',['/PID',String(child.pid),'/T','/F'],{stdio:'pipe',timeout:10000})
+          else process.kill(-child.pid,'SIGKILL')
+        }
+        await until(()=>child.exitCode!==null||child.signalCode!==null)
+        if(child===django)assert.equal(child.exitCode,0,'Backend fixture did not shut down cleanly')
+      }catch(error){cleanupErrors.push(`Cleanup PID ${child.pid}: ${error.message}`);passed=false}
+    }
+    if(passed)await rm(temp,{recursive:true,force:true})
+    if(cleanupErrors.length){
+      await writeFile(path.join(temp,'failure.txt'),`${cleanupErrors.join('\n')}\n${log.slice(-16000)}`)
+      console.error(`TASK-366 diagnostics: ${temp}`)
+    }
+    assert.deepEqual(cleanupErrors,[])  // TASK-366: cleanup failures fail the check too.
+  }
+})}
+
+fixtureTest('cloud retry and usage-limit recovery through real routes',async({page,context,origin,command,messages,until,errors})=>{
     await page.goto(origin+'/settings/profile')
     const limit=page.locator('#analysis-time-limit')
     await limit.fill('2')
@@ -87,33 +120,43 @@ test('cloud retry and usage-limit recovery through real routes',{timeout:120000}
     command('evidence');await until(()=>messages.some(m=>m.calls!==undefined),'evidence msg')
     assert.deepEqual(messages.find(m=>m.calls!==undefined),{calls:2,identical:true})
     assert.deepEqual(errors,[])
-    passed=true
-  }catch(error){
-    if(page)await page.screenshot({path:path.join(temp,'failure.png')}).catch(()=>{})
-    await writeFile(path.join(temp,'failure.txt'),`${error.stack}\n${log.slice(-16000)}`)
-    console.error(`TASK-366 diagnostics: ${temp}`)
-    throw error
-  }finally{
-    const cleanupErrors=[]
-    await browser?.close().catch(()=>{})
-    for(const child of servers.reverse()){
-      if(child.exitCode!==null){if(child===django&&child.exitCode!==0)cleanupErrors.push(`Backend exited ${child.exitCode}`);continue}
-      try{
-        child.stdin.write('{"command":"stop"}\n')
-        for(let i=0;i<50&&child.exitCode===null;i++)await sleep(100)
-        if(child.exitCode===null){
-          if(process.platform==='win32')execFileSync('taskkill',['/PID',String(child.pid),'/T','/F'],{stdio:'pipe',timeout:10000})
-          else process.kill(-child.pid,'SIGKILL')
-        }
-        await until(()=>child.exitCode!==null||child.signalCode!==null)
-        if(child===django)assert.equal(child.exitCode,0,'Backend fixture did not shut down cleanly')
-      }catch(error){cleanupErrors.push(`Cleanup PID ${child.pid}: ${error.message}`);passed=false}
-    }
-    if(passed)await rm(temp,{recursive:true,force:true})
-    if(cleanupErrors.length){
-      await writeFile(path.join(temp,'failure.txt'),`${cleanupErrors.join('\n')}\n${log.slice(-16000)}`)
-      console.error(`TASK-366 diagnostics: ${temp}`)
-    }
-    assert.deepEqual(cleanupErrors,[])  // TASK-366: cleanup failures fail the check too.
-  }
+})
+
+// TASK-375 TASK-376: Skip, Cancel and Restart through the real Queue page.
+fixtureTest('queue Skip, Cancel and Restart',async({page,origin,command,messages,until,errors})=>{
+  const stats=async()=>{const n=messages.filter(m=>m.stats).length;command('stats');await until(()=>messages.filter(m=>m.stats).length>n,'stats');return messages.filter(m=>m.stats).at(-1).stats}
+  const row=(region,company)=>page.getByRole('region',{name:region,exact:true}).getByRole('listitem').filter({hasText:company})
+  command('lenient');command('block')
+  await page.goto(origin+'/queue')
+  // 1. Cancel a running analysis, then Restart it.
+  command('start:2')
+  const running=row('Running','Cancel fixture')
+  await running.getByRole('button',{name:'Skip',exact:true}).waitFor()
+  await running.getByRole('button',{name:'Cancel',exact:true}).click()
+  const cancelled=row('Failed / cancelled','Cancel fixture')
+  await cancelled.getByText('Cancelled',{exact:true}).waitFor()
+  command('release')  // lets the abandoned model discovery end, so the restart is not refused as "still stopping"
+  const restart=cancelled.getByRole('button',{name:'Restart',exact:true})
+  await until(async()=>{await restart.click().catch(()=>{});return (await stats()).eval_jobs.length>0},'restarted analysis ran')
+  await row('Done','Cancel fixture').waitFor()
+  assert.equal(await page.getByRole('region',{name:'Failed / cancelled',exact:true}).count(),0)
+  // 2. Skip a running analysis: no model call follows.
+  command('block');command('start:3')
+  await until(async()=>(await stats()).skip_stage==='models','job 4 analysing');await page.reload()  // the idle page polls slowly
+  const skipping=row('Running','Skip fixture')
+  await skipping.getByRole('button',{name:'Cancel',exact:true}).waitFor()
+  await skipping.getByRole('button',{name:'Skip',exact:true}).click()
+  await until(async()=>await page.getByText('Skip fixture').count()===0,'skipped job leaves the queue')  // job status becomes skipped
+  assert.equal(await page.getByRole('region',{name:'Blocked',exact:true}).count(),0)
+  command('release');await new Promise(r=>setTimeout(r,1500))
+  const before=await stats();assert.equal(before.eval_jobs.length,1,'a skipped job must make no further model call')
+  // 3. Cancel the running letter, Restart it: the finished CV is not generated again.
+  command('docs');await until(async()=>(await stats()).doc_calls.includes('letter-en'),'letter started');await page.reload()
+  const letter=row('Running','Doc fixture').filter({hasText:/letter/i})
+  await letter.getByRole('button',{name:'Cancel',exact:true}).click()
+  const stopped=row('Failed / cancelled','Doc fixture')
+  await stopped.getByRole('button',{name:'Restart',exact:true}).click()
+  await row('Done','Doc fixture').filter({hasText:/letter/i}).waitFor()
+  assert.deepEqual((await stats()).doc_calls,['cv-en','letter-en','letter-en'])
+  assert.deepEqual(errors,[])
 })

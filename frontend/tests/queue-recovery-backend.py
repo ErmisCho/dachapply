@@ -38,7 +38,7 @@ from django.core.servers.basehttp import ThreadedWSGIServer, WSGIRequestHandler
 from django.core.wsgi import get_wsgi_application
 from jobradar.models import CvAsset, JobLead, UserProfile
 from jobradar.services import application_prep as prep, cv_generator as generator, cv_tasks, job_evaluator
-from jobradar.tests.test_application_prep import POSTING
+from jobradar.tests.test_application_prep import POSTING, _req
 
 # TASK-366: deny external sockets and subprocesses even if a fixture misses a provider boundary.
 def audit(event, args):
@@ -52,8 +52,12 @@ call_command('createcachetable', verbosity=0)
 user = User.objects.create_user('recovery-test', password='fixture-password')
 UserProfile.objects.update_or_create(user=user, defaults={'can_generate_cv': True, 'candidate_profile': 'Synthetic engineer', 'candidate_evidence': 'Synthetic Python experience.'})
 CvAsset.objects.create(user=user, kind=CvAsset.KIND_CV, key='en', language='en', label='Fixture CV', filename='fixture.tex', source='Synthetic CV')
+CvAsset.objects.create(user=user, kind=CvAsset.KIND_LETTER, key='letter-en', language='en', label='Fixture letter', filename='letter.tex', source='Synthetic letter')
 jobs = [JobLead.objects.create(created_by=user, company=name, title='Engineer', original_source_text=POSTING, url='https://example.invalid/jobs/cloud' if name[0]=='C' else '') for name in ('Cloud fixture', 'Limit fixture')]
 options = [{'provider': 'openai', 'key': 'gpt-5.5', 'label': 'Fixture cloud', 'efforts': ['medium'], 'default_effort': 'medium', 'tools': True, 'fast_tier': False}]
+# TASK-375 TASK-376: extra jobs for the Skip / Cancel / Restart test (appended, so jobs[0] and jobs[1] keep their meaning).
+jobs += [JobLead.objects.create(created_by=user, company=name, title='Engineer', original_source_text=POSTING, url='https://example.invalid/jobs/' + name[0]) for name in ('Cancel fixture', 'Skip fixture')]
+jobs.append(JobLead.objects.create(created_by=user, company='Doc fixture', title='Engineer', status='reviewed', original_source_text=POSTING, application_requirements=_req('en', cover_letter='required')))
 release = threading.Event()
 stopping = threading.Event()  # TASK-366: discovery release must not cancel generation.
 calls = []
@@ -65,12 +69,37 @@ generator._discover_model_options = discover
 generator.cloud_model_options = lambda: options
 prep.cloud_model_options = generator.cloud_model_options
 prep.fetch_missing_sources = lambda jobs: None
+lenient = threading.Event()  # TASK-375: the Skip/Cancel test does not exercise cloud-only selection.
+eval_jobs = []
+doc_calls = []
+doc_release = threading.Event()
 def evaluate(*args, **kwargs):
-    assert getattr(generator._cloud, 'on', False), 'TASK-366 retry did not select cloud-only models'
+    eval_jobs.append(args[0][0])
+    if not lenient.is_set():
+        assert getattr(generator._cloud, 'on', False), 'TASK-366 retry did not select cloud-only models'
     return {'ok': True, 'preview': [{'recommendation': 'skip', 'fit_score': 40}]}
 job_evaluator.evaluate_jobs = evaluate
 
+def generate_doc(*args, **kwargs):
+    # TASK-376: the cv finishes at once; the first letter blocks until cancelled, a restarted one finishes.
+    create_cv = args[13] if len(args) > 13 else kwargs.get('create_cv', True)
+    key = ('cv-' if create_cv else 'letter-') + args[2]
+    doc_calls.append(key)
+    if key.startswith('letter') and doc_calls.count(key) == 1:
+        until = time.monotonic() + 60
+        while not kwargs['cancelled']() and not stopping.is_set():
+            assert time.monotonic() < until, 'Document cancellation fixture timed out'
+            time.sleep(.05)
+        raise generator.GenerationCancelled
+    prefix = key.split('-')[0]
+    tex = Path(settings_test.CODEX_CV_WORKSPACE) / ('CVs' if prefix == 'cv' else 'output') / f'{key}-{len(doc_calls)}.tex'
+    tex.parent.mkdir(exist_ok=True)
+    tex.write_text(key, encoding='utf-8'); tex.with_suffix('.pdf').write_bytes(b'%PDF')
+    return b'zip', 'a.zip', {f'{prefix}_tex': str(tex), f'{prefix}_pdf': str(tex.with_suffix('.pdf'))}
+
 def generate(*args, **kwargs):
+    if args[0].company == 'Doc fixture':
+        return generate_doc(*args, **kwargs)
     # TASK-366: compare all generator inputs except the per-attempt progress/cancellation callbacks.
     inputs = repr((args[:9], args[10:], {k: v for k, v in kwargs.items() if k != 'cancelled'}))
     calls.append(inputs)
@@ -100,6 +129,17 @@ try:
             prep.start_pipeline(jobs[0].pk, user, force=True)
         elif command == 'release':
             release.set()
+        elif command == 'block':
+            release.clear(); generator._model_options_cache['options'] = None  # discovery is cached for 60 s
+        elif command == 'lenient':
+            lenient.set()
+        elif command.startswith('start:'):
+            prep.start_pipeline(jobs[int(command[6:])].pk, user, force=True)
+        elif command == 'docs':
+            prep.validate_model_capability = lambda *a, **k: None
+            prep.prepare(jobs[4].pk, user)
+        elif command == 'stats':
+            print(json.dumps({'stats': {'eval_jobs': eval_jobs, 'doc_calls': doc_calls, 'skip_stage': (prep._state(jobs[3], user).get('pipeline') or {}).get('stage')}}), flush=True)
         elif command == 'evidence':
             print(json.dumps({'calls': len(calls), 'identical': len(calls) == 2 and calls[0] == calls[1]}), flush=True)
         elif command == 'stop':

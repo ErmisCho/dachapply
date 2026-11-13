@@ -340,3 +340,32 @@ def test_with_no_cloud_model_both_cloud_options_say_so(owner, client, workspace,
     assert application_prep._pipeline(job.id, owner.pk) is False
     assert application_prep._state(job, owner)['reason'] == f'Analysis failed: {application_prep.NO_CLOUD}. Press Retry.'
     assert machine['discovered'] == [] and cloud_model['providers'] == []
+
+
+# TASK-375 TASK-376: real worker stop, late completion, and durable restart with no lost posting.
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize('action', ['skip', 'cancel'])
+def test_queue_stops_analysis_and_cancel_survives_restart(owner, client, lanes, monkeypatch, action):
+    job = _jobs(owner, 1)[0]
+    application_prep.start_pipeline(job.id, owner, force=True, reanalyse=application_prep.REANALYSED)
+    _until(lambda: job.id in lanes['entered'])
+    response = client.post(ACTION, {'job_id':job.id, 'key':'', 'action':action}, format='json')
+    assert response.status_code == 200, response.data
+    assert application_prep._state(job, owner)['pipeline']['note'] == application_prep.REANALYSED  # TASK-376
+    _until(lambda: lanes['cancelled'][job.id]())
+    _join_pipelines()
+    assert application_prep._state(job, owner)['pipeline']['stage'] == ('skipped' if action == 'skip' else 'cancelled')
+    lanes['gate'](job.id).set()
+    if action == 'cancel':
+        monkeypatch.setattr(application_prep, '_stops', {})
+        application_prep.resume_queue()
+        assert [row['status'] for row in _items(client) if row['job_id'] == job.id] == ['cancelled']
+        response = client.post(ACTION, {'job_id':job.id, 'key':'', 'action':'restart'}, format='json')
+        assert response.status_code == 200, response.data
+        _join_pipelines()
+        assert lanes['entered'] == [job.id, job.id]
+    else:
+        application_prep.run_daily(owner)
+        assert lanes['entered'] == [job.id]
+    job.refresh_from_db()
+    assert job.original_source_text == POSTING

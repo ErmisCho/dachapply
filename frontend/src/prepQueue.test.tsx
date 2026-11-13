@@ -59,7 +59,8 @@ describe('queue page sections',()=>{
     const failed=section(html,'Failed / cancelled')
     expect(failed).toContain('Failed: provider down')
     expect(failed).toContain('Cancelled')
-    expect(failed.match(/>Retry</g)?.length).toBe(2)
+    expect(failed.match(/>Retry</g)?.length).toBe(1) // TASK-376
+    expect(failed).toContain('>Restart<')
     expect(html).toContain('Up to 2 documents are prepared at a time.')
   })
 
@@ -366,4 +367,12 @@ describe('finding models and the cloud retry (TASK-360)',()=>{
     expect(calls).toEqual([{method:'POST',url:'/api/jobs/application-prep/queue/action/',body:{job_id:50,key:'',action:'cloud'}}])
     expect(section(view({data:{concurrency:2,items:[failed]},failed:queueSnapshot().failed}),'Blocked')).toContain('No cloud model is available')
   })
+})
+
+// TASK-375 TASK-376: controls cover every live row and durable cancelled work.
+it('offers Skip and Cancel on active rows and Restart on cancelled analyses',()=>{
+  const html=view({data:{concurrency:1,items:[item({}),item({job_id:8,key:'',document:null,status:'running',stage:'analysing'}),item({job_id:9,key:'',document:null,status:'blocked'}),item({job_id:10,key:'',document:null,status:'cancelled'})]}})
+  for(const title of ['Running','Queued','Blocked'])expect(section(html,title)).toContain('>Skip<')
+  expect(section(html,'Running')).toContain('>Cancel<')
+  expect(section(html,'Failed / cancelled')).toContain('>Restart<')
 })
