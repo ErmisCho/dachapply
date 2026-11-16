@@ -29,6 +29,10 @@ def _req(posting='en', application='', **documents):
             'source': 'owner'}
 
 
+# TASK-380: a full letter is prepared by default, so a CV-only job is one whose posting refuses letters.
+CV_ONLY = _req('de', '', cover_letter='not_accepted')
+
+
 def _keys(requirements):
     return [variant['key'] for variant in plan_variants(requirements)[0]]
 
@@ -38,9 +42,9 @@ def _keys(requirements):
 def test_clear_instructions_give_one_cv_in_the_application_language_plus_only_wanted_letters():
     # Explicit application language outranks the posting language.
     assert _keys(_req('en', 'de', cover_letter='required')) == ['cv-de', 'letter-de']
-    assert _keys(_req('de', '', short_message='preferred')) == ['cv-de', 'message-de']
-    # Optional is not required or preferred: not generated.
-    assert _keys(_req('en', '', cover_letter='optional')) == ['cv-en']
+    assert _keys(_req('de', '', short_message='preferred')) == ['cv-de', 'letter-de', 'message-de']
+    # TASK-380: optional still gets the default full letter.
+    assert _keys(_req('en', '', cover_letter='optional')) == ['cv-en', 'letter-en']
 
 
 def test_explicitly_unwanted_letters_are_never_generated():
@@ -49,10 +53,11 @@ def test_explicitly_unwanted_letters_are_never_generated():
     assert _keys(_req('en', '', cover_letter='not_accepted', short_message='unclear')) == ['cv-en', 'message-en']
 
 
-def test_absent_and_not_mentioned_follow_the_visible_rule_not_required():
-    assert _keys(_req('de')) == ['cv-de']
-    assert _keys(_req('de', '', cover_letter='not_mentioned', motivation_letter='not_mentioned', short_message='not_mentioned')) == ['cv-de']
-    assert 'not prepared automatically' in application_prep.LETTER_RULE
+def test_absent_and_not_mentioned_get_a_full_letter_by_default():
+    # TASK-380 (owner: "make it always, most of the jobs want it").
+    assert _keys(_req('de')) == ['cv-de', 'letter-de']
+    assert _keys(_req('de', '', cover_letter='not_mentioned', motivation_letter='not_mentioned', short_message='not_mentioned')) == ['cv-de', 'letter-de']
+    assert 'unless the posting says letters are not accepted' in application_prep.LETTER_RULE
 
 
 def test_contradictory_instructions_become_unclear_and_give_a_letter_and_a_message():
@@ -64,7 +69,7 @@ def test_contradictory_instructions_become_unclear_and_give_a_letter_and_a_messa
 
 
 def test_mixed_or_unclear_language_gives_bounded_en_and_de_variants():
-    assert _keys(_req('mixed')) == ['cv-en', 'cv-de']
+    assert _keys(_req('mixed')) == ['cv-en', 'cv-de', 'letter-en', 'letter-de']
     assert _keys(_req('unclear', '', cover_letter='required')) == ['cv-en', 'cv-de', 'letter-en', 'letter-de']
     # The full fallback set: at most CV, full letter and short message per plausible language.
     assert _keys(_req('mixed', '', motivation_letter='unclear')) == ['cv-en', 'cv-de', 'letter-en', 'letter-de', 'message-en', 'message-de']
@@ -211,7 +216,7 @@ def test_prepare_refuses_jobs_outside_new_reviewed_and_to_apply(owner, generator
 @pytest.mark.parametrize('status', ['new', 'reviewed'])
 def test_prepare_accepts_new_and_reviewed_jobs(owner, generator, status):
     # TASK-312 AC1: an apply/maybe evaluation prepares a job before it reaches To apply.
-    application_prep.prepare(_job(owner, status, requirements=_req('de')).id, owner)
+    application_prep.prepare(_job(owner, status, requirements=CV_ONLY).id, owner)
     assert [call['key'] for call in generator['calls']] == ['cv-de']
 
 
@@ -237,7 +242,7 @@ def test_missing_template_starts_nothing(client, owner, generator, django_captur
 def test_reentering_to_apply_after_a_skip_tries_again(client, owner, generator, django_capture_on_commit_callbacks):
     job = _job(owner, requirements={})
     _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
-    JobLead.objects.filter(pk=job.pk).update(application_requirements=_req('de'))
+    JobLead.objects.filter(pk=job.pk).update(application_requirements=CV_ONLY)
     _move(client, job, 'reviewed', django_capture_on_commit_callbacks)
     _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
     assert [call['key'] for call in generator['calls']] == ['cv-de']
@@ -298,7 +303,7 @@ def test_a_failed_variant_leaves_the_others_and_retry_reruns_only_it(client, own
 
 
 def test_a_run_interrupted_by_a_restart_shows_failed_and_is_retried(client, owner, generator, django_capture_on_commit_callbacks):
-    job = _job(owner, requirements=_req('de'))
+    job = _job(owner, requirements=CV_ONLY)
     _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
     application_prep._save(job, owner.pk, lambda prep: prep['variants']['cv-de'].update(status='running', task_id='gone'))
     variants, _ = _state(client, job)
@@ -309,7 +314,7 @@ def test_a_run_interrupted_by_a_restart_shows_failed_and_is_retried(client, owne
 
 
 def test_existing_generated_files_are_never_joined_or_replaced(client, owner, workspace, generator, django_capture_on_commit_callbacks):
-    job = _job(owner, requirements=_req('de'))
+    job = _job(owner, requirements=CV_ONLY)
     existing = workspace / 'CVs' / 'mine.tex'; existing.write_text('owner edit', encoding='utf-8')
     cv_generator._record_artifact_metadata(job, owner.id, {'cv_tex': str(existing)})
     _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
@@ -351,7 +356,7 @@ def _resolve(client, job, text, django_capture_on_commit_callbacks):
 @pytest.mark.parametrize('choice', ['current', 'fetched'])
 def test_choosing_the_job_text_on_a_to_apply_job_starts_preparation(client, owner, generator, django_capture_on_commit_callbacks, choice):
     # TASK-306: PORR stayed on the stale choose-text reason after Use fetched.
-    job = _job(owner, requirements=_req('de'))
+    job = _job(owner, requirements=CV_ONLY)
     fetched = POSTING + ' Fetched again.'
     JobLead.objects.filter(pk=job.pk).update(pending_source_text=fetched)
     _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
@@ -368,14 +373,14 @@ def test_choosing_the_job_text_on_a_to_apply_job_starts_preparation(client, owne
 
 @pytest.mark.parametrize('status', ['new', 'reviewed'])
 def test_choosing_the_job_text_outside_to_apply_starts_nothing(client, owner, generator, django_capture_on_commit_callbacks, status):
-    job = _job(owner, status, requirements=_req('de'))
+    job = _job(owner, status, requirements=CV_ONLY)
     JobLead.objects.filter(pk=job.pk).update(pending_source_text=POSTING + ' Fetched again.')
     _resolve(client, job, POSTING, django_capture_on_commit_callbacks)
     assert generator['calls'] == []
 
 
 def test_a_preparation_failure_never_fails_the_text_choice(client, owner, monkeypatch, django_capture_on_commit_callbacks):
-    job = _job(owner, 'to_apply', requirements=_req('de'))
+    job = _job(owner, 'to_apply', requirements=CV_ONLY)
     called = []
     def boom(*args, **kwargs):
         called.append(args)
@@ -481,16 +486,16 @@ def test_a_failed_analysis_says_why_and_prepare_retries_it(client, owner, genera
 
 def test_analysis_never_overwrites_owner_requirements(client, owner, generator, monkeypatch, django_capture_on_commit_callbacks):
     # Requirements present: no analysis at all, preparation as before.
-    job = _job(owner, requirements=_req('de'))
+    job = _job(owner, requirements=CV_ONLY)
     calls = _model(monkeypatch)
     _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
     assert calls == [] and set(_state(client, job)[0]) == {'cv-de'}
     # An owner edit that lands while the model runs wins over the analysis.
     job = _job(owner, requirements={})
-    _model(monkeypatch, during=lambda: JobLead.objects.filter(pk=job.pk).update(application_requirements=_req('de')))
+    _model(monkeypatch, during=lambda: JobLead.objects.filter(pk=job.pk).update(application_requirements=CV_ONLY))
     _move(client, job, 'to_apply', django_capture_on_commit_callbacks)
     job.refresh_from_db()
-    assert job.application_requirements == _req('de') and set(_state(client, job)[0]) == {'cv-de'}
+    assert job.application_requirements == CV_ONLY and set(_state(client, job)[0]) == {'cv-de'}
 
 
 def test_an_analysis_interrupted_by_a_restart_says_so(client, owner, generator):
@@ -503,8 +508,8 @@ def test_an_analysis_interrupted_by_a_restart_says_so(client, owner, generator):
 
 def test_only_plans_just_that_document_and_an_asked_letter_even_when_none_is_wanted():
     assert [v['key'] for v in plan_variants(_req('mixed', '', cover_letter='required'), 'cv')[0]] == ['cv-en', 'cv-de']
-    assert [v['key'] for v in plan_variants(_req('de', '', short_message='preferred'), 'letter')[0]] == ['message-de']
-    assert [v['key'] for v in plan_variants(_req('de'), 'letter')[0]] == ['letter-de']
+    assert [v['key'] for v in plan_variants(_req('de', '', short_message='preferred'), 'letter')[0]] == ['letter-de', 'message-de']
+    assert [v['key'] for v in plan_variants(CV_ONLY, 'letter')[0]] == ['letter-de']
 
 
 def test_prepare_only_cv_then_only_letter_leaves_the_other_document_alone(client, owner, workspace, generator):
@@ -528,7 +533,7 @@ def test_prepare_only_cv_then_only_letter_leaves_the_other_document_alone(client
 
 def test_a_letter_can_be_added_to_a_job_whose_posting_wanted_none(client, owner, generator):
     _one_german_letter(owner)
-    job = _job(owner, requirements=_req('de'))
+    job = _job(owner, requirements=CV_ONLY)
     application_prep.prepare(job.id, owner)
     assert set(_state(client, job)[0]) == {'cv-de'}
     generator['calls'].clear()
@@ -538,13 +543,13 @@ def test_a_letter_can_be_added_to_a_job_whose_posting_wanted_none(client, owner,
 
 
 def test_only_must_be_cv_or_letter(client, owner, generator):
-    job = _job(owner, requirements=_req('de'))
+    job = _job(owner, requirements=CV_ONLY)
     assert client.post(f'/api/jobs/{job.id}/application-prep/retry/', {'only': 'message'}, format='json').status_code == 400
     assert generator['calls'] == []
 
 
 def test_an_explicit_document_is_not_held_by_files_the_owner_already_generated(client, owner, workspace, generator):
-    job = _job(owner, requirements=_req('de'))
+    job = _job(owner, requirements=CV_ONLY)
     existing = workspace / 'CVs' / 'mine.tex'; existing.write_text('owner edit', encoding='utf-8')
     cv_generator._record_artifact_metadata(job, owner.id, {'cv_tex': str(existing)})
     application_prep.prepare(job.id, owner)
@@ -568,7 +573,7 @@ def test_a_choice_made_before_the_analysis_survives_a_failed_analysis_and_its_re
 
 def test_a_document_whose_worker_died_can_be_prepared_again(client, owner, generator):
     # Codex review: the panel shows it failed (its task is gone), so Prepare CV must rerun it.
-    job = _job(owner, requirements=_req('de'))
+    job = _job(owner, requirements=CV_ONLY)
     application_prep.prepare(job.id, owner)
     application_prep._save(job, owner.pk, lambda prep: prep['variants']['cv-de'].update(status='running', task_id='gone'))
     generator['calls'].clear()
