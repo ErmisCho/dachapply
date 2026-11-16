@@ -497,3 +497,80 @@ def test_an_analysis_interrupted_by_a_restart_says_so(client, owner, generator):
     job = _job(owner, 'to_apply', requirements={})
     application_prep._save(job, owner.pk, lambda prep: prep.update(reason=application_prep.ANALYSING, variants={}))
     assert _state(client, job)[1]['reason'] == application_prep.ANALYSIS_INTERRUPTED
+
+
+# --- TASK-379: the owner prepares just the CV or just the letter ------------------------------
+
+def test_only_plans_just_that_document_and_an_asked_letter_even_when_none_is_wanted():
+    assert [v['key'] for v in plan_variants(_req('mixed', '', cover_letter='required'), 'cv')[0]] == ['cv-en', 'cv-de']
+    assert [v['key'] for v in plan_variants(_req('de', '', short_message='preferred'), 'letter')[0]] == ['message-de']
+    assert [v['key'] for v in plan_variants(_req('de'), 'letter')[0]] == ['letter-de']
+
+
+def test_prepare_only_cv_then_only_letter_leaves_the_other_document_alone(client, owner, workspace, generator):
+    _one_german_letter(owner)
+    job = _job(owner, requirements=_req('de', '', cover_letter='required'))
+    assert client.post(f'/api/jobs/{job.id}/application-prep/retry/', {'only': 'cv'}, format='json').status_code == 200
+    variants, _ = _state(client, job)
+    assert [call['key'] for call in generator['calls']] == ['cv-de'] and set(variants) == {'cv-de'}
+    cv, cv_bytes = variants['cv-de'], {path: Path(path).read_bytes() for path in variants['cv-de']['files'].values()}
+
+    generator['calls'].clear()
+    assert client.post(f'/api/jobs/{job.id}/application-prep/retry/', {'only': 'letter'}, format='json').status_code == 200
+    variants, _ = _state(client, job)
+    assert [call['key'] for call in generator['calls']] == ['letter-de'] and variants['letter-de']['status'] == 'ready'
+    assert variants['cv-de'] == cv and all(Path(path).read_bytes() == data for path, data in cv_bytes.items())
+    # Asked again: both are ready, so nothing is regenerated (Adjust changes a ready one).
+    generator['calls'].clear()
+    client.post(f'/api/jobs/{job.id}/application-prep/retry/', {'only': 'letter'}, format='json')
+    assert generator['calls'] == []
+
+
+def test_a_letter_can_be_added_to_a_job_whose_posting_wanted_none(client, owner, generator):
+    _one_german_letter(owner)
+    job = _job(owner, requirements=_req('de'))
+    application_prep.prepare(job.id, owner)
+    assert set(_state(client, job)[0]) == {'cv-de'}
+    generator['calls'].clear()
+    client.post(f'/api/jobs/{job.id}/application-prep/retry/', {'only': 'letter'}, format='json')
+    assert [call['key'] for call in generator['calls']] == ['letter-de']
+    assert set(_state(client, job)[0]) == {'cv-de', 'letter-de'}
+
+
+def test_only_must_be_cv_or_letter(client, owner, generator):
+    job = _job(owner, requirements=_req('de'))
+    assert client.post(f'/api/jobs/{job.id}/application-prep/retry/', {'only': 'message'}, format='json').status_code == 400
+    assert generator['calls'] == []
+
+
+def test_an_explicit_document_is_not_held_by_files_the_owner_already_generated(client, owner, workspace, generator):
+    job = _job(owner, requirements=_req('de'))
+    existing = workspace / 'CVs' / 'mine.tex'; existing.write_text('owner edit', encoding='utf-8')
+    cv_generator._record_artifact_metadata(job, owner.id, {'cv_tex': str(existing)})
+    application_prep.prepare(job.id, owner)
+    assert generator['calls'] == []
+    client.post(f'/api/jobs/{job.id}/application-prep/retry/', {'only': 'cv'}, format='json')
+    assert [call['key'] for call in generator['calls']] == ['cv-de']
+    assert existing.read_text(encoding='utf-8') == 'owner edit'
+
+
+def test_a_choice_made_before_the_analysis_survives_a_failed_analysis_and_its_retry(client, owner, generator, monkeypatch):
+    # Codex review: retry_due / queue_action call prepare() without the choice; the sidecar keeps it.
+    job = _job(owner, 'to_apply', requirements={})
+    _model(monkeypatch, cv_generator.RecoverableGenerationError('Quota exceeded.'))
+    client.post(f'/api/jobs/{job.id}/application-prep/retry/', {'only': 'cv'}, format='json')
+    assert generator['calls'] == []
+    _model(monkeypatch)
+    application_prep.prepare(job.id, owner, retry=True)
+    assert [call['key'] for call in generator['calls']] == ['cv-en'] and set(_state(client, job)[0]) == {'cv-en'}
+    assert 'only' not in application_prep._state(job, owner)
+
+
+def test_a_document_whose_worker_died_can_be_prepared_again(client, owner, generator):
+    # Codex review: the panel shows it failed (its task is gone), so Prepare CV must rerun it.
+    job = _job(owner, requirements=_req('de'))
+    application_prep.prepare(job.id, owner)
+    application_prep._save(job, owner.pk, lambda prep: prep['variants']['cv-de'].update(status='running', task_id='gone'))
+    generator['calls'].clear()
+    client.post(f'/api/jobs/{job.id}/application-prep/retry/', {'only': 'cv'}, format='json')
+    assert [call['key'] for call in generator['calls']] == ['cv-de'] and _state(client, job)[0]['cv-de']['status'] == 'ready'

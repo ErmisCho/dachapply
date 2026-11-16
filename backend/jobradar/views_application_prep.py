@@ -36,11 +36,15 @@ def application_prep_status(request, job_id):
 @api_view(['POST'])
 @throttle_classes([CVGenerationUserThrottle])
 def application_prep_retry(request, job_id):
-    """Prepare now, or re-run only the failed variants. Never touches a ready or running one."""
+    """Prepare now, or re-run only the failed variants. Never touches a ready or running one.
+    TASK-379: {only: 'cv'|'letter'} prepares just that document."""
     job = _job(request, job_id)
     if not job:
         return _not_found()
-    state = prepare(job.id, request.user, retry=True)
+    only = request.data.get('only') or ''
+    if only not in ('', 'cv', 'letter'):
+        return Response({'detail': "only must be 'cv' or 'letter'."}, status=400)
+    state = prepare(job.id, request.user, retry=True, only=only)
     if state is None:
         return Response({'detail': 'CV generation is unavailable on this server.'}, status=503)
     return Response(state)

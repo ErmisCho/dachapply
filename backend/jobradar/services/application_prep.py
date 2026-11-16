@@ -166,13 +166,15 @@ def _kind_status(documents, types):
     return 'unclear' if 'unclear' in statuses else 'default'
 
 
-def plan_variants(requirements):
+def plan_variants(requirements, only=''):
     """(variants, reason) for an analysed requirements dict -- the AC2/AC3 matrix, nothing else.
 
     Language: the explicit application language, else a clear posting language, else EN and DE.
     Letters: required/preferred ones only; not_accepted never; with nothing wanted, an unclear letter
     or message requirement gives both a full letter and a short message (minus any not accepted);
     not mentioned / optional / absent follow LETTER_RULE (none).
+    TASK-379: `only` ('cv' or 'letter') is the owner asking for just that document; an asked-for letter
+    is a full letter even when the posting wants none.
     """
     if not requirements:
         return [], NOT_ANALYSED
@@ -187,10 +189,12 @@ def plan_variants(requirements):
         letters = [kind for kind, status in kinds.items() if status != 'never']
     else:
         letters = []
+    if only == 'letter':
+        letters = letters or ['letter']
     motivation = _kind_status(documents, ('motivation_letter',)) == 'want' and _kind_status(documents, ('cover_letter',)) != 'want'
     letter_type = 'motivation_letter' if motivation else 'cover_letter'
     return [{'key': f'{document}-{lang}', 'document': document, 'language': lang, 'letter_type': letter_type}
-            for document in ['cv', *letters] for lang in languages], ''
+            for document in {'cv': ['cv'], 'letter': letters}.get(only, ['cv', *letters]) for lang in languages], ''
 
 
 def _letter_template(letters, letter_type):
@@ -221,7 +225,7 @@ def _save(job, user_id, change):
     return _edit_sidecar(job, user_id, edit)
 
 
-def _gate(job, user):
+def _gate(job, user, only=''):
     """(reason, variants, context, choice). A non-empty reason means nothing may start (AC1)."""
     if job.pending_source_text:
         return CHOOSE_SOURCE, [], '', None
@@ -233,7 +237,7 @@ def _gate(job, user):
         # a job with documents already prepared (a retry) is past that hold. TASK-350: a salary alone never
         # holds (posting_missing still reports it) and Ready to submit is past it too.
         return f"{INCOMPLETE}: missing {', '.join(PART_NAMES[part] for part in missing)}. Paste the full posting on the job page, or Continue anyway.", [], '', None
-    variants, reason = plan_variants(job.application_requirements)
+    variants, reason = plan_variants(job.application_requirements, only)
     if reason:
         return reason, [], '', None
     templates = user_templates(user)
@@ -358,11 +362,12 @@ def _finish(job_id, user_id, key, task_id):
             _pump()
 
 
-def prepare(job_id, user, retry=False, inline=False, cloud=False):
+def prepare(job_id, user, retry=False, inline=False, cloud=False, only=''):
     """Queue preparation for a New, Reviewed or To-apply job, or with retry, re-queue only its failed
     (or cancelled) variants. TASK-312: variants join the back of the shared queue rather than starting.
     `inline` (TASK-335's daily batch) analyses missing requirements in the calling thread, not a new one.
-    `cloud` (TASK-360) analyses them with cloud models only.
+    `cloud` (TASK-360) analyses them with cloud models only. `only` (TASK-379, 'cv' or 'letter') queues just
+    that document's variants that are not already queued, running or ready; the other document is left alone.
 
     Returns the public state, or None when this account/server cannot generate at all. Concurrency
     safe: a second call (a double transition) finds the variants already recorded and starts nothing.
@@ -379,6 +384,8 @@ def prepare(job_id, user, retry=False, inline=False, cloud=False):
     analyse = False
     with _lock:
         state = public_state(job, user)
+        # TASK-379: a choice made before the analysis outlives it (its worker and retry_due call without one).
+        only = only or (not state['variants'] and _state(job, user).get('only')) or ''
         # AC1: TASK-312 widened it from To apply to New/Reviewed/To apply (an apply/maybe evaluation
         # queues those); a retry also the Ready to submit it may have moved to. Applied or later never.
         allowed = (*PREPARE_STATUSES, 'ready_to_submit') if retry else PREPARE_STATUSES
@@ -386,10 +393,10 @@ def prepare(job_id, user, retry=False, inline=False, cloud=False):
             return state
         # TASK-280.3: a failed variant the owner discarded is not wanted, so Retry leaves it alone.
         failed = [variant for variant in state['variants'] if variant['status'] in ('failed', 'cancelled') and variant.get('review') != 'discard']
-        if state['variants'] and not (retry and failed):
+        if state['variants'] and not (retry and failed) and not only:
             return state
-        reason, variants, context, choice = _gate(job, user)
-        if (reason in ('', NOT_ANALYSED) or reason.startswith(INCOMPLETE)) and not state['variants'] and any(latest_generated_sources(job, user)):
+        reason, variants, context, choice = _gate(job, user, only)
+        if not only and (reason in ('', NOT_ANALYSED) or reason.startswith(INCOMPLETE)) and not state['variants'] and any(latest_generated_sources(job, user)):
             # AC5: files the owner already generated are theirs; automatic drafts never join or replace them.
             reason = FILES_EXIST
         if reason == NOT_ANALYSED and not state['variants']:
@@ -397,13 +404,16 @@ def prepare(job_id, user, retry=False, inline=False, cloud=False):
             analyse = job.id not in _analysing
             if analyse:
                 _analysing.add(job.id)
-                _save(job, user.pk, lambda prep: prep.update(reason=ANALYSING, variants={}, retry_at=None, analysing_at=_now()))
+                _save(job, user.pk, lambda prep: prep.update(reason=ANALYSING, variants={}, retry_at=None, analysing_at=_now(), only=only))
         elif reason:
             if not state['variants']:
                 _save(job, user.pk, lambda prep: prep.update(reason=reason, variants={}, retry_at=None))
             return public_state(job, user, reason_override=reason if state['variants'] else None)
         else:
-            if state['variants']:
+            if only:  # its live status: a variant whose worker died reads failed here, as on the panel
+                live = {variant['key']: variant['status'] for variant in state['variants']}
+                variants = [variant for variant in variants if live.get(variant['key']) in (None, 'failed', 'cancelled')]
+            elif state['variants']:
                 # AC5: retry targets only failed variants; ready and running ones are left alone.
                 wanted = [variant['key'] for variant in failed]
                 stored = _state(job, user)['variants']
@@ -412,6 +422,7 @@ def prepare(job_id, user, retry=False, inline=False, cloud=False):
 
             def queue(prep):
                 prep.update(reason='', model=choice)
+                prep.pop('only', None)
                 prep.setdefault('variants', {})
                 for variant in variants:
                     prep['variants'][variant['key']] = {'document': variant['document'], 'language': variant['language'],

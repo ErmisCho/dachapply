@@ -4,7 +4,7 @@ import {describe,expect,it,vi} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
 import {ApplicationPrepPanel,DailySlider,PrepBadge,TexPicker} from './App'
 import appSource from './App.tsx?raw'
-import {anyPreparing,defaultTex,isPreparing,prepAction,prepBadge,reviewText,texLabel,texOptions,variantLabel,variantStatusText,type PrepState,type PrepVariant} from './applicationPrep'
+import {anyPreparing,defaultTex,isPreparing,prepAction,prepBadge,prepOnly,reviewText,texLabel,texOptions,variantLabel,variantStatusText,type PrepState,type PrepVariant} from './applicationPrep'
 
 const rule='Letters the posting does not mention, or calls optional, are not prepared automatically.'
 const v=(extra:Partial<PrepVariant>):PrepVariant=>({key:'cv-de',document:'cv',language:'de',status:'ready',files:{cv_pdf:'C:\\ws\\CVs\\Me-CV-Acme-DE.pdf'},...extra})
@@ -31,6 +31,19 @@ describe('prepared documents panel',()=>{
   it('shows nothing for a job that was never prepared outside To apply, or for a non-generating account',()=>{
     expect(render(state([]),'reviewed')).toBe('')
     expect(render(null)).toBe('')
+  })
+
+  it('TASK-379: offers Prepare CV / Prepare letter for a document with nothing queued, running or ready, and Cancel on a queued one',()=>{
+    expect(prepOnly(state([]),'to_apply')).toEqual(['cv','letter'])
+    expect(prepOnly(state([v({})]),'to_apply')).toEqual(['letter'])
+    expect(prepOnly(state([v({key:'message-de',document:'message',status:'running'})]),'reviewed')).toEqual(['cv'])
+    expect(prepOnly(state([v({status:'failed'})]),'to_apply')).toEqual(['cv','letter'])
+    expect(prepOnly(state([v({})]),'applied')).toEqual([])
+    expect(prepOnly(state([],'Analysing application requirements…'),'to_apply')).toEqual([])
+    const html=render(state([v({}),v({key:'cv-en',language:'en',status:'queued'})]))
+    expect(html).toContain('Prepare letter')
+    expect(html).not.toContain('Prepare CV')
+    expect(html).toContain('>Cancel<')
   })
 
   it('offers no action while everything is ready or running',()=>{
