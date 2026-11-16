@@ -17,7 +17,8 @@ from jobradar.services.processing_control import store
 root = Path(settings.CODEX_CV_WORKSPACE)
 root.mkdir(parents=True, exist_ok=True)
 settings.CODEX_CV_ENABLED = True
-requirements = {'posting_language': 'en', 'documents': [], 'source': 'owner'}
+requirements = {'posting_language': 'en', 'source': 'owner',  # TASK-380: letters refused, so one CV only
+                'documents': [{'type': 'cover_letter', 'name': '', 'status': 'not_accepted', 'quote': ''}]}
 
 if sys.argv[1] == 'seed':
     user = get_user_model().objects.create_user('retry-fixture', password='fixture-password-123')

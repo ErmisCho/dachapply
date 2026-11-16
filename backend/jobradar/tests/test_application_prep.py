@@ -29,8 +29,9 @@ def _req(posting='en', application='', **documents):
             'source': 'owner'}
 
 
-# TASK-380: a full letter is prepared by default, so a CV-only job is one whose posting refuses letters.
-CV_ONLY = _req('de', '', cover_letter='not_accepted')
+# TASK-380: a full letter is prepared by default, so a CV-only job is one whose posting refuses letters. The quote
+# is in POSTING, so an imported or analysed copy keeps the refusal through the quote check.
+CV_ONLY = {**_req('de'), 'documents': [{'type': 'cover_letter', 'name': '', 'status': 'not_accepted', 'quote': 'Wir freuen uns auf Ihre Bewerbung.'}]}
 
 
 def _keys(requirements):

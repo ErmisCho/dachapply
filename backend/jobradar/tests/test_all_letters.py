@@ -10,7 +10,7 @@ from rest_framework.test import APIClient
 
 from jobradar.models import CvAsset, JobLead, UserProfile
 from jobradar.services import application_prep, cv_generator, cv_tasks, processing_control
-from jobradar.tests.test_application_prep import POSTING, _job, _req, _state, client, generator, owner, workspace  # noqa: F401 -- fixtures
+from jobradar.tests.test_application_prep import CV_ONLY, POSTING, _job, _req, _state, client, generator, owner, workspace  # noqa: F401 -- fixtures
 from jobradar.tests.test_application_prep_queue import ACTION, QUEUE, tasks  # noqa: F401 -- fixture
 from jobradar.tests.test_cv_assets import GENERATED, VALID_TEX, _fake_pdflatex
 
@@ -59,8 +59,8 @@ def test_a_single_template_language_stays_one_letter_under_its_key(owner, genera
     assert variants['letter-en']['recommended'] is True and variants['letter-en']['letter_label'] == 'English motivation letter'
 
 
-def test_no_letter_wanted_still_means_no_letter_and_a_message_stays_one(owner, generator):
-    none, message = _job(owner, 'to_apply', requirements=_req('de')), _job(owner, 'to_apply', requirements=_req('de', short_message='required'))
+def test_a_refused_letter_means_no_letter_and_a_message_stays_one(owner, generator):  # TASK-380
+    none, message = _job(owner, 'to_apply', requirements=CV_ONLY), _job(owner, 'to_apply', requirements=_req('de', cover_letter='not_accepted', short_message='required'))
     application_prep.prepare(none.id, owner)
     application_prep.prepare(message.id, owner)
     assert list(_variants(none, owner)) == ['cv-de']

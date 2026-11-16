@@ -11,7 +11,7 @@ import pytest
 from jobradar.models import JobEvaluation, JobLead, UserProfile
 from jobradar.services import application_prep, job_evaluator
 from jobradar.services.cv_generator import RecoverableGenerationError
-from jobradar.tests.test_application_prep import POSTING, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
+from jobradar.tests.test_application_prep import CV_ONLY, POSTING, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
 from jobradar.tests.test_application_prep_queue import ACTION, _at, _items, tasks, timers  # noqa: F401 -- fixtures
 from jobradar.tests.test_job_evaluator import OLLAMA_OPTION, evaluation_for
 from jobradar.tests.test_link_only_prep import LINK, _blocked, fetch  # noqa: F401 -- fixtures
@@ -41,7 +41,7 @@ def model(monkeypatch):
     monkeypatch.setattr(job_evaluator, 'validate_model_capability', lambda *a, **k: OLLAMA_OPTION)
     monkeypatch.setattr(job_evaluator, 'run_structured_model', run)
     # The apply/maybe hook's requirements analysis (TASK-308) answers German, one CV.
-    monkeypatch.setattr(application_prep, 'run_structured_model', lambda *a, **k: {'application_requirements': _req('de')})
+    monkeypatch.setattr(application_prep, 'run_structured_model', lambda *a, **k: {'application_requirements': CV_ONLY})
     return state
 
 

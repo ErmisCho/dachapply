@@ -11,7 +11,7 @@ from rest_framework.test import APIClient
 
 from jobradar.models import JobLead
 from jobradar.services import application_prep, cv_tasks, json_importer
-from jobradar.tests.test_application_prep import POSTING, _job, _one_german_letter, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
+from jobradar.tests.test_application_prep import CV_ONLY, POSTING, _job, _one_german_letter, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
 
 QUEUE = '/api/jobs/application-prep/queue/'
 ACTION = QUEUE + 'action/'
@@ -33,14 +33,14 @@ def _evaluate(job, user, recommendation, django_capture_on_commit_callbacks):
     ('apply', 'new', True), ('maybe', 'reviewed', True), ('apply', 'to_apply', True),
     ('skip', 'new', False), ('skip', 'to_apply', False), ('apply', 'applied', False), ('maybe', 'interview', False)])
 def test_an_imported_evaluation_prepares_open_jobs_unless_it_says_skip(owner, generator, django_capture_on_commit_callbacks, recommendation, status, prepared):
-    job = _job(owner, status, requirements=_req('de'))
+    job = _job(owner, status, requirements=CV_ONLY)
     _evaluate(job, owner, recommendation, django_capture_on_commit_callbacks)
     assert [call['key'] for call in generator['calls']] == (['cv-de'] if prepared else [])
 
 
 def test_a_nested_evaluation_in_a_jobs_import_prepares_the_new_job(owner, generator, django_capture_on_commit_callbacks):
     record = {'company': 'Nested', 'title': 'Engineer', 'url': 'https://example.test/nested', 'original_source_text': POSTING,
-              'application_requirements': {'posting_language': 'de', 'documents': []}, 'evaluation': {**EVAL, 'recommendation': 'maybe'}}
+              'application_requirements': CV_ONLY, 'evaluation': {**EVAL, 'recommendation': 'maybe'}}
     with django_capture_on_commit_callbacks(execute=True) as callbacks:
         result = json_importer.import_jobs_data({'jobs': [record]}, user=owner)
         # Nothing starts inside the import's transaction; only its commit does.
@@ -51,7 +51,7 @@ def test_a_nested_evaluation_in_a_jobs_import_prepares_the_new_job(owner, genera
 
 def test_an_evaluation_imported_by_a_non_owner_prepares_nothing(owner, generator, django_capture_on_commit_callbacks):
     stranger = User.objects.create_user('no-cv', password='pw')
-    job = JobLead.objects.create(company='Theirs', title='Engineer', created_by=stranger, original_source_text=POSTING, application_requirements=_req('de'))
+    job = JobLead.objects.create(company='Theirs', title='Engineer', created_by=stranger, original_source_text=POSTING, application_requirements=CV_ONLY)
     _evaluate(job, stranger, 'apply', django_capture_on_commit_callbacks)
     assert generator['calls'] == []
 
@@ -93,7 +93,7 @@ def _variant(job, owner, key):
 
 
 def test_one_slot_runs_one_task_and_the_next_starts_when_it_finishes(owner, client, tasks, settings):
-    first, second = _job(owner, 'new', requirements=_req('de')), _job(owner, 'reviewed', requirements=_req('de'))
+    first, second = _job(owner, 'new', requirements=CV_ONLY), _job(owner, 'reviewed', requirements=CV_ONLY)
     application_prep.prepare(first.id, owner)
     application_prep.prepare(second.id, owner)
     assert tasks['started'] == [(first.id, 'cv-de')]
@@ -105,7 +105,7 @@ def test_one_slot_runs_one_task_and_the_next_starts_when_it_finishes(owner, clie
     done = _variant(first, owner, 'cv-de')
     assert done['status'] == 'ready' and done['queued_at'] <= done['started_at'] <= done['finished_at']
     # A failure frees the slot as well.
-    third = _job(owner, 'to_apply', requirements=_req('de'))
+    third = _job(owner, 'to_apply', requirements=CV_ONLY)
     application_prep.prepare(third.id, owner)
     tasks['end']('task-2', status='failed')
     assert tasks['started'][-1] == (third.id, 'cv-de') and _variant(second, owner, 'cv-de')['error'] == 'model failed'
@@ -113,7 +113,7 @@ def test_one_slot_runs_one_task_and_the_next_starts_when_it_finishes(owner, clie
 
 def test_the_concurrency_setting_is_the_number_of_running_tasks(owner, tasks, settings):
     settings.PREP_QUEUE_CONCURRENCY = 2
-    jobs = [_job(owner, 'new', requirements=_req('de')) for _ in range(3)]
+    jobs = [_job(owner, 'new', requirements=CV_ONLY) for _ in range(3)]
     for job in jobs:
         application_prep.prepare(job.id, owner)
     assert [job_id for job_id, _ in tasks['started']] == [jobs[0].id, jobs[1].id]
@@ -123,10 +123,10 @@ def test_manual_generate_is_not_queued(owner, client, tasks, monkeypatch):
     from jobradar import views
     monkeypatch.setattr(views, 'start_cv_task', cv_tasks.start_cv_task)  # the fake; views imported the name
     monkeypatch.setattr(views, 'validate_model_capability', lambda *a, **k: None)
-    application_prep.prepare(_job(owner, 'new', requirements=_req('de')).id, owner)
-    waiting = _job(owner, 'new', requirements=_req('de'))
+    application_prep.prepare(_job(owner, 'new', requirements=CV_ONLY).id, owner)
+    waiting = _job(owner, 'new', requirements=CV_ONLY)
     application_prep.prepare(waiting.id, owner)
-    manual = _job(owner, 'to_apply', requirements=_req('de'))
+    manual = _job(owner, 'to_apply', requirements=CV_ONLY)
     response = client.post(f'/api/jobs/{manual.id}/cv-generation/run/', {'cv_template': 'de', 'create_letter': False, 'provider': 'openai', 'model': 'gpt-6.1', 'effort': 'high'}, format='json')
     # The manual run starts at once although the one slot is taken, and is not counted in the queue.
     assert response.status_code == 202, response.content
@@ -135,7 +135,7 @@ def test_manual_generate_is_not_queued(owner, client, tasks, monkeypatch):
 
 
 def test_a_restart_requeues_left_variants_in_queued_at_order(owner, client, tasks):
-    jobs = [_job(owner, status, requirements=_req('de')) for status in ('new', 'reviewed', 'to_apply', 'to_apply', 'applied')]
+    jobs = [_job(owner, status, requirements=CV_ONLY) for status in ('new', 'reviewed', 'to_apply', 'to_apply', 'applied')]
     left = [('queued', '', '2026-10-19T10:03:00+00:00'), ('running', 'gone', '2026-10-19T10:01:00+00:00'),
             ('running', 'gone-2', '2026-10-19T10:02:00+00:00'), ('running', 'live-1', '2026-10-19T10:00:00+00:00'),
             ('queued', '', '2026-10-19T09:00:00+00:00')]  # the last job is Applied: not resumed
@@ -176,7 +176,7 @@ def _post(client, job, key, action):
 
 
 def test_cancel_a_queued_variant_takes_it_out_of_the_queue(owner, client, tasks):
-    running, waiting, behind = (_job(owner, 'new', requirements=_req('de')) for _ in range(3))
+    running, waiting, behind = (_job(owner, 'new', requirements=CV_ONLY) for _ in range(3))
     for job in (running, waiting, behind):
         application_prep.prepare(job.id, owner)
     response = _post(client, waiting, 'cv-de', 'cancel')
@@ -189,7 +189,7 @@ def test_cancel_a_queued_variant_takes_it_out_of_the_queue(owner, client, tasks)
 
 
 def test_cancel_a_running_variant_stops_its_task_and_frees_the_slot_when_it_stops(owner, client, tasks):
-    running, waiting = _job(owner, 'new', requirements=_req('de')), _job(owner, 'new', requirements=_req('de'))
+    running, waiting = _job(owner, 'new', requirements=CV_ONLY), _job(owner, 'new', requirements=CV_ONLY)
     for job in (running, waiting):
         application_prep.prepare(job.id, owner)
     assert _post(client, running, 'cv-de', 'cancel').status_code == 200
@@ -200,7 +200,7 @@ def test_cancel_a_running_variant_stops_its_task_and_frees_the_slot_when_it_stop
 
 
 def test_retry_puts_a_failed_or_cancelled_variant_at_the_back_of_the_queue(owner, client, tasks):
-    jobs = [_job(owner, 'new', requirements=_req('de')) for _ in range(3)]
+    jobs = [_job(owner, 'new', requirements=CV_ONLY) for _ in range(3)]
     for job in jobs:
         application_prep.prepare(job.id, owner)
     tasks['end']('task-1', status='failed')  # jobs[1] starts; jobs[2] waits
@@ -214,7 +214,7 @@ def test_retry_puts_a_failed_or_cancelled_variant_at_the_back_of_the_queue(owner
 
 
 def test_first_moves_a_queued_variant_to_the_front(owner, client, tasks):
-    jobs = [_job(owner, 'new', requirements=_req('de')) for _ in range(3)]
+    jobs = [_job(owner, 'new', requirements=CV_ONLY) for _ in range(3)]
     for job in jobs:
         application_prep.prepare(job.id, owner)
     response = _post(client, jobs[2], 'cv-de', 'first')
@@ -225,10 +225,10 @@ def test_first_moves_a_queued_variant_to_the_front(owner, client, tasks):
 
 
 def test_actions_that_do_not_fit_answer_400(owner, client, tasks):
-    running, waiting = _job(owner, 'new', requirements=_req('de')), _job(owner, 'new', requirements=_req('de'))
+    running, waiting = _job(owner, 'new', requirements=CV_ONLY), _job(owner, 'new', requirements=CV_ONLY)
     for job in (running, waiting):
         application_prep.prepare(job.id, owner)
-    applied = _job(owner, 'applied', requirements=_req('de'))
+    applied = _job(owner, 'applied', requirements=CV_ONLY)
     application_prep._save(applied, owner.pk, lambda prep: prep.update(variants={'cv-de': {'document': 'cv', 'language': 'de', 'status': 'failed', 'task_id': '', 'error': 'x', 'files': {}}}))
     for job, key, action in ((waiting, 'cv-de', 'explode'), (waiting, 'letter-de', 'cancel'), (running, 'cv-de', 'retry'),
                              (running, 'cv-de', 'first'), (waiting, 'cv-de', 'retry'), (applied, 'cv-de', 'retry')):
@@ -252,7 +252,7 @@ def test_the_queue_endpoints_are_owner_only(owner, tasks):
 def test_the_queue_lists_running_then_queued_by_position_then_finished_newest_first(owner, client, tasks, settings):
     _one_german_letter(owner)  # TASK-348: test_all_letters has the several-letters queue
     settings.PREP_QUEUE_CONCURRENCY = 2
-    older, newer = _job(owner, 'to_apply', requirements=_req('de')), _job(owner, 'reviewed', requirements=_req('de'))
+    older, newer = _job(owner, 'to_apply', requirements=CV_ONLY), _job(owner, 'reviewed', requirements=CV_ONLY)
     application_prep._save(older, owner.pk, lambda prep: prep.update(variants={
         'cv-de': {'document': 'cv', 'language': 'de', 'status': 'ready', 'task_id': '', 'error': '', 'files': {'cv_tex': 'C:/w/CVs/Old-CV.tex', 'cv_pdf': 'C:/w/CVs/Old-CV.pdf'},
                   'queued_at': '2026-10-19T08:00:00+00:00', 'started_at': '2026-10-19T08:00:01+00:00', 'finished_at': '2026-10-19T08:05:00+00:00'}}))
@@ -313,7 +313,7 @@ def _limited(tasks, task_id, reset_at=RESET):
 
 def test_a_usage_limited_variant_is_retried_automatically_once_it_resets(owner, client, tasks, timers, monkeypatch):
     _at(monkeypatch, '2026-10-19T17:00:00+02:00')
-    job = _job(owner, 'new', requirements=_req('de'))
+    job = _job(owner, 'new', requirements=CV_ONLY)
     application_prep.prepare(job.id, owner)
     _limited(tasks, 'task-1')
     assert _variant(job, owner, 'cv-de')['retry_at'] == '2026-10-19T18:52:00+02:00'
@@ -331,7 +331,7 @@ def test_a_usage_limited_variant_is_retried_automatically_once_it_resets(owner, 
 
 def test_a_usage_limit_without_a_reset_time_is_retried_half_an_hour_later(owner, tasks, timers, monkeypatch):
     _at(monkeypatch, '2026-10-19T17:00:00+00:00')
-    job = _job(owner, 'new', requirements=_req('de'))
+    job = _job(owner, 'new', requirements=CV_ONLY)
     application_prep.prepare(job.id, owner)
     _limited(tasks, 'task-1', reset_at=None)
     assert _variant(job, owner, 'cv-de')['retry_at'] == '2026-10-19T17:30:00+00:00'
@@ -339,7 +339,7 @@ def test_a_usage_limit_without_a_reset_time_is_retried_half_an_hour_later(owner,
 
 def test_automatic_retries_stop_after_three(owner, tasks, timers, monkeypatch):
     _at(monkeypatch, '2026-10-19T17:00:00+02:00')
-    job = _job(owner, 'new', requirements=_req('de'))
+    job = _job(owner, 'new', requirements=CV_ONLY)
     application_prep.prepare(job.id, owner)
     for attempt in range(1, 4):
         _limited(tasks, f'task-{attempt}')
@@ -352,7 +352,7 @@ def test_automatic_retries_stop_after_three(owner, tasks, timers, monkeypatch):
 
 
 def test_any_other_failure_is_never_retried_automatically(owner, client, tasks, timers, monkeypatch):
-    job = _job(owner, 'new', requirements=_req('de'))
+    job = _job(owner, 'new', requirements=CV_ONLY)
     application_prep.prepare(job.id, owner)
     tasks['end']('task-1', status='failed')
     assert _variant(job, owner, 'cv-de')['retry_at'] is None and timers == []
@@ -362,7 +362,7 @@ def test_any_other_failure_is_never_retried_automatically(owner, client, tasks, 
 
 
 def test_a_restart_schedules_pending_usage_limit_retries(owner, tasks, timers, monkeypatch):
-    waiting, due = _job(owner, 'new', requirements=_req('de')), _job(owner, 'new', requirements=_req('de'))
+    waiting, due = _job(owner, 'new', requirements=CV_ONLY), _job(owner, 'new', requirements=CV_ONLY)
     for job, retry_at in ((waiting, '2026-10-19T18:52:00+02:00'), (due, '2026-10-19T16:00:00+02:00')):
         application_prep._save(job, owner.pk, lambda prep, retry_at=retry_at: prep.update(
             model={'provider': 'openai', 'model': 'gpt-6.1', 'effort': 'high', 'speed': 'normal'},
@@ -464,11 +464,11 @@ def test_a_scheduled_continuation_can_be_cancelled(owner, timers, monkeypatch):
 @pytest.mark.parametrize('state', ['queued', 'running', 'blocked', 'analysis'])
 def test_queue_skip_stops_job_and_undo_starts_nothing(owner, client, tasks, monkeypatch, state, django_capture_on_commit_callbacks):
     from threading import Event
-    job = _job(owner, requirements=_req('de'))
+    job = _job(owner, requirements=CV_ONLY)
     stop = Event()
     if state in ('queued', 'running'):
         if state == 'queued':
-            application_prep.prepare(_job(owner, requirements=_req('de')).id, owner)
+            application_prep.prepare(_job(owner, requirements=CV_ONLY).id, owner)
         application_prep.prepare(job.id, owner)
     else:
         application_prep._save(job, owner.pk, lambda prep: prep.update(reason='Blocked' if state == 'blocked' else '', pipeline={'stage': 'analysing'} if state == 'analysis' else {}))
@@ -510,7 +510,7 @@ def test_cancelled_document_restart_after_server_restart(owner, client, tasks, m
 @pytest.mark.parametrize('changed', [False, True])
 def test_document_restart_rechecks_state_and_limit(owner, client, tasks, changed):
     from jobradar.models import UserProfile
-    job = _job(owner, requirements=_req('de'))
+    job = _job(owner, requirements=CV_ONLY)
     application_prep.prepare(job.id, owner)
     application_prep.queue_action(owner, job.id, 'cv-de', 'cancel')
     if changed:
@@ -549,7 +549,7 @@ def test_cancelled_requirements_restart_reuses_fit_and_checks_budget(owner, clie
 # TASK-376: a cancelled model must release its old run before Restart can take another slot.
 def test_document_restart_waits_for_cancelled_worker(owner, client, tasks, settings):
     settings.PREP_QUEUE_CONCURRENCY = 2
-    job = _job(owner, requirements=_req('de'))
+    job = _job(owner, requirements=CV_ONLY)
     application_prep.prepare(job.id, owner)
     application_prep.queue_action(owner, job.id, 'cv-de', 'cancel')
     response = client.post(ACTION, {'job_id':job.id, 'key':'cv-de', 'action':'restart'}, format='json')
@@ -559,7 +559,7 @@ def test_document_restart_waits_for_cancelled_worker(owner, client, tasks, setti
 
 # TASK-376 review: a document cancelled together with its job's analysis must not restart into a stuck "queued".
 def test_document_restart_waits_for_a_cancelled_analysis(owner, client, tasks):
-    job = _job(owner, requirements=_req('de'))
+    job = _job(owner, requirements=CV_ONLY)
     application_prep.prepare(job.id, owner)
     application_prep._save(job, owner.pk, lambda prep: prep.update(pipeline={'stage': 'models', 'at': 'T'}))
     application_prep.queue_action(owner, job.id, '', 'cancel')
@@ -572,7 +572,7 @@ def test_document_restart_waits_for_a_cancelled_analysis(owner, client, tasks):
 
 # TASK-376 review: a document whose worker is still cancelling owns its slot; Restart must wait.
 def test_document_restart_waits_while_the_task_is_cancelling(owner, client, tasks):
-    job = _job(owner, requirements=_req('de'))
+    job = _job(owner, requirements=CV_ONLY)
     application_prep.prepare(job.id, owner)
     application_prep.queue_action(owner, job.id, 'cv-de', 'cancel')
     tasks['live']['task-1']['status'] = 'cancelling'
@@ -584,7 +584,7 @@ def test_document_restart_waits_while_the_task_is_cancelling(owner, client, task
 # TASK-375 review: Skip disarms a failed document's scheduled provider-limit retry.
 def test_skip_clears_a_failed_documents_scheduled_retry(owner, client, tasks, timers, monkeypatch):
     _at(monkeypatch, '2026-10-19T17:00:00+02:00')
-    job = _job(owner, 'new', requirements=_req('de'))
+    job = _job(owner, 'new', requirements=CV_ONLY)
     application_prep.prepare(job.id, owner)
     _limited(tasks, 'task-1')
     assert _variant(job, owner, 'cv-de')['retry_at']

@@ -12,7 +12,7 @@ import pytest
 from jobradar import views
 from jobradar.models import JobLead, UserProfile
 from jobradar.services import application_prep, posting_fetch
-from jobradar.tests.test_application_prep import POSTING, _job, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
+from jobradar.tests.test_application_prep import CV_ONLY, POSTING, _job, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
 from jobradar.tests.test_application_prep_queue import ACTION, _items, tasks  # noqa: F401 -- fixtures
 from jobradar.tests.test_job_evaluator import OLLAMA_OPTION, evaluation_for
 
@@ -38,7 +38,7 @@ def fetch(monkeypatch, owner):
 
 def _link_only(owner, status='new', text=LINK):
     return JobLead.objects.create(company='ACME', title='Python Engineer', status=status, created_by=owner, url=LINK,
-                                  original_source_text=text, application_requirements=_req('de'))
+                                  original_source_text=text, application_requirements=CV_ONLY)
 
 
 def _evaluate(client, job):

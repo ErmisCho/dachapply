@@ -5,7 +5,7 @@ import pytest
 
 from jobradar.models import JobLead
 from jobradar.services import application_prep, job_evaluator
-from jobradar.tests.test_application_prep import POSTING, _req, client, generator, owner, workspace  # noqa: F401
+from jobradar.tests.test_application_prep import CV_ONLY, POSTING, _req, client, generator, owner, workspace  # noqa: F401
 from jobradar.tests.test_application_prep_queue import _evaluate, _items, _variant, tasks, timers  # noqa: F401
 from jobradar.tests.test_analysis_lanes import _jobs, _join_pipelines, _profile, _until, lanes  # noqa: F401
 from jobradar.tests.test_link_only_prep import fetch  # noqa: F401
@@ -23,7 +23,7 @@ def test_blocked_job_does_not_hold_other_analyses_or_documents(owner, client, is
     # TASK-377: keep one blocked row visible while two other jobs traverse analysis and the document queue.
     _profile(owner, analysis_concurrency=1)
     blocked, *others = _jobs(owner, 3)
-    JobLead.objects.filter(pk__in=[blocked.id, *(job.id for job in others)]).update(application_requirements=_req('de'))
+    JobLead.objects.filter(pk__in=[blocked.id, *(job.id for job in others)]).update(application_requirements=CV_ONLY)
     evaluate = job_evaluator.evaluate_jobs
 
     def analyse(job_ids, user, *args, **kwargs):
