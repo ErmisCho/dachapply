@@ -33,8 +33,8 @@ else:
             threading.Event().wait()  # Parent kills this disposable runtime at this boundary.
         return requirements
 
-    def gate(job, user):
-        variants, reason = prep.plan_variants(job.application_requirements)
+    def gate(job, user, only=''):  # TASK-379: application_prep._gate's signature
+        variants, reason = prep.plan_variants(job.application_requirements, only)
         return reason, variants, 'Fixture evidence', {
             'provider': 'openai', 'model': 'fixture', 'effort': 'medium', 'speed': 'normal'}
 
