@@ -12,7 +12,7 @@ from jobradar.models import JobEvaluation, JobLead
 from jobradar.services import application_prep, processing_control
 from jobradar.services.cv_generator import RecoverableGenerationError, _provider_failure
 from jobradar.services.posting_fetch import posting_missing
-from jobradar.tests.test_application_prep import POSTING, _job, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
+from jobradar.tests.test_application_prep import CV_ONLY, POSTING, _job, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
 from jobradar.tests.test_application_prep_queue import ACTION, QUEUE, _at, _items, _variant, tasks, timers  # noqa: F401 -- fixtures
 from jobradar.tests.test_existing_jobs_pipeline import _limits, _run
 from jobradar.tests.test_late_text_reanalysis import _blind, _retry, model  # noqa: F401 -- fixtures
@@ -39,7 +39,7 @@ def _prep(job, owner):
 # --- AC1/AC2: a missing salary is reported, never a hold -----------------------------------------
 
 def test_task350_a_posting_missing_only_the_salary_prepares_and_stays_reported(owner, client, tasks):
-    job = _job(owner, 'to_apply', requirements=_req('de'), text=_ad(GERMAN, without=['salary']))
+    job = _job(owner, 'to_apply', requirements=CV_ONLY, text=_ad(GERMAN, without=['salary']))
     state = application_prep.prepare(job.id, owner)
     assert state['reason'] == '' and tasks['started'] == [(job.id, 'cv-de')]
     assert posting_missing(job) == ['salary']
@@ -49,14 +49,14 @@ def test_task350_a_posting_missing_only_the_salary_prepares_and_stays_reported(o
 @pytest.mark.parametrize('without, names', [(['tasks'], 'tasks'), (['requirements'], 'requirements'), (['company'], 'company description'),
                                             (['requirements', 'salary'], 'requirements, salary')])
 def test_task350_any_other_missing_part_still_holds_as_before(owner, client, tasks, without, names):
-    job = _job(owner, 'to_apply', requirements=_req('de'), text=_ad(GERMAN, without=without))
+    job = _job(owner, 'to_apply', requirements=CV_ONLY, text=_ad(GERMAN, without=without))
     assert application_prep.prepare(job.id, owner)['reason'] == REASON.format(names) and tasks['started'] == []
     [item] = _items(client)
     assert (item['status'], item['error'], item['incomplete']) == ('blocked', REASON.format(names), True)
 
 
 def test_task350_a_stored_salary_hold_is_released_and_the_daily_budget_takes_the_job(owner, client, tasks, django_capture_on_commit_callbacks):
-    job = _job(owner, 'to_apply', requirements=_req('de'), text=_ad(GERMAN, without=['salary']))
+    job = _job(owner, 'to_apply', requirements=CV_ONLY, text=_ad(GERMAN, without=['salary']))
     JobEvaluation.objects.create(job=job, fit_score=70, priority='high', recommendation='apply', summary='')
     _hold(job, owner, SALARY_HOLD)
     assert _items(client) == [] and application_prep.public_state(job, owner)['reason'] == ''
@@ -69,13 +69,13 @@ def test_task350_a_stored_salary_hold_is_released_and_the_daily_budget_takes_the
 
 @pytest.mark.parametrize('reason', [SALARY_HOLD, REASON.format('tasks, salary')])
 def test_task350_a_ready_to_submit_job_never_shows_a_stored_hold(owner, client, tasks, reason):
-    job = _job(owner, 'ready_to_submit', requirements=_req('de'), text=_ad(GERMAN, without=['tasks', 'salary']))
+    job = _job(owner, 'ready_to_submit', requirements=CV_ONLY, text=_ad(GERMAN, without=['tasks', 'salary']))
     _hold(job, owner, reason)
     assert _items(client) == [] and application_prep.public_state(job, owner)['reason'] == ''
 
 
 def test_task350_a_retry_in_ready_to_submit_is_not_held_again(owner, client, tasks):
-    job = _job(owner, 'ready_to_submit', requirements=_req('de'), text=_ad(GERMAN, without=['tasks']))
+    job = _job(owner, 'ready_to_submit', requirements=CV_ONLY, text=_ad(GERMAN, without=['tasks']))
     state = application_prep.prepare(job.id, owner, retry=True)
     assert state['reason'] == '' and tasks['started'] == [(job.id, 'cv-de')]
     assert [item['status'] for item in _items(client)] == ['running']
@@ -167,7 +167,7 @@ def test_task350_a_reanalysis_beside_documents_retries_with_its_own_note(owner, 
     """queue_action's retry cannot reach a job with variants, and the note must stay: only CHANGED redoes
     documents when the outcome is the same, so a stale re-check must not turn into a paid redo."""
     _at(monkeypatch, START)
-    job = _job(owner, 'to_apply', requirements=_req('de'), text=POSTING)
+    job = _job(owner, 'to_apply', requirements=CV_ONLY, text=POSTING)
     JobEvaluation.objects.create(job=job, fit_score=70, priority='high', recommendation='maybe', summary='')
     application_prep._save(job, owner.pk, lambda prep: prep.update(variants={'cv-de': {'document': 'cv', 'language': 'de', 'status': 'ready', 'task_id': '', 'error': '', 'files': {}}}))
     model.update(job_id=job.id, answers=[_failure(), 'maybe'])

@@ -6,7 +6,7 @@ import {ApplicationPrepPanel,DailySlider,PrepBadge,TexPicker} from './App'
 import appSource from './App.tsx?raw'
 import {anyPreparing,defaultTex,isPreparing,prepAction,prepBadge,prepOnly,reviewText,texLabel,texOptions,variantLabel,variantStatusText,type PrepState,type PrepVariant} from './applicationPrep'
 
-const rule='Letters the posting does not mention, or calls optional, are not prepared automatically.'
+const rule='A full letter is prepared unless the posting says letters are not accepted.'
 const v=(extra:Partial<PrepVariant>):PrepVariant=>({key:'cv-de',document:'cv',language:'de',status:'ready',files:{cv_pdf:'C:\\ws\\CVs\\Me-CV-Acme-DE.pdf'},...extra})
 const state=(variants:PrepVariant[],reason='',extra:Partial<PrepState>={}):PrepState=>({reason,rule,model:{},variants,...extra})
 const render=(s:PrepState|null,status='to_apply')=>renderToStaticMarkup(<ApplicationPrepPanel state={s} jobStatus={status}/>)

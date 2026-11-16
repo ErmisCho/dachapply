@@ -14,7 +14,7 @@ import pytest
 from jobradar.models import JobLead, UserProfile
 from jobradar.services import application_prep, job_evaluator, json_importer, posting_fetch, prompt_builder
 from jobradar.services.posting_fetch import missing_parts, posting_missing
-from jobradar.tests.test_application_prep import _job, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
+from jobradar.tests.test_application_prep import CV_ONLY, _job, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
 from jobradar.tests.test_application_prep_queue import ACTION, _items, tasks  # noqa: F401 -- fixtures
 from jobradar.tests.test_job_evaluator import OLLAMA_OPTION, evaluation_for
 from jobradar.tests.test_posting_fetch import JOB_URL, PUBLIC_IP, _fake_playwright, net  # noqa: F401 -- fixtures
@@ -137,7 +137,7 @@ def test_task322_posting_missing_falls_back_to_the_keywords_without_a_current_ve
 # --- AC4/AC5: documents are held, Continue anyway, and a pasted posting -------------------------
 
 def test_task322_an_incomplete_posting_holds_documents_until_continue(owner, client, tasks):
-    job = _job(owner, 'to_apply', requirements=_req('de'), text=_ad(GERMAN, without=['requirements', 'company']))
+    job = _job(owner, 'to_apply', requirements=CV_ONLY, text=_ad(GERMAN, without=['requirements', 'company']))
     held = REASON.format('requirements, company description')
     assert application_prep.prepare(job.id, owner)['reason'] == held and tasks['started'] == []
     [item] = _items(client)
@@ -153,7 +153,7 @@ def test_task322_an_incomplete_posting_holds_documents_until_continue(owner, cli
 
 
 def test_task322_continue_is_refused_for_a_job_not_held_as_incomplete(owner, client, tasks):
-    job = _job(owner, 'to_apply', requirements=_req('de'), text='https://jobs.example.test/role')
+    job = _job(owner, 'to_apply', requirements=CV_ONLY, text='https://jobs.example.test/role')
     application_prep.prepare(job.id, owner)
     assert _items(client)[0]['incomplete'] is False
     assert client.post(ACTION, {'job_id': job.id, 'key': '', 'action': 'continue'}, format='json').status_code == 400
@@ -161,7 +161,7 @@ def test_task322_continue_is_refused_for_a_job_not_held_as_incomplete(owner, cli
 
 
 def test_task322_pasting_the_full_posting_clears_the_hold(owner, client, tasks, django_capture_on_commit_callbacks):
-    job = _job(owner, 'to_apply', requirements=_req('de'), text=_ad(GERMAN, without=['company']))
+    job = _job(owner, 'to_apply', requirements=CV_ONLY, text=_ad(GERMAN, without=['company']))
     application_prep.prepare(job.id, owner)
     assert _items(client)[0]['error'] == REASON.format('company description')
     with django_capture_on_commit_callbacks(execute=True):

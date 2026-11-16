@@ -15,7 +15,7 @@ from jobradar.models import JobEvaluation, JobLead, UserProfile
 from jobradar.services import application_prep, mailbox, mailbox_loop
 from jobradar.services.cv_generator import _record_artifact_metadata
 from jobradar.services.posting_fetch import _source_hash
-from jobradar.tests.test_application_prep import POSTING, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
+from jobradar.tests.test_application_prep import CV_ONLY, POSTING, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
 from jobradar.tests.test_application_prep_queue import _at, tasks  # noqa: F401 -- fixtures
 from jobradar.tests.test_auto_pipeline import model  # noqa: F401 -- fixture
 from jobradar.tests.test_link_only_prep import SUBSTANTIAL, THIN, fetch  # noqa: F401 -- fixtures
@@ -31,7 +31,7 @@ def today(monkeypatch):
 
 def _job(owner, n, status='new', url=True, text=POSTING, age_hours=0):
     job = JobLead.objects.create(company='ACME', title=f'Role {n}', status=status, created_by=owner, original_source_text=text,
-                                 url=f'https://jobs.example.test/{n}' if url else '', application_requirements=_req('de'))
+                                 url=f'https://jobs.example.test/{n}' if url else '', application_requirements=CV_ONLY)
     JobLead.objects.filter(pk=job.pk).update(created_at=timezone.now() - timedelta(hours=age_hours))
     return job
 

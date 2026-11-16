@@ -69,7 +69,7 @@ from jobradar.services.prompt_builder import APPLICATION_REQUIREMENTS_RULES, APP
 logger = logging.getLogger(__name__)
 
 # AC4: the owner-visible default for a letter the posting does not mention (or calls optional).
-LETTER_RULE = 'Letters the posting does not mention, or calls optional, are not prepared automatically. Generate one from the CV section if you want it.'
+LETTER_RULE = 'A full letter is prepared unless the posting says letters are not accepted.'  # TASK-380
 LANGUAGE_NAMES = {'en': 'English', 'de': 'German'}
 DOCUMENT_NAMES = {'cv': 'CV', 'letter': 'Full letter', 'message': 'Short message'}
 WANT = ('required', 'preferred')
@@ -172,7 +172,7 @@ def plan_variants(requirements, only=''):
     Language: the explicit application language, else a clear posting language, else EN and DE.
     Letters: required/preferred ones only; not_accepted never; with nothing wanted, an unclear letter
     or message requirement gives both a full letter and a short message (minus any not accepted);
-    not mentioned / optional / absent follow LETTER_RULE (none).
+    TASK-380 (owner: "most of the jobs want it"): a full letter always, unless the posting does not accept one.
     TASK-379: `only` ('cv' or 'letter') is the owner asking for just that document; an asked-for letter
     is a full letter even when the posting wants none.
     """
@@ -189,6 +189,8 @@ def plan_variants(requirements, only=''):
         letters = [kind for kind, status in kinds.items() if status != 'never']
     else:
         letters = []
+    if kinds['letter'] != 'never' and 'letter' not in letters:
+        letters = ['letter', *letters]
     if only == 'letter':
         letters = letters or ['letter']
     motivation = _kind_status(documents, ('motivation_letter',)) == 'want' and _kind_status(documents, ('cover_letter',)) != 'want'
