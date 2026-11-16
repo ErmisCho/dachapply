@@ -7,7 +7,7 @@ import {artifactStem,comboValid,draftEffort,cvClipboardParts,cvClipboardTex,cvPi
 import type {PanelDragPreview} from './appUtils';
 import {pollWhileVisible,postingSections} from './appUtils' // TASK-302, TASK-354
 import {defaultLetter,letterMismatchWarning,letterOptions} from './letterOptions';
-import {anyPreparing,chosenTex,failedLetters,isPreparing,packageText,prepAction,prepBadge,prepOnly,preparedFile,reviewText,texLabel,texOptions,usable,variantLabel,variantStatusText,type PrepState,type PrepSummary} from './applicationPrep';
+import {anyPreparing,chosenTex,failedLetters,isPreparing,packageText,prepAction,prepBadge,prepOnly,preparedFile,reviewText,texLabel,texOptions,usable,variantLabel,variantStatusText,type PrepState,type PrepSummary,type PrepVariant} from './applicationPrep';
 import PrepQueue,{queueProgress,useQueue} from './PrepQueue';
 import InterviewPrep,{prepNotesAvailable} from './InterviewPrep';
 import {DbUsageLine,DbUsagePanel} from './DbUsage';
@@ -845,10 +845,19 @@ export function TexPicker({state,value,onChange,onCopy}:{state:PrepState;value:s
 // TASK-351: stays in view on the job page (below the nav). `letter` is what Copy TeX would copy; onCopy and onMarkApplied throw on failure.
 export function JobApplyBar({job,letter,onCopy,onMarkApplied}:{job:Job;letter?:string;onCopy:()=>Promise<void>;onMarkApplied:()=>Promise<void>}){const[copied,flash]=useFlash(1800);const[marking,setMarking]=useState(false);const[err,setErr]=useState<any>(null);async function copy(){setErr(null);try{await onCopy();flash()}catch(e){setErr(e)}}async function mark(){setErr(null);setMarking(true);try{await onMarkApplied()}catch(e){setErr(e)}finally{setMarking(false)}}const canApply=boardThresholds().unapplied_statuses.includes(job.status);return <section aria-label="Apply actions" className="sticky top-[3.3rem] z-[var(--z-raised)] mt-3 rounded-lg border border-blue-100 bg-white p-2 shadow-sm lg:top-[2.3rem]"><div className="grid grid-cols-3 items-center gap-1 sm:flex sm:flex-wrap sm:gap-2">{job.url?<OriginalPostingLink company={job.company} title={job.title} url={job.url} className="btn justify-center px-2" label="Open posting"/>:<button type="button" className="btn px-2" disabled title="This job has no posting URL">Open posting</button>}<button type="button" className="btn px-2" disabled={!letter} title={letter?`Copy ${letter}`:'No letter prepared yet'} onClick={copy}>{copied?<CheckIcon/>:<CopyIcon/>}{copied?'Copied':'Copy TeX'}</button><span role="status" className="sr-only">{copied?'Copied':''}</span>{job.status==='applied'?<span className="inline-flex items-center gap-1 rounded-lg border border-green-200 bg-green-50 px-2 text-sm font-medium text-green-800"><CheckIcon/>Applied</span>:<button type="button" className="btn-primary px-2" disabled={marking||!canApply} title={canApply?undefined:`Status is ${jobStatusLabel(job.status)}`} onClick={mark}>{marking?'Marking…':'Mark applied'}</button>}{letter&&<span className="hidden min-w-0 truncate text-xs text-slate-500 sm:inline">{letter}</span>}</div><ErrorBox error={err}/></section>}
 
+// TASK-381: one instruction for the documents the owner chose, run in parallel through the existing per-document
+// adjust. A refused start stops the rest (its error is the panel's); a later failure shows on its own document.
+export function AdjustBox({chosen,busy=false,onAdjust,onDone}:{chosen:PrepVariant[];busy?:boolean;onAdjust?:(key:string,instructions:string)=>Promise<boolean>;onDone?:()=>void}){
+  const[text,setText]=useState('')
+  if(!chosen.length)return null
+  async function run(){for(const v of chosen)if(!await onAdjust?.(v.key,text))return;setText('');onDone?.()}
+  return <div className="mt-2 grid gap-1 rounded border border-blue-100 bg-blue-50 p-2 text-sm dark:bg-white/5"><span className="text-xs font-medium">Adjust {chosen.map(variantLabel).join(' + ')}</span><textarea className="text-xs" rows={2} aria-label="Adjustment for the chosen documents" placeholder="What to change in the chosen documents only" value={text} onChange={e=>setText(e.target.value)}/><button className="btn justify-self-start px-2 py-0.5 text-xs" disabled={busy||!text.trim()} onClick={run}>{chosen.length>1?`Adjust these ${chosen.length}`:'Adjust only this'}</button></div>
+}
+
 export function ApplicationPrepPanel({jobId=0,state,jobStatus,busy=false,error=null,onAction,onPrepare,onCancel,onReview,onAdjust,onCopy,texKey='',setTexKey=()=>{}}:{jobId?:number;state:PrepState|null;jobStatus:string;busy?:boolean;error?:any;onAction?:()=>void;onPrepare?:(only:'cv'|'letter')=>void;onCancel?:(key:string)=>void;onReview?:(body:any)=>void;onAdjust?:(key:string,instructions:string)=>Promise<boolean>;onCopy?:(key:string)=>void;texKey?:string;setTexKey?:(key:string)=>void}){
   const selection=state?.selection||[];const selectionKey=selection.join(',')
   const[picked,setPicked]=useState<string[]>(selection);useEffect(()=>setPicked(selectionKey?selectionKey.split(','):[]),[selectionKey])
-  const[adjustKey,setAdjustKey]=useState('');const[adjustText,setAdjustText]=useState('')
+  const[adjustKeys,setAdjustKeys]=useState<string[]>([])  // TASK-381: the documents one adjustment goes to
   if(!state||(!state.variants.length&&!state.reason&&!state.outdated&&jobStatus!=='to_apply'))return null
   const action=prepAction(state,jobStatus)
   const exportUrl=(key:string,as='zip')=>fileUrl(`/jobs/${jobId}/application-prep/export/?as=${as}${key?`&key=${encodeURIComponent(key)}`:''}`)
@@ -869,9 +878,9 @@ export function ApplicationPrepPanel({jobId=0,state,jobStatus,busy=false,error=n
       {usable(v)&&<div className="mt-1 flex flex-wrap gap-1 text-xs">{v.review==='discard'?<button className="btn-muted px-2 py-0.5" disabled={busy} onClick={()=>onReview?.({action:'restore',key:v.key})}>Restore</button>:<>
         <a className="btn-muted px-2 py-0.5" href={exportUrl(v.key,'pdf')} target="_blank" rel="noreferrer">Preview PDF</a><a className="btn-muted px-2 py-0.5" href={exportUrl(v.key)}>Download</a><button className="btn-muted px-2 py-0.5" onClick={()=>onCopy?.(v.key)}>Copy TeX</button>
         {v.review!=='keep'&&<button className="btn-muted px-2 py-0.5" disabled={busy} onClick={()=>onReview?.({action:'keep',key:v.key})}>Keep</button>}<button className="btn-muted px-2 py-0.5" disabled={busy} onClick={()=>onReview?.({action:'discard',key:v.key})}>Discard</button>
-        <button className="btn-muted px-2 py-0.5" disabled={busy||v.adjusting} onClick={()=>{setAdjustKey(adjustKey===v.key?'':v.key);setAdjustText('')}}>Adjust</button></>}</div>}
-      {adjustKey===v.key&&<div className="mt-1 flex flex-wrap items-start gap-1"><textarea className="min-w-0 flex-1 text-xs" rows={2} aria-label={`Adjustment for ${variantLabel(v)}`} placeholder="What to change in this document only" value={adjustText} onChange={e=>setAdjustText(e.target.value)}/><button className="btn px-2 py-0.5 text-xs" disabled={busy||!adjustText.trim()} onClick={async()=>{if(await onAdjust?.(v.key,adjustText)){setAdjustKey('');setAdjustText('')}}}>Adjust only this</button></div>}
+        <button className="btn-muted px-2 py-0.5" aria-pressed={adjustKeys.includes(v.key)} disabled={busy||v.adjusting} onClick={()=>setAdjustKeys(adjustKeys.includes(v.key)?adjustKeys.filter(k=>k!==v.key):[...adjustKeys,v.key])}>{adjustKeys.includes(v.key)?'Adjust ✓':'Adjust'}</button></>}</div>}
     </li>)}</ul>}
+    <AdjustBox chosen={state.variants.filter(v=>adjustKeys.includes(v.key)&&usable(v)&&v.review!=='discard')} busy={busy} onAdjust={onAdjust} onDone={()=>setAdjustKeys([])}/>
     {!state.variants.length&&!state.reason&&<p className="mt-2 text-sm text-slate-600">Nothing prepared yet.</p>}<p className="mt-2 text-xs text-slate-500">{state.rule}</p><ErrorBox error={error}/></section>
 }
 

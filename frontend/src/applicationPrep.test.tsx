@@ -2,7 +2,7 @@
 // postingSource.test.tsx), so the pure panel is rendered to markup; polling needs a browser.
 import {describe,expect,it,vi} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {ApplicationPrepPanel,DailySlider,PrepBadge,TexPicker} from './App'
+import {AdjustBox,ApplicationPrepPanel,DailySlider,PrepBadge,TexPicker} from './App'
 import appSource from './App.tsx?raw'
 import {anyPreparing,defaultTex,isPreparing,prepAction,prepBadge,prepOnly,reviewText,texLabel,texOptions,variantLabel,variantStatusText,type PrepState,type PrepVariant} from './applicationPrep'
 
@@ -44,6 +44,14 @@ describe('prepared documents panel',()=>{
     expect(html).toContain('Prepare letter')
     expect(html).not.toContain('Prepare CV')
     expect(html).toContain('>Cancel<')
+  })
+
+  it('TASK-381: one adjustment box for the chosen documents',()=>{
+    expect(renderToStaticMarkup(<AdjustBox chosen={[]}/>)).toBe('')
+    const html=renderToStaticMarkup(<AdjustBox chosen={[v({}),v({key:'letter-de',document:'letter'})]}/>)
+    expect(html).toContain('Adjust CV · German + Full letter · German')
+    expect(html).toContain('Adjust these 2')
+    expect(render(state([v({})]))).toContain('aria-pressed="false"')
   })
 
   it('offers no action while everything is ready or running',()=>{
