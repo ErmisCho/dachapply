@@ -37,6 +37,14 @@ export function prepAction(state:PrepState|null|undefined,jobStatus:string):stri
   return state.variants.length?'':'Prepare now'
 }
 
+// TASK-379: the documents the owner can ask for on their own -- 'letter' covers short messages -- while none of
+// that kind is queued, running or ready. Not during the requirements analysis, which prepares on its own after.
+export function prepOnly(state:PrepState|null|undefined,jobStatus:string):('cv'|'letter')[]{
+  if(!state||!['new','reviewed','to_apply','ready_to_submit'].includes(jobStatus)||state.reason.startsWith('Analysing application requirements'))return []
+  const has=(only:string)=>state.variants.some(v=>(v.document==='cv')===(only==='cv')&&['queued','running','ready'].includes(v.status))
+  return (['cv','letter'] as const).filter(only=>!has(only))
+}
+
 export function preparedFile(v:PrepVariant){const path=v.files?.cv_pdf||v.files?.letter_pdf||v.files?.cv_tex||v.files?.letter_tex||'';return path.split(/[\\/]/).pop()||''}
 
 // TASK-280.3: a variant the owner can act on -- ready, with its files on disk.
