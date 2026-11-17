@@ -948,6 +948,11 @@ def test_exact_revision_plan_replaces_every_copy_of_a_repeated_old(tmp_path):
     cv.write_text('p 1 q\np 2 q\n',encoding='utf-8',newline='')
     assert exact_revision_plan([cv],'OLD:\np\n...\nq\nNEW:\nz') is None  # a wildcard OLD still needs one match
     assert exact_revision_plan([cv],'OLD: missing\nNEW: absent') is None
+    cv.write_text('foo foo',encoding='utf-8',newline='')
+    assert exact_revision_plan([cv],'OLD: foo\nNEW: foo bar') is None  # NEW contains OLD: not repeatable
+    letter=tmp_path/'letter.tex'; letter.write_text('dup once',encoding='utf-8',newline='')
+    cv.write_text('dup dup',encoding='utf-8',newline='')
+    assert exact_revision_plan([cv],'OLD: dup\nNEW: x',[letter])=={str(cv):'x x'}  # ticked copies win
 
 
 def test_multiline_and_bounded_wildcard_revision_plan_is_conservative(tmp_path):

@@ -1384,12 +1384,14 @@ def exact_revision_plan(sources, instructions, unselected=()):
     if documents is None: return None
     changed=set()
     for old,new in pairs:
-        selected=match_exact_pair(documents,old,new) or others and match_exact_pair(others,old,new)
-        if not selected:
-            copies=None if any(line.strip() == '...' for line in old.split('\n')) else replace_every_copy(documents,old,new)
-            if copies is None: return None
+        selected=match_exact_pair(documents,old,new)
+        # TASK-383: repeated copies in the ticked documents win over a single match in the unticked one.
+        copies=None if selected or any(line.strip() == '...' for line in old.split('\n')) else replace_every_copy(documents,old,new)
+        if copies is not None:
             documents.update(copies); changed.update(copies)
             continue
+        selected=selected or others and match_exact_pair(others,old,new)
+        if not selected: return None
         path,start,end,replacement=selected
         texts=documents if path in documents else others
         if path and texts[path][start:end] != replacement:
@@ -1401,6 +1403,8 @@ def exact_revision_plan(sources, instructions, unselected=()):
 def replace_every_copy(documents, old, new):
     """TASK-383 (owner, 2026-11-17): an OLD found more than once in the ticked documents is replaced
     everywhere. {} when OLD is gone and NEW occurs 2+ times (already applied); None otherwise."""
+    if old in new:  # a rerun would expand every copy again
+        return None
     for candidate,replacement in ((old,new),(old.replace('\n','\r\n'),new.replace('\n','\r\n'))):
         hits=[path for path,text in documents.items() if candidate in text]
         if sum(documents[path].count(candidate) for path in hits) > 1:
