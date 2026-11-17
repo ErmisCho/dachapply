@@ -920,8 +920,8 @@ def test_exact_revision_plan_is_conservative_and_byte_local(tmp_path):
     cv.write_bytes(b'line one\r\nOLD text\r\nline three')
     assert exact_revision_plan([cv],'OLD:\nOLD text\nNEW:\nNEW text')[str(cv)]=='line one\r\nNEW text\r\nline three'
     cv.write_text('duplicate duplicate',encoding='utf-8')
-    assert exact_revision_plan([cv],'OLD:\nduplicate\nNEW:\nreplacement') is None
-    assert exact_revision_plan([cv],'OLD:\nduplicate\nNEW:\nline one\nline two') is None
+    # TASK-383 (owner, 2026-11-17): a repeated OLD replaces every copy instead of refusing.
+    assert exact_revision_plan([cv],'OLD:\nduplicate\nNEW:\nreplacement')=={str(cv):'replacement replacement'}
     assert exact_revision_plan([cv],'Please rewrite the profile.') is None
 
 
@@ -933,6 +933,26 @@ def test_exact_revision_plan_accepts_text_on_the_marker_line(tmp_path):
     assert exact_revision_plan([letter],'OLD: Vienna, 16 November 2026\nNEW: Vienna, \\today')=={str(letter):'Dear team,\nVienna, \\today\nBest\nfirst\nsecond\n'}
     assert exact_revision_plan([letter],'OLD: first\nsecond\nNEW: one\ntwo')=={str(letter):'Dear team,\nVienna, 16 November 2026\nBest\none\ntwo\n'}
     assert exact_revision_plan([letter],'OLD: Best\nNEW: Regards\nOLD:\nfirst\nNEW:\nprimary')=={str(letter):'Dear team,\nVienna, 16 November 2026\nRegards\nprimary\nsecond\n'}
+
+
+def test_exact_revision_plan_replaces_every_copy_of_a_repeated_old(tmp_path):
+    """TASK-383: job 2086's '\\end{tabular*}\\vspace{-7pt}' occurs twice; replace both, rerun is a no-op."""
+    from jobradar.services.cv_generator import exact_revision_plan
+
+    cv=tmp_path/'cv.tex'; cv.write_text('a \\vspace{-7pt}\nb \\vspace{-7pt}\nunique\n',encoding='utf-8',newline='')
+    instruction='OLD: \\vspace{-7pt}\nNEW: \\vspace{0pt}\nOLD: unique\nNEW: single'
+    plan=exact_revision_plan([cv],instruction)
+    assert plan=={str(cv):'a \\vspace{0pt}\nb \\vspace{0pt}\nsingle\n'}
+    cv.write_text(plan[str(cv)],encoding='utf-8',newline='')
+    assert exact_revision_plan([cv],instruction)=={}
+    cv.write_text('p 1 q\np 2 q\n',encoding='utf-8',newline='')
+    assert exact_revision_plan([cv],'OLD:\np\n...\nq\nNEW:\nz') is None  # a wildcard OLD still needs one match
+    assert exact_revision_plan([cv],'OLD: missing\nNEW: absent') is None
+    cv.write_text('foo foo',encoding='utf-8',newline='')
+    assert exact_revision_plan([cv],'OLD: foo\nNEW: foo bar') is None  # NEW contains OLD: not repeatable
+    letter=tmp_path/'letter.tex'; letter.write_text('dup once',encoding='utf-8',newline='')
+    cv.write_text('dup dup',encoding='utf-8',newline='')
+    assert exact_revision_plan([cv],'OLD: dup\nNEW: x',[letter])=={str(cv):'x x'}  # ticked copies win
 
 
 def test_multiline_and_bounded_wildcard_revision_plan_is_conservative(tmp_path):
