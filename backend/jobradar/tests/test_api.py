@@ -925,6 +925,16 @@ def test_exact_revision_plan_is_conservative_and_byte_local(tmp_path):
     assert exact_revision_plan([cv],'Please rewrite the profile.') is None
 
 
+def test_exact_revision_plan_accepts_text_on_the_marker_line(tmp_path):
+    """TASK-382: 'OLD: Vienna, 16 November 2026' / 'NEW: Vienna, \\today' went to the cloud model."""
+    from jobradar.services.cv_generator import exact_revision_plan
+
+    letter=tmp_path/'letter.tex'; letter.write_text('Dear team,\nVienna, 16 November 2026\nBest\nfirst\nsecond\n',encoding='utf-8',newline='')
+    assert exact_revision_plan([letter],'OLD: Vienna, 16 November 2026\nNEW: Vienna, \\today')=={str(letter):'Dear team,\nVienna, \\today\nBest\nfirst\nsecond\n'}
+    assert exact_revision_plan([letter],'OLD: first\nsecond\nNEW: one\ntwo')=={str(letter):'Dear team,\nVienna, 16 November 2026\nBest\none\ntwo\n'}
+    assert exact_revision_plan([letter],'OLD: Best\nNEW: Regards\nOLD:\nfirst\nNEW:\nprimary')=={str(letter):'Dear team,\nVienna, 16 November 2026\nRegards\nprimary\nsecond\n'}
+
+
 def test_multiline_and_bounded_wildcard_revision_plan_is_conservative(tmp_path):
     from jobradar.services.cv_generator import exact_revision_plan
 

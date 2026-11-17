@@ -1347,10 +1347,16 @@ def exact_revision_plan(sources, instructions, unselected=()):
         while values and not values[0].strip(): values.pop(0)
         while values and not values[-1].strip(): values.pop()
         return '\n'.join(values)
+    # TASK-382: 'OLD: text' / 'NEW: text' carry the block's first line on the marker line itself.
+    inline=lambda value,marker: re.match(rf'^{marker}:[ \t]+(\S.*)$',value,re.IGNORECASE)
     def old_marker(value):
+        if inline(value,'old'): return True
         value=value.casefold()
         return value in ('old:','from:') or value.startswith('replace ') and value.endswith(' from:')
-    def new_marker(value): return value.casefold() in ('new:','with:')
+    def new_marker(value): return bool(inline(value,'new')) or value.casefold() in ('new:','with:')
+    def first_line(value,marker):
+        match=inline(value.strip(),marker)
+        return [match.group(1)] if match else []
     def heading(value):
         # TASK-333: 'CHANGE 2 — Restore ...', 'FILE 2: x.tex' or 'FINAL VALIDATION:' after a NEW block
         # was spliced into the CV preamble ('Missing \begin{document}', 2026-10-21). Only checked after
@@ -1362,12 +1368,11 @@ def exact_revision_plan(sources, instructions, unselected=()):
         if not old_marker(lines[index].strip()):
             index+=1
             continue
-        old=[]; index+=1
+        old=first_line(lines[index],'old'); index+=1
         while index < len(lines) and not new_marker(lines[index].strip()):
             old.append(lines[index]); index+=1
         if index == len(lines): return None
-        index+=1
-        new=[]
+        new=first_line(lines[index],'new'); index+=1
         while index < len(lines) and not boundary(lines[index].strip(), not lines[index-1].strip()):
             new.append(lines[index]); index+=1
         old,new=block(old),block(new)
