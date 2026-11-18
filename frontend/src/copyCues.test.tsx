@@ -50,7 +50,7 @@ describe('wiring (AC1/AC3/AC4/AC5)',()=>{
   })
   it('the banner is gone and the chip sits next to Generate',()=>{
     expect(gen).not.toContain('SuccessMessage message={clipboardMessage}')
-    expect(gen).toContain('onClick={generate}/><CopiedChip show={texCopied}/>')
+    expect(gen).toContain('onClick={generate}/>}<CopiedChip show={texCopied}/>')
     expect(gen).toContain('if(current.clipboard_copied||await copyTex(current.clipboard_tex))flashTexCopied()')
   })
   it('chimes after a successful Generate only, and once per bulk batch',()=>{

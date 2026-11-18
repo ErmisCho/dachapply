@@ -55,7 +55,7 @@ describe('compact CV generator popup (TASK-216)',()=>{
 
   it('keeps Applied on the Generate row and the job texts small and scrollable (TASK-328)',()=>{
     // The loaded controls never render here (no effects), so these read the source.
-    expect(appSource).toContain('<div className="flex flex-nowrap items-center gap-2" data-cv-action-row><ProgressButton active={loading} task={task} label="Generate"')
+    expect(appSource).toContain('<div className="flex flex-nowrap items-center gap-2" data-cv-action-row>{(!hideGenerate||loading)&&<ProgressButton active={loading} task={task} label="Generate"')
     // Current accepted and fetched text: a small fixed height that scrolls inside, no field-sizing:content.
     const wrapper=appSource.slice(appSource.indexOf("<div className={compact?'lg:col-span-2"),appSource.indexOf('<PostingSource job={preview.job}'))
     expect(wrapper).toBe("<div className={compact?'lg:col-span-2 [&_textarea]:h-28 [&_textarea]:resize-y':'lg:col-span-2'}>")
