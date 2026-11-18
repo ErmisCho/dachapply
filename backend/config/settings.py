@@ -177,6 +177,8 @@ DB_USAGE_OWNER_EMAIL = os.getenv('DB_USAGE_OWNER_EMAIL', '').strip()
 # already does). Sharing that directory between accounts is TASK-99b's problem, not this setting's.
 CODEX_CV_WORKSPACE = os.getenv('CODEX_CV_WORKSPACE', '')
 CODEX_CV_CACHE = env_bool('CODEX_CV_CACHE', True)
+CODEX_CV_SELF_REVIEW = env_bool('CODEX_CV_SELF_REVIEW', True)  # TASK-385
+CODEX_CV_SELF_REVIEW_TIMEOUT = int(os.getenv('CODEX_CV_SELF_REVIEW_TIMEOUT', '300'))
 # TASK-278: the installed local model ('ollama:<name>' or 'lmstudio:<name>') that translates a
 # free-form literal readjustment ("swap X for Y") into exact edits; empty disables that route, and
 # a model that is not installed just skips it. Default picked by scripts/eval_literal_edits.py.

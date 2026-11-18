@@ -12,6 +12,7 @@ from pathlib import Path
 from django.conf import settings
 
 from jobradar.services.cv_generator import GenerationCancelled, match_exact_pair, replace_every_copy, run_structured_model
+from jobradar.services.literal_edits import words
 
 logger=logging.getLogger(__name__)
 
@@ -146,3 +147,22 @@ def apply_review_fixes(documents, findings, kinds):
             text=text[:start]+replacement+text[end:]
         updates[path]=text
     return updates,applied,dropped
+
+
+def harden_findings(findings, evidence_text, posting_text):
+    """(kept, dropped [(finding, reason)]): the word-level no-invented-content gate. A wildcard OLD
+    ('...' alone on a line) or a NEW with a word found in neither its OLD, the evidence nor the posting is dropped."""
+    known=words(evidence_text)|words(posting_text)
+    kept=[]
+    dropped=[]
+    for finding in findings:
+        old,new=finding.get('old') or '',finding.get('new') or ''
+        if any(line.strip() == '...' for line in old.splitlines()):
+            dropped.append((finding,'wildcard OLD'))
+            continue
+        invented=sorted(words(new)-words(old)-known)
+        if invented:
+            dropped.append((finding,'NEW adds unsupported words: '+', '.join(invented[:8])))
+        else:
+            kept.append(finding)
+    return kept,dropped

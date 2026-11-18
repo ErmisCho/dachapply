@@ -150,6 +150,7 @@ def test_ollama_rereads_current_tex_for_each_repair_attempt(tmp_path):
 
 
 def test_invalid_initial_output_keeps_full_context_then_compile_failure_uses_compact_repair(db, tmp_path, monkeypatch, settings, cv_assets):
+    settings.CODEX_CV_SELF_REVIEW=False  # TASK-385: this test pins stages/prompt counts without the review call
     from django.contrib.auth.models import User
     from jobradar.models import JobLead
 

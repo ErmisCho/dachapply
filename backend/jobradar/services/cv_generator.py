@@ -2351,6 +2351,39 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
                     raise GenerationFailed(f'{exc.summary} Two automatic repair attempts also failed.', '\n\n'.join(diagnostics), 2, saved_files=saved_files) from None
 
         generation_report={key:generated[key] for key in ('changed_files','main_changes','unsupported_requirements_not_claimed','confirmations')}
+        if settings.CODEX_CV_SELF_REVIEW and not is_revision and not short_message:
+            # TASK-385: one review round per fresh run; it can never fail the run, only improve it.
+            from jobradar.services.self_review import apply_review_fixes, harden_findings, review_documents
+            generation_report['main_changes']=list(generation_report['main_changes'])
+            report(96, 'Reviewing documents')
+            tex_paths={output/name:kind for name,kind in ((cv_name,'cv'),(letter_name,'letter')) if name in generated_files}
+            snapshot={path:path.read_bytes() for name in generated_files for path in (output/name,(output/name).with_suffix('.pdf')) if path.is_file()}
+            try:
+                texts={str(path):path.read_bytes().decode('utf-8') for path in tex_paths}  # byte-exact: keep the file's own newlines
+                kinds={str(path):kind for path,kind in tex_paths.items()}
+                evidence_text=str(profile)
+                findings=review_documents(texts,job.source_text or '',evidence_text,provider,model,effort,speed,cancelled=cancelled)
+                kept,dropped=harden_findings(findings,evidence_text,job.source_text or '')
+                updates,applied,dropped_more=apply_review_fixes(texts,kept,kinds)
+                dropped+=dropped_more
+                if applied:
+                    for path,text in updates.items():
+                        Path(path).write_bytes(text.encode('utf-8'))
+                    compile_documents()  # the same validation (compile + page limits) the run used
+                generation_report['self_review']={
+                    'applied':[{key:item.get(key) for key in ('category','file','explanation','old','new')} for item in applied],
+                    'dropped':[{**{key:item.get(key) for key in ('category','explanation','old')},'reason':reason} for item,reason in dropped]}
+                if applied or dropped:
+                    categories=', '.join(sorted({str(item.get('category')) for item in applied}))
+                    generation_report['main_changes'].append(f'Self-review: {len(applied)} fixes applied ({categories or "none"}), {len(dropped)} dropped')
+            except GenerationCancelled:
+                raise
+            except Exception as exc:
+                logger.warning('self-review reverted: %s',exc,exc_info=True)
+                for path,data in snapshot.items():
+                    path.write_bytes(data)
+                generation_report['self_review']={'applied':[],'dropped':[],'reverted':str(exc)[:300]}
+                generation_report['main_changes'].append('Self-review: reverted (the reviewed documents failed validation)')
         report(97, 'Saving files')
         _ensure_active(cancelled)
         saved=persist_generated_files(output,workspace,cv_name if create_cv else None,letter_name if create_letter else None,source_cv if is_revision else replace_cv,source_letter if is_revision else replace_letter)
