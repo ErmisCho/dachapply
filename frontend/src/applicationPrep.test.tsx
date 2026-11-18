@@ -54,6 +54,14 @@ describe('prepared documents panel',()=>{
     expect(render(state([v({})]))).toContain('aria-pressed="false"')
   })
 
+  it('TASK-384: Adjust defaults to one usable CV and the recommended (else first) usable letter, not to nothing',()=>{
+    // No DOM and renderToStaticMarkup skips effects, so the default is pinned in the source.
+    expect(appSource).toContain("(state?.variants||[]).filter(v=>v.document===doc&&usable(v)&&v.review!=='discard')")
+    expect(appSource).toContain('(c.find(v=>selection.includes(v.key))||c.find(v=>v.recommended)||c[0])?.key')
+    expect(appSource).toContain("const defaultAdjust=[pickDefault('cv'),pickDefault('letter')].filter(Boolean) as string[]")
+    expect(appSource).toContain("useEffect(()=>setAdjustKeys(defaultAdjustKey?defaultAdjustKey.split(','):[]),[defaultAdjustKey])")
+  })
+
   it('offers no action while everything is ready or running',()=>{
     expect(prepAction(state([v({}),v({key:'cv-en',language:'en',status:'running'})]),'to_apply')).toBe('')
     expect(prepAction(state([v({status:'failed'})]),'reviewed')).toBe('Retry failed')   // TASK-312: New/Reviewed are prepared too
