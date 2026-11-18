@@ -357,8 +357,13 @@ def _finish(job_id, user_id, key, task_id):
                 retry_at = _retry_at(status == 'failed' and task.get('usage_limit'), reset_at, variant)
                 variant.update(task_id=task_id, status=status, files=files if status == 'ready' else {}, error=limit_line(error, retry_at),
                                finished_at=_now(), retry_at=retry_at)  # TASK-359: "Continues" only when retry_at is armed
+                chosen.append(_auto_select(job, prep))
+
+            chosen = []
             if job:
                 _save(job, user_id, record)
+                if True in chosen:
+                    cv_tasks.mark_ready_to_submit(job.id, respect_skip=False)  # same side effect as the owner's select
         finally:
             _running -= 1
             _pump()
@@ -1043,6 +1048,35 @@ def _unready(job_id):
         status='to_apply', status_date=None, feedback_due_date=None, last_update_date=None)
 
 
+def _set_selection(prep, keys):
+    variants = prep['variants']
+    for chosen in keys:
+        variants[chosen]['review'] = 'keep'
+    prep['selection'] = {'keys': keys, 'files': [path for chosen in keys for path in variants[chosen]['files'].values()]}
+    prep.pop('invalidated', None)
+
+
+def _auto_select(job, prep):
+    """TASK-389: select the final package when nothing is selected and only one is possible: no variant
+    still running, exactly one usable CV and one usable letter in its language. True when it selected."""
+    variants = prep.get('variants') or {}
+    if prep.get('selection') or any(v.get('status') in ('queued', 'running') for v in variants.values()):
+        return False
+    usable = {key: v for key, v in variants.items() if v.get('status') == 'ready' and v.get('review') != 'discard' and _files_present(v)}
+    cvs = [key for key, v in usable.items() if v['document'] == 'cv']
+    letters = [key for key, v in usable.items() if v['document'] == 'letter']
+    if len(cvs) != 1 or len(letters) != 1 or usable[cvs[0]]['language'] != usable[letters[0]]['language']:
+        return False
+    keys = cvs + letters
+    try:
+        _check_package(job, variants, keys)  # e.g. a required short message is still missing
+    except ValueError:
+        return False
+    prep.pop('outdated', None)
+    _set_selection(prep, keys)
+    return True
+
+
 def _invalidate(job, user):
     def change(prep):
         reason = _stale_reason(prep)  # re-checked under the sidecar lock: a fresh selection may have won
@@ -1104,10 +1138,7 @@ def review(job, user, action, key='', keys=None):
             prep.pop('outdated', None)  # TASK-336: the owner approved documents again after the change
         if action == 'select':
             _check_package(job, variants, keys)
-            for chosen in keys:
-                variants[chosen]['review'] = 'keep'
-            prep['selection'] = {'keys': keys, 'files': [path for chosen in keys for path in variants[chosen]['files'].values()]}
-            prep.pop('invalidated', None)
+            _set_selection(prep, keys)
         elif action == 'clear':
             prep.pop('selection', None)
             prep.pop('invalidated', None)
@@ -1179,6 +1210,9 @@ def _adjusted(job_id, user_id, key, task_id):
         variant.pop('adjust_task_id', None)
         if task.get('status') == 'ready' and files:
             variant.update(files=files, adjust_error='')
+            selection = prep.get('selection')
+            if selection and key in selection['keys']:  # TASK-389: the owner's own adjust keeps the package
+                selection['files'] = [path for chosen in selection['keys'] for path in prep['variants'][chosen]['files'].values()]
         else:
             # A failed adjustment keeps the variant's previous files and state.
             variant['adjust_error'] = task.get('error') or 'Stopped before it finished.'
