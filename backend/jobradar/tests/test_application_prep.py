@@ -525,7 +525,8 @@ def test_prepare_only_cv_then_only_letter_leaves_the_other_document_alone(client
     assert client.post(f'/api/jobs/{job.id}/application-prep/retry/', {'only': 'letter'}, format='json').status_code == 200
     variants, _ = _state(client, job)
     assert [call['key'] for call in generator['calls']] == ['letter-de'] and variants['letter-de']['status'] == 'ready'
-    assert variants['cv-de'] == cv and all(Path(path).read_bytes() == data for path, data in cv_bytes.items())
+    # TASK-389: the pair is then unambiguous, so it is selected (review/selected change); the CV's files do not.
+    assert {**variants['cv-de'], 'review': '', 'selected': False} == cv and all(Path(path).read_bytes() == data for path, data in cv_bytes.items())
     # Asked again: both are ready, so nothing is regenerated (Adjust changes a ready one).
     generator['calls'].clear()
     client.post(f'/api/jobs/{job.id}/application-prep/retry/', {'only': 'letter'}, format='json')
