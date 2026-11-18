@@ -1,9 +1,10 @@
 ---
 id: TASK-384
 title: 'Adjust offers CV, letter or both once both documents exist'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-17 10:13'
+updated_date: '2026-11-18 22:30'
 labels: []
 dependencies: []
 priority: medium
