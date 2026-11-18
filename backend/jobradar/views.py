@@ -2428,7 +2428,17 @@ def revise_latest_cv_documents(request, job_id):
             use_letter=create_letter or str(source_letter) in exact_updates
             unticked=[name for name,ticked,used in (('CV',create_cv,use_cv),('letter',create_letter,use_letter)) if used and not ticked]
             report={'changed_files':[Path(path).name for path in exact_updates],'main_changes':['Applied exact OLD/NEW replacements without AI.']+[f'Also updated the {name}: some blocks were only found there.' for name in unticked],'unsupported_requirements_not_claimed':[]}
-            task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv if use_cv else None,source_letter if use_letter else None,source_updates=exact_updates,task_report=report,letter_key=letter_key,adjust={**adjust,'route':'exact'})
+            # TASK-386/388: if the edited documents fail the compile or page check, the task falls back
+            # to full optimization. Without a usable model/evidence the exact edit runs as before.
+            fallback=None
+            try:
+                with cloud_models_only(uses_cloud_only(request.user.pk)):
+                    validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', needs_tools=True)
+                exact_profile=user_profile_settings(request.user)
+                fallback={'profile':load_candidate_evidence(build_candidate_profile_text(request.user), exact_profile.learned_application_preferences, exact_profile.candidate_evidence),'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'provider':request.data.get('provider') or '','model':request.data.get('model') or '','effort':request.data.get('effort') or '','speed':request.data.get('speed') or 'normal','source_cv':source_cv,'source_letter':source_letter,'revision_instructions':instructions[:5000],'create_cv':create_cv}
+            except (ValueError,RuntimeError):
+                pass
+            task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv if use_cv else None,source_letter if use_letter else None,source_updates=exact_updates,task_report=report,letter_key=letter_key,adjust={**adjust,'route':'exact'},fallback=fallback)
             return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
     # TASK-278: free-form literal edits -- parsed deterministically, else translated by the installed
     # local model. Both are gated in the task, which falls back to the full optimization below.

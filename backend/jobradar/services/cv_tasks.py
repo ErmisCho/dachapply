@@ -612,11 +612,15 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
 
 
 @tracked('documents')
-def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, source_updates, task_report, cancel_event, fall_back=False):
+def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, source_updates, task_report, cancel_event, fall_back=False, fallback=None):
     """Compile (with source_updates: edit, then compile) the latest documents. With fall_back, a
     compile or page-limit failure -- raised before recompile_generated_package writes anything --
-    is returned as a reason instead of failing the task, so the caller can run full optimization."""
+    is returned as a reason instead of failing the task, so the caller can run full optimization.
+    With `fallback` (_run's keyword arguments) this function runs that optimization itself, with the
+    failure appended to its instructions (TASK-386/388: the owner's exact edits broke the build)."""
     close_old_connections()
+    fall_back=fall_back or fallback is not None
+    reason=''
     try:
         job=JobLead.objects.get(id=job_id)
         compile_kwargs={'cancelled':cancel_event.is_set,'user_id':user_id}
@@ -634,11 +638,21 @@ def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, sou
     except Exception as exc:
         _keep_failed_files(task_id,exc)
         if fall_back and isinstance(exc,RecoverableGenerationError):
-            return f'the edited document failed the compile check: {str(exc).splitlines()[0][:200]}'
-        _update(task_id,status='failed',stage='Failed',error=str(exc).splitlines()[0][:500],diagnostics=getattr(exc,'diagnostics',str(exc)))
+            reason=f'the edited document failed the compile check: {str(exc).splitlines()[0][:200]}'
+            if fallback is None:
+                return reason
+            lines=str(getattr(exc,'diagnostics','') or '').splitlines()
+            detail='; '.join([str(exc).splitlines()[0]]+[line.strip() for line in lines if line.startswith('!') or 'LaTeX Error' in line])[:1500]
+            fallback={**fallback,'revision_instructions':fallback['revision_instructions']+f'\n\nThe exact replacements above were applied but the result failed: {detail}. Apply the same replacements and fix this error without other changes.'}
+        else:
+            _update(task_id,status='failed',stage='Failed',error=str(exc).splitlines()[0][:500],diagnostics=getattr(exc,'diagnostics',str(exc)))
+            return ''
     finally:
         close_old_connections()
-    return ''
+    if fallback is not None and reason:
+        _run_fallback(task_id,job_id,user_id,reason,fallback,cancel_event)
+        return ''
+    return reason
 
 
 @tracked('documents')
@@ -662,8 +676,12 @@ def _run_literal(task_id, job_id, user_id, source_cv, source_letter, instruction
     except GenerationCancelled:
         _update(task_id,status='cancelled',stage='Cancelled',error='')
         return
-    if not reason:
-        return
+    if reason:
+        _run_fallback(task_id,job_id,user_id,reason,fallback,cancel_event)
+
+
+def _run_fallback(task_id, job_id, user_id, reason, fallback, cancel_event):
+    """Run full optimization in this same task after a literal or exact route gave up for `reason`."""
     plan,defaults,estimate_key=_task_timing(fallback['provider'],fallback['model'],fallback['effort'],fallback['speed'],fallback['create_cv'],fallback['create_letter'],True)
     with _lock:
         if task_id in _tasks:
@@ -730,9 +748,11 @@ def start_cv_noop_task(job_id, user_id, artifacts, adjust=None):
     return task_id
 
 
-def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter=None, source_updates=None, task_report=None, letter_key='', adjust=None):
+def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter=None, source_updates=None, task_report=None, letter_key='', adjust=None, fallback=None):
     _cleanup()
     renamed=_adopt_letter_label(job_id,user_id,letter_key,source_letter)
+    if fallback and fallback['source_letter'] == source_letter:
+        fallback['source_letter']=renamed
     if renamed != source_letter:
         source_updates={(renamed if key == str(source_letter) else key):value for key,value in (source_updates or {}).items()}
         if task_report and task_report.get('changed_files'):  # the report was written before the rename
@@ -747,7 +767,7 @@ def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter
     with _lock:
         _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':task_report,'clipboard_tex':'','clipboard_tex_parts':{},'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('compile-only',bool(compile_cv),bool(compile_letter)),'_stage_times':{},'_adjust':adjust,'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in _tasks[task_id]['_stage_plan'])
-    args=(task_id,job_id,user_id,cv_key,source_cv,source_letter,source_updates or {},task_report,cancel_event)
+    args=(task_id,job_id,user_id,cv_key,source_cv,source_letter,source_updates or {},task_report,cancel_event,False,fallback)
     if processing_store():
         _run_compile.submit(*args)
     else:

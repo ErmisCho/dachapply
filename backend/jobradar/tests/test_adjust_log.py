@@ -19,6 +19,14 @@ def workspace(tmp_path, settings):
     return path
 
 
+def _no_fallback(monkeypatch):
+    # TASK-386/388: a failed exact edit falls back to full optimization when a model is usable;
+    # these tests pin the TASK-334 capture on the no-fallback path (test_exact_fallback covers the other).
+    def invalid(*args, **kwargs):
+        raise ValueError('no model')
+    monkeypatch.setattr('jobradar.views.validate_model_capability', invalid)
+
+
 def _entries(workspace):
     return [json.loads(line) for line in (workspace/'.dachapply-logs'/'adjustments.jsonl').read_text(encoding='utf-8').splitlines()]
 
@@ -39,6 +47,7 @@ def test_failed_compile_saves_tex_and_log_and_the_entry_lists_them(env, workspac
         (Path(cwd)/Path(command[-1]).with_suffix('.log')).write_text('! Undefined control sequence.\nl.12 \\foo\n', encoding='utf-8')
         return fake(command, cancelled, cwd=cwd, **kwargs)
     monkeypatch.setattr(cv_generator, '_run_command', pdflatex)
+    _no_fallback(monkeypatch)
     task=env.revise(EXACT)
     assert task['status']=='failed' and 'Undefined control sequence' in task['error']
     [entry]=_entries(workspace)
@@ -48,7 +57,8 @@ def test_failed_compile_saves_tex_and_log_and_the_entry_lists_them(env, workspac
     assert entry['status']=='failed' and 'Undefined control sequence' in entry['error'] and 'l.12' in entry['diagnostics_head']
 
 
-def test_unwritable_log_location_never_breaks_the_task(env, workspace):
+def test_unwritable_log_location_never_breaks_the_task(env, workspace, monkeypatch):
+    _no_fallback(monkeypatch)
     (workspace/'.dachapply-logs').write_text('a file where the log directory should be', encoding='utf-8')
     assert env.revise(EXACT)['status']=='ready'
     env.source.write_bytes(env.original)
