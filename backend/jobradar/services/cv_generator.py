@@ -2361,7 +2361,10 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
             try:
                 texts={str(path):path.read_bytes().decode('utf-8') for path in tex_paths}  # byte-exact: keep the file's own newlines
                 kinds={str(path):kind for path,kind in tex_paths.items()}
-                evidence_text=str(profile)
+                # The owner wrote the base templates: their facts count, unless the evidence above says otherwise
+                # (first real review run, 2026-11-19, stripped true template facts missing from the evidence file).
+                templates_text='\n\n'.join(asset.source for asset in (cv_template['cv'],letter_asset) if asset is not None and getattr(asset,'source',''))
+                evidence_text=str(profile)+(f"\n\nOWNER'S BASE TEMPLATES (owner-written; their facts are true unless the evidence above states otherwise):\n{templates_text}" if templates_text else '')
                 findings=review_documents(texts,job.source_text or '',evidence_text,provider,model,effort,speed,cancelled=cancelled)
                 kept,dropped=harden_findings(findings,evidence_text,job.source_text or '')
                 updates,applied,dropped_more=apply_review_fixes(texts,kept,kinds)

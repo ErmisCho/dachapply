@@ -12,6 +12,16 @@ def fix(old,new,file='cv'):
     return {'severity':'blocking','category':'other','file':file,'explanation':'x','old':old,'new':new}
 
 
+def test_harden_findings_gates_only_claim_like_words():
+    """2026-11-19 real run: prose words ('bring', 'foundation') dropped every letter rewrite."""
+    old='I built Python services.'
+    kept,dropped=self_review.harden_findings([fix(old,'That foundation would bring Python services to your indexing.'),
+                                              fix(old,'I built Kubernetes services.'), fix(old,'I built Python services for 40 teams.')],
+                                             'Python services','indexing')
+    assert [f['new'] for f in kept]==['That foundation would bring Python services to your indexing.']
+    assert sorted(reason for _,reason in dropped)==['NEW adds unsupported words: 40','NEW adds unsupported words: kubernetes']
+
+
 def test_prompt_contains_everything():
     prompt=build_review_prompt({CV:'\\textbf{Python} {a}'},'POSTING-TEXT','EVIDENCE-TEXT',['CLAIM-X'],'German')
     for needle in ('POSTING-TEXT','EVIDENCE-TEXT','\\textbf{Python} {a}','CLAIM-X','German','HONESTY RULE','not in the EVIDENCE'):

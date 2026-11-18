@@ -5,6 +5,7 @@ and only the matched spans change. The honesty rule lives in the prompt (the mod
 reason to add unsupported content) -- wiring and any word-level gate are a later task.
 """
 import logging
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -149,6 +150,13 @@ def apply_review_fixes(documents, findings, kinds):
     return updates,applied,dropped
 
 
+def _claim_tokens(text):
+    """The words of `text` that can carry a fact: capitalised (names, tools, employers) or containing a digit."""
+    text=re.sub(r'\\[A-Za-z@]+', ' ', text)
+    text=re.sub(r'(^|[.!?:]\s+)[A-Z][a-z]*\b', r'\1', text)  # a sentence's first word is capitalised anyway
+    return ' '.join(re.findall(r'\b[A-Z][\w+#.-]*|\b\w*\d\w*', text))
+
+
 def harden_findings(findings, evidence_text, posting_text):
     """(kept, dropped [(finding, reason)]): the word-level no-invented-content gate. A wildcard OLD
     ('...' alone on a line) or a NEW with a word found in neither its OLD, the evidence nor the posting is dropped."""
@@ -160,7 +168,9 @@ def harden_findings(findings, evidence_text, posting_text):
         if any(line.strip() == '...' for line in old.splitlines()):
             dropped.append((finding,'wildcard OLD'))
             continue
-        invented=sorted(words(new)-words(old)-known)
+        # Only claim-like tokens count (names, tools, numbers): plain prose words ('bring', 'foundation')
+        # carry no fact, and gating them dropped every letter rewrite in the first real run (2026-11-19).
+        invented=sorted(word for word in words(_claim_tokens(new))-words(old)-known)
         if invented:
             dropped.append((finding,'NEW adds unsupported words: '+', '.join(invented[:8])))
         else:

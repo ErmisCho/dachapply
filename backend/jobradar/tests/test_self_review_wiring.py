@@ -39,7 +39,10 @@ def fix(old, new, category='posting_fit'):
 
 def test_review_called_once_and_valid_fix_applied(run):
     saved, calls = run([fix('tailored', 'tailored Erfahrung')])
-    assert len(calls) == 1 and calls[0][1][1:5] == ('profile', 'openai', 'gpt-5.5', 'medium')
+    assert len(calls) == 1 and calls[0][1][2:5] == ('openai', 'gpt-5.5', 'medium')
+    # the owner's base template counts as evidence, after the profile (2026-11-19 real run stripped true template facts)
+    evidence = calls[0][1][1]
+    assert evidence.startswith('profile') and "OWNER'S BASE TEMPLATES" in evidence
     assert 'tailored Erfahrung' in Path(saved['cv_tex']).read_text(encoding='utf-8')
     assert any(line.startswith('Self-review: 1 fixes applied (posting_fit), 0 dropped') for line in saved['report']['main_changes'])
     assert len(saved['report']['self_review']['applied']) == 1
