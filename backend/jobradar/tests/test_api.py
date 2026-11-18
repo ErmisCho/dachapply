@@ -1151,6 +1151,7 @@ def test_cv_model_discovery_includes_anthropic_and_installed_local_models(monkey
 
 
 def test_cv_generation_uses_temporary_copies(db, tmp_path, monkeypatch, settings, cv_assets):
+    settings.CODEX_CV_SELF_REVIEW=False  # TASK-385: this test pins stages/prompt counts without the review call
     import zipfile
     from io import BytesIO
     from types import SimpleNamespace
