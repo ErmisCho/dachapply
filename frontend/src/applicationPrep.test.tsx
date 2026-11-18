@@ -130,13 +130,13 @@ describe('choosing which TeX to copy',()=>{
 describe('reviewing prepared documents',()=>{
   const four=()=>[v({}),v({key:'cv-en',language:'en',files:{cv_pdf:'C:\ws\CVs\Me-CV-Acme-EN.pdf'}}),v({key:'letter-de',document:'letter'}),v({key:'letter-en',document:'letter',language:'en'})]
 
-  it('shows unreviewed documents visibly as drafts with preview, download, copy, keep, discard and adjust',()=>{
+  it('shows unreviewed documents visibly as drafts with preview, download, discard and adjust',()=>{
     const html=renderToStaticMarkup(<ApplicationPrepPanel jobId={7} state={state(four())} jobStatus="to_apply"/>)
     expect(html).toContain('Drafts: no final package is selected, so this job is not Ready to submit')
     expect(html.match(/>Draft</g)?.length).toBe(4)
     expect(html).toContain('/api/jobs/7/application-prep/export/?as=pdf&amp;key=cv-de')
     expect(html).toContain('/api/jobs/7/application-prep/export/?as=zip&amp;key=letter-en')
-    for(const label of ['Preview PDF','Download','Copy TeX','Keep','Discard','Adjust','Select as final package'])expect(html).toContain(label)
+    for(const label of ['Preview PDF','Download','Copy TeX','Discard','Adjust','Select as final package'])expect(html).toContain(label)
     expect(html).toContain('aria-label="Include CV · German in the final package"')
   })
 
