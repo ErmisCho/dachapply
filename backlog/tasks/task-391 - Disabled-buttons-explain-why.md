@@ -1,9 +1,10 @@
 ---
 id: TASK-391
 title: Disabled buttons explain why
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-18 22:39'
+updated_date: '2026-11-19 06:34'
 labels: []
 dependencies: []
 priority: high
@@ -18,6 +19,12 @@ ordinal: 392000
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each of these buttons has a non-empty title when disabled naming the reason (busy, nothing changed, no document ticked, no instruction, adjusting)
-- [ ] #2 Enabled buttons keep their current label and no misleading title
+- [x] #1 Each of these buttons has a non-empty title when disabled naming the reason (busy, nothing changed, no document ticked, no instruction, adjusting)
+- [x] #2 Enabled buttons keep their current label and no misleading title
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+PR #430. Verified on localhost 2026-11-19 (runtime a081242, bundle index-DwwR4cEt.js matches dist). Readjust title 'Add an instruction or an image first'; Select title 'Tick at least one document first'.
+<!-- SECTION:NOTES:END -->

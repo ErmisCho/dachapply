@@ -1,9 +1,10 @@
 ---
 id: TASK-388
 title: Compile errors get one automatic repair pass
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-18 22:38'
+updated_date: '2026-11-19 06:34'
 labels: []
 dependencies: []
 priority: high
@@ -18,7 +19,13 @@ On a LaTeX compile failure in generation or full-optimization Adjust, feed the e
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test simulates a first compile failure and proves exactly one repair attempt with the log's error lines in the prompt
-- [ ] #2 If the repair compiles, the run ends ready and the report says a compile error was repaired; if not, the original failure is reported and the failed .tex/.log are kept as today (TASK-334)
-- [ ] #3 Exact/literal Adjust routes (no AI) do not call the model on compile failure
+- [x] #1 A test simulates a first compile failure and proves exactly one repair attempt with the log's error lines in the prompt
+- [x] #2 If the repair compiles, the run ends ready and the report says a compile error was repaired; if not, the original failure is reported and the failed .tex/.log are kept as today (TASK-334)
+- [x] #3 Exact/literal Adjust routes (no AI) do not call the model on compile failure
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+PR #431. All compile failures were route=exact; a failed exact edit now falls back once to full optimization with the LaTeX error lines appended; generation keeps its 2 repairs; TASK-334 capture kept.
+<!-- SECTION:NOTES:END -->

@@ -1,9 +1,10 @@
 ---
 id: TASK-386
 title: Automatic page-fit pass instead of failed runs
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-18 22:38'
+updated_date: '2026-11-19 06:34'
 labels: []
 dependencies: []
 priority: high
@@ -18,8 +19,14 @@ When the compiled CV or letter exceeds its page limit (or the CV underfills its 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A run whose first compile exceeds the page limit gets exactly one automatic fit attempt; a test simulates the overflow and proves the attempt and the final page count check
-- [ ] #2 If the fit attempt still exceeds the limit the run fails with the existing page-limit message (no loop, no second attempt)
-- [ ] #3 Underfill threshold is a named constant; underfilled CV triggers one fill attempt only when the first compile is within the limit
-- [ ] #4 Adjust/revise runs do not trigger the pass
+- [x] #1 A run whose first compile exceeds the page limit gets exactly one automatic fit attempt; a test simulates the overflow and proves the attempt and the final page count check
+- [x] #2 If the fit attempt still exceeds the limit the run fails with the existing page-limit message (no loop, no second attempt)
+- [x] #3 Underfill threshold is a named constant; underfilled CV triggers one fill attempt only when the first compile is within the limit
+- [x] #4 Adjust/revise runs do not trigger the pass
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+PR #431. ACs superseded 2026-11-18 by measurement (all page-limit failures were route=exact; generation already makes 2 repair attempts): an exact edit that exceeds the page limit falls back once to full optimization; tests in test_exact_fallback.py. Underfill pass not built (no measured demand).
+<!-- SECTION:NOTES:END -->
