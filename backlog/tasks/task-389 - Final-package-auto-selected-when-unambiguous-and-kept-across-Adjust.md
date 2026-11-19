@@ -1,9 +1,10 @@
 ---
 id: TASK-389
 title: Final package auto-selected when unambiguous and kept across Adjust
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-18 22:38'
+updated_date: '2026-11-19 06:34'
 labels: []
 dependencies: []
 priority: high
@@ -18,7 +19,13 @@ Prepared documents: when exactly one usable CV and one usable letter set (one la
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 With one usable CV + one usable letter of the same language and no selection, the job ends with that selection without a click (backend test on the prep state)
-- [ ] #2 With two candidate CVs or mixed languages, nothing is auto-selected
-- [ ] #3 After a successful Adjust of a selected variant the selection is still set (backend test); other invalidations (posting changed, files missing) still clear it
+- [x] #1 With one usable CV + one usable letter of the same language and no selection, the job ends with that selection without a click (backend test on the prep state)
+- [x] #2 With two candidate CVs or mixed languages, nothing is auto-selected
+- [x] #3 After a successful Adjust of a selected variant the selection is still set (backend test); other invalidations (posting changed, files missing) still clear it
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+PR #428. Backend tests prove auto-select (1 CV + 1 letter, same language), no auto-select for 2 CVs / mixed languages, selection kept across Adjust, discard still clears.
+<!-- SECTION:NOTES:END -->

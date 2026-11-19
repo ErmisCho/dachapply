@@ -1,9 +1,10 @@
 ---
 id: TASK-393
 title: Bake repeated spacing fixes into stored CV templates (dry-run command)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-18 22:39'
+updated_date: '2026-11-19 06:34'
 labels: []
 dependencies: []
 priority: high
@@ -18,8 +19,14 @@ Management command applies the owner's most repeated spacing OLD/NEW pairs (resu
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Dry-run prints, per stored CV template, each pair's match count and a unified diff; writes nothing
-- [ ] #2 --apply changes only the matched spans (byte-local) and only templates where every pair matches exactly once; others are reported and skipped
-- [ ] #3 Tests on a fixture template cover dry-run no-write, apply, and a skipped template
-- [ ] #4 The owner sees the dry-run output against the real database before --apply is run
+- [x] #1 Dry-run prints, per stored CV template, each pair's match count and a unified diff; writes nothing
+- [x] #2 --apply changes only the matched spans (byte-local) and only templates where every pair matches exactly once; others are reported and skipped
+- [x] #3 Tests on a fixture template cover dry-run no-write, apply, and a skipped template
+- [x] #4 The owner sees the dry-run output against the real database before --apply is run
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+PR #429. Dry-run on the real DB found only the demo account's template: the owner's templates are workspace files. Owner-approved v1.6 base templates were written instead (C:/latex/CVs, v1.5 kept). Spacing values were refused by measurement: they pushed the full base CV from 2 to 3 pages (pdfinfo); v1.6 carries only the confirmed German/Chinese lines (2 pages each).
+<!-- SECTION:NOTES:END -->
