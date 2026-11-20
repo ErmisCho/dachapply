@@ -1,10 +1,10 @@
 ---
 id: TASK-392
 title: 'Board action bar: hide Generate once documents exist, label evaluation buttons'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-18 22:39'
-updated_date: '2026-11-19 06:34'
+updated_date: '2026-11-20 08:07'
 labels: []
 dependencies: []
 priority: high
@@ -19,7 +19,7 @@ Job board/job page action bar: the Generate action is hidden once prepared varia
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 With prepared variants present, the Generate button is not rendered; without variants it is
+- [x] #1 With prepared variants present, the Generate button is not rendered; without variants it is
 - [x] #2 The two evaluation buttons have distinct visible labels or titles that name their difference
 - [x] #3 npm test and tsc green
 <!-- AC:END -->
@@ -27,5 +27,5 @@ Job board/job page action bar: the Generate action is hidden once prepared varia
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-PR #430: job page hides Generate once variants exist (verified job 2024); board evaluation buttons relabelled (in served bundle). Blocker for AC1: the board toolbar single-job Generate button is unchanged because board rows carry no prepared-variants flag (needs a backend field).
+PR #434: board toolbar hides single-job Generate when the selected job has ready prepared documents (existing prep poll). Verified on localhost 2026-11-20 (bundle index-SYQWfm8p.js): job 2086 selected -> Generate shown; job 2024 (prepared CV) selected -> hidden.
 <!-- SECTION:NOTES:END -->
