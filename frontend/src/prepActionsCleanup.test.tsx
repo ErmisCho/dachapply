@@ -14,6 +14,8 @@ describe('prepared-documents cleanup (TASK-390/391/392)',()=>{
   })
   it('hides Generate when variants exist and labels the evaluations',()=>{
     expect(appSource).toContain('hideGenerate={hasPrep}')
+    // Board toolbar: the ready count rides on the existing /application-prep/active/ payload (done), no new field.
+    expect(appSource).toContain('(!((prepActive[selected[0]]?.done||0)>0&&!prepActive[selected[0]]?.running)||cvGeneratorJob===selected[0])&&<span className="relative">')
     expect(appSource).toContain('Analyze selected jobs (ChatGPT prompt)')
     expect(appSource).toContain('Evaluate with model (in app)')
   })
