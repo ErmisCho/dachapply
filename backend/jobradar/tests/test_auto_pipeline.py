@@ -10,7 +10,7 @@ import pytest
 
 from jobradar.models import JobEvaluation, JobLead, UserProfile
 from jobradar.services import application_prep, job_evaluator
-from jobradar.services.cv_generator import RecoverableGenerationError
+from jobradar.services.cv_generator import RecoverableGenerationError, cv_default_choice
 from jobradar.tests.test_application_prep import CV_ONLY, POSTING, _req, client, generator, owner, workspace  # noqa: F401 -- fixtures
 from jobradar.tests.test_application_prep_queue import ACTION, _at, _items, tasks, timers  # noqa: F401 -- fixtures
 from jobradar.tests.test_job_evaluator import OLLAMA_OPTION, evaluation_for
@@ -23,12 +23,13 @@ INCOMPLETE_POSTING = 'We are hiring a Python engineer. Your tasks: build APIs wi
 def model(monkeypatch):
     """state['answers'] is popped per evaluation -- a recommendation, or an exception; calls records (job_ids, commit)."""
     monkeypatch.setattr(application_prep, '_piping', set())
-    state = {'answers': [], 'calls': []}
+    state = {'answers': [], 'calls': [], 'efforts': []}
     real = job_evaluator.evaluate_jobs
 
     def evaluate(job_ids, user, *args, commit=False, **kwargs):
         state['calls'].append((list(job_ids), commit))
         state['job_id'] = job_ids[0]
+        state['efforts'].append(args[2])
         return real(job_ids, user, *args, commit=commit, **kwargs)
 
     def run(prompt, schema, *args, **kwargs):
@@ -69,6 +70,14 @@ def test_single_add_fetches_analyses_commits_and_an_apply_queues_documents(owner
     # The documents follow through the TASK-312 hook, and their rows replace the pipeline's.
     assert tasks['started'] == [(job.id, 'cv-de')] and _pipeline(job, owner)['stage'] == 'analysed'
     assert [(item['key'], item['status']) for item in _items(client)] == [('cv-de', 'running')]
+
+
+def test_automatic_fit_analysis_runs_at_medium_while_documents_stay_high(owner, client, tasks, fetch, model, generator, django_capture_on_commit_callbacks):
+    # TASK-394: gpt-6.1 offers medium and high; the fit analysis asks medium, the CV generation keeps high.
+    model['answers'] = ['apply']
+    _add(client, django_capture_on_commit_callbacks)
+    assert model['efforts'] == ['medium']
+    assert cv_default_choice(application_prep.available_model_options())[1] == 'high'
 
 
 def test_an_analysed_job_stays_listed_while_its_requirements_are_analysed(owner, client, tasks, fetch, model, monkeypatch):

@@ -13,7 +13,7 @@ from threading import Event, Lock, Thread
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db import close_old_connections, transaction
+from django.db import InterfaceError, OperationalError, close_old_connections, connections, transaction
 from django.db.models import OuterRef, Q, Subquery
 
 from jobradar.models import ApplicationNote, JobEvaluation, JobLead, UserProfile
@@ -534,6 +534,15 @@ def _retry_missing_source(job):
     job.refresh_from_db()
 
 
+def _save_once_more(save):
+    """TASK-395: a finished generation must not be lost to a dropped DB connection -- reconnect and retry the save once."""
+    try:
+        return save()
+    except (OperationalError, InterfaceError):
+        connections.close_all()
+        return save()
+
+
 @tracked('documents')
 def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, provider, model, effort, speed, source_cv=None, source_letter=None, revision_instructions='', create_cv=True, correction_image=None, base_templates=None, replace_existing=False, cancel_event=None, auto_clipboard=True, route_reason='', generation_options=None, mark_ready=True, on_finish=None):
     inputs=dict(locals())  # TASK-359: exactly the arguments, for a usage-limited run's automatic rerun
@@ -560,7 +569,9 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         # above is often dead by now. Recycle before the first write, or the task fails at the very
         # end with the documents already produced.
         close_old_connections()
-        learned_preference=_learn_application_preference(user_id, revision_instructions, create_cv, create_letter)
+        def persist():
+            return _learn_application_preference(user_id, revision_instructions, create_cv, create_letter)
+        learned_preference=_save_once_more(persist)
         # TASK-236 AC8: the entry above is still stored verbatim -- nothing is deleted -- but
         # cv_generator.preference_exclusion decides whether it will ever be sent as a durable
         # preference again. '' means it will; anything else is the reason it will not, and the CV
@@ -570,11 +581,13 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
         # TASK-261: bulk runs pass auto_clipboard=False -- N parallel tasks would each overwrite the
         # clipboard. clipboard_tex is still computed so the UI can copy it on demand.
         clipboard_copied=bool(auto_clipboard and clipboard_tex and _copy_to_clipboard(clipboard_tex))
-        if 'base_templates' in artifacts:
-            _record_base_templates(job,artifacts['base_templates'])
-        # TASK-280.2: automatic To-apply drafts are not a chosen package, so they leave the status alone.
-        if mark_ready and not has_prepared_drafts(job.id,user_id):
-            mark_ready_to_submit(job.id)
+        def persist_rest():
+            if 'base_templates' in artifacts:
+                _record_base_templates(job,artifacts['base_templates'])
+            # TASK-280.2: automatic To-apply drafts are not a chosen package, so they leave the status alone.
+            if mark_ready and not has_prepared_drafts(job.id,user_id):
+                mark_ready_to_submit(job.id)
+        _save_once_more(persist_rest)
         report=artifacts.get('report')
         if revision_instructions and isinstance(report,dict):
             # TASK-278 AC6: a readjustment names the route that produced it.
