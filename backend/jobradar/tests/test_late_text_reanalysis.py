@@ -55,8 +55,8 @@ def test_task319_blocked_retry_reanalyses_the_fetched_posting_then_queues_for_ma
     job = _blind(owner, model)
     model['answers'] = ['maybe']
     _retry(client, job, django_capture_on_commit_callbacks)
-    # Once, with the automatic paths' model (cv_default_choice, as _analyse), on the fetched posting.
-    assert len(model['calls']) == 1 and POSTING in model['calls'][0]['prompt'] and model['calls'][0]['choice'] == ('openai', 'gpt-6.1', 'high', 'normal')
+    # Once, with the automatic paths' model (cv_default_choice) at TASK-394's medium fit effort, on the fetched posting.
+    assert len(model['calls']) == 1 and POSTING in model['calls'][0]['prompt'] and model['calls'][0]['choice'] == ('openai', 'gpt-6.1', 'medium', 'normal')
     assert JobEvaluation.objects.filter(job=job).order_by('-created_at').first().fit_score == 70
     assert tasks['started'] == [(job.id, 'cv-de')]
 
