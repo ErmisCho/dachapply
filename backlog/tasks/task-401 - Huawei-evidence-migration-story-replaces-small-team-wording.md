@@ -1,9 +1,10 @@
 ---
 id: TASK-401
 title: 'Huawei evidence: migration story replaces ''small team'' wording'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-21 09:16'
+updated_date: '2026-11-21 09:45'
 labels: []
 dependencies: []
 priority: high
@@ -18,6 +19,12 @@ Owner repeatedly swaps the Huawei 'Led a small engineering team' line for the mi
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Evidence Huawei entries use the confirmed migration story; no 'small engineering team' phrasing remains unless the owner keeps it
-- [ ] #2 Compacted evidence (what generation reads) contains the new wording
+- [x] #1 Evidence Huawei entries use the confirmed migration story; no 'small engineering team' phrasing remains unless the owner keeps it
+- [x] #2 Compacted evidence (what generation reads) contains the new wording
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Evidence file updated 2026-11-21 per the owner's own 2026-11-06 instruction (never 'small', no team size) plus the migration story; compacted evidence: 0 'small engineering team', new wording present. Backup next to the file.
+<!-- SECTION:NOTES:END -->

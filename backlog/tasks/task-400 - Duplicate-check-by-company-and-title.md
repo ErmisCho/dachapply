@@ -1,9 +1,10 @@
 ---
 id: TASK-400
 title: Duplicate check by company and title
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-21 09:15'
+updated_date: '2026-11-21 09:45'
 labels: []
 dependencies: []
 priority: high
@@ -18,6 +19,12 @@ Duplicates are detected only by exact URL; the same posting from another board o
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Adding a job whose normalized company+title matches an existing job of the same user is reported as a possible duplicate the same way a URL duplicate is (test)
-- [ ] #2 Different titles at the same company are not flagged
+- [x] #1 Adding a job whose normalized company+title matches an existing job of the same user is reported as a possible duplicate the same way a URL duplicate is (test)
+- [x] #2 Different titles at the same company are not flagged
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+PR #440. Running on localhost 2026-11-21 (runtime 03b8d2d, health 200; code presence checked). Scoped to the user; company+title only when both are supplied.
+<!-- SECTION:NOTES:END -->
