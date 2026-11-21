@@ -66,6 +66,8 @@ from jobradar.services.cv_generator import GenerationCancelled, _edit_sidecar, _
 from jobradar.services.posting_fetch import PART_NAMES, fetch_missing_sources, posting_missing
 from jobradar.services.prompt_builder import APPLICATION_REQUIREMENTS_RULES, APPLICATION_REQUIREMENTS_SCHEMA_FIELD, build_candidate_profile_text, user_profile_settings
 
+FIT_ANALYSIS_EFFORT = 'medium'  # TASK-394: fit verdicts need less reasoning than documents; 'high' cost 74 s median over 254 runs
+
 logger = logging.getLogger(__name__)
 
 # AC4: the owner-visible default for a letter the posting does not mention (or calls optional).
@@ -723,6 +725,8 @@ def _pipeline(job_id, user_id, reanalyse='', cloud=False):
                             stage(name, started=began)
                     with cloud_models_only(cloud):
                         option, effort = cv_default_choice(available_model_options())
+                        if option and FIT_ANALYSIS_EFFORT in option.get('efforts', []):  # TASK-394
+                            effort = FIT_ANALYSIS_EFFORT
                         next_stage('fetching')
                         fetch_missing_sources([job])
                         next_stage('analysing')
