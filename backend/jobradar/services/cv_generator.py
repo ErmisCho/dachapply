@@ -857,7 +857,7 @@ def _write_json(path, data):
     try:
         path.parent.mkdir(parents=True,exist_ok=True)
         temporary.write_text(json.dumps(data,ensure_ascii=False),encoding='utf-8')
-        temporary.replace(path)
+        _retry_locked(temporary.replace,path)
         return path
     except OSError:
         temporary.unlink(missing_ok=True)
@@ -1153,7 +1153,7 @@ def rename_generated_artifact(job, user, artifact, letter_key, name, remember=Tr
     done=[]
     try:
         for old,new in moves:
-            old.rename(new)
+            _retry_locked(old.rename,new)
             done.append((old,new))
     except OSError as exc:
         for moved_from,moved_to in reversed(done):
@@ -1254,7 +1254,7 @@ def _retire(directory, job_hash, data):
     entry['history']=entry.get('history',[])+_document_rows(data)
     temporary=path.with_suffix('.tmp')
     temporary.write_text(json.dumps(retired,ensure_ascii=False),encoding='utf-8')
-    temporary.replace(path)
+    _retry_locked(temporary.replace,path)
 
 
 def _letter_label(user, letter_key):
@@ -1666,12 +1666,37 @@ def _save_failed_compile(output, filename):
     return saved
 
 
+# TASK-397: Windows briefly locks a PDF/TeX (WinError 32) while a viewer or scanner holds it.
+def _retry_locked(operation, *args, attempts=5, delay=.5):
+    for attempt in range(attempts):
+        try:
+            return operation(*args)
+        except PermissionError:
+            if attempt == attempts-1:
+                raise
+            time.sleep(delay)
+
+
+# TASK-396: pdflatex (utf8 inputenc) has no glyph for these; \ensuremath works in text and math mode alike.
+_LATEX_UNSAFE={'≤':r'\ensuremath{\leq}','≥':r'\ensuremath{\geq}','→':r'\ensuremath{\rightarrow}','←':r'\ensuremath{\leftarrow}','≠':r'\ensuremath{\neq}','≈':r'\ensuremath{\approx}','⇒':r'\ensuremath{\Rightarrow}'}
+
+
+def _latex_safe(text):
+    return text.translate(str.maketrans(_LATEX_UNSAFE))
+
+
 def _compile_pdf(output, filename, is_cv, cancelled=None):
     pdflatex=shutil.which('pdflatex')
     if not pdflatex:
         raise RuntimeError('pdflatex must be installed on the generation server.')
     for suffix in ('.aux','.log','.out','.pdf'):
         (output/Path(filename).with_suffix(suffix)).unlink(missing_ok=True)
+    source=output/filename
+    if source.is_file():
+        original=source.read_bytes()
+        safe=_latex_safe(original.decode('utf-8',errors='surrogateescape')).encode('utf-8',errors='surrogateescape')
+        if safe != original:
+            source.write_bytes(safe)
     # ponytail: TeX Live shares Windows caches; serialize two short passes unless compilation becomes a measured bottleneck.
     while not _LATEX_LOCK.acquire(timeout=.25):
         _ensure_active(cancelled)
