@@ -45,9 +45,9 @@ def model(monkeypatch):
     return state
 
 
-def _add(client, capture, url=LINK):
+def _add(client, capture, url=LINK, title='Python Engineer'):
     with capture(execute=True):
-        response = client.post('/api/jobs/', {'url': url, 'company': 'ACME', 'title': 'Python Engineer'}, format='json')
+        response = client.post('/api/jobs/', {'url': url, 'company': 'ACME', 'title': title}, format='json')
     assert response.status_code == 201, response.content
     return JobLead.objects.get(pk=response.data['id'])
 
@@ -95,9 +95,8 @@ def test_a_skip_queues_nothing_and_shows_as_done_with_its_score(owner, client, t
     model['answers'] = ['skip']
     job = _add(client, django_capture_on_commit_callbacks)
     assert tasks['started'] == [] and _pipeline(job, owner)['stage'] == 'skipped' and _pipeline(job, owner)['fit_score'] == 44
-    [row] = _items(client)
-    assert (row['key'], row['status'], row['label'], row['error'], row['document']) == ('', 'skipped', 'Not applying', 'Skip · fit 44', None)
-    assert row['finished_at'] == _pipeline(job, owner)['at']
+    job.refresh_from_db()
+    assert job.status == 'skipped' and _items(client) == []  # TASK-399: the skip verdict moves it off the queue to Skipped
 
 
 def test_a_job_with_an_evaluation_or_no_link_or_a_non_owner_runs_nothing(owner, client, tasks, fetch, model, django_capture_on_commit_callbacks):
@@ -108,7 +107,7 @@ def test_a_job_with_an_evaluation_or_no_link_or_a_non_owner_runs_nothing(owner, 
         assert client.post('/api/jobs/', {'company': 'NoLink', 'title': 'Engineer', 'original_source_text': POSTING}, format='json').status_code == 201
     UserProfile.objects.filter(user=owner).update(can_generate_cv=False)
     owner.refresh_from_db()
-    _add(client, django_capture_on_commit_callbacks, url='https://jobs.example.test/other')
+    _add(client, django_capture_on_commit_callbacks, url='https://jobs.example.test/other', title='Other Engineer')
     assert model['calls'] == []
 
 
@@ -132,10 +131,10 @@ def test_the_daily_limit_holds_later_adds_and_retry_runs_one_now(owner, client, 
     UserProfile.objects.filter(user=owner).update(auto_pipeline_daily_limit=1)
     model['answers'] = ['skip', 'skip']
     _add(client, django_capture_on_commit_callbacks)
-    held = _add(client, django_capture_on_commit_callbacks, url='https://jobs.example.test/second')
+    held = _add(client, django_capture_on_commit_callbacks, url='https://jobs.example.test/second', title='Second Engineer')
     assert len(model['calls']) == 1 and _pipeline(held, owner)['stage'] == 'limit'
     reason = 'Daily limit of 1 automatic runs reached. Press Retry to run it now, or raise the limit on the Profile page.'
-    assert {**_blocked(held, reason), 'job_status': 'new'} in _items(client)
+    assert {**_blocked(held, reason), 'title': 'Second Engineer', 'job_status': 'new'} in _items(client)
     _retry(client, held, django_capture_on_commit_callbacks)
     assert model['calls'][-1] == ([held.id], True) and _pipeline(held, owner)['stage'] == 'skipped'
 

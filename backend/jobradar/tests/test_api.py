@@ -188,10 +188,33 @@ def test_bulk_create_keeps_distinct_job_query_ids(client):
     assert set(JobLead.objects.values_list('url', flat=True))==set(links.splitlines())
 
 
-def test_bulk_create_duplicate_requires_choice(client):
+def test_bulk_create_single_duplicate_requires_choice(client):
+    make_job(client, company='A', title='T', url='https://a.test/job1')
+    r=client.post('/api/jobs/bulk-create/', {'url':'https://a.test/job1'}, format='json')
+    assert r.status_code==400 and r.data['type']=='duplicate_conflicts'
+
+def test_bulk_create_batch_skips_duplicate_and_adds_the_rest(client):
     make_job(client, company='A', title='T', url='https://a.test/job1')
     r=client.post('/api/jobs/bulk-create/', {'url':'https://a.test/job1\nhttps://b.test/job2'}, format='json')
-    assert r.status_code==400 and r.data['type']=='duplicate_conflicts' and JobLead.objects.filter(url='https://b.test/job2').count()==0
+    assert r.status_code==201 and r.data['count']==1 and [x['url'] for x in r.data['skipped']]==['https://a.test/job1']
+    assert JobLead.objects.filter(url='https://b.test/job2').count()==1 and JobLead.objects.filter(url='https://a.test/job1').count()==1
+
+def test_skip_verdict_moves_only_a_new_job_to_skipped(client):
+    from jobradar.services.json_importer import create_evaluation
+    ev={'fit_score':10,'priority':'low','recommendation':'skip'}
+    new=make_job(client, company='A', title='T'); applying=make_job(client, company='B', title='T', status='to_apply')
+    create_evaluation(new, ev); create_evaluation(applying, ev)
+    new.refresh_from_db(); applying.refresh_from_db()
+    assert new.status=='skipped' and applying.status=='to_apply'
+
+def test_company_and_title_duplicate_is_flagged_but_other_title_or_user_is_not(client):
+    make_job(client, company='Acme GmbH', title='Data  Engineer', url='https://a.test/job1')
+    other=User.objects.create_user('someone-else', password='x')
+    JobLead.objects.create(created_by=other, company='Zed', title='Backend Dev')
+    r=client.post('/api/jobs/', {'company':'acme','title':'data engineer','url':'https://z.test/new'}, format='json')
+    assert r.status_code==400 and r.data['type']=='duplicate_conflicts'
+    assert client.post('/api/jobs/', {'company':'Acme','title':'Data Scientist','url':'https://z.test/n2'}, format='json').status_code==201
+    assert client.post('/api/jobs/', {'company':'Zed','title':'Backend Dev','url':'https://z.test/n3'}, format='json').status_code==201
 
 def test_bulk_create_per_conflict_skip_removes_from_conflicts(client):
     make_job(client, company='A', title='T', url='https://a.test/job1')
