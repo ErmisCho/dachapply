@@ -337,6 +337,22 @@ def find_existing_by_url(url, owner=None, queryset=None):
     return qs.first()
 
 
+def _company_title_key(value):
+    import re
+    value=re.sub(r'\b(gmbh|ag|kg|se|ltd|inc|llc)\b\.?', ' ', (value or '').casefold())
+    return ' '.join(value.split())
+
+
+def find_existing_by_company_title(company, title, queryset):
+    """TASK-400: same company + title (case, spacing and GmbH/AG-style suffix ignored) as a job already on this board.
+    shortcut: scans the user's jobs in Python, fine at board size; move to a stored key if boards get huge."""
+    key=(_company_title_key(company), _company_title_key(title))
+    if not all(key): return None
+    for pk, c, t in queryset.values_list('pk','company','title'):
+        if (_company_title_key(c), _company_title_key(t))==key: return queryset.filter(pk=pk).first()
+    return None
+
+
 def extract_links(text):
     import re
     text=text or ''
@@ -1003,6 +1019,8 @@ class JobLeadViewSet(viewsets.ModelViewSet):
         url=ser.validated_data.get('url')
         action=request.data.get('duplicate_action')
         existing=find_existing_by_url(url, queryset=accessible_jobs(request.user))
+        if not existing and request.data.get('company') and request.data.get('title'):
+            existing=find_existing_by_company_title(ser.validated_data.get('company'), ser.validated_data.get('title'), accessible_jobs(request.user))
         if existing and not action:
             return Response({'ok':False,'type':'duplicate_conflicts','message':'This job link already exists.','conflicts':[{'index':0,'url':url,'incoming':{'company':ser.validated_data.get('company') or 'Unknown company','title':ser.validated_data.get('title') or 'Untitled role'},'existing_jobs':[JobLeadSerializer(existing).data]}]}, status=400)
         if existing and action=='override':
@@ -2039,9 +2057,16 @@ def bulk_create_jobs(request):
     conflicts=[]; created=[]; updated=[]; skipped=[]
     strategy=request.data.get('duplicate_action') or request.data.get('duplicate_strategy')
     action_map={a.get('index'):a.get('action') for a in request.data.get('duplicate_actions',[])}
+    # TASK-398: in a pasted batch of 2+ links an unanswered duplicate is skipped (and reported), not a reason to add nothing.
+    if len(links)>1 and not action_map: strategy=strategy or 'skip'
     owned_qs=accessible_jobs(request.user)
+    def existing_for(link):
+        found=find_existing_by_url(link, queryset=owned_qs) if link else None
+        if not found and len(links)==1 and request.data.get('company') and request.data.get('title'):
+            found=find_existing_by_company_title(request.data.get('company'), request.data.get('title'), owned_qs)  # TASK-400
+        return found
     for i, link in enumerate(links):
-        existing=find_existing_by_url(link, queryset=owned_qs) if link else None
+        existing=existing_for(link)
         action=action_map.get(i) or strategy
         if existing and not action:
             conflicts.append({'index':i,'url':link,'incoming':{'company':request.data.get('company') or 'Unknown company','title':request.data.get('title') or 'Untitled role'},'existing_jobs':[JobLeadSerializer(existing).data]})
@@ -2053,7 +2078,7 @@ def bulk_create_jobs(request):
             continue
         data=request.data.copy(); data['url']=link; data['company']=data.get('company') or 'Unknown company'; data['title']=data.get('title') or 'Untitled role'
         if len(links)>1 and (not request.data.get('title')): data['title']=f'Untitled role {i+1}'
-        existing=find_existing_by_url(link, queryset=owned_qs) if link else None
+        existing=existing_for(link)
         action=action_map.get(i) or strategy
         if existing and action=='skip':
             skipped.append({'index':i,'url':link}); continue

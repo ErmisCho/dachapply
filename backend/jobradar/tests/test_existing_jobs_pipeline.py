@@ -219,7 +219,8 @@ def test_a_changed_full_posting_of_a_new_or_reviewed_job_is_accepted_and_reanaly
     model['answers'] = ['skip']
     _refresh(client, django_capture_on_commit_callbacks)
     job.refresh_from_db()
-    assert job.original_source_text == CHANGED_AD and job.pending_source_text == '' and job.status == status
+    # TASK-399: a 'skip' verdict on a New job archives it; Reviewed keeps its status.
+    assert job.original_source_text == CHANGED_AD and job.pending_source_text == '' and job.status == ('skipped' if status == 'new' else status)
     assert model['calls'] == [([job.id], True)]
 
 

@@ -136,6 +136,9 @@ def create_evaluation(job, ev, user=None):
         if is_placeholder_label(field, getattr(job, field)) and not is_placeholder_label(field, value) and len(value) <= LENGTH_LIMITED_JOB_FIELDS[field]:
             setattr(job, field, value); named.append(field)
     if named: job.save(update_fields=named+['updated_at'])
+    # TASK-399: a skip verdict on a still-new job moves it to Skipped; any other status is the user's own.
+    if ev['recommendation']=='skip' and job.status=='new':
+        job.status='skipped'; job.save(update_fields=['status','updated_at'])
     # TASK-312 AC1: an apply/maybe evaluation queues the job's documents once the import commits, as the
     # importing user; prepare() itself keeps to New/Reviewed/To apply jobs and CV owners.
     if user is not None and ev['recommendation'] in ('apply','maybe'):
