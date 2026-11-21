@@ -1723,6 +1723,23 @@ def _compile_pdf(output, filename, is_cv, cancelled=None):
         raise RecoverableGenerationError(f'The {"CV" if is_cv else "motivation letter"} exceeds its {limit}-page limit.', f'{filename} compiled to {pages} pages; limit: {limit}.')
 
 
+_LEAKED_INSTRUCTION=re.compile(r'^[ \t]*(?:OLD:|NEW:|FINAL VALIDATION|CHANGE \d+|FILE \d+:)',re.MULTILINE)
+_LITERAL_DATE=re.compile(r'^([ \t]*(?:\\hfill[ \t]*)?[^\W\d_][^\W\d_ -]*,[ \t]*)(?:\d{1,2}\.?[ \t]+[^\W\d_]+[ \t]+\d{4}|[^\W\d_]+[ \t]+\d{1,2},?[ \t]+\d{4})(?=[ \t]*(?:\\\\.*)?$)',re.MULTILINE)
+
+
+def _reject_leaked_instructions(label, tex):
+    """TASK-404: instruction text outside a % comment (e.g. 'OLD:', 'CHANGE 2 —') leaked into the TeX; the repair loop retries."""
+    leaked=_LEAKED_INSTRUCTION.search(tex)
+    if leaked:
+        line=tex[leaked.start():].split('\n',1)[0].strip()[:120]
+        raise RecoverableGenerationError('The selected model returned invalid application documents.', f'{label} contains instruction text outside a LaTeX comment: {line!r}. Remove it; return only the finished document.')
+
+
+def _restore_today(base_tex, generated_tex):
+    """TASK-403: the model replaces the template's \\today with a literal date; put it back on the '<City>, <date>' line only."""
+    return _LITERAL_DATE.sub(lambda m: m.group(1)+'\\today',generated_tex) if '\\today' in base_tex else generated_tex
+
+
 def _package_cache(workspace, job, profile, sources, options, user_id=None):
     # The cache directory is shared by every account on the machine, so the account is part of the
     # key (version 7; v6 named files with Ai and gender markers, TASK-270; v5 exposed the job id in generated filenames). Two accounts with byte-identical templates and the same job hashed
@@ -1807,6 +1824,10 @@ RULES:
 - Mention only evidence-supported experience. For unsupported tools/responsibilities, use honest adjacent experience or list the requirement under unsupported_requirements_not_claimed.
 - Never invent experience, tools, employers, dates, responsibilities, production ownership, metrics, or qualifications.
 - Preserve the existing LaTeX structure and good content.
+- Title: use "Senior" in the headline/title only when the posting asks for senior level (or the base template already says Senior and the posting is senior); otherwise drop it. Honesty rules above still win.
+- The headline/profile names at least two of the posting's key requirements that the evidence supports; skills category labels and their first items use the posting's own terms where the evidence supports them.
+- Letter: keep \\today in the date line unchanged, never write a literal date. If the posting names a contact person, address them by name in the greeting (correct salutation for the letter language, e.g. "Sehr geehrte Frau Ade,"); otherwise keep the template greeting.
+- Return only finished LaTeX: no instruction or change-log text such as OLD:, NEW:, CHANGE n, FINAL VALIDATION outside % comments.
 - CV maximum: two pages. Motivation letter maximum: one page.
 - Fill both CV pages: keep the base CV's experience bullets unless one is clearly irrelevant to this job, and keep more of the most relevant base content rather than leave empty space. Never add \\newpage, \\clearpage or \\pagebreak; the template's \\Needspace keeps employer headings with their entries.
 - For readjustments, make minimal targeted edits; do not regenerate wholesale unless explicitly requested.
@@ -2331,6 +2352,8 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
                     problems.append('confirmations is not an object')
                 if problems:
                     raise ValueError('; '.join(problems))
+                for label,content in (('cv_tex',cv_tex if create_cv else ''),('letter_tex',letter_tex if create_letter else '')):
+                    _reject_leaked_instructions(label,content)
             except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
                 raise RecoverableGenerationError('The selected model returned invalid application documents.', str(exc) or 'The structured response or LaTeX document was invalid.') from None
             if create_cv:
@@ -2340,7 +2363,7 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
                     cv_tex=_unstick_project_headings(_restore_base_macros(cv_template['cv'].source, cv_tex))  # TASK-342/345; an Adjust keeps its own edits
                 (output/cv_name).write_text(cv_tex, encoding='utf-8')
             if create_letter:
-                (output/letter_name).write_text(letter_tex, encoding='utf-8')
+                (output/letter_name).write_text(_restore_today(letter_text, letter_tex), encoding='utf-8')
             wrote_generated_tex=True
             return generated
 
