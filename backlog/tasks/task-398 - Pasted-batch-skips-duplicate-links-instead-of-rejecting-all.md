@@ -1,9 +1,10 @@
 ---
 id: TASK-398
 title: Pasted batch skips duplicate links instead of rejecting all
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-21 09:15'
+updated_date: '2026-11-21 09:45'
 labels: []
 dependencies: []
 priority: high
@@ -18,6 +19,12 @@ One duplicate link in a multi-link paste returns 400 'Nothing was added yet' for
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A multi-link batch with one duplicate adds the others and reports the duplicate as skipped (test)
-- [ ] #2 A single duplicate link still shows the existing duplicate prompt
+- [x] #1 A multi-link batch with one duplicate adds the others and reports the duplicate as skipped (test)
+- [x] #2 A single duplicate link still shows the existing duplicate prompt
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+PR #440. Running on localhost 2026-11-21 (runtime 03b8d2d, health 200; code presence checked).
+<!-- SECTION:NOTES:END -->

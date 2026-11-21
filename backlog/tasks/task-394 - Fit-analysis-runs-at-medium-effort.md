@@ -1,9 +1,10 @@
 ---
 id: TASK-394
 title: Fit analysis runs at medium effort
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-21 09:14'
+updated_date: '2026-11-21 09:45'
 labels: []
 dependencies: []
 priority: high
@@ -18,6 +19,12 @@ The automatic fit analysis always runs at effort high: 254 runs, 74 s median sin
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The automatic fit analysis requests effort medium (code + test); the user's explicit choice elsewhere is unchanged
+- [x] #1 The automatic fit analysis requests effort medium (code + test); the user's explicit choice elsewhere is unchanged
 - [ ] #2 Median fit duration over the next 20 runs is at most 45 s (measured from benchmarks after deploy; may stay open until measured)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+PR #437. Running on localhost 2026-11-21 (runtime 03b8d2d, health 200; code presence checked). Blocker for AC2: needs 20 real automatic fit runs after 2026-11-21 in cv-benchmarks.jsonl to measure the median.
+<!-- SECTION:NOTES:END -->
