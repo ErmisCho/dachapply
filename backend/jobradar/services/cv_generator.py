@@ -826,7 +826,10 @@ def _sent_paths(workspace):
     for path in root.glob('retired-*.json'):
         try:
             data=json.loads(path.read_text(encoding='utf-8'))
-            sent.update(os.path.normcase(str(Path(value))) for entry in data.get('jobs',{}).values() for value in _sidecar_paths(entry))
+            for entry in data.get('jobs',{}).values():
+                # TASK-405: any of an Applied job's files can be ticked, and a chosen package need not be the current pointers.
+                history=[Path(row['path']).with_suffix(suffix) for row in entry.get('history',[]) if row.get('path') for suffix in ('.tex','.pdf')]
+                sent.update(os.path.normcase(str(Path(value))) for value in [*_sidecar_paths(entry),*history])
         except (OSError,TypeError,ValueError,AttributeError):
             continue
     return sent
@@ -936,13 +939,20 @@ def generated_files(job, user=None):
         return []
     languages={key:language for language,template in user_templates(user).items() for key in template['letters']}
     files={}
-    for row in _document_rows(_read_artifact_metadata(job,user))+_document_rows(_retired_entry(job,user)):
+    # TASK-405: a file only the legacy name lookup finds is this job's document too. Looked up first:
+    # it also follows an Explorer rename in the sidecar the rows are then read from.
+    current=[]
+    for key in ('',*languages):
+        cv,letter=latest_generated_sources(job,user,key)
+        current+=[{'path':cv,'kind':'cv'},{'path':letter,'kind':'letter','letter_template':key}]
+    for row in _document_rows(_read_artifact_metadata(job,user))+_document_rows(_retired_entry(job,user))+current:
         path=row.get('path')
         if not isinstance(path,str) or not path:
             continue
-        item=files.setdefault(os.path.normcase(str(Path(path))),{'kind':'','language':'','tex':path,'generated_at':''})
+        item=files.setdefault(os.path.normcase(str(Path(path))),{'kind':'','language':'','letter_template':'','tex':path,'generated_at':''})
         item['kind']=item['kind'] or row.get('kind','')
         item['language']=item['language'] or row.get('language') or languages.get(str(row.get('letter_template','')).split(':')[0],'')
+        item['letter_template']=item['letter_template'] or str(row.get('letter_template','')).split(':')[0]
         item['generated_at']=max(item['generated_at'],row.get('at',''))
     result=[]
     for item in files.values():

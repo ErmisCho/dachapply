@@ -9,17 +9,6 @@ import type {PostingJob} from './types'
 
 const file=(extra:any)=>({kind:'cv',language:'de',tex:'C:\\ws\\CVs\\Owner-CV.tex',pdf:'C:\\ws\\CVs\\Owner-CV.pdf',generated_at:'2026-10-16T08:00:00+00:00',missing:false,pdf_missing:false,...extra})
 
-describe('Adjust document choice (TASK-384)',()=>{
-  // No DOM: the loaded panel cannot be rendered, so the wiring is pinned in the source.
-  it('offers CV/Letter ticks only for artifact types that exist and sends them to revise-latest',()=>{
-    expect(appSource).toContain("cv:Object.keys(preview?.artifacts||{}).some(k=>k.startsWith('cv_')),letter:Object.keys(preview?.artifacts||{}).some(k=>k.startsWith('letter_'))")
-    expect(appSource).toContain("adjCv=adjHas.cv&&!adjOff.includes('cv'),adjLetter=adjHas.letter&&!adjOff.includes('letter')")
-    expect(appSource).toContain(".filter(([k])=>adjHas[k])")
-    expect(appSource).toContain('aria-label="Documents to adjust"')
-    expect(appSource).toContain('create_cv:adjCv,create_letter:adjLetter')
-  })
-})
-
 describe('Generated files table (TASK-301)',()=>{
   it('lists every row in the order the server gives (newest first) with type and language',()=>{
     const html=renderToStaticMarkup(<GeneratedFilesTable workspace="C:\ws" files={[
@@ -42,8 +31,8 @@ describe('Generated files table (TASK-301)',()=>{
 
   it('is fed from the preview on the job page and refreshed after a run and a rename',()=>{
     expect(appSource).toContain('{!compact&&<ArtifactPaths artifacts={selectedArtifacts} files={preview?.generated_files}')
-    expect(appSource).toContain('generated_files:p.generated_files,clipboard_tex:p.clipboard_tex')
-    expect(appSource).toContain("if(current.status==='ready'){fetchCvGeneration(job.id).then((p:any)=>setPreview((c:any)=>({...c,generated_files:p.generated_files,artifacts:p.artifacts})))")
+    expect(appSource).toContain('letter_artifacts:p.letter_artifacts,generated_files:p.generated_files}')
+    expect(appSource).toContain("if(current.status==='ready'){fetchCvGeneration(job.id).then((p:any)=>setPreview((c:any)=>({...c,generated_files:p.generated_files,artifacts:p.artifacts,letter_artifacts:p.letter_artifacts})))")
   })
 })
 

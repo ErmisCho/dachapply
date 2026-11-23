@@ -1,4 +1,5 @@
 import logging
+import os
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from email.utils import parseaddr
@@ -48,9 +49,9 @@ from .services.followup_digest import owned_jobs, record_job_followup_sent
 from .services.draft_chat import ChatTurn, generate_followup_draft, profile_draft_choice, run_chat_turn
 from .services.analytics import record_demo_click
 from .services.db_usage import is_owner as db_usage_is_owner
-from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, cloud_models_only, decode_correction_image, exact_revision_plan, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, rename_generated_artifact, reveal_artifact_folder, uses_cloud_only, validate_model_capability
+from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, cloud_models_only, decode_correction_image, exact_revision_plan, generated_files, generation_preview, is_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, rename_generated_artifact, reveal_artifact_folder, uses_cloud_only, user_templates, validate_model_capability
 from .services import cv_tasks
-from .services.cv_tasks import _clipboard_parts, _clipboard_payload, cancel_cv_task, get_cv_task, get_cv_task_download, no_change_requested, rename_task_paths, start_cv_compile_task, start_cv_literal_task, start_cv_noop_task, start_cv_revision, start_cv_task, with_expected_seconds
+from .services.cv_tasks import _clipboard_parts, _clipboard_payload, cancel_cv_task, documents_clipboard_text, get_cv_task, get_cv_task_download, no_change_requested, rename_task_paths, start_cv_compile_task, start_cv_literal_task, start_cv_noop_task, start_cv_revision, start_cv_task, with_expected_seconds
 from .services.literal_edits import deterministic_edit_pairs, local_literal_model, looks_like_swap
 from .services.email_verification import email_verification_token, is_email_verified, mark_verified, send_verification_email, unverified_email_response
 from .throttles import CVGenerationUserThrottle, EmailVerificationIPThrottle, ImportUserThrottle, LoginAccountThrottle, LoginIPThrottle, PasswordResetConfirmIPThrottle, PasswordResetEmailThrottle, PasswordResetIPThrottle, PublicSubmitIPThrottle, RegisterIPThrottle
@@ -2339,6 +2340,71 @@ def _started_cv_task(task_id, user_id):
     return {'task_id':task_id, **(get_cv_task(task_id,user_id) or {'status':'queued','progress':0,'stage':'Queued','elapsed_seconds':0,'estimated_seconds_remaining':180,'step_label':'Queued','step_completed':0,'step_total':0})}
 
 
+def _selected_documents(request, job):
+    """TASK-405: the job's own documents the owner ticked, in listed order; None when the request names
+    none. Paths in the body only ever pick from the server's own list. Raises ValueError."""
+    paths=request.data.get('documents')
+    if paths is None:
+        return None
+    if not isinstance(paths,list) or not paths or not all(isinstance(path,str) for path in paths):
+        raise ValueError('Select at least one document.')
+    own={os.path.normcase(row['tex']):{**row,'tex':str(Path(row['tex']))} for row in generated_files(job,request.user) if not row['missing']}
+    wanted={os.path.normcase(path) for path in paths}
+    if not wanted <= own.keys():
+        raise ValueError("A selected document is not one of this job's files on disk.")
+    return sorted((row for key,row in own.items() if key in wanted),key=lambda row: ('cv','letter','message').index(row['kind']))
+
+
+def _document_runs(request, job, documents):
+    """The runs a readjust or recompile starts. Without a document list: the current CV and letter.
+    TASK-405: at most one CV and one letter stay one run, as before; more run one document each, with
+    that document's own language and letter template."""
+    cv_key,letter_key=request.data.get('cv_template') or '',request.data.get('letter_template') or ''
+    if documents is None:
+        source_cv,source_letter=latest_generated_sources(job,request.user,letter_key)
+        return [{'cv':source_cv if request.data.get('create_cv',True) is not False else None,
+                 'letter':source_letter if request.data.get('create_letter',True) is not False else None,
+                 'cv_key':cv_key,'letter_key':letter_key,'short':False}]
+    cvs=[row for row in documents if row['kind'] == 'cv']
+    letters=[row for row in documents if row['kind'] != 'cv']
+    if len(cvs) <= 1 and len(letters) <= 1:
+        groups=[(cvs[0] if cvs else None,letters[0] if letters else None)]
+    else:
+        groups=[(row,None) if row['kind'] == 'cv' else (None,row) for row in documents]
+    templates=user_templates(request.user)
+    letter_keys={key for template in templates.values() for key in template['letters']}
+    runs=[]
+    for cv,letter in groups:
+        language=(cv or letter)['language']
+        runs.append({'cv':cv and cv['tex'],'letter':letter and letter['tex'],
+                     'cv_key':language if language in templates else cv_key,
+                     'letter_key':letter['letter_template'] if letter and letter['letter_template'] in letter_keys else letter_key,
+                     'short':bool(letter) and letter['kind'] == 'message'})
+    return runs
+
+
+def _started_cv_runs(runs, start, user_id):
+    """Start every run; the response is the first one's task plus, for several, each task's documents."""
+    tasks=[]
+    for run in runs:
+        paths=[path for path in (run['cv'],run['letter']) if path]
+        try:
+            task_id=start(run)
+        except RuntimeError:
+            task_id=''  # not started; the others run
+        tasks.append({'id':task_id,'documents':[Path(path).name for path in paths],'paths':paths})
+    first=next((task['id'] for task in tasks if task['id']),None)
+    if not first:
+        return Response({'detail':'CV generation is restarting. Try again shortly.'}, status=503)
+    extra={'tasks':tasks} if len(tasks) > 1 else {}
+    return Response({**_started_cv_task(first,user_id),**extra}, status=status.HTTP_202_ACCEPTED)
+
+
+def _clipboard_option(runs):
+    # TASK-261: several parallel tasks would overwrite each other's clipboard; the page copies instead.
+    return {'auto_clipboard':False} if len(runs) > 1 else {}
+
+
 @api_view(['POST'])
 @throttle_classes([CVGenerationUserThrottle])
 def generate_cv_documents(request, job_id):
@@ -2400,14 +2466,13 @@ def recompile_latest_cv_documents(request, job_id):
     job=accessible_jobs(request.user).filter(id=job_id).first()
     if not job:
         return Response({'detail':'Job not found.'},status=404)
-    cv_key=request.data.get('cv_template') or ''
-    source_cv,source_letter=latest_generated_sources(job,request.user,request.data.get('letter_template') or '')
-    source_cv=source_cv if request.data.get('create_cv',True) is not False else None
-    source_letter=source_letter if request.data.get('create_letter',True) is not False else None
-    if not source_cv and not source_letter:
+    try:
+        runs=_document_runs(request,job,_selected_documents(request,job))
+    except ValueError as exc:
+        return Response({'detail':str(exc)}, status=400)
+    if not any(run['cv'] or run['letter'] for run in runs):
         return Response({'detail':'No previous generated TeX files were found for this job.'},status=400)
-    task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv,source_letter,letter_key=request.data.get('letter_template') or '')
-    return Response(_started_cv_task(task_id,request.user.id),status=status.HTTP_202_ACCEPTED)
+    return _started_cv_runs(runs,lambda run: start_cv_compile_task(job.id,request.user.id,run['cv_key'],run['cv'],run['letter'],letter_key=run['letter_key'],**_clipboard_option(runs)),request.user.id)
 
 
 @api_view(['POST'])
@@ -2429,68 +2494,110 @@ def revise_latest_cv_documents(request, job_id):
         return Response({'detail':'Provide revision instructions or a correction image and select at least one document.'}, status=400)
     cv_key=request.data.get('cv_template') or ''
     letter_key=request.data.get('letter_template') or ''
-    source_cv,source_letter=latest_generated_sources(job,request.user,letter_key)
-    create_cv=create_cv and bool(source_cv)
-    create_letter=create_letter and bool(source_letter)
-    if not create_cv and not create_letter:
+    try:
+        documents=_selected_documents(request,job)
+        runs=_document_runs(request,job,documents)
+    except ValueError as exc:
+        return Response({'detail':str(exc)}, status=400)
+    if not any(run['cv'] or run['letter'] for run in runs):
         return Response({'detail':'No previous generated files were found for this job.'}, status=400)
-    # TASK-334: each route's task appends this, plus its outcome, to .dachapply-logs/adjustments.jsonl.
-    adjust={'job_id':job.id,'company':job.company,'title':job.title,'provider':request.data.get('provider') or '','model':request.data.get('model') or '','effort':request.data.get('effort') or '',
-            'documents':[name for name,ticked in (('cv',create_cv),('letter',create_letter)) if ticked],'instructions':instructions,'correction_image':bool(correction_image)}
+    pick=[request.data.get(field) or '' for field in ('provider','model','effort')]+[request.data.get('speed') or 'normal']
+
+    def adjust(run, route, **extra):
+        # TASK-334: each route's task appends this, plus its outcome, to .dachapply-logs/adjustments.jsonl.
+        return {'job_id':job.id,'company':job.company,'title':job.title,'provider':pick[0],'model':pick[1],'effort':pick[2],
+                'documents':[kind for kind in ('cv','letter') if run[kind]],'instructions':instructions,'correction_image':bool(correction_image),'route':route,**extra}
+
+    def check_model():
+        # needs_tools: both endpoints generate or readjust LaTeX, whose prompt tells the model to read
+        # the copied source files (TASK-221 AC3). TASK-360: cloud only when the account says so.
+        with cloud_models_only(uses_cloud_only(request.user.pk)):
+            validate_model_capability(*pick, needs_tools=True)
+
+    def evidence():
+        profile=user_profile_settings(request.user)
+        return load_candidate_evidence(build_candidate_profile_text(request.user), profile.learned_application_preferences, profile.candidate_evidence)
+
+    def short_message(run):
+        return {'generation_options':{'short_message':True}} if run['short'] else {}
+
+    def full_optimization(run, profile):  # _run's keyword arguments
+        return {'profile':profile,'cv_key':run['cv_key'],'letter_key':run['letter_key'],'create_letter':bool(run['letter']),'provider':pick[0],'model':pick[1],'effort':pick[2],'speed':pick[3],
+                'source_cv':run['cv'],'source_letter':run['letter'],'revision_instructions':instructions[:5000],'create_cv':bool(run['cv']),**short_message(run),**_clipboard_option(runs)}
+
     if not correction_image:
-        artifacts=latest_generated_artifacts(job,request.user,letter_key)
-        artifacts={key:path for key,path in artifacts.items() if (create_cv and key.startswith('cv_')) or (create_letter and key.startswith('letter_'))}
-        if no_change_requested(instructions):
-            task_id=start_cv_noop_task(job.id,request.user.id,artifacts,adjust={**adjust,'route':'no-change'})
-            return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
+        # The current document of a type with nothing ticked (TASK-278).
+        current=dict(zip(('cv','letter'),latest_generated_sources(job,request.user,letter_key)))
+        unticked={kind:path for kind,path in current.items() if path and not any(run[kind] for run in runs)}
         # TASK-278: blocks only found in the unticked document are applied there too; ticked ones win.
-        exact_updates=exact_revision_plan([source_cv if create_cv else None,source_letter if create_letter else None],instructions,[None if create_cv else source_cv,None if create_letter else source_letter])
+        exact_updates={} if no_change_requested(instructions) else exact_revision_plan([run[kind] for run in runs for kind in ('cv','letter')],instructions,list(unticked.values()))
         if exact_updates == {}:
-            task_id=start_cv_noop_task(job.id,request.user.id,artifacts,adjust={**adjust,'route':'no-change'})
+            if documents is None:
+                artifacts=latest_generated_artifacts(job,request.user,letter_key)
+            else:
+                artifacts={f'{kind}_{suffix}':str(Path(runs[0][kind]).with_suffix(f'.{suffix}')) for kind in ('cv','letter') if runs[0][kind] for suffix in ('tex','pdf')}
+            artifacts={key:path for key,path in artifacts.items() if runs[0][key.split('_')[0]]}
+            task_id=start_cv_noop_task(job.id,request.user.id,artifacts,adjust=adjust(runs[0],'no-change'))
             return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
         if exact_updates:
-            use_cv=create_cv or str(source_cv) in exact_updates
-            use_letter=create_letter or str(source_letter) in exact_updates
-            unticked=[name for name,ticked,used in (('CV',create_cv,use_cv),('letter',create_letter,use_letter)) if used and not ticked]
-            report={'changed_files':[Path(path).name for path in exact_updates],'main_changes':['Applied exact OLD/NEW replacements without AI.']+[f'Also updated the {name}: some blocks were only found there.' for name in unticked],'unsupported_requirements_not_claimed':[]}
             # TASK-386/388: if the edited documents fail the compile or page check, the task falls back
             # to full optimization. Without a usable model/evidence the exact edit runs as before.
-            fallback=None
             try:
-                with cloud_models_only(uses_cloud_only(request.user.pk)):
-                    validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', needs_tools=True)
-                exact_profile=user_profile_settings(request.user)
-                fallback={'profile':load_candidate_evidence(build_candidate_profile_text(request.user), exact_profile.learned_application_preferences, exact_profile.candidate_evidence),'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'provider':request.data.get('provider') or '','model':request.data.get('model') or '','effort':request.data.get('effort') or '','speed':request.data.get('speed') or 'normal','source_cv':source_cv,'source_letter':source_letter,'revision_instructions':instructions[:5000],'create_cv':create_cv}
+                check_model()
+                profile=evidence()
             except (ValueError,RuntimeError):
-                pass
-            task_id=start_cv_compile_task(job.id,request.user.id,cv_key,source_cv if use_cv else None,source_letter if use_letter else None,source_updates=exact_updates,task_report=report,letter_key=letter_key,adjust={**adjust,'route':'exact'},fallback=fallback)
-            return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
+                profile=None
+            also={kind:path for kind,path in unticked.items() if str(path) in exact_updates}
+            if len(runs) == 1:
+                edits=[{**runs[0],**also,'ticked':runs[0]}]
+            else:
+                edits=[{**run,'ticked':run} for run in runs if str(run['cv'] or run['letter']) in exact_updates]
+                edits+=[{'cv':None,'letter':None,'cv_key':cv_key,'letter_key':letter_key,'short':False,'ticked':None,kind:path} for kind,path in also.items()]
+
+            def start_exact(run):
+                updates={path:text for path,text in exact_updates.items() if path in (str(run['cv']),str(run['letter']))}
+                notes=[f'Also updated the {name}: some blocks were only found there.' for kind,name in (('cv','CV'),('letter','letter')) if run[kind] and run[kind] == also.get(kind)]
+                report={'changed_files':[Path(path).name for path in updates],'main_changes':['Applied exact OLD/NEW replacements without AI.']+notes,'unsupported_requirements_not_claimed':[]}
+                fallback=full_optimization(run['ticked'],profile) if profile is not None and run['ticked'] else None
+                return start_cv_compile_task(job.id,request.user.id,run['cv_key'],run['cv'],run['letter'],source_updates=updates,task_report=report,letter_key=run['letter_key'],adjust=adjust(run['ticked'] or run,'exact'),fallback=fallback,**_clipboard_option(edits))
+            return _started_cv_runs(edits,start_exact,request.user.id)
     # TASK-278: free-form literal edits -- parsed deterministically, else translated by the installed
     # local model. Both are gated in the task, which falls back to the full optimization below.
     literal_pairs=None if correction_image else deterministic_edit_pairs(instructions)
     literal_model=None if correction_image or literal_pairs or not looks_like_swap(instructions) or uses_cloud_only(request.user.pk) else local_literal_model()  # TASK-326; TASK-360: never local when cloud only
     try:
-        # needs_tools: both endpoints generate or readjust LaTeX, whose prompt tells the model to read
-        # the copied source files (TASK-221 AC3). TASK-360: cloud only when the account says so.
-        with cloud_models_only(uses_cloud_only(request.user.pk)):
-            validate_model_capability(request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', needs_tools=True)
+        check_model()
     except ValueError as exc:
         return Response({'detail':str(exc)}, status=400)
-    cv_profile=user_profile_settings(request.user)
     try:
-        candidate_context=load_candidate_evidence(build_candidate_profile_text(request.user), cv_profile.learned_application_preferences, cv_profile.candidate_evidence)
+        profile=evidence()
     except RuntimeError as exc:
         return Response({'detail':str(exc)}, status=503)
-    if literal_pairs or literal_model:
-        fallback={'profile':candidate_context,'cv_key':cv_key,'letter_key':letter_key,'create_letter':create_letter,'provider':request.data.get('provider') or '','model':request.data.get('model') or '','effort':request.data.get('effort') or '','speed':request.data.get('speed') or 'normal','source_cv':source_cv,'source_letter':source_letter,'revision_instructions':instructions[:5000],'create_cv':create_cv}
-        task_id=start_cv_literal_task(job.id,request.user.id,source_cv if create_cv else None,source_letter if create_letter else None,instructions,literal_pairs,literal_model,fallback,
-                                      adjust={**adjust,'route':'literal-deterministic'} if literal_pairs else {**adjust,'route':'literal-local-model','local_model':':'.join(literal_model)})
-        return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
+
+    def start(run):
+        if literal_pairs or literal_model:
+            route=adjust(run,'literal-deterministic') if literal_pairs else adjust(run,'literal-local-model',local_model=':'.join(literal_model))
+            return start_cv_literal_task(job.id,request.user.id,run['cv'],run['letter'],instructions,literal_pairs,literal_model,full_optimization(run,profile),adjust=route)
+        return start_cv_task(job.id,request.user.id,profile,run['cv_key'],run['letter_key'],bool(run['letter']),*pick,source_cv=run['cv'],source_letter=run['letter'],revision_instructions=instructions[:5000],create_cv=bool(run['cv']),correction_image=correction_image,adjust=adjust(run,'full-optimization'),**short_message(run),**_clipboard_option(runs))
+    return _started_cv_runs(runs,start,request.user.id)
+
+
+@api_view(['POST'])
+def cv_documents_tex(request, job_id):
+    """TASK-405: the TeX of exactly the ticked documents, to copy."""
+    if not is_cv_owner(request.user):
+        return Response({'detail':'Not found.'}, status=404)
+    job=accessible_jobs(request.user).filter(id=job_id).first()
+    if not job:
+        return Response({'detail':'Job not found.'}, status=404)
     try:
-        task_id=start_cv_task(job.id, request.user.id, candidate_context, cv_key, request.data.get('letter_template') or '', create_letter, request.data.get('provider') or '', request.data.get('model') or '', request.data.get('effort') or '', request.data.get('speed') or 'normal', source_cv=source_cv, source_letter=source_letter, revision_instructions=instructions[:5000], create_cv=create_cv, correction_image=correction_image, adjust={**adjust,'route':'full-optimization'})
-    except RuntimeError:
-        return Response({'detail':'CV generation is restarting. Try again shortly.'}, status=503)
-    return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
+        documents=_selected_documents(request,job) or []
+        if not documents:
+            raise ValueError('Select at least one document.')
+        text=documents_clipboard_text([row['tex'] for row in documents],job.url)
+    except (OSError,ValueError) as exc:
+        return Response({'detail':str(exc)}, status=400)
+    return Response({'text':text})
 
 
 @api_view(['POST'])

@@ -4,7 +4,7 @@
 // functions and are tested here. What is NOT covered by any test: that the two pickers are wired to
 // separate state in App.tsx, and every pixel claim -- both need a browser.
 import {afterEach,describe,expect,it,vi} from 'vitest'
-import {comboValid,cvClipboardTex,cvPick,emptyCvPick,isUnknownCompany,readCvPicks,selectedGeneratedArtifacts,writeCvPicks} from './cvModel'
+import {comboValid,cvPick,emptyCvPick,isUnknownCompany,readCvPicks,selectedGeneratedArtifacts,writeCvPicks} from './cvModel'
 
 const models=[
   {provider:'openai',key:'gpt-5-codex',label:'GPT-5 Codex',efforts:['low','medium','high','xhigh'],default_effort:'medium',fast_tier:true},
@@ -83,12 +83,6 @@ describe('existing generated files (TASK-252, TASK-253)',()=>{
     const preview={artifacts:{cv_tex:'CVs/job-7.tex'},letter_artifacts:{bewerbungsschreiben:{letter_tex:'output/job-7-bewerbung.tex'}}}
 
     expect(selectedGeneratedArtifacts(task,preview,'bewerbungsschreiben').letter_tex).toBe('output/job-7-bewerbung.tex')
-  })
-
-  it('keeps Copy TeX usable after reopening, while preferring a newly completed task',()=>{
-    expect(cvClipboardTex(null,{clipboard_tex:'persisted files'})).toBe('persisted files')
-    expect(cvClipboardTex({clipboard_tex:'new files'},{clipboard_tex:'persisted files'})).toBe('new files')
-    expect(cvClipboardTex(null,null)).toBe('')
   })
 })
 
