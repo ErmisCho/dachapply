@@ -936,13 +936,20 @@ def generated_files(job, user=None):
         return []
     languages={key:language for language,template in user_templates(user).items() for key in template['letters']}
     files={}
-    for row in _document_rows(_read_artifact_metadata(job,user))+_document_rows(_retired_entry(job,user)):
+    # TASK-405: a file only the legacy name lookup finds is this job's document too. Looked up first:
+    # it also follows an Explorer rename in the sidecar the rows are then read from.
+    current=[]
+    for key in ('',*languages):
+        cv,letter=latest_generated_sources(job,user,key)
+        current+=[{'path':cv,'kind':'cv'},{'path':letter,'kind':'letter','letter_template':key}]
+    for row in _document_rows(_read_artifact_metadata(job,user))+_document_rows(_retired_entry(job,user))+current:
         path=row.get('path')
         if not isinstance(path,str) or not path:
             continue
-        item=files.setdefault(os.path.normcase(str(Path(path))),{'kind':'','language':'','tex':path,'generated_at':''})
+        item=files.setdefault(os.path.normcase(str(Path(path))),{'kind':'','language':'','letter_template':'','tex':path,'generated_at':''})
         item['kind']=item['kind'] or row.get('kind','')
         item['language']=item['language'] or row.get('language') or languages.get(str(row.get('letter_template','')).split(':')[0],'')
+        item['letter_template']=item['letter_template'] or str(row.get('letter_template','')).split(':')[0]
         item['generated_at']=max(item['generated_at'],row.get('at',''))
     result=[]
     for item in files.values():

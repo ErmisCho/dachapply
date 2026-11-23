@@ -111,8 +111,7 @@ describe('repeat generation and reopened files (TASK-252, TASK-253)',()=>{
   })
 
   it('enables the adjustment copy action from persisted preview content',()=>{
-    expect(appSource).toContain('const clipboardTex=cvClipboardTex(task,preview)')
-    expect(appSource).toContain('disabled={loading||revisionLoading||compileLoading||!clipboardTex}')
+    expect(appSource).toContain('const documents=presentDocuments(preview?.generated_files)')
     expect(appSource).toContain('if(tex&&await copyToClipboard(tex))')
   })
 })

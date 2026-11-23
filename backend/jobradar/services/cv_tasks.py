@@ -440,7 +440,10 @@ def has_prepared_drafts(job_id, user_id):
 
 
 def _clipboard_contents(artifacts):
-    files=[Path(artifacts[key]) for key in ('cv_tex','letter_tex') if artifacts.get(key) and Path(artifacts[key]).is_file()]
+    return _tex_text(Path(artifacts[key]) for key in ('cv_tex','letter_tex') if artifacts.get(key) and Path(artifacts[key]).is_file())
+
+
+def _tex_text(files):
     contents=[(path.name,path.read_text(encoding='utf-8')) for path in files]
     if len(contents)==1:
         return contents[0][1]
@@ -453,8 +456,16 @@ def _clipboard_payload(artifacts, job_url):
     # into a .tex file instead, and needs no escaping: TeX discards a comment to end of line, so a
     # URL's %, #, &, _ or ~ are inert here -- which they would not be if the link were printed as text.
     # Kept out of _clipboard_contents so that helper stays artifacts-only for its existing callers.
+    return _with_job_link(_clipboard_contents(artifacts),job_url)
+
+
+def documents_clipboard_text(paths, job_url):
+    """TASK-405: the TeX of exactly these files, in this order."""
+    return _with_job_link(_tex_text(Path(path) for path in paths),job_url)
+
+
+def _with_job_link(text, job_url):
     url=' '.join((job_url or '').split())  # a stray newline would close the comment and break the file
-    text=_clipboard_contents(artifacts)
     return f'% Job listing: {url}\n\n{text}' if text and url else text
 
 

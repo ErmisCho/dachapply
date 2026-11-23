@@ -1,66 +1,88 @@
-// TASK-279: Copy TeX lets the owner pick Both / CV only / Letter only when a run has both documents.
-// No DOM in this vitest run (see cvPopup.test.tsx), so the control is tested through static markup,
-// the choice through the pure helper plus a mocked clipboard, and the wiring through App.tsx's source.
-import {afterEach,describe,expect,it,vi} from 'vitest'
+// TASK-405: the owner ticks which of the job's CVs and letters to adjust and, separately, which to copy as TeX.
+// No DOM in this vitest run (see cvPopup.test.tsx), so the list is tested through static markup, the choice
+// through the pure helpers, and the wiring through App.tsx's source.
+import {describe,expect,it} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {CopyTexAction} from './App'
+import {CopyTexAction,DocumentTicks} from './App'
 import appSource from './App.tsx?raw'
-import {copyToClipboard} from './appUtils'
-import {cvClipboardParts,hasTexChoice,texForChoice,type TexChoice} from './cvModel'
+import {defaultDocuments,presentDocuments,runError,startedRuns,tickedDocuments,type GeneratedFile} from './cvModel'
 
-const cv='% Job listing: https://a.example/jobs/1\n\n% ===== cv.tex =====\nCV A'
-const letter='% Job listing: https://a.example/jobs/1\n\n% ===== letter.tex =====\nLETTER A'
-const all=`${cv}\n\n% ===== letter.tex =====\nLETTER A`
-const parts={cv,letter}
-const noop=async()=>true
+const file=(kind:string,name:string,extra:Partial<GeneratedFile>={}):GeneratedFile=>({kind,language:'de',tex:`C:\\ws\\CVs\\${name}.tex`,pdf:`C:\\ws\\CVs\\${name}.pdf`,generated_at:'',missing:false,pdf_missing:false,...extra})
+const files=[file('letter','Anschreiben'),file('cv','CV-EN',{language:'en'}),file('message','Message'),file('cv','CV-DE'),file('letter','Bewerbung'),file('cv','Deleted',{missing:true})]
+const documents=presentDocuments(files)
+const tex=(name:string)=>`C:\\ws\\CVs\\${name}.tex`
+const noop=()=>{}
 
-afterEach(()=>vi.unstubAllGlobals())
-
-describe('Copy TeX choice (AC1/AC2)',()=>{
-  it('offers Both, CV only and Letter only next to the button when both documents exist',()=>{
-    const html=renderToStaticMarkup(<CopyTexAction tex={all} parts={parts} onCopy={noop}/>)
-    expect(html).toContain('<select')
-    expect(html).toContain('aria-label="TeX to copy"')
-    expect(html.match(/<option/g)?.length).toBe(3)
-    for(const label of ['Both','CV only','Letter only'])expect(html).toContain(`>${label}</option>`)
-    expect(html).toContain('aria-label="Copy generated TeX files"')
+describe('which documents can be ticked',()=>{
+  it('every document on disk, CVs first, a missing one never',()=>{
+    expect(documents.map(x=>x.tex)).toEqual(['CV-EN','CV-DE','Anschreiben','Bewerbung','Message'].map(tex))
+    expect(presentDocuments(undefined)).toEqual([])
   })
-  it('keeps the single button with one document, no parts field, or an empty part',()=>{
-    for(const p of [{cv},{letter},undefined,{cv,letter:''}]){
-      const html=renderToStaticMarkup(<CopyTexAction tex={all} parts={p} onCopy={noop}/>)
-      expect(html).not.toContain('<select')
-      expect(html).toContain('aria-label="Copy generated TeX files"')
-    }
-    expect(hasTexChoice({cv})).toBe(false);expect(hasTexChoice(parts)).toBe(true)
+  it('starts on the current CV and the selected template\'s letter, else the newest of each',()=>{
+    const preview={artifacts:{cv_tex:tex('CV-DE')},letter_artifacts:{bewerbungsschreiben:{letter_tex:tex('Bewerbung')},anschreiben:{}}}
+    expect(defaultDocuments(documents,preview,'bewerbungsschreiben')).toEqual([tex('CV-DE'),tex('Bewerbung')])
+    expect(defaultDocuments(documents,preview,'anschreiben')).toEqual([tex('CV-DE'),tex('Anschreiben')])
+    expect(defaultDocuments(documents.filter(x=>x.kind==='cv'),null,'')).toEqual([tex('CV-EN')])
+    expect(defaultDocuments([],null,'')).toEqual([])
   })
-  it('each choice copies exactly that TeX through the clipboard',async()=>{
-    const writeText=vi.fn(async()=>{});vi.stubGlobal('navigator',{clipboard:{writeText}})
-    const expected:Record<TexChoice,string>={both:all,cv,letter}
-    for(const choice of ['both','cv','letter'] as TexChoice[]){
-      expect(await copyToClipboard(texForChoice(all,parts,choice))).toBe(true)
-      expect(writeText).toHaveBeenLastCalledWith(expected[choice])
-    }
-    expect(texForChoice(all,{cv},'letter')).toBe(all)
+  it('keeps the owner\'s choice, nothing ticked included, and drops a document that is gone',()=>{
+    expect(tickedDocuments(documents,null,[tex('CV-EN')])).toEqual([tex('CV-EN')])
+    expect(tickedDocuments(documents,[],[tex('CV-EN')])).toEqual([])
+    expect(tickedDocuments(documents,[tex('Message'),tex('CV-DE'),tex('Deleted')],[])).toEqual([tex('CV-DE'),tex('Message')])
   })
-  it('parts come from the same source as the full TeX',()=>{
-    expect(cvClipboardParts({clipboard_tex:'T',clipboard_tex_parts:parts},{clipboard_tex_parts:{cv:'old'}})).toBe(parts)
-    expect(cvClipboardParts({},{clipboard_tex:'P',clipboard_tex_parts:parts})).toBe(parts)
-    expect(cvClipboardParts(null,null)).toBeUndefined()
+  it('a run per document is waited for; one that could not start is named',()=>{
+    expect(startedRuns({task_id:'a'})).toEqual([{id:'a',documents:[]}])
+    const tasks=[{id:'a',documents:['CV-EN.tex']},{id:'',documents:['CV-DE.tex']}]
+    expect(startedRuns({task_id:'a',tasks})).toBe(tasks)
+    expect(runError(tasks[1],'Failed')).toBe('CV-DE.tex: Failed');expect(runError({id:'a',documents:[]},'Failed')).toBe('Failed')
   })
 })
 
-describe('wiring (AC1/AC3/AC4)',()=>{
+describe('the list',()=>{
+  const html=renderToStaticMarkup(<DocumentTicks documents={documents} adjust={[tex('CV-DE')]} copy={[tex('CV-EN'),tex('Anschreiben')]} onAdjust={noop} onCopy={noop} workspace="C:\ws"/>)
+  const ticked=(label:string)=>new RegExp(`<input[^>]*aria-label="${label}"[^>]*checked=""`).test(html)
+  it('has an Adjust and a Copy tick per document, with type, language and file name',()=>{
+    expect(html.match(/type="checkbox"/g)?.length).toBe(10)
+    for(const label of ['CV · EN · CV-EN.tex','CV · DE · CV-DE.tex','Letter · DE · Anschreiben.tex','Letter · DE · Bewerbung.tex','Short message · DE · Message.tex']){
+      expect(html).toContain(`aria-label="Adjust ${label}"`);expect(html).toContain(`aria-label="Copy ${label}"`)
+    }
+    expect(html).not.toContain('Deleted')
+  })
+  it('keeps Adjust and Copy independent',()=>{
+    expect(ticked('Adjust CV · DE · CV-DE.tex')).toBe(true);expect(ticked('Copy CV · DE · CV-DE.tex')).toBe(false)
+    expect(ticked('Adjust CV · EN · CV-EN.tex')).toBe(false);expect(ticked('Copy CV · EN · CV-EN.tex')).toBe(true)
+  })
+  it('says so when there is nothing yet',()=>{
+    expect(renderToStaticMarkup(<DocumentTicks documents={[]} adjust={[]} copy={[]} onAdjust={noop} onCopy={noop}/>)).toContain('No generated documents on disk')
+  })
+})
+
+describe('Copy TeX',()=>{
+  it('is off with a reason when nothing is ticked or a task runs',()=>{
+    const button=(ticked:string[],busy=false)=>renderToStaticMarkup(<CopyTexAction documents={ticked} busy={busy} onCopy={async()=>true}/>)
+    expect(button([])).toContain('disabled=""');expect(button([])).toContain('title="Tick a document to copy"')
+    expect(button(['a'],true)).toContain('title="Wait for the running task to finish"')
+    expect(button(['a'])).not.toContain('disabled=""');expect(button(['a'])).toContain('aria-label="Copy generated TeX files"')
+  })
+})
+
+describe('wiring',()=>{
   const gen=appSource.slice(appSource.indexOf('export function CvGenerator'),appSource.indexOf('function BatchCvGenerator'))
   const batch=appSource.slice(appSource.indexOf('function BatchCvGenerator'),appSource.indexOf('type NoteTable'))
-  it('single-job panel passes the parts and keeps them on refresh',()=>{
-    expect(gen).toContain('const clipboardParts=cvClipboardParts(task,preview)')
-    expect(gen).toContain('<CopyTexAction tex={clipboardTex} parts={clipboardParts}')
-    expect(gen).toContain('clipboard_tex_parts:p.clipboard_tex_parts')
+  it('the single-job generator sends the ticked documents',()=>{
+    expect(gen).toContain('presentDocuments(preview?.generated_files)')
+    expect(gen).toContain('<DocumentTicks documents={documents} adjust={adjTicked} copy={copyTicked}')
+    expect(gen.split('documents:adjTicked').length-1).toBe(2)
+    expect(gen).toContain("/cv-generation/tex/`,{method:'POST',body:{documents:copyTicked}}")
+    expect(gen).toContain('<CopyTexAction documents={copyTicked} busy={loading||revisionLoading||compileLoading} onCopy={copyDocuments}/>')
+    expect(gen).not.toContain('create_cv:adjCv')
   })
   it('bulk rows offer the same choice',()=>{
-    expect(batch).toContain('<CopyTexAction tex={row.clipboard_tex} parts={row.clipboard_tex_parts} disabled={!row.clipboard_tex} onCopy={text=>copyRowTex(row,text)}/>')
+    expect(batch).toContain('<DocumentTicks {...rowTicks(row)}')
+    expect(batch.split('documents:rowTicks(row).adjust').length-1).toBe(2)
+    expect(batch).toContain('body:{documents:rowTicks(row).copy}')
   })
-  it('the automatic copy after a run still copies everything',()=>{
-    expect(gen).toContain('await copyTex(current.clipboard_tex))flashTexCopied()')
+  it('the automatic copy after a single run still copies everything it made',()=>{
+    expect(gen).toContain('await copyTex(current.clipboard_tex)))flashTexCopied()')
   })
 })
