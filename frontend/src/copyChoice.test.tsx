@@ -5,7 +5,7 @@ import {describe,expect,it} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
 import {CopyTexAction,DocumentTicks} from './App'
 import appSource from './App.tsx?raw'
-import {defaultDocuments,presentDocuments,runError,startedRuns,tickedDocuments,type GeneratedFile} from './cvModel'
+import {defaultDocuments,followRun,presentDocuments,runError,startedRuns,tickedDocuments,type GeneratedFile} from './cvModel'
 
 const file=(kind:string,name:string,extra:Partial<GeneratedFile>={}):GeneratedFile=>({kind,language:'de',tex:`C:\\ws\\CVs\\${name}.tex`,pdf:`C:\\ws\\CVs\\${name}.pdf`,generated_at:'',missing:false,pdf_missing:false,...extra})
 const files=[file('letter','Anschreiben'),file('cv','CV-EN',{language:'en'}),file('message','Message'),file('cv','CV-DE'),file('letter','Bewerbung'),file('cv','Deleted',{missing:true})]
@@ -35,6 +35,15 @@ describe('which documents can be ticked',()=>{
     const tasks=[{id:'a',documents:['CV-EN.tex']},{id:'',documents:['CV-DE.tex']}]
     expect(startedRuns({task_id:'a',tasks})).toBe(tasks)
     expect(runError(tasks[1],'Failed')).toBe('CV-DE.tex: Failed');expect(runError({id:'a',documents:[]},'Failed')).toBe('Failed')
+  })
+})
+
+describe('after a run',()=>{
+  it('the copy follows a document whose run wrote a fresh file (a sent document)',()=>{
+    const run={id:'a',documents:['CV-DE.tex'],paths:[tex('CV-DE')]}
+    expect(followRun([tex('CV-DE'),tex('Anschreiben')],run,{artifacts:{cv_tex:tex('CV-DE-2')}})).toEqual([tex('CV-DE-2'),tex('Anschreiben')])
+    expect(followRun([tex('Anschreiben')],run,{artifacts:{cv_tex:tex('CV-DE-2')}})).toEqual([tex('Anschreiben')])
+    expect(followRun([tex('CV-DE')],run,{artifacts:{}})).toEqual([tex('CV-DE')])
   })
 })
 
@@ -73,14 +82,17 @@ describe('wiring',()=>{
     expect(gen).toContain('presentDocuments(preview?.generated_files)')
     expect(gen).toContain('<DocumentTicks documents={documents} adjust={adjTicked} copy={copyTicked}')
     expect(gen.split('documents:adjTicked').length-1).toBe(2)
-    expect(gen).toContain("/cv-generation/tex/`,{method:'POST',body:{documents:copyTicked}}")
+    expect(gen).toContain("/cv-generation/tex/`,{method:'POST',body:{documents:ticked}}")
+    expect(gen).toContain('copyDocuments(ticked=copyTicked)')
+    expect(gen).toContain('ticked=followRun(ticked,run,done)')
     expect(gen).toContain('<CopyTexAction documents={copyTicked} busy={loading||revisionLoading||compileLoading} onCopy={copyDocuments}/>')
     expect(gen).not.toContain('create_cv:adjCv')
   })
   it('bulk rows offer the same choice',()=>{
     expect(batch).toContain('<DocumentTicks {...rowTicks(row)}')
     expect(batch.split('documents:rowTicks(row).adjust').length-1).toBe(2)
-    expect(batch).toContain('body:{documents:rowTicks(row).copy}')
+    expect(batch).toContain('copyRowDocuments(row:any,ticked=rowTicks(row).copy)')
+    expect(batch).toContain('ticked=followRun(ticked,run,task)')
   })
   it('the automatic copy after a single run still copies everything it made',()=>{
     expect(gen).toContain('await copyTex(current.clipboard_tex)))flashTexCopied()')

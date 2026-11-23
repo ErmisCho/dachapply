@@ -9,7 +9,7 @@ from rest_framework.test import APIClient
 
 from jobradar.models import JobLead
 from jobradar.services import cv_generator, cv_tasks
-from jobradar.services.cv_generator import _edit_sidecar, _record_artifact_metadata
+from jobradar.services.cv_generator import _edit_sidecar, _record_artifact_metadata, delete_generated_metadata
 
 
 @pytest.fixture
@@ -159,6 +159,18 @@ def test_an_exact_block_only_in_the_unticked_current_document_is_still_applied(e
     assert response.status_code == 202 and env.full == []
     _finish(env, response)
     assert Path(env.cv_en).read_text(encoding='utf-8') == 'new English text' and Path(env.cv_de).read_text(encoding='utf-8') == 'text of Owner-CV-DE'
+
+
+def test_several_recompiled_sent_documents_report_the_fresh_files_to_copy(env, monkeypatch):
+    _fake_pdflatex(monkeypatch)
+    delete_generated_metadata(env.job)  # Applied: every document is now a read-only sent one
+    response = env.post('recompile-latest', documents=[env.cv_de, env.cv_en])
+    _finish(env, response)
+    for task in response.data['tasks']:
+        written = cv_tasks.get_cv_task(task['id'], env.owner.id)['artifacts']['cv_tex']
+        assert task['paths'][0] in (env.cv_de, env.cv_en) and written not in (env.cv_de, env.cv_en)
+        assert env.post('tex', documents=[written]).status_code == 200
+    assert Path(env.cv_de).with_suffix('.pdf').read_bytes() == b'%PDF-old'
 
 
 def test_copy_returns_exactly_the_ticked_documents(env):

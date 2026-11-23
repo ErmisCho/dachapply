@@ -82,8 +82,10 @@ export function defaultDocuments(documents:GeneratedFile[],preview:any,letterKey
 export function tickedDocuments(documents:GeneratedFile[],chosen:string[]|null|undefined,fallback:string[]){const wanted=chosen||fallback;return documents.filter(x=>wanted.includes(x.tex)).map(x=>x.tex)}
 
 // Several ticked documents can run as one task each; a run without an id could not be started.
-export type CvRun={id:string;documents:string[]}
+export type CvRun={id:string;documents:string[];paths?:string[]}
 export function startedRuns(started:any):CvRun[]{return started.tasks||[{id:started.task_id,documents:[]}]}
+// A sent document's run writes a fresh copy and a legacy letter can be renamed: copy what the run wrote.
+export function followRun(ticked:string[],run:CvRun,task:any){const written=task?.artifacts?.cv_tex||task?.artifacts?.letter_tex;return run.paths?.length===1&&written?ticked.map(x=>x===run.paths![0]?written:x):ticked}
 export function runError(run:CvRun,message:string){return run.documents.length?`${run.documents.join(' + ')}: ${message}`:message}
 
 export type CvPick={provider:string;model:string;effort:string;speed:string}

@@ -826,7 +826,10 @@ def _sent_paths(workspace):
     for path in root.glob('retired-*.json'):
         try:
             data=json.loads(path.read_text(encoding='utf-8'))
-            sent.update(os.path.normcase(str(Path(value))) for entry in data.get('jobs',{}).values() for value in _sidecar_paths(entry))
+            for entry in data.get('jobs',{}).values():
+                # TASK-405: any of an Applied job's files can be ticked, and a chosen package need not be the current pointers.
+                history=[Path(row['path']).with_suffix(suffix) for row in entry.get('history',[]) if row.get('path') for suffix in ('.tex','.pdf')]
+                sent.update(os.path.normcase(str(Path(value))) for value in [*_sidecar_paths(entry),*history])
         except (OSError,TypeError,ValueError,AttributeError):
             continue
     return sent

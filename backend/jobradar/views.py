@@ -2387,11 +2387,12 @@ def _started_cv_runs(runs, start, user_id):
     """Start every run; the response is the first one's task plus, for several, each task's documents."""
     tasks=[]
     for run in runs:
-        names=[Path(path).name for path in (run['cv'],run['letter']) if path]
+        paths=[path for path in (run['cv'],run['letter']) if path]
         try:
-            tasks.append({'id':start(run),'documents':names})
+            task_id=start(run)
         except RuntimeError:
-            tasks.append({'id':'','documents':names})  # not started; the others run
+            task_id=''  # not started; the others run
+        tasks.append({'id':task_id,'documents':[Path(path).name for path in paths],'paths':paths})
     first=next((task['id'] for task in tasks if task['id']),None)
     if not first:
         return Response({'detail':'CV generation is restarting. Try again shortly.'}, status=503)

@@ -55,7 +55,7 @@ describe('wiring (AC1/AC3/AC4/AC5)',()=>{
   })
   it('chimes after a successful Generate only, and once per bulk batch',()=>{
     expect(gen).toContain("if(current.status==='cancelled')return false;")
-    expect(gen).toContain("flashTexCopied();return true}")
+    expect(gen).toContain("flashTexCopied();return current}")
     expect(gen).toContain('if(await waitForTask(started.task_id))playChime()')
     expect(gen.split('playChime()').length-1).toBe(1)
     expect(batch).toContain("if(results.some(task=>task?.status==='ready'))playChime();")
