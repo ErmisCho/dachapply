@@ -71,7 +71,7 @@ def test_saving_never_changes_the_task_result(env, monkeypatch):
     assert cv_tasks._tasks[task_id]['status'] == 'failed' and failure_evidence.save_answer('a.tex', 'x') == []
 
 
-def test_records_and_files_older_than_30_days_are_deleted(env):
+def test_records_and_files_older_than_30_days_are_deleted(env, monkeypatch):
     folder = env.workspace/'.dachapply-logs'
     (folder/'failures').mkdir(parents=True); (folder/'failed').mkdir()
     old, new, log = folder/'failures'/'old.json', folder/'failed'/'new.tex', folder/'adjustments.jsonl'
@@ -80,8 +80,20 @@ def test_records_and_files_older_than_30_days_are_deleted(env):
         path.write_text('{}', encoding='utf-8')
     for path in (old, stale, log):
         os.utime(path, (time.time() - 31*86400,)*2)
-    cv_tasks._update(env.task(), status='failed', error=INVALID)
+    from jobradar.services import mailbox_loop
+    monkeypatch.setattr(mailbox_loop, 'tick', lambda: (_ for _ in ()).throw(SystemExit))  # one turn of the loop, nothing failing
+    with pytest.raises(SystemExit):
+        mailbox_loop._loop()
     assert not old.exists() and not stale.exists() and new.exists() and log.exists()
+
+
+def test_a_deployment_keeps_nothing_and_a_checkout_ignores_everything(env, settings):
+    cv_tasks._update(env.task(), status='failed', error=INVALID)
+    assert (env.workspace/'.dachapply-logs'/'.gitignore').read_text(encoding='utf-8') == '*'
+    settings.DEBUG = False
+    cv_tasks._update(env.task('b'*32), status='failed', error=INVALID)
+    assert failure_evidence.save_answer('a.tex', 'x') == [] and failure_evidence.records(env.owner.pk) == []
+    assert len(list((env.workspace/'.dachapply-logs'/'failures').iterdir())) == 1
 
 
 @pytest.mark.parametrize('answer', [

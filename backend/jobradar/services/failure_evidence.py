@@ -27,8 +27,15 @@ CLASSES = (
 
 
 def logs_dir():
+    # DEBUG is the local runtime, as for error_occurrences: a deployment never keeps these files.
     workspace = getattr(settings, 'CODEX_CV_WORKSPACE', '') or ''
-    return Path(workspace)/'.dachapply-logs' if workspace and Path(workspace).is_dir() else None  # never create the workspace itself
+    return Path(workspace)/'.dachapply-logs' if settings.DEBUG and workspace and Path(workspace).is_dir() else None  # never create the workspace itself
+
+
+def _private(folder, name):
+    (folder/name).mkdir(parents=True, exist_ok=True)
+    (folder/'.gitignore').write_text('*', encoding='utf-8')  # the workspace may be somebody's checkout
+    return folder/name
 
 
 def classify(error):
@@ -55,11 +62,15 @@ def signature(error, diagnostics=''):
     return hashlib.sha256(cause(error, diagnostics).casefold().encode()).hexdigest()
 
 
-def prune(folder):
-    limit = time.time() - KEEP_DAYS*86400
-    for path in [*(folder/'failures').glob('*.json'), *(folder/'failed').glob('*')]:
-        if path.is_file() and path.stat().st_mtime < limit:
-            path.unlink(missing_ok=True)
+def prune():
+    """Run by the local loop at least hourly, so old evidence goes even when nothing fails any more."""
+    try:
+        folder, limit = logs_dir(), time.time() - KEEP_DAYS*86400
+        for path in [*(folder/'failures').glob('*.json'), *(folder/'failed').glob('*')] if folder else ():
+            if path.is_file() and path.stat().st_mtime < limit:
+                path.unlink(missing_ok=True)
+    except OSError:
+        logger.debug('Could not prune old failure evidence', exc_info=True)
 
 
 def record(task):
@@ -68,8 +79,7 @@ def record(task):
         folder = logs_dir()
         if not folder:
             return
-        (folder/'failures').mkdir(parents=True, exist_ok=True)
-        prune(folder)
+        target = _private(folder, 'failures')
         config = task.get('_config') or {}
         adjust = task.get('_adjust') or {}
         error, diagnostics = str(task.get('error') or ''), str(task.get('diagnostics') or '')
@@ -78,7 +88,7 @@ def record(task):
                 'error': error[:500], 'diagnostics': diagnostics[:20000], 'instructions': str(adjust.get('instructions') or '')[:5000],
                 'cause': cause(error, diagnostics), 'signature': signature(error, diagnostics), 'class': classify(error),
                 'files': [str(path) for path in task.get('_failed_files', [])]}
-        (folder/'failures'/f'{task["id"]}.json').write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding='utf-8')
+        (target/f'{task["id"]}.json').write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding='utf-8')
     except Exception:
         logger.debug('Could not record the failure of task %s', task.get('id'), exc_info=True)
 
@@ -89,8 +99,7 @@ def save_answer(name, text):
         folder = logs_dir()
         if not folder or not text:
             return []
-        target = folder/'failed'/f'{time.strftime("%Y%m%d-%H%M%S")}-{time.time_ns() % 10**6:06d}-rejected-{Path(name).stem}.tex'
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target = _private(folder, 'failed')/f'{time.strftime("%Y%m%d-%H%M%S")}-{time.time_ns() % 10**6:06d}-rejected-{Path(name).stem}.tex'
         target.write_text(text, encoding='utf-8')
         return [str(target)]
     except Exception:

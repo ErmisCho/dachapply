@@ -201,3 +201,19 @@ creation recovers by the marker, and replays do not create additional incidents.
 
 Hermetic lifecycle, status failure/retry, concurrent arrival and interrupted
 regression creation tests live in `backend/jobradar/tests/test_error_triage.py`.
+
+
+<!-- TASK-406.1 / TASK-406.2 -->
+## Failed documents: private evidence and grouping
+
+Separate from the sanitized store above, the local runtime (`DEBUG=True`) keeps one JSON per
+failed document task in `<workspace>/.dachapply-logs/failures/` and the files it names (failed
+TeX, LaTeX logs, rejected model answers) in `.dachapply-logs/failed/`. They hold CV and letter
+text, stay on this machine for 30 days, carry a `.gitignore` and are never sent to Backlog.
+The local loop deletes older ones at least hourly. Code: `services/failure_evidence.py`.
+
+A failed document's occurrence uses its normalised cause as the operation, so equal failures of
+different tasks form one group, and it carries a class. Only causes recognised as a fault of the
+platform are `actionable`; page limits and unrecognised errors are `unknown` and wait for a look.
+No build is supplied, so a group does not split on every update. `triage(operation=..., root=...)`
+limits triage to one cause and writes the task file into the given checkout.
