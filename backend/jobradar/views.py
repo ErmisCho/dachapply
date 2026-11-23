@@ -2391,11 +2391,17 @@ def _started_cv_runs(runs, start, user_id):
         try:
             tasks.append({'id':start(run),'documents':names})
         except RuntimeError:
-            if not tasks:
-                return Response({'detail':'CV generation is restarting. Try again shortly.'}, status=503)
-            tasks.append({'id':'','documents':names})  # not started; the earlier ones keep running
+            tasks.append({'id':'','documents':names})  # not started; the others run
+    first=next((task['id'] for task in tasks if task['id']),None)
+    if not first:
+        return Response({'detail':'CV generation is restarting. Try again shortly.'}, status=503)
     extra={'tasks':tasks} if len(tasks) > 1 else {}
-    return Response({**_started_cv_task(tasks[0]['id'],user_id),**extra}, status=status.HTTP_202_ACCEPTED)
+    return Response({**_started_cv_task(first,user_id),**extra}, status=status.HTTP_202_ACCEPTED)
+
+
+def _clipboard_option(runs):
+    # TASK-261: several parallel tasks would overwrite each other's clipboard; the page copies instead.
+    return {'auto_clipboard':False} if len(runs) > 1 else {}
 
 
 @api_view(['POST'])
@@ -2465,7 +2471,7 @@ def recompile_latest_cv_documents(request, job_id):
         return Response({'detail':str(exc)}, status=400)
     if not any(run['cv'] or run['letter'] for run in runs):
         return Response({'detail':'No previous generated TeX files were found for this job.'},status=400)
-    return _started_cv_runs(runs,lambda run: start_cv_compile_task(job.id,request.user.id,run['cv_key'],run['cv'],run['letter'],letter_key=run['letter_key']),request.user.id)
+    return _started_cv_runs(runs,lambda run: start_cv_compile_task(job.id,request.user.id,run['cv_key'],run['cv'],run['letter'],letter_key=run['letter_key'],**_clipboard_option(runs)),request.user.id)
 
 
 @api_view(['POST'])
@@ -2516,7 +2522,7 @@ def revise_latest_cv_documents(request, job_id):
 
     def full_optimization(run, profile):  # _run's keyword arguments
         return {'profile':profile,'cv_key':run['cv_key'],'letter_key':run['letter_key'],'create_letter':bool(run['letter']),'provider':pick[0],'model':pick[1],'effort':pick[2],'speed':pick[3],
-                'source_cv':run['cv'],'source_letter':run['letter'],'revision_instructions':instructions[:5000],'create_cv':bool(run['cv']),**short_message(run)}
+                'source_cv':run['cv'],'source_letter':run['letter'],'revision_instructions':instructions[:5000],'create_cv':bool(run['cv']),**short_message(run),**_clipboard_option(runs)}
 
     if not correction_image:
         # The current document of a type with nothing ticked (TASK-278).
@@ -2552,7 +2558,7 @@ def revise_latest_cv_documents(request, job_id):
                 notes=[f'Also updated the {name}: some blocks were only found there.' for kind,name in (('cv','CV'),('letter','letter')) if run[kind] and run[kind] == also.get(kind)]
                 report={'changed_files':[Path(path).name for path in updates],'main_changes':['Applied exact OLD/NEW replacements without AI.']+notes,'unsupported_requirements_not_claimed':[]}
                 fallback=full_optimization(run['ticked'],profile) if profile is not None and run['ticked'] else None
-                return start_cv_compile_task(job.id,request.user.id,run['cv_key'],run['cv'],run['letter'],source_updates=updates,task_report=report,letter_key=run['letter_key'],adjust=adjust(run['ticked'] or run,'exact'),fallback=fallback)
+                return start_cv_compile_task(job.id,request.user.id,run['cv_key'],run['cv'],run['letter'],source_updates=updates,task_report=report,letter_key=run['letter_key'],adjust=adjust(run['ticked'] or run,'exact'),fallback=fallback,**_clipboard_option(edits))
             return _started_cv_runs(edits,start_exact,request.user.id)
     # TASK-278: free-form literal edits -- parsed deterministically, else translated by the installed
     # local model. Both are gated in the task, which falls back to the full optimization below.
@@ -2571,9 +2577,7 @@ def revise_latest_cv_documents(request, job_id):
         if literal_pairs or literal_model:
             route=adjust(run,'literal-deterministic') if literal_pairs else adjust(run,'literal-local-model',local_model=':'.join(literal_model))
             return start_cv_literal_task(job.id,request.user.id,run['cv'],run['letter'],instructions,literal_pairs,literal_model,full_optimization(run,profile),adjust=route)
-        # Several parallel tasks would overwrite each other's clipboard (TASK-261).
-        options={**short_message(run),**({'auto_clipboard':False} if len(runs) > 1 else {})}
-        return start_cv_task(job.id,request.user.id,profile,run['cv_key'],run['letter_key'],bool(run['letter']),*pick,source_cv=run['cv'],source_letter=run['letter'],revision_instructions=instructions[:5000],create_cv=bool(run['cv']),correction_image=correction_image,adjust=adjust(run,'full-optimization'),**options)
+        return start_cv_task(job.id,request.user.id,profile,run['cv_key'],run['letter_key'],bool(run['letter']),*pick,source_cv=run['cv'],source_letter=run['letter'],revision_instructions=instructions[:5000],create_cv=bool(run['cv']),correction_image=correction_image,adjust=adjust(run,'full-optimization'),**short_message(run),**_clipboard_option(runs))
     return _started_cv_runs(runs,start,request.user.id)
 
 

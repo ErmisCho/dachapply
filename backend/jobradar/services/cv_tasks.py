@@ -636,7 +636,7 @@ def _run(task_id, job_id, user_id, profile, cv_key, letter_key, create_letter, p
 
 
 @tracked('documents')
-def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, source_updates, task_report, cancel_event, fall_back=False, fallback=None):
+def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, source_updates, task_report, cancel_event, fall_back=False, fallback=None, auto_clipboard=True):
     """Compile (with source_updates: edit, then compile) the latest documents. With fall_back, a
     compile or page-limit failure -- raised before recompile_generated_package writes anything --
     is returned as a reason instead of failing the task, so the caller can run full optimization.
@@ -656,7 +656,7 @@ def _run_compile(task_id, job_id, user_id, cv_key, source_cv, source_letter, sou
         clipboard_tex=_clipboard_payload(artifacts,job.url)
         if not has_prepared_drafts(job.id,user_id):  # TASK-280.3
             mark_ready_to_submit(job.id)
-        _update(task_id,status='ready',progress=100,stage='Ready',archive=archive,filename=filename,artifacts=artifacts,report=task_report,clipboard_tex=clipboard_tex,clipboard_tex_parts=_clipboard_parts(artifacts,job.url),clipboard_copied=bool(clipboard_tex and _copy_to_clipboard(clipboard_tex)))
+        _update(task_id,status='ready',progress=100,stage='Ready',archive=archive,filename=filename,artifacts=artifacts,report=task_report,clipboard_tex=clipboard_tex,clipboard_tex_parts=_clipboard_parts(artifacts,job.url),clipboard_copied=bool(auto_clipboard and clipboard_tex and _copy_to_clipboard(clipboard_tex)))
     except GenerationCancelled:
         _update(task_id,status='cancelled',stage='Cancelled',error='')
     except Exception as exc:
@@ -694,7 +694,7 @@ def _run_literal(task_id, job_id, user_id, source_cv, source_letter, instruction
             pairs=translate_literal_edits(documents,instructions,*local_model,cancel_event.is_set)
             route=f'local model ({local_model[1]})'
         updates,edits=gate_literal_edits(documents,instructions,pairs)
-        reason=_run_compile(task_id,job_id,user_id,fallback['cv_key'],source_cv,source_letter,updates,literal_report(updates,edits,route),cancel_event,fall_back=True)
+        reason=_run_compile(task_id,job_id,user_id,fallback['cv_key'],source_cv,source_letter,updates,literal_report(updates,edits,route),cancel_event,fall_back=True,auto_clipboard=fallback.get('auto_clipboard',True))
     except NotLiteral as exc:
         reason=str(exc)
     except GenerationCancelled:
@@ -772,7 +772,7 @@ def start_cv_noop_task(job_id, user_id, artifacts, adjust=None):
     return task_id
 
 
-def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter=None, source_updates=None, task_report=None, letter_key='', adjust=None, fallback=None):
+def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter=None, source_updates=None, task_report=None, letter_key='', adjust=None, fallback=None, auto_clipboard=True):
     _cleanup()
     renamed=_adopt_letter_label(job_id,user_id,letter_key,source_letter)
     if fallback and fallback['source_letter'] == source_letter:
@@ -791,7 +791,7 @@ def start_cv_compile_task(job_id, user_id, cv_key, source_cv=None, source_letter
     with _lock:
         _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'queued','progress':0,'stage':'Queued','error':'','archive':None,'filename':'','artifacts':{},'report':task_report,'clipboard_tex':'','clipboard_tex_parts':{},'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_cancel':cancel_event,'_created_at':now,'_started_at':None,'_finished_at':None,'_stage_key':'queued','_stage_started_at':now,'_stage_plan':plan,'_stage_defaults':{'compiling_cv':2,'cv_compiled':.3,'compiling_letter':1.5,'letter_compiled':.3},'_estimate_key':('compile-only',bool(compile_cv),bool(compile_letter)),'_stage_times':{},'_adjust':adjust,'updated_at':time.time()}
         _tasks[task_id]['_initial_eta']=sum(_stage_seconds(_tasks[task_id],stage) for stage in _tasks[task_id]['_stage_plan'])
-    args=(task_id,job_id,user_id,cv_key,source_cv,source_letter,source_updates or {},task_report,cancel_event,False,fallback)
+    args=(task_id,job_id,user_id,cv_key,source_cv,source_letter,source_updates or {},task_report,cancel_event,False,fallback,auto_clipboard)
     if processing_store():
         _run_compile.submit(*args)
     else:

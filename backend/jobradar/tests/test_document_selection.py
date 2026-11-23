@@ -102,15 +102,33 @@ def test_several_documents_run_one_each_with_their_own_template(env):
     assert sorted(task['documents'][0] for task in response.data['tasks']) == sorted(Path(path).name for path in runs)
 
 
-def test_a_document_that_cannot_start_is_named_and_the_others_keep_running(env, monkeypatch):
+@pytest.mark.parametrize('broken', ['cv_en', 'cv_de'])  # the first started, then the second
+def test_a_document_that_cannot_start_is_named_and_the_others_keep_running(env, monkeypatch, broken):
     def start(*args, **kwargs):
-        if kwargs['source_cv'] == env.cv_de:
+        if kwargs['source_cv'] == getattr(env, broken):
             raise RuntimeError('restarting')
         return 'started'
     monkeypatch.setattr('jobradar.views.start_cv_task', start)
     response = env.post('revise-latest', instructions='Make it shorter.', documents=[env.cv_en, env.cv_de])
-    assert response.status_code == 202
-    assert [(task['id'], task['documents']) for task in response.data['tasks']] == [('started', ['Owner-CV-EN.tex']), ('', ['Owner-CV-DE.tex'])]
+    assert response.status_code == 202 and response.data['task_id'] == 'started'
+    assert {task['documents'][0]: task['id'] for task in response.data['tasks']} == {
+        name: '' if Path(getattr(env, broken)).name == name else 'started' for name in ('Owner-CV-EN.tex', 'Owner-CV-DE.tex')}
+    monkeypatch.setattr('jobradar.views.start_cv_task', lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('restarting')))
+    assert env.post('revise-latest', instructions='Make it shorter.', documents=[env.cv_en, env.cv_de]).status_code == 503
+
+
+@pytest.mark.parametrize(('action', 'body'), [
+    ('recompile-latest', {}),
+    ('revise-latest', {'instructions': 'OLD:\ntext of Owner-CV-DE\nNEW:\nnew de\n\nOLD:\ntext of Owner-CV-EN\nNEW:\nnew en'}),
+])
+def test_parallel_tasks_leave_the_clipboard_to_the_copy_ticks(env, monkeypatch, action, body):
+    _fake_pdflatex(monkeypatch)
+    copied = []
+    monkeypatch.setattr(cv_tasks, '_copy_to_clipboard', lambda text: copied.append(text) or True)
+    _finish(env, env.post(action, documents=[env.cv_de, env.cv_en], **body))
+    assert copied == []
+    _finish(env, env.post('recompile-latest', documents=[env.cv_de]))
+    assert len(copied) == 1  # one run still copies by itself, as before
 
 
 def test_exact_edits_write_only_the_ticked_documents(env, monkeypatch):
@@ -178,4 +196,4 @@ def test_preparation_files_are_selectable(env):
 def test_without_a_document_list_the_current_documents_are_used_as_before(env):
     env.post('revise-latest', instructions='Make it shorter.', create_letter=False, cv_template='en', letter_template='anschreiben')
     [run] = env.full
-    assert (run['source_cv'], run['source_letter'], run['create_letter'], run['cv_key']) == (env.cv_en, None, False, 'en') and 'auto_clipboard' not in run
+    assert (run['source_cv'], run['create_cv'], run['create_letter'], run['cv_key']) == (env.cv_en, True, False, 'en') and 'auto_clipboard' not in run
