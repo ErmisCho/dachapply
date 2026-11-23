@@ -58,6 +58,7 @@ def _fake_pdflatex(monkeypatch):
         (Path(cwd)/Path(command[-1]).with_suffix('.pdf')).write_bytes(b'%PDF-new')
         return SimpleNamespace(returncode=0, stdout='', stderr='')
     monkeypatch.setattr(cv_generator, '_run_command', run)
+    monkeypatch.setattr(cv_generator.shutil, 'which', lambda name: name)
     monkeypatch.setattr(cv_generator, '_pdf_pages', lambda pdf: 1)
     # In the calling thread: parallel task threads lock the shared in-memory test database.
     monkeypatch.setattr(cv_tasks, 'Thread', lambda target, args=(), kwargs=None, **_: SimpleNamespace(start=lambda: target(*args, **(kwargs or {}))))
