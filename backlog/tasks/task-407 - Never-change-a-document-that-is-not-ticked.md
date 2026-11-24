@@ -4,6 +4,7 @@ title: Never change a document that is not ticked
 status: In Progress
 assignee: []
 created_date: '2026-11-24 11:46'
+updated_date: '2026-11-24 12:24'
 labels: []
 dependencies: []
 priority: high
@@ -18,8 +19,14 @@ Owner decision 2026-11-24, replaces TASK-278 AC9: an OLD/NEW edit whose text is 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An exact edit found only in an unticked document (the current one or any other of the job) leaves every unticked file byte-identical and starts no model call
-- [ ] #2 Edits found in ticked documents are still applied in the same request
-- [ ] #3 The result names how many edits were skipped and in which file
-- [ ] #4 Backend pytest, frontend tests and tsc pass; tests shown red on the old code
+- [x] #1 An exact edit found only in an unticked document (the current one or any other of the job) leaves every unticked file byte-identical and starts no model call
+- [x] #2 Edits found in ticked documents are still applied in the same request
+- [x] #3 The result names how many edits were skipped and in which file
+- [x] #4 Backend pytest, frontend tests and tsc pass; tests shown red on the old code
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+PR #448, CI green (third run; two earlier runs failed only on the flaky lock tests). 4 tests red on the old code. Stays In Progress until the localhost runtime is updated and checked.
+<!-- SECTION:NOTES:END -->
