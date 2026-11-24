@@ -22,6 +22,7 @@ from jobradar.services import mailbox
 from jobradar.services.application_prep import daily_tick
 from jobradar.services.demo_scheduler import should_start_local_loop
 from jobradar.services.mailbox import MailboxCheckInProgress, check_mailbox_tick, is_within_check_window
+from jobradar.services import failure_evidence
 from jobradar.services.prompt_builder import user_profile_settings
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,7 @@ def tick():
 
 def _loop():
     while True:
+        failure_evidence.prune()  # TASK-406.1
         time.sleep(tick())
 
 

@@ -18,6 +18,7 @@ from django.db.models import OuterRef, Q, Subquery
 
 from jobradar.models import ApplicationNote, JobEvaluation, JobLead, UserProfile
 from jobradar.services.cv_generator import GenerationCancelled, RecoverableGenerationError, _artifact_metadata_path, _filename_label, _is_sent, _letter_label, _sent_paths, applicant_name, generate_cv_package, latest_generated_sources, limit_line, preference_exclusion, preferred_names, read_revision_sources, recompile_generated_package, rename_generated_artifact
+from jobradar.services import failure_evidence
 from jobradar.services.literal_edits import NotLiteral, gate_literal_edits, literal_report, translate_literal_edits
 from jobradar.services.posting_fetch import fetch_job_posting, fetch_posting_text  # TASK-371
 from jobradar.services.processing_control import tracked, store as processing_store
@@ -495,8 +496,11 @@ def _learn_application_preference(user_id, instructions, create_cv, create_lette
 
 def _update(task_id, **values):
     if values.get('status') == 'failed':  # TASK-372.1: includes caught/returned failures without ERROR logging.
-        from jobradar.services.error_occurrences import capture  # TASK-372.1
-        capture('document', task_id, task_id)  # TASK-372.1
+        from jobradar.services.error_occurrences import ingest  # TASK-372.1
+        # TASK-406.2: the cause is the operation, so equal failures of different tasks form one group.
+        error,diagnostics=values.get('error') or '',values.get('diagnostics') or ''
+        ingest('document',[{'id':task_id,'operation':failure_evidence.signature(error,diagnostics),'status':'failed','classification':failure_evidence.classify(error)}])
+    failed=None
     with _lock:
         task=_tasks.get(task_id)
         if not task:
@@ -518,10 +522,14 @@ def _update(task_id, **values):
         if status in ('ready','failed','cancelled'):
             _record_stage(task,now)
             task['_finished_at']=now
+        if status == 'failed' and task['status'] != 'failed':
+            failed={**task,**values}  # before _record_adjustment drops the adjust details
         task.update(values, updated_at=time.time())
         if status in ('ready','failed','cancelled'):
             _record_benchmark(task,now)
             _record_adjustment(task)
+    if failed:
+        failure_evidence.record(failed)
 
 
 def _cleanup():

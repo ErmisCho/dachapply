@@ -16,26 +16,27 @@ DISPOSITIONS = {'cancelled': 'expected cancellation; no bug', 'quota': 'operator
                 'actionable': 'product bug', 'retry_exhausted': 'product bug; retries exhausted'}
 
 
-def _cli(*args):
-    result = subprocess.run([shutil.which('backlog') or 'backlog', *args], cwd=ROOT,
+def _cli(*args, root=None):
+    result = subprocess.run([shutil.which('backlog') or 'backlog', *args], cwd=root or ROOT,
                             capture_output=True, text=True, timeout=60, check=True)
     return result.stdout
 
 
-def _find(marker):
-    tasks = json.loads(_cli('task', 'list', '--search', marker, '--json'))['tasks']
+def _find(marker, root=None):
+    tasks = json.loads(_cli('task', 'list', '--search', marker, '--json', root=root))['tasks']
     matches = [t['id'] for t in tasks if marker in t['title']]
     if len(matches) > 1 or any(not re.fullmatch(r'TASK-\d+(?:\.\d+)*', t) for t in matches):
         raise ValueError('ambiguous task linkage')
     return matches[0] if matches else None
 
 
-def triage(*, dry_run=False, list_only=False):
+def triage(*, dry_run=False, list_only=False, operation=None, root=None):
     """Only unresolved evidence participates. A write lock serializes concurrent triagers.
 
     Checkpoints commit after CLI success. A deterministic title marker recovers a task
     written by a CLI call that failed/was interrupted before its response was persisted.
     TASK-372.3: closure is explicit; Done alone never resolves local evidence.
+    TASK-406.2: `operation` limits it to one operation's groups; `root` is the checkout that gets the task file.
     """
     with closing(errors._connect()) as db, db:
         db.row_factory = sqlite3.Row
@@ -43,6 +44,8 @@ def triage(*, dry_run=False, list_only=False):
         groups = {}
         for row in db.execute('SELECT o.*, COALESCE(c.build, \'unknown\') AS build, COALESCE(c.classification, \'unknown\') AS classification FROM occurrences o LEFT JOIN occurrence_context c ON c.id=o.id WHERE o.resolved=0 ORDER BY o.at,o.id'):
             row = dict(row)
+            if operation is not None and row['operation'] != errors._digest(operation):
+                continue
             signature = errors._digest(tuple(row[k] for k in ('source', 'environment', 'build', 'operation', 'error_type')))
             # TASK-372.3: new IDs always survive closure; successor markers recover interrupted creates.
             family = errors._digest(tuple(row[k] for k in ('source', 'environment', 'operation', 'error_type')))
@@ -81,7 +84,7 @@ def triage(*, dry_run=False, list_only=False):
                 continue
             if actionable:
                 marker = 'error-group:' + signature
-                task_id = task_id or _find(marker)
+                task_id = task_id or _find(marker, root)
                 # Only fixed vocabulary and digests enter shared files, even if local rows were edited.
                 source = rows[0]['source'] if rows[0]['source'] in errors.SOURCES else 'backend'
                 description = (f'{errors.SOURCES[source]}. Source: {source}. Environment/build/operation context: {signature}.\n'
@@ -93,13 +96,13 @@ def triage(*, dry_run=False, list_only=False):
                 if not task_id:
                     _cli('task', 'create', f'{errors.SOURCES[source]} [{marker}]', '--type', 'bug',
                          '--description', description, '--ac', 'Reproduce or document why reproduction remains unknown using the linked local evidence.',
-                         '--ac', 'Verify the affected operation succeeds and add a regression check for the confirmed cause.', '--plain')
-                    task_id = _find(marker)
+                         '--ac', 'Verify the affected operation succeeds and add a regression check for the confirmed cause.', '--plain', root=root)
+                    task_id = _find(marker, root)
                     if not task_id:
                         raise ValueError('created task not found; retry to recover')
                 else:
                     # review: never overwrite an investigator's description; append dated evidence instead
-                    _cli('task', 'edit', task_id, '--append-notes', f'Error triage: {len(rows)} unresolved failures, last {_time(rows[-1]["at"])} UTC; {disposition}.')
+                    _cli('task', 'edit', task_id, '--append-notes', f'Error triage: {len(rows)} unresolved failures, last {_time(rows[-1]["at"])} UTC; {disposition}.', root=root)
                 proposal['task_id'] = task_id
             db.execute('INSERT OR REPLACE INTO error_groups VALUES (?,?,?,?)', (signature, task_id, checkpoint, disposition))
             for row in rows:

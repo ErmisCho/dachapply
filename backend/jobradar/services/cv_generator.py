@@ -25,7 +25,7 @@ from django.contrib.auth import get_user_model
 from django.utils.text import slugify
 
 from jobradar.models import CvAsset, UserProfile
-from jobradar.services import cv_workspace
+from jobradar.services import cv_workspace, failure_evidence
 from jobradar.services.json_importer import parse_json_object
 
 
@@ -1730,7 +1730,9 @@ def _compile_pdf(output, filename, is_cv, cancelled=None):
     pages=_pdf_pages(output/Path(filename).with_suffix('.pdf'))
     limit=2 if is_cv else 1
     if pages > limit:
-        raise RecoverableGenerationError(f'The {"CV" if is_cv else "motivation letter"} exceeds its {limit}-page limit.', f'{filename} compiled to {pages} pages; limit: {limit}.')
+        error=RecoverableGenerationError(f'The {"CV" if is_cv else "motivation letter"} exceeds its {limit}-page limit.', f'{filename} compiled to {pages} pages; limit: {limit}.')
+        error.saved_files=_save_failed_compile(output,filename)
+        raise error
 
 
 _LEAKED_INSTRUCTION=re.compile(r'^[ \t]*(?:OLD:|NEW:|FINAL VALIDATION|CHANGE \d+|FILE \d+:)',re.MULTILINE)
@@ -2338,6 +2340,10 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
                                            cancelled=cancelled, read_tools=True, model_option=model_option,
                                            image_path=output/correction_image_name if correction_image_name else None,
                                            tex_files=[output/name for name in generated_files] if provider in ('lmstudio','ollama') else ())
+            def keep_answer(error):  # TASK-406.1: the rejected answer is the only evidence of what the model did
+                if isinstance(generated,dict):
+                    error.saved_files=[path for name,key in ((cv_name,'cv_tex'),(letter_name,'letter_tex')) for path in failure_evidence.save_answer(name,str(generated.get(key) or ''))]
+                return error
             try:
                 cv_tex=generated.get('cv_tex','')
                 letter_tex=generated.get('letter_tex','')
@@ -2365,7 +2371,9 @@ def generate_cv_package(job, profile, cv_key, letter_key, create_letter, provide
                 for label,content in (('cv_tex',cv_tex if create_cv else ''),('letter_tex',letter_tex if create_letter else '')):
                     _reject_leaked_instructions(label,content)
             except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
-                raise RecoverableGenerationError('The selected model returned invalid application documents.', str(exc) or 'The structured response or LaTeX document was invalid.') from None
+                raise keep_answer(RecoverableGenerationError('The selected model returned invalid application documents.', str(exc) or 'The structured response or LaTeX document was invalid.')) from None
+            except RecoverableGenerationError as exc:  # _reject_leaked_instructions
+                raise keep_answer(exc)
             if create_cv:
                 if not re.search(r'page ?break|newpage|clearpage|seitenumbruch', revision_instructions or '', re.IGNORECASE):
                     cv_tex=_drop_forced_breaks(cv_template['cv'].source, cv_tex)  # TASK-327, unless the owner asked for one
