@@ -1,9 +1,10 @@
 ---
 id: TASK-406.2
 title: Group failed documents by cause and file Backlog bugs
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-23 23:31'
+updated_date: '2026-11-24 06:39'
 labels: []
 dependencies: []
 parent_task_id: TASK-406
@@ -19,9 +20,15 @@ Reuses the TASK-372 collector and triage; fixes its grouping for documents. Part
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Two failures with the same cause and different jobs, names, dates or line numbers form one group; different causes form different groups (tests with the real error texts of 2026-10-21 to 2026-11-23)
-- [ ] #2 Usage limits, lost database connections, locked files and cancellations are classed as not a bug and file no task
-- [ ] #3 A bug group files exactly one Backlog task through the existing triage; repeats update it; a verified fix closes it and a later failure is a new regression
-- [ ] #4 No CV, letter, posting, company or person text reaches the Backlog task (test)
-- [ ] #5 The collector is on for the local runtime and off in tests and production
+- [x] #1 Two failures with the same cause and different jobs, names, dates or line numbers form one group; different causes form different groups (tests with the real error texts of 2026-10-21 to 2026-11-23)
+- [x] #2 Usage limits, lost database connections, locked files and cancellations are classed as not a bug and file no task
+- [x] #3 A bug group files exactly one Backlog task through the existing triage; repeats update it; a verified fix closes it and a later failure is a new regression
+- [x] #4 No CV, letter, posting, company or person text reaches the Backlog task (test)
+- [x] #5 The collector is on for the local runtime and off in tests and production
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+PR #444 (1ac2603), CI green. Localhost runtime on 1ac2603 since 2026-11-24, health 200; collector on (private folder outside the checkouts, ACL owner/admins/SYSTEM), 0 occurrences so far. Hooks shown red on the old code; Codex findings fixed. Open: no real failure has gone through it on localhost yet. Triage must run with root=<fix worktree> (the runtime is a detached checkout, so a task file written there would be lost); operation=failure_evidence.signature(...).
+<!-- SECTION:NOTES:END -->

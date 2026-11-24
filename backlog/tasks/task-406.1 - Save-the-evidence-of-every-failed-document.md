@@ -1,9 +1,10 @@
 ---
 id: TASK-406.1
 title: Save the evidence of every failed document
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-23 23:31'
+updated_date: '2026-11-24 06:39'
 labels: []
 dependencies: []
 parent_task_id: TASK-406
@@ -19,9 +20,15 @@ Failed generations, readjusts and recompiles of CVs, letters and messages. Part 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every failed document task (generate, readjust, recompile, preparation) leaves one record with time, job id, route, model, error and diagnostics
-- [ ] #2 Its record keeps the TeX and LaTeX log of each failed compile and the model answer of each rejected attempt, also when no LaTeX ran
-- [ ] #3 Cancelled tasks and scheduled usage-limit retries leave no record; a retry that then fails does
-- [ ] #4 Records older than 30 days are deleted; a record never goes into git, Backlog, an export or a public response
-- [ ] #5 A failure while saving never changes the task result (test)
+- [x] #1 Every failed document task (generate, readjust, recompile, preparation) leaves one record with time, job id, route, model, error and diagnostics
+- [x] #2 Its record keeps the TeX and LaTeX log of each failed compile and the model answer of each rejected attempt, also when no LaTeX ran
+- [x] #3 Cancelled tasks and scheduled usage-limit retries leave no record; a retry that then fails does
+- [x] #4 Records older than 30 days are deleted; a record never goes into git, Backlog, an export or a public response
+- [x] #5 A failure while saving never changes the task result (test)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+PR #444 (1ac2603), CI green. Localhost runtime on 1ac2603 since 2026-11-24, health 200; collector on (private folder outside the checkouts, ACL owner/admins/SYSTEM), 0 occurrences so far. Hooks shown red on the old code; Codex findings fixed. Open: no real failure has gone through it on localhost yet.
+<!-- SECTION:NOTES:END -->
