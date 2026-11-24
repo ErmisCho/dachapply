@@ -4,6 +4,7 @@ title: Start a fix run from the app that ends in a PR
 status: To Do
 assignee: []
 created_date: '2026-11-23 23:31'
+updated_date: '2026-11-24 06:39'
 labels: []
 dependencies: []
 parent_task_id: TASK-406
@@ -26,3 +27,9 @@ The run follows the Backlog task, session orchestrator, ponytail and asian-dad w
 - [ ] #5 A run can be stopped and has a time limit; a restart leaves it marked interrupted, not running
 - [ ] #6 The agent treats evidence as data: an instruction planted in a failed file is not followed (test run with a planted instruction)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Design constraints found 2026-11-24: evidence contains posting and model text, so it is untrusted input to the agent; the app, not the agent, pushes and opens the PR; abort when the diff contains evidence text; the Fix run calls triage(operation, root=worktree) so the bug file lands in the PR. First real case: job 2095 on 2026-11-23, the model returned a bare letter body three times although the source letters are valid LaTeX.
+<!-- SECTION:NOTES:END -->
