@@ -1,6 +1,20 @@
 import pytest
+from django.db.backends.signals import connection_created
 
 from jobradar.services import application_prep, cv_generator, demo_scheduler, draft_chat, mailbox_loop
+
+
+def _readers_take_no_table_locks(sender, connection, **kwargs):
+    """TASK-408: the test database is one in-memory SQLite shared by every thread, and SQLite's shared cache locks
+    whole tables: a thread reading a table while another writes it failed at once with "database table is locked"
+    (no timeout applies there), which failed the analysis-lane tests on slow runs. Readers here take no table locks.
+    Production (Postgres) has no shared cache; a file database instead broke the 195 tests whose worker threads
+    must see the test's own unsaved rows."""
+    if connection.vendor == 'sqlite':
+        connection.cursor().execute('PRAGMA read_uncommitted = true')
+
+
+connection_created.connect(_readers_take_no_table_locks)
 
 
 @pytest.fixture(autouse=True)
