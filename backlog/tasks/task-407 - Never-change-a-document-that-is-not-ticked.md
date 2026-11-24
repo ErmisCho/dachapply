@@ -1,10 +1,10 @@
 ---
 id: TASK-407
 title: Never change a document that is not ticked
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-24 11:46'
-updated_date: '2026-11-24 12:24'
+updated_date: '2026-11-24 12:58'
 labels: []
 dependencies: []
 priority: high
@@ -29,4 +29,6 @@ Owner decision 2026-11-24, replaces TASK-278 AC9: an OLD/NEW edit whose text is 
 
 <!-- SECTION:NOTES:BEGIN -->
 PR #448, CI green (third run; two earlier runs failed only on the flaky lock tests). 4 tests red on the old code. Stays In Progress until the localhost runtime is updated and checked.
+
+Runtime on 36f35f0 since 2026-11-24, health 200, bundle matches.
 <!-- SECTION:NOTES:END -->
