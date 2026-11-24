@@ -1,10 +1,10 @@
 ---
 id: TASK-408
 title: Stop the analysis-lane tests from failing on a database lock
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-24 12:24'
-updated_date: '2026-11-24 14:06'
+updated_date: '2026-11-24 14:12'
 labels: []
 dependencies: []
 priority: medium
@@ -29,4 +29,6 @@ test_analysis_lanes tests fail with 'database table is locked' (jobradar_jobeval
 
 <!-- SECTION:NOTES:BEGIN -->
 Cause: the test database is one in-memory SQLite in shared-cache mode; a thread reading a table another writes gets SQLITE_LOCKED at once (no timeout applies), shown with a two-connection demo. Fix: readers take no table locks (PRAGMA read_uncommitted in tests/conftest.py). Measured: old code 2 of 9 loaded runs failed; new code 0 of 23 loaded runs (40 busy processes on 24 cores); full suite 2401 passed. A WAL file database was tried and rejected: 195 tests need worker threads to see the test's unsaved rows. Test setup only; no production code changed.
+
+PR #452 merged, CI green. Asian dad: PERFECT (self-graded).
 <!-- SECTION:NOTES:END -->
