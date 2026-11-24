@@ -1,10 +1,10 @@
 ---
 id: TASK-409
 title: Copy a letter as plain text
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-24 12:47'
-updated_date: '2026-11-24 12:50'
+updated_date: '2026-11-24 12:58'
 labels: []
 dependencies: []
 priority: high
@@ -30,4 +30,6 @@ Owner decision 2026-11-24: application forms need the letter as plain text. The 
 
 <!-- SECTION:NOTES:BEGIN -->
 Checked on all 96 real letters on this PC 2026-11-24: 0 not delimited, 0 leftover LaTeX marks, 0 word differences.
+
+PR #450 (36f35f0), CI green. Codex finding declined: none of the 96 real letters has text after the name, and cutting could lose a postscript. Verified in the owner's signed-in Chrome on localhost, job 2087.
 <!-- SECTION:NOTES:END -->
