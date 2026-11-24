@@ -227,14 +227,20 @@ def test_success_pushes_only_the_fix_branch(env, monkeypatch):
 
 
 def test_repair_can_fix_failing_tests(env):
-    env.fake.greens = [1, 0]
+    env.fake.greens = [1, 1, 0]  # the suite, its failing tests again, then after the repair
     run = go(env)
     assert run['state'] == 'pr' and len(env.fake.claude_calls()) == 4  # plan, implement, one repair, judge
 
 
+def test_a_flaky_failure_costs_no_repair(env):
+    env.fake.greens = [1, 0]
+    run = go(env)
+    assert run['state'] == 'pr' and len(env.fake.claude_calls()) == 3 and any('flaky' in line for line in run['log'])
+
+
 @pytest.mark.parametrize('case, message', [
     ('tests', 'backend tests failed'), ('empty', 'diff is empty'), ('path', 'path is not allowed'), ('notest', 'no new or changed test'),
-    ('line', 'private evidence'), ('words', 'private evidence'), ('name', 'private evidence'), ('company', 'private evidence'), ('red', 'without the fix'),
+    ('line', 'private evidence'), ('words', 'private evidence'), ('name', 'private evidence'), ('company', 'private evidence'), ('red', 'without the fix'), ('noload', 'cannot run on the old code'),
     ('excerpt', 'private evidence'), ('secret', '.env file'), ('risky', 'starts processes'), ('gitlink', 'git link'), ('late', 'changed after they were checked'),
     ('verdict', 'FAILURE'), ('tamper', 'rubric changed'), ('norubric', 'usable rubric')])
 def test_no_pr_when_a_check_fails(env, case, message):
@@ -268,6 +274,8 @@ def test_no_pr_when_a_check_fails(env, case, message):
         fake.write = {**GOOD, 'backend/jobradar/mod.py': 'greeting = "Hello plimsoll"\n'}
     if case == 'red':
         fake.red = 0
+    if case == 'noload':  # pytest's exit code for an error during collection
+        fake.red = 2
     if case == 'verdict':
         fake.verdict = 'FAILURE'
     if case == 'tamper':
@@ -336,6 +344,25 @@ def test_stop(env):
     assert_no_pr(env, run, 'stopped')
     with pytest.raises(ValueError, match='not running'):
         fix_runs.stop(run['id'])
+
+
+@pytest.mark.parametrize('command', [['git', 'commit'], ['git', 'rev-list']])
+def test_a_stop_between_two_commands_still_prevents_the_push(env, monkeypatch, command):
+    real = env.fake.__call__
+
+    def spy(run, args, **kw):
+        result = real(run, args, **kw)
+        if list(args[:2]) == command:
+            fix_runs.stop(run['id'])  # no child is running at this moment
+        return result
+    monkeypatch.setattr(fix_runs, '_run', spy)
+    run = go(env)
+    assert_no_pr(env, run, 'stopped')
+
+
+def test_a_stopped_run_starts_no_process(store):
+    with pytest.raises(fix_runs._Stopped):
+        fix_runs._run({**save_run(id='s1'), 'state': 'stopped'}, [sys.executable, '-c', 'raise SystemExit(0)'])
 
 
 def test_stop_kills_the_child_process_tree(store):

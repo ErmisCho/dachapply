@@ -69,11 +69,18 @@ def _kill(child):
         child.kill()
 
 
+def _live_or_stop(run):
+    if run.get('state') == 'stopped':
+        raise _Stopped()
+
+
 def _run(run, args, cwd=None, env=None, input=None, timeout=1800):
     """The only place a process starts. Output is stdout+stderr as text."""
-    child = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
-    _children[run['id']] = child
+    with _lock:  # stop() takes it too, so a stopped run starts nothing more and its last child is always found
+        _live_or_stop(run)
+        child = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+        _children[run['id']] = child
     try:
         out, _ = child.communicate(input, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -133,7 +140,9 @@ def _end(run, state, error=''):
 
 def _sh(run, args, **kw):
     kw.setdefault('timeout', max(1, min(1800, _left(run))))
+    _live_or_stop(run)
     result = _run(run, args, **kw)
+    _live_or_stop(run)
     _log(run, f'{" ".join([Path(args[0]).stem, *args[1:2]])} exit {result.returncode}')
     return result
 
@@ -242,7 +251,7 @@ def _main(run, signature, ctx):
     finally:
         shutil.rmtree(work, ignore_errors=True)
         try:  # this run's own worktree and local branch, whatever the end: it can hold private text
-            root, wt = error_triage.ROOT, _worktree(run)
+            root, wt, run = error_triage.ROOT, _worktree(run), {**run, 'state': 'cleanup'}
             if wt.exists():
                 _run(run, ['git', 'worktree', 'remove', '--force', str(wt)], cwd=root, timeout=300)
                 shutil.rmtree(wt, ignore_errors=True)  # git refuses a worktree whose link was changed
@@ -476,15 +485,19 @@ def _check(run, wt, ctx, texts, info):
                 shutil.copyfile(wt/p, red/p)
             old_code = _sh(run, [uv, *PYTEST, *[p[len('backend/'):] for p in backend]], cwd=red/'backend', env=_test_env())
         finally:
-            _sh(run, ['git', 'worktree', 'remove', '--force', str(red)], cwd=error_triage.ROOT)
+            _run({**run, 'state': 'cleanup'}, ['git', 'worktree', 'remove', '--force', str(red)], cwd=error_triage.ROOT, timeout=300)
         if old_code.returncode == 0:
             return 'The new tests pass without the fix.', ''
+        if old_code.returncode != 1 or not re.search(r'\d+ failed', old_code.stdout):  # 1 is "tests failed"; a collection error, a timeout or a crash proves nothing
+            return 'The new tests cannot run on the old code, so they prove nothing. They must load there and fail in an assertion.', _tail(old_code.stdout)
     _step(run, 'backend tests')
     full = _sh(run, [uv, *PYTEST], cwd=wt/'backend', env=_test_env())
     info['summary'] = _summary(full.stdout)
     _log(run, info['summary'])
     info['passed'] = (re.search(r'(\d+) passed', info['summary']) or [0, 0])[1]
-    if full.returncode:
+    if full.returncode == 1 and _sh(run, [uv, *PYTEST, '--lf'], cwd=wt/'backend', env=_test_env()).returncode == 0:
+        _log(run, 'the failing tests passed when run again (flaky)')
+    elif full.returncode:
         return 'The backend tests failed: ' + info['summary'], _tail(full.stdout)
     if any(p.startswith('frontend/') for p in paths):
         _step(run, 'frontend checks')
