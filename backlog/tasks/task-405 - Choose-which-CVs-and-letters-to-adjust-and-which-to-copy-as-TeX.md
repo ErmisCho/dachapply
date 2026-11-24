@@ -1,10 +1,10 @@
 ---
 id: TASK-405
 title: Choose which CVs and letters to adjust and which to copy as TeX
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-23 16:50'
-updated_date: '2026-11-23 20:37'
+updated_date: '2026-11-24 08:48'
 labels: []
 dependencies: []
 priority: high
@@ -26,11 +26,13 @@ Owner request, 2026-11-23: in CV and letter generation the owner chooses which l
 - [x] #5 Nothing ticked is possible for both: the button is then disabled and says why; by default the current CV and the current letter are ticked for both
 - [x] #6 The server rejects a document that is not one of this job's own documents on disk (400), and nothing is written or returned for it
 - [x] #7 Existing requests without a document list behave as before (backend pytest, frontend tests and tsc pass)
-- [ ] #8 Verified in a real browser on localhost with a job that has two CVs and with one that has several letters
+- [x] #8 Verified in a real browser on localhost with a job that has two CVs and with one that has several letters
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 PR #442 (dc911b7), CI green. New backend tests red on the old code except regression guards; 533 vitest tests. Headless Chrome on disposable copies of jobs 1896 (3 CVs), 2082 (2 CVs, 2 messages), 2087 (1 CV, 3 letters): list, copy, recompile and exact adjust changed only ticked files; board popup and bulk rows checked, no overflow at 340px. Not run: a multi-document AI readjust (task start mocked in tests). Every file of an Applied job is now read-only (_sent_paths). Runtime updated to dc911b7 on 2026-11-23: health 200, served bundle index-2tCsgOTr.js matches dist, tex endpoint answers 403 signed out. AC8 open: the owner's signed-in page on localhost:8000 was not seen because the Chrome extension was not connected; check /jobs/2087 and /jobs/1896, Adjust latest files.
+
+AC8 verified 2026-11-24 in the owner's signed-in Chrome on localhost:8000 (2041aa9): job 2087 lists 4 documents, job 1896 lists 3, one CV and one letter ticked by default.
 <!-- SECTION:NOTES:END -->
