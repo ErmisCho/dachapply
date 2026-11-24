@@ -194,6 +194,7 @@ def start(signature, user):
     from .cv_generator import applicant_name
     names = {user.get_full_name(), user.first_name, user.last_name, *re.split(r'\W+', applicant_name(user)),
              *JobLead.objects.filter(pk__in=[r['job_id'] for r in rows if r.get('job_id')]).values_list('company', flat=True)}
+    names |= {word for name in names if name for word in re.split(r'\W+', name) if len(word) >= 4}  # part of a name gives it away too
     ctx = {'records': rows[:5], 'names': {n.strip() for n in names if n and len(n.strip()) >= 3 and n.strip().lower() != 'unknown company'}}
     with _lock:
         saved = _read()
@@ -263,6 +264,8 @@ def _pipeline(run, signature, ctx, work):
     _step(run, 'worktree')
     _must(run, ['git', 'fetch', 'origin'], cwd=root)
     _must(run, ['git', 'worktree', 'add', '-b', branch, str(wt), 'origin/main'], cwd=root)
+    # A word the repository already holds (Labs, Post, a company in a fixture) gives nothing away.
+    ctx['names'] = {name for name in ctx['names'] if _run(run, ['git', 'grep', '-qiwF', '-e', name, 'origin/main'], cwd=wt, timeout=60).returncode}
     _step(run, 'triage')
     run['task_id'] = task_id = _task(signature, wt)
     texts = _copy_evidence(ctx['records'], work)  # private text, kept in memory: the agent can edit the copy
@@ -278,6 +281,7 @@ def _pipeline(run, signature, ctx, work):
         short, detail = _check(run, wt, ctx, texts, info)
         if not short:
             break
+        _log(run, 'check failed: ' + short)  # fixed wording only
         if attempt == 2:
             raise _Fail(short)
         _step(run, f'repair {attempt + 1}')

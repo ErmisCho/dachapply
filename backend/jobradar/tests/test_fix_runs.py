@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from django.contrib.auth import get_user_model
 
+from jobradar.models import JobLead
 from jobradar.services import error_triage, failure_evidence, fix_runs
 
 TEX = 'Zorblax frobnicates seventeen purple marmalade engines over the glacier tonight\nshort line\n'
@@ -130,7 +131,8 @@ def env(store, tmp_path, monkeypatch):
     outside = tmp_path/'outside.txt'
     outside.write_text('OUTSIDE-SECRET', encoding='utf-8')
     kept = failure_evidence.save_answer('a.tex', TEX)
-    failure_evidence.record({'id': 't1', 'user_id': user.pk, 'error': 'LaTeX could not compile the document', 'diagnostics': DIAGNOSTICS,
+    job = JobLead.objects.create(company='Plimsoll Base', title='x', created_by=user)
+    failure_evidence.record({'id': 't1', 'user_id': user.pk, 'job_id': job.pk, 'error': 'LaTeX could not compile the document', 'diagnostics': DIAGNOSTICS,
                              '_adjust': {'instructions': PLANTED}, '_failed_files': [*kept, str(outside)]})
     signature = failure_evidence.signature('LaTeX could not compile the document', DIAGNOSTICS)
     return SimpleNamespace(fake=fake, user=user, sig=signature, repo=repo, origin=origin, branches=lambda: git(origin, 'branch', '--format=%(refname:short)'))
@@ -232,7 +234,7 @@ def test_repair_can_fix_failing_tests(env):
 
 @pytest.mark.parametrize('case, message', [
     ('tests', 'backend tests failed'), ('empty', 'diff is empty'), ('path', 'path is not allowed'), ('notest', 'no new or changed test'),
-    ('line', 'private evidence'), ('words', 'private evidence'), ('name', 'private evidence'), ('red', 'without the fix'),
+    ('line', 'private evidence'), ('words', 'private evidence'), ('name', 'private evidence'), ('company', 'private evidence'), ('red', 'without the fix'),
     ('excerpt', 'private evidence'), ('secret', '.env file'), ('risky', 'starts processes'), ('gitlink', 'git link'), ('late', 'changed after they were checked'),
     ('verdict', 'FAILURE'), ('tamper', 'rubric changed'), ('norubric', 'usable rubric')])
 def test_no_pr_when_a_check_fails(env, case, message):
@@ -262,6 +264,8 @@ def test_no_pr_when_a_check_fails(env, case, message):
         fake.on['implement'] = lambda run: ((fake.tree/'.git').unlink(), (fake.tree/'.git').write_text('gitdir: ../elsewhere', encoding='utf-8'))
     if case == 'late':  # a test that runs after the checks stages something else
         fake.on['judge'] = lambda run: ((fake.tree/'backend'/'jobradar'/'mod.py').write_text('evil = 1\n', encoding='utf-8'), git(fake.tree, 'add', '.'))
+    if case == 'company':  # only the telling word of 'Plimsoll Base'
+        fake.write = {**GOOD, 'backend/jobradar/mod.py': 'greeting = "Hello plimsoll"\n'}
     if case == 'red':
         fake.red = 0
     if case == 'verdict':
@@ -315,6 +319,14 @@ def test_a_latex_preamble_is_not_private_text(env):
     failure_evidence.record({'id': 't5', 'user_id': env.user.pk, 'error': 'LaTeX could not compile the document', 'diagnostics': DIAGNOSTICS, '_adjust': {},
                              '_failed_files': failure_evidence.save_answer('p.tex', '\\documentclass[a4paper,11pt]{article} \\usepackage{hyperref}\\begin{document}Private sentence here\\end{document}')})
     env.fake.write = {**GOOD, 'backend/jobradar/mod.py': 'x = r"\\documentclass[a4paper,11pt]{article} \\usepackage{hyperref}"\n'}
+    assert go(env)['state'] == 'pr'
+
+
+def test_a_company_word_the_repository_already_holds_is_allowed(env):
+    (env.repo/'backend'/'jobradar'/'mod.py').write_text('x = 1  # base\n', encoding='utf-8')
+    git(env.repo, 'commit', '-qam', 'base word')
+    git(env.repo, 'push', '-q')
+    env.fake.write = {**GOOD, 'backend/jobradar/mod.py': 'base = 2\n'}
     assert go(env)['state'] == 'pr'
 
 
