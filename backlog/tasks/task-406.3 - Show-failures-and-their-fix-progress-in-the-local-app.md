@@ -1,9 +1,10 @@
 ---
 id: TASK-406.3
 title: Show failures and their fix progress in the local app
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23 23:31'
+updated_date: '2026-11-24 08:48'
 labels: []
 dependencies: []
 parent_task_id: TASK-406
@@ -19,8 +20,14 @@ Owner-only, local only. Part of TASK-406. Owner decisions 2026-11-24: fix up to 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An owner-only page lists the groups with cause, count, last time, class, Backlog task, and state (new, running, PR open, merged, failed, not a bug)
-- [ ] #2 Opening a group shows its records with error, diagnostics and the saved files; any other account and production get 404
-- [ ] #3 The page shows the running fix live: current step, elapsed time and the last lines of its log, and the final result with the PR link
-- [ ] #4 Verified in a real browser on localhost, light and dark, at 360 px and desktop
+- [x] #1 An owner-only page lists the groups with cause, count, last time, class, Backlog task, and state (new, running, PR open, merged, failed, not a bug)
+- [x] #2 Opening a group shows its records with error, diagnostics and the saved files; any other account and production get 404
+- [x] #3 The page shows the running fix live: current step, elapsed time and the last lines of its log, and the final result with the PR link
+- [x] #4 Verified in a real browser on localhost, light and dark, at 360 px and desktop
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+PR #446 (2041aa9), CI green. Headless Chrome on invented data: light/dark, 360 and 1280 px, no overflow; live progress and Stop on a real run. Owner's signed-in /failures on localhost: renders, Fix enabled, nothing recorded yet. The PR link was only seen in a component test.
+<!-- SECTION:NOTES:END -->
