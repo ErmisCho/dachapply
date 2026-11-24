@@ -17,7 +17,8 @@ DISPOSITIONS = {'cancelled': 'expected cancellation; no bug', 'quota': 'operator
 
 
 def _cli(*args, root=None):
-    result = subprocess.run([shutil.which('backlog') or 'backlog', *args], cwd=root or ROOT,
+    # TASK-406.4: npm's backlog.CMD cuts the command off at a line break, and every later argument with it.
+    result = subprocess.run([shutil.which('backlog') or 'backlog', *(' '.join(arg.split()) for arg in args)], cwd=root or ROOT,
                             capture_output=True, text=True, timeout=60, check=True)
     return result.stdout
 
