@@ -252,5 +252,5 @@ The evidence is untrusted (prompt injection) and private (CV/letter text), so:
   once a minute with `gh pr view`).
 
 Known risks: the app runs the agent-written tests on this machine (a hostile test can do what the owner's
-account can); a failed run leaves its worktree and branch for inspection; the agent's reading of the evidence
+account can); an interrupted run leaves its worktree; the agent's reading of the evidence
 cannot be proven non-leaking, only checked on what it adds to the diff. Tests: `backend/jobradar/tests/test_fix_runs.py`.

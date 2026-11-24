@@ -141,9 +141,14 @@ def go(env):
     return fix_runs.runs()[0] if run['state'] == 'running' else run
 
 
+def assert_cleaned(env):  # nothing of a finished run stays on the PC
+    assert not list(env.repo.parent.glob('dachapply-fix-*')) and git(env.repo, 'branch', '--format=%(refname:short)').split() == ['main']
+
+
 def assert_no_pr(env, run, state='failed'):
     assert run['state'] == state, run
     assert not [c for c in env.fake.calls if c[:3] == ['gh', 'pr', 'create'] or c[:2] == ['git', 'push']]
+    assert_cleaned(env)
 
 
 @pytest.mark.parametrize('setup, message', [
@@ -191,6 +196,7 @@ def test_success_pushes_only_the_fix_branch(env, monkeypatch):
     main_before = git(env.origin, 'rev-parse', 'main')
     run = go(env)
     assert run['state'] == 'pr' and run['pr_url'] == 'https://github.com/example/repo/pull/7' and run['task_id'] == 'TASK-9', run
+    assert_cleaned(env)
     fake = env.fake
     pushes = [c for c in fake.calls if c[:2] == ['git', 'push']]
     assert pushes == [['git', 'push', 'origin', f'refs/heads/fix/{run["id"]}:refs/heads/fix/{run["id"]}']]

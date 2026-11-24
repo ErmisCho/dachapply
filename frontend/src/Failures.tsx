@@ -11,6 +11,7 @@ export type FailuresData={groups:Group[];fix:{enabled:boolean;reason:string}}
 const STATES:Record<string,string>={new:'New',running:'Running',pr:'PR open',merged:'Merged',failed:'Failed',stopped:'Stopped',interrupted:'Interrupted',not_a_bug:'Not a bug',look:'Needs a look'}
 export const stateLabel=(s:string)=>STATES[s]||s
 export const hasRunning=(d:FailuresData|null)=>!!d?.groups.some(g=>g.run?.state==='running')
+export const pollEvery=(d:FailuresData|null)=>hasRunning(d)?3000:d?.groups.some(g=>g.run?.state==='pr')?60000:0  // an open PR is merged or closed on GitHub
 export const safePr=(url?:string)=>url&&url.startsWith('https://github.com/')?url:''
 export function elapsed(run:FixRun,now=Date.now()){const a=Date.parse(run.started_at||'');if(!a)return '';const s=Math.max(0,Math.round(((Date.parse(run.finished_at||'')||now)-a)/1000));return s<60?`${s}s`:`${Math.floor(s/60)}m ${s%60}s`}
 const when=(iso:string)=>new Date(iso).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'})
@@ -51,8 +52,8 @@ export default function Failures(){
   const[data,setData]=useState<FailuresData|null>(null),[error,setError]=useState(''),[open,setOpen]=useState(''),[records,setRecords]=useState<FailRecord[]>(),[busy,setBusy]=useState('')
   const load=useCallback(()=>api('/failures/').then((d:FailuresData)=>{setData(d);setError('')}).catch((e:any)=>setError(e?.detail||'Could not load the failures.')),[])
   useEffect(()=>{load()},[load])
-  const running=hasRunning(data)
-  useEffect(()=>running?pollWhileVisible(load,3000):undefined,[running,load])
+  const every=pollEvery(data)
+  useEffect(()=>every?pollWhileVisible(load,every):undefined,[every,load])
   const act=(id:string,path:string)=>{setBusy(id);api(path,{method:'POST'}).then(load).catch((e:any)=>setError(e?.detail||'The request failed.')).finally(()=>setBusy(''))}
   const wanted=useRef('')  // a slow answer for a group opened before must not show under the one open now
   const onOpen=(s:string)=>{wanted.current=open===s?'':s;setOpen(wanted.current);if(!wanted.current)return;setRecords(undefined);api(`/failures/${s}/`).then(d=>{if(wanted.current===s)setRecords(d.records)}).catch((e:any)=>setError(e?.detail||'Could not load the records.'))}

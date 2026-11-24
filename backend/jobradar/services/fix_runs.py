@@ -240,13 +240,26 @@ def _main(run, signature, ctx):
         _end(run, 'failed', f'Unexpected {type(exc).__name__}.')
     finally:
         shutil.rmtree(work, ignore_errors=True)
+        try:  # this run's own worktree and local branch, whatever the end: it can hold private text
+            root, wt = error_triage.ROOT, _worktree(run)
+            if wt.exists():
+                _run(run, ['git', 'worktree', 'remove', '--force', str(wt)], cwd=root, timeout=300)
+                shutil.rmtree(wt, ignore_errors=True)  # git refuses a worktree whose link was changed
+                _run(run, ['git', 'worktree', 'prune'], cwd=root, timeout=60)
+            _run(run, ['git', 'branch', '-D', f'fix/{run["id"]}'], cwd=root, timeout=60)
+        except Exception:
+            pass
         _live.pop(run['id'], None)
+
+
+def _worktree(run):
+    return error_triage.ROOT.parent/f'dachapply-fix-{run["id"]}'
 
 
 def _pipeline(run, signature, ctx, work):
     root, rid = error_triage.ROOT, run['id']
     branch = f'fix/{rid}'
-    wt = root.parent/f'dachapply-fix-{rid}'
+    wt = _worktree(run)
     _step(run, 'worktree')
     _must(run, ['git', 'fetch', 'origin'], cwd=root)
     _must(run, ['git', 'worktree', 'add', '-b', branch, str(wt), 'origin/main'], cwd=root)
@@ -297,7 +310,6 @@ def _pipeline(run, signature, ctx, work):
     if not url:
         raise _Fail('The branch was pushed but gh gave no pull request URL.')
     run['pr_url'] = url
-    _sh(run, ['git', 'worktree', 'remove', '--force', str(wt)], cwd=root)  # this run's own; the branch is on GitHub
     _end(run, 'pr')
 
 

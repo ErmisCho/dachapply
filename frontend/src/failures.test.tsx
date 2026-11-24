@@ -2,7 +2,7 @@
 import {describe,expect,it} from 'vitest'
 import app from './App.tsx?raw'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {FailuresView,RunView,elapsed,hasRunning,safePr,type FailuresData,type FixRun} from './Failures'
+import {FailuresView,RunView,elapsed,hasRunning,pollEvery,safePr,type FailuresData,type FixRun} from './Failures'
 
 const run:FixRun={id:'r1',signature:'a',state:'running',step:'Editing',started_at:'2026-11-20T10:00:00Z',log:['line <b>1</b>','line 2']}
 const group=(over:object={})=>({signature:'a',cause:'LaTeX could not compile <i>x</i>',class:'actionable',count:3,last:'2026-11-20T10:00:00Z',job_ids:[1],task_id:'TASK-9',state:'new',run:null,...over})
@@ -30,6 +30,7 @@ describe('failures page',()=>{
     expect(html).not.toContain('>Fix<')
     expect(hasRunning(data([group({run})]))).toBe(true)
     expect(hasRunning(data([group({run:{...run,state:'pr'}})]))).toBe(false)
+    expect([pollEvery(data([group({run})])),pollEvery(data([group({run:{...run,state:'pr'}})])),pollEvery(data([group({run:{...run,state:'merged'}})])),pollEvery(null)]).toEqual([3000,60000,0,0])
     expect(elapsed(run,Date.parse('2026-11-20T10:01:05Z'))).toBe('1m 5s')
   })
   it('links only https://github.com/ pull requests',()=>{
