@@ -307,3 +307,20 @@ def test_later_family_closure_cannot_duplicate_an_interrupted_successor(store, c
     complete(other)
     triage.triage()
     assert len(tasks) == 3 and triage.triage() == []
+
+
+def test_unlink_lets_a_lost_task_be_filed_again(store, cli):  # TASK-406.4
+    ingest('lost')
+    [first] = triage.triage()
+    assert triage.triage() == []
+    cli[0].clear()  # its file was only in a worktree that is gone
+    triage.unlink(first['task_id'])
+    [again] = triage.triage()
+    assert again['action'] == 'create' and len(cli[0]) == 1
+
+
+def test_no_argument_holds_a_line_break(store, cli):  # TASK-406.4: backlog.CMD drops everything after one
+    ingest('1')
+    triage.triage()
+    create = next(args for args in cli[1] if args[2] == 'create')
+    assert not any(chr(10) in arg for arg in create) and create.count('--ac') == 2 and 'Root cause: unknown.' in create[create.index('--description') + 1]

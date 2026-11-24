@@ -17,7 +17,8 @@ DISPOSITIONS = {'cancelled': 'expected cancellation; no bug', 'quota': 'operator
 
 
 def _cli(*args, root=None):
-    result = subprocess.run([shutil.which('backlog') or 'backlog', *args], cwd=root or ROOT,
+    # TASK-406.4: npm's backlog.CMD cuts the command off at a line break, and every later argument with it.
+    result = subprocess.run([shutil.which('backlog') or 'backlog', *(' '.join(arg.split()) for arg in args)], cwd=root or ROOT,
                             capture_output=True, text=True, timeout=60, check=True)
     return result.stdout
 
@@ -108,6 +109,12 @@ def triage(*, dry_run=False, list_only=False, operation=None, root=None):
             for row in rows:
                 db.execute('INSERT OR REPLACE INTO error_group_links VALUES (?,?,?)', (row['id'], signature, row['evidence']))
         return proposals
+
+
+def unlink(task_id):
+    """TASK-406.4: forget the link to a task file that was never merged, so triage files the group again."""
+    with closing(errors._connect()) as db, db:
+        db.execute('DELETE FROM error_groups WHERE task_id=? AND signature NOT IN (SELECT signature FROM error_resolutions)', (task_id,))
 
 
 def _token(value):

@@ -217,3 +217,40 @@ different tasks form one group, and it carries a class. Only causes recognised a
 platform are `actionable`; page limits and unrecognised errors are `unknown` and wait for a look.
 No build is supplied, so a group does not split on every update. `triage(operation=..., root=...)`
 limits triage to one cause and writes the task file into the given checkout.
+
+
+<!-- TASK-406.4 -->
+## Fix runs: from a group of failed documents to a pull request
+
+`services/fix_runs.py` turns one `actionable` group into a branch `fix/<run id>` and a pull request that the
+owner merges by hand. It is off unless `DEBUG` is on and `FIX_RUNS_ENABLED=1` is in `.env` (always off in
+tests), and `claude`, `gh` and the failure evidence folder exist. One run at a time; a run lasts at most 90
+minutes. Each run is a JSON file in `.dachapply-logs/fix-runs/`; a run still `running` after a restart is
+shown as `interrupted`, `stop` kills the child's whole process tree. The log keeps the last 200 lines: step
+names, exit codes and test summary lines, never evidence text.
+
+The evidence is untrusted (prompt injection) and private (CV/letter text), so:
+- The agent can read and write only its worktree and its temp folder: `acceptEdits` without an allow list
+  (probed 2026-11-24; bare `Read`/`Write` in `--allowedTools` reach every file on the PC).
+- What is committed is the exact tree that was checked before any agent-written test ran. Added text may not
+  contain a `.env` value, and added code that starts processes, opens connections or evaluates text is refused.
+- The agent runs in a fresh worktree of `origin/main` (`dachapply-fix-<run id>`, beside the repo) with file
+  tools only (`Read,Edit,Write,Glob,Grep`), no Bash, web, `gh` or push, and an environment built from an
+  allow-list (no `DATABASE_URL`, `NEON_*` or tokens). It reads up to 5 newest records and their files from a
+  temp copy outside the worktree (only files under `failed/`); the copy is deleted at the end. The prompts say
+  the evidence is untrusted and must not be copied; the evidence text itself is never in a prompt.
+- Steps: triage links the Backlog bug, the agent writes an acceptance rubric (the app seals its sha256), then
+  the fix and a test, up to 2 repair calls after failed checks, then a separate judge call.
+- The app, not the agent, checks: non-empty diff; path allow-list (`backend/jobradar` except migrations,
+  `frontend/src`, `docs`, `backlog/tasks`); no private text in added lines (6 words in a row, a line of 40+
+  characters, or a company/applicant name; text already in `origin/main` is allowed); the new backend tests
+  fail on `origin/main` without the fix and pass with it; the full backend suite; for frontend changes `npm ci`,
+  `tsc --noEmit` and the tests. The verdict must be `PERFECT` and the rubric hash unchanged.
+- Only then the app commits the allowed files, pushes only `refs/heads/fix/<run id>` and runs
+  `gh pr create --base main` with a title and body it builds from fixed wording, the task id, the verdict and the
+  test count. It never merges, deploys, migrates or pushes `main`. A `pr` run becomes `merged` (checked at most
+  once a minute with `gh pr view`).
+
+Known risks: the app runs the agent-written tests on this machine (a hostile test can do what the owner's
+account can); an interrupted run leaves its worktree; the agent's reading of the evidence
+cannot be proven non-leaking, only checked on what it adds to the diff. Tests: `backend/jobradar/tests/test_fix_runs.py`.

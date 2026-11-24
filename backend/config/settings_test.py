@@ -75,3 +75,6 @@ DB_USAGE_OWNER_EMAIL = ''
 # TASK-281: usage counters are written before the response so tests can assert on them right away.
 # The one test of the background path turns this on itself.
 USAGE_RECORD_ASYNC = False
+
+# TASK-406.4: a test must never be able to start an agent run.
+FIX_RUNS_ENABLED = False
