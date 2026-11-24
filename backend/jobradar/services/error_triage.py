@@ -110,6 +110,12 @@ def triage(*, dry_run=False, list_only=False, operation=None, root=None):
         return proposals
 
 
+def unlink(task_id):
+    """TASK-406.4: forget the link to a task file that was never merged, so triage files the group again."""
+    with closing(errors._connect()) as db, db:
+        db.execute('DELETE FROM error_groups WHERE task_id=? AND signature NOT IN (SELECT signature FROM error_resolutions)', (task_id,))
+
+
 def _token(value):
     return value if re.fullmatch(r'[a-f0-9]{64}', value) else 'unknown'
 
