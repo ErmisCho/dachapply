@@ -760,7 +760,7 @@ def no_change_requested(instructions):
     return (instructions or '').strip().partition('.')[0].strip().casefold() == 'no further cv changes required'
 
 
-def start_cv_noop_task(job_id, user_id, artifacts, adjust=None):
+def start_cv_noop_task(job_id, user_id, artifacts, adjust=None, note=''):
     _cleanup()
     artifacts={key:path for key,path in artifacts.items() if key in ('cv_tex','cv_pdf','letter_tex','letter_pdf') and Path(path).is_file()}
     if not artifacts:
@@ -775,7 +775,7 @@ def start_cv_noop_task(job_id, user_id, artifacts, adjust=None):
     job_url=JobLead.objects.filter(id=job_id).values_list('url',flat=True).first()
     clipboard_tex=_clipboard_payload(artifacts,job_url)
     with _lock:
-        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'ready','progress':100,'stage':'No changes requested','error':'','archive':archive.getvalue(),'filename':'application.zip','artifacts':artifacts,'report':{'changed_files':[],'main_changes':['Current files retained unchanged.'],'unsupported_requirements_not_claimed':[]},'clipboard_tex':clipboard_tex,'clipboard_tex_parts':_clipboard_parts(artifacts,job_url),'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_created_at':now,'_started_at':now,'_finished_at':now,'_stage_key':'ready','_stage_started_at':now,'_stage_plan':[],'_stage_defaults':{},'_estimate_key':('no-change',),'_stage_times':{},'_adjust':adjust,'updated_at':time.time()}
+        _tasks[task_id]={'id':task_id,'user_id':user_id,'job_id':job_id,'status':'ready','progress':100,'stage':note or 'No changes requested','error':'','archive':archive.getvalue(),'filename':'application.zip','artifacts':artifacts,'report':{'changed_files':[],'main_changes':['Current files retained unchanged.']+([note] if note else []),'unsupported_requirements_not_claimed':[]},'clipboard_tex':clipboard_tex,'clipboard_tex_parts':_clipboard_parts(artifacts,job_url),'clipboard_copied':False,'learned_preference':'','learned_preference_exclusion':'','diagnostics':'','repair_attempts':0,'_created_at':now,'_started_at':now,'_finished_at':now,'_stage_key':'ready','_stage_started_at':now,'_stage_plan':[],'_stage_defaults':{},'_estimate_key':('no-change',),'_stage_times':{},'_adjust':adjust,'updated_at':time.time()}
         _record_adjustment(_tasks[task_id])  # created final, so it never passes _update
     return task_id
 

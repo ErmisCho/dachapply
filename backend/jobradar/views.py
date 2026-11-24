@@ -2527,18 +2527,22 @@ def revise_latest_cv_documents(request, job_id):
                 'source_cv':run['cv'],'source_letter':run['letter'],'revision_instructions':instructions[:5000],'create_cv':bool(run['cv']),**short_message(run),**_clipboard_option(runs)}
 
     if not correction_image:
-        # The current document of a type with nothing ticked (TASK-278).
-        current=dict(zip(('cv','letter'),latest_generated_sources(job,request.user,letter_key)))
-        unticked={kind:path for kind,path in current.items() if path and not any(run[kind] for run in runs)}
-        # TASK-278: blocks only found in the unticked document are applied there too; ticked ones win.
-        exact_updates={} if no_change_requested(instructions) else exact_revision_plan([run[kind] for run in runs for kind in ('cv','letter')],instructions,list(unticked.values()))
+        ticked=[run[kind] for run in runs for kind in ('cv','letter')]
+        if documents is None:
+            unticked=[path for path in latest_generated_sources(job,request.user,letter_key) if path and path not in ticked]
+        else:
+            unticked=[path for row in generated_files(job,request.user) if not row['missing'] and (path:=str(Path(row['tex']))) not in ticked]
+        skipped=[]
+        exact_updates={} if no_change_requested(instructions) else exact_revision_plan(ticked,instructions,unticked,skipped)
+        # TASK-407: an unticked document is never changed; say so instead.
+        note=f"Not changed: {len(skipped)} edit{' is' if len(skipped) == 1 else 's are'} only in a document that is not ticked ({', '.join(sorted({Path(path).name for path in skipped}))})." if skipped else ''
         if exact_updates == {}:
             if documents is None:
                 artifacts=latest_generated_artifacts(job,request.user,letter_key)
             else:
                 artifacts={f'{kind}_{suffix}':str(Path(runs[0][kind]).with_suffix(f'.{suffix}')) for kind in ('cv','letter') if runs[0][kind] for suffix in ('tex','pdf')}
             artifacts={key:path for key,path in artifacts.items() if runs[0][key.split('_')[0]]}
-            task_id=start_cv_noop_task(job.id,request.user.id,artifacts,adjust=adjust(runs[0],'no-change'))
+            task_id=start_cv_noop_task(job.id,request.user.id,artifacts,adjust=adjust(runs[0],'no-change'),note=note)
             return Response(_started_cv_task(task_id,request.user.id), status=status.HTTP_202_ACCEPTED)
         if exact_updates:
             # TASK-386/388: if the edited documents fail the compile or page check, the task falls back
@@ -2548,19 +2552,13 @@ def revise_latest_cv_documents(request, job_id):
                 profile=evidence()
             except (ValueError,RuntimeError):
                 profile=None
-            also={kind:path for kind,path in unticked.items() if str(path) in exact_updates}
-            if len(runs) == 1:
-                edits=[{**runs[0],**also,'ticked':runs[0]}]
-            else:
-                edits=[{**run,'ticked':run} for run in runs if str(run['cv'] or run['letter']) in exact_updates]
-                edits+=[{'cv':None,'letter':None,'cv_key':cv_key,'letter_key':letter_key,'short':False,'ticked':None,kind:path} for kind,path in also.items()]
+            edits=runs if len(runs) == 1 else [run for run in runs if str(run['cv'] or run['letter']) in exact_updates]
 
             def start_exact(run):
                 updates={path:text for path,text in exact_updates.items() if path in (str(run['cv']),str(run['letter']))}
-                notes=[f'Also updated the {name}: some blocks were only found there.' for kind,name in (('cv','CV'),('letter','letter')) if run[kind] and run[kind] == also.get(kind)]
-                report={'changed_files':[Path(path).name for path in updates],'main_changes':['Applied exact OLD/NEW replacements without AI.']+notes,'unsupported_requirements_not_claimed':[]}
-                fallback=full_optimization(run['ticked'],profile) if profile is not None and run['ticked'] else None
-                return start_cv_compile_task(job.id,request.user.id,run['cv_key'],run['cv'],run['letter'],source_updates=updates,task_report=report,letter_key=run['letter_key'],adjust=adjust(run['ticked'] or run,'exact'),fallback=fallback,**_clipboard_option(edits))
+                report={'changed_files':[Path(path).name for path in updates],'main_changes':['Applied exact OLD/NEW replacements without AI.']+([note] if note else []),'unsupported_requirements_not_claimed':[]}
+                fallback=full_optimization(run,profile) if profile is not None else None
+                return start_cv_compile_task(job.id,request.user.id,run['cv_key'],run['cv'],run['letter'],source_updates=updates,task_report=report,letter_key=run['letter_key'],adjust=adjust(run,'exact'),fallback=fallback,**_clipboard_option(edits))
             return _started_cv_runs(edits,start_exact,request.user.id)
     # TASK-278: free-form literal edits -- parsed deterministically, else translated by the installed
     # local model. Both are gated in the task, which falls back to the full optimization below.
