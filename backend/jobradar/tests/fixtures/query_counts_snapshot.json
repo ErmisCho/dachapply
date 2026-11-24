@@ -5,6 +5,7 @@
   "is_demo": false,
   "can_use_mailbox": true,
   "can_view_db_usage": false,
+  "can_view_failures": false,
   "submit_for_username": null,
   "requested_submit_for_username": null,
   "is_friend_submitter": false,
