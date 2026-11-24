@@ -224,18 +224,17 @@ limits triage to one cause and writes the task file into the given checkout.
 
 `services/fix_runs.py` turns one `actionable` group into a branch `fix/<run id>` and a pull request that the
 owner merges by hand. It is off unless `DEBUG` is on and `FIX_RUNS_ENABLED=1` is in `.env` (always off in
-tests), and `claude`, `gh` and the failure evidence folder exist. One run at a time; a run lasts at most 90
+tests), and `codex`, `claude`, `gh` and the failure evidence folder exist. One run at a time; a run lasts at most 90
 minutes. Each run is a JSON file in `.dachapply-logs/fix-runs/`; a run still `running` after a restart is
 shown as `interrupted`, `stop` kills the child's whole process tree. The log keeps the last 200 lines: step
 names, exit codes and test summary lines, never evidence text.
 
 The evidence is untrusted (prompt injection) and private (CV/letter text), so:
-- The agent can read and write only its worktree and its temp folder: `acceptEdits` without an allow list
-  (probed 2026-11-24; bare `Read`/`Write` in `--allowedTools` reach every file on the PC).
+- Codex plans, implements and repairs with workspace-write, a work-folder grant and network disabled; Claude Opus judges with read-only tools. Run `backend/scripts/probe_codex_sandbox.py` manually to measure confinement on this machine. Outside reads are not assumed blocked.
 - What is committed is the exact tree that was checked before any agent-written test ran. Added text may not
-  contain a `.env` value, and added code that starts processes, opens connections or evaluates text is refused.
+  contain a `.env` value or a line from local SSH, Git or gh credentials, and added code that starts processes, opens connections or evaluates text is refused.
 - The agent runs in a fresh worktree of `origin/main` (`dachapply-fix-<run id>`, beside the repo) with file
-  tools only (`Read,Edit,Write,Glob,Grep`), no Bash, web, `gh` or push, and an environment built from an
+  a restricted workspace and an environment built from an
   allow-list (no `DATABASE_URL`, `NEON_*` or tokens). It reads up to 5 newest records and their files from a
   temp copy outside the worktree (only files under `failed/`); the copy is deleted at the end. The prompts say
   the evidence is untrusted and must not be copied; the evidence text itself is never in a prompt.
@@ -251,6 +250,6 @@ The evidence is untrusted (prompt injection) and private (CV/letter text), so:
   test count. It never merges, deploys, migrates or pushes `main`. A `pr` run becomes `merged` (checked at most
   once a minute with `gh pr view`).
 
-Known risks: the app runs the agent-written tests on this machine (a hostile test can do what the owner's
+Known risks: measured 2026-11-24 with the probe, Codex writes only its worktree and work folder and has no network, but it can read every file on this PC; added text is therefore also checked against the candidate evidence file; credential filtering cannot cover every secret or transformed disclosure. The app runs the agent-written tests on this machine (a hostile test can do what the owner's
 account can); an interrupted run leaves its worktree; the agent's reading of the evidence
 cannot be proven non-leaking, only checked on what it adds to the diff. Tests: `backend/jobradar/tests/test_fix_runs.py`.

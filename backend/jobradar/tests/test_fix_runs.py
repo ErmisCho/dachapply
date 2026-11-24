@@ -60,8 +60,8 @@ class Fake:
     def __call__(self, run, args, cwd=None, env=None, input=None, timeout=1800):
         self.calls.append(list(args))
         name = Path(args[0]).stem
-        if name == 'claude':
-            return self.claude(run, args, cwd, env, input)
+        if name in ('claude', 'codex'):
+            return self.agent(run, args, cwd, env, input)
         if name == 'gh':
             return SimpleNamespace(returncode=0, stdout=self.pr_state if args[2] == 'view' else 'https://github.com/example/repo/pull/7\n')
         if name == 'uv':
@@ -72,11 +72,12 @@ class Fake:
             return SimpleNamespace(returncode=code, stdout='3 failed in 1s' if code else '3 passed in 1s')
         return self.real(run, args, cwd=cwd, env=env, input=input, timeout=timeout)
 
-    def claude(self, run, args, cwd, env, input):
+    def agent(self, run, args, cwd, env, input):
         self.envs.append(env)
         self.prompts.append(input)
         self.work, self.tree = Path(args[args.index('--add-dir') + 1]), Path(cwd)
         stage = input.split('Stage: ')[1].split('.')[0].split(' ')[0] if 'Stage: ' in input else ''
+        assert (name := Path(args[0]).stem) == ('claude' if stage == 'judge' else 'codex')
         if stage == 'plan':
             self.evidence_seen = (self.work/'evidence'/'records.json').read_text(encoding='utf-8')
             if self.rubric:
@@ -90,6 +91,9 @@ class Fake:
         if stage in self.on:
             self.on[stage](run)
         return SimpleNamespace(returncode=0, stdout=json.dumps({'verdict': self.verdict, 'criteria': []}) if stage == 'judge' else 'ok')
+
+    def codex_calls(self):
+        return [c for c in self.calls if Path(c[0]).stem == 'codex']
 
     def claude_calls(self):
         return [c for c in self.calls if Path(c[0]).stem == 'claude']
@@ -154,7 +158,7 @@ def assert_no_pr(env, run, state='failed'):
 
 
 @pytest.mark.parametrize('setup, message', [
-    ('debug', 'DEBUG'), ('disabled', 'FIX_RUNS_ENABLED=1 in .env'), ('nodir', 'evidence folder'), ('claude', 'claude'), ('gh', 'gh'),
+    ('debug', 'DEBUG'), ('disabled', 'FIX_RUNS_ENABLED=1 in .env'), ('nodir', 'evidence folder'), ('claude', 'claude'), ('codex', 'codex'), ('gh', 'gh'),
     ('nogroup', 'no failed documents'), ('unknown', 'manual look'), ('running', 'already running')])
 def test_refusals(env, settings, monkeypatch, setup, message):
     sig = env.sig
@@ -164,8 +168,8 @@ def test_refusals(env, settings, monkeypatch, setup, message):
         settings.FIX_RUNS_ENABLED = False
     if setup == 'nodir':
         settings.CODEX_CV_WORKSPACE = ''
-    if setup in ('claude', 'gh'):
-        monkeypatch.setattr(fix_runs.shutil, 'which', lambda name: None if name == setup else name)
+    if setup in ('claude', 'codex', 'gh'):
+        monkeypatch.setattr(fix_runs.shutil, 'which', lambda name: None if name in (setup, setup + '.cmd') else name)
     if setup == 'nogroup':
         sig = 'nothing'
     if setup == 'unknown':
@@ -215,7 +219,14 @@ def test_success_pushes_only_the_fix_branch(env, monkeypatch):
         joined = ' '.join(call)
         assert 'Bash' not in joined and 'Web' not in joined and 'gh' not in call and call[call.index('--permission-mode') + 1] == 'acceptEdits'
         assert '--allowedTools' not in call  # an allow list with bare Read/Write opens every file on the PC
-    assert fake.claude_calls()[0][fake.claude_calls()[0].index('--tools') + 1] == 'Read,Edit,Write,Glob,Grep'
+    assert len(fake.claude_calls()) == 1
+    assert fake.claude_calls()[0][fake.claude_calls()[0].index('--tools') + 1] == 'Read,Glob,Grep'
+    for call in fake.codex_calls():
+        assert call[:2] == ['codex', 'exec']
+        assert call[call.index('-s') + 1] == 'workspace-write'
+        assert 'sandbox_workspace_write.network_access=false' in call
+        assert call[call.index('-C') + 1] == str(fake.tree)
+        assert call[call.index('--add-dir') + 1] == str(fake.work)
     for env_used in fake.envs:
         assert set(env_used) <= set(fix_runs.ENV_ALLOW) | {'DATABASE_URL', 'UV_PROJECT_ENVIRONMENT'}
         assert 'NEON_API_KEY' not in env_used and env_used.get('DATABASE_URL', '') == ''
@@ -229,19 +240,19 @@ def test_success_pushes_only_the_fix_branch(env, monkeypatch):
 def test_repair_can_fix_failing_tests(env):
     env.fake.greens = [1, 1, 0]  # the suite, its failing tests again, then after the repair
     run = go(env)
-    assert run['state'] == 'pr' and len(env.fake.claude_calls()) == 4  # plan, implement, one repair, judge
+    assert run['state'] == 'pr' and len(env.fake.codex_calls()) == 3 and len(env.fake.claude_calls()) == 1
 
 
 def test_a_flaky_failure_costs_no_repair(env):
     env.fake.greens = [1, 0]
     run = go(env)
-    assert run['state'] == 'pr' and len(env.fake.claude_calls()) == 3 and any('flaky' in line for line in run['log'])
+    assert run['state'] == 'pr' and len(env.fake.codex_calls()) == 2 and len(env.fake.claude_calls()) == 1 and any('flaky' in line for line in run['log'])
 
 
 @pytest.mark.parametrize('case, message', [
     ('tests', 'backend tests failed'), ('empty', 'diff is empty'), ('path', 'path is not allowed'), ('notest', 'no new or changed test'),
     ('line', 'private evidence'), ('words', 'private evidence'), ('name', 'private evidence'), ('company', 'private evidence'), ('red', 'without the fix'), ('noload', 'cannot run on the old code'),
-    ('excerpt', 'private evidence'), ('secret', '.env file'), ('risky', 'starts processes'), ('gitlink', 'git link'), ('late', 'changed after they were checked'),
+    ('excerpt', 'private evidence'), ('secret', '.env file'), ('credential', 'local credential text'), ('risky', 'starts processes'), ('gitlink', 'git link'), ('late', 'changed after they were checked'),
     ('verdict', 'FAILURE'), ('tamper', 'rubric changed'), ('norubric', 'usable rubric')])
 def test_no_pr_when_a_check_fails(env, case, message):
     fake = env.fake
@@ -264,6 +275,11 @@ def test_no_pr_when_a_check_fails(env, case, message):
     if case == 'secret':
         (env.repo/'.env').write_text('NEON_API_KEY="hunter2hunter2hunter2"\n', encoding='utf-8')
         fake.write = {**GOOD, 'backend/jobradar/mod.py': 'key = "hunter2hunter2hunter2"\n'}
+    if case == 'credential':
+        credentials = Path.home()/'.git-credentials'
+        credentials.parent.mkdir(parents=True, exist_ok=True)
+        credentials.write_text('private-credential-canary', encoding='utf-8')
+        fake.write = {**GOOD, 'backend/jobradar/mod.py': 'key = "private-credential-canary"\n'}
     if case == 'risky':
         fake.write = {**GOOD, 'backend/jobradar/tests/test_mod.py': 'import subprocess\n\ndef test_mod():\n    assert 1\n'}
     if case == 'gitlink':
@@ -288,7 +304,7 @@ def test_no_pr_when_a_check_fails(env, case, message):
     assert 'Zorblax' not in json.dumps(run) and 'verrastro' not in json.dumps(run).lower()
     assert env.branches().split() == ['main']
     if case in ('tests', 'empty', 'path', 'line'):  # two repairs, then it stops
-        assert len(fake.claude_calls()) == 4
+        assert len(fake.codex_calls()) == 4
 
 
 def test_a_changed_file_that_is_not_staged_is_never_committed(env):
@@ -336,6 +352,30 @@ def test_a_company_word_the_repository_already_holds_is_allowed(env):
     git(env.repo, 'push', '-q')
     env.fake.write = {**GOOD, 'backend/jobradar/mod.py': 'base = 2\n'}
     assert go(env)['state'] == 'pr'
+
+
+def test_short_env_values_and_key_frames_do_not_block_a_fix(env, monkeypatch, tmp_path):  # TASK-410 review
+    (env.repo/'.env').write_text('FIX_RUNS_ENABLED=1\nDEBUG=True\n', encoding='utf-8')
+    ssh = tmp_path/'home'/'.ssh'
+    ssh.mkdir(parents=True)
+    (ssh/'id_test').write_text('-----BEGIN OPENSSH PRIVATE KEY-----\nAAAAB3NzaC1yc2EAAAADAQABAAABAQ\n-----END OPENSSH PRIVATE KEY-----\n', encoding='utf-8')
+    env.fake.write = {**GOOD, 'backend/jobradar/mod.py': 'x = 1  # True\n'}
+    assert go(env)['state'] == 'pr'
+    env.fake.pr_state = 'CLOSED'  # frees the cause for a second run
+    fix_runs._checked.clear()
+    fix_runs.runs()
+    env.fake.write = {**GOOD, 'backend/jobradar/mod.py': 'key = "AAAAB3NzaC1yc2EAAAADAQABAAABAQ"\n'}
+    run = go(env)
+    assert run['state'] == 'failed' and 'credential' in run['error']
+
+
+def test_the_candidate_evidence_is_private_text_too(env, settings, tmp_path):  # Codex can read it
+    evidence = tmp_path/'evidence.md'
+    evidence.write_text('My private career story about the lighthouse migration in Brno\n', encoding='utf-8')
+    settings.CODEX_CANDIDATE_EVIDENCE_PATH = str(evidence)
+    env.fake.write = {**GOOD, 'backend/jobradar/mod.py': '# private career story about the lighthouse migration\n'}
+    run = go(env)
+    assert run['state'] == 'failed' and 'private evidence' in run['error']
 
 
 def test_stop(env):

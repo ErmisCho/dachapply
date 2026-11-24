@@ -27,7 +27,7 @@ from . import error_triage, failure_evidence
 
 LIMIT = 90 * 60  # seconds for a whole run
 ENV_ALLOW = ('PATH', 'SYSTEMROOT', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'HOME', 'PATHEXT', 'COMSPEC')
-TOOLS, JUDGE_TOOLS = 'Read,Edit,Write,Glob,Grep', 'Read,Glob,Grep'
+JUDGE_TOOLS = 'Read,Glob,Grep'
 ALLOWED = ('backend/jobradar/', 'frontend/src/', 'docs/', 'backlog/tasks/')
 TESTS = re.compile(r'^backend/jobradar/tests/.+\.py$|^frontend/src/.+\.test\.')
 # A speed bump, not a sandbox: the app runs agent-written tests as the owner, so obvious ways out are refused first.
@@ -161,6 +161,7 @@ def _blocker():
                     (getattr(settings, 'FIX_RUNS_ENABLED', False), 'Set FIX_RUNS_ENABLED=1 in .env to allow fix runs.'),
                     (failure_evidence.logs_dir(), 'There is no failure evidence folder; set the CV workspace.'),
                     (shutil.which('claude'), 'The claude CLI is not installed.'),
+                    (shutil.which('codex') or shutil.which('codex.cmd'), 'The codex CLI is not installed.'),
                     (shutil.which('gh'), 'The gh CLI is not installed.')):
         if not ok:
             return why
@@ -239,7 +240,10 @@ def stop(run_id):
 # ---- the run ----
 
 def _main(run, signature, ctx):
-    work = Path(tempfile.mkdtemp(prefix='dachapply-fix-'))
+    # Beside the worktree, not mkdtemp: Python 3.13 makes a temp folder owner-only on Windows, and Codex's
+    # sandbox user is not the owner (probed 2026-11-24: every read and write was denied there).
+    work = _worktree(run).with_name(_worktree(run).name + '-work')
+    work.mkdir(parents=True)
     try:
         _pipeline(run, signature, ctx, work)
     except _Stopped:
@@ -278,6 +282,11 @@ def _pipeline(run, signature, ctx, work):
     _step(run, 'triage')
     run['task_id'] = task_id = _task(signature, wt)
     texts = _copy_evidence(ctx['records'], work)  # private text, kept in memory: the agent can edit the copy
+    # Codex can read every file on the PC (probed 2026-11-24), so the owner's candidate evidence counts as private too.
+    try:
+        texts.append(Path(settings.CODEX_CANDIDATE_EVIDENCE_PATH).read_text(encoding='utf-8', errors='replace'))
+    except (OSError, TypeError, AttributeError):
+        pass
     rubric = work/'rubric.json'
     prompts = {'task': task_id, 'work': work, 'rubric': rubric}
     _step(run, 'plan')
@@ -297,7 +306,7 @@ def _pipeline(run, signature, ctx, work):
         _agent(run, wt, work, _prompt('repair', **prompts, problem=short + '\n' + detail))
     _step(run, 'judge')
     diff = _must(run, ['git', 'diff', '--cached'], cwd=wt)[:60000]
-    answer = _agent(run, wt, work, _prompt('judge', **prompts, rubric_text=seal[1], diff=diff, result=info['summary']), JUDGE_TOOLS, 'opus')
+    answer = _agent(run, wt, work, _prompt('judge', **prompts, rubric_text=seal[1], diff=diff, result=info['summary']), judge=True)
     verdict = _verdict(answer)
     if verdict != 'PERFECT':
         raise _Fail(f'The judge verdict was {verdict if verdict in ("FAILURE", "SPEC-GAP") else "unreadable"}, not PERFECT.')
@@ -395,17 +404,21 @@ def _prompt(stage, task, work, rubric, **more):
     return head + _skills() + '\n\n' + body
 
 
-def _agent(run, wt, work, prompt, tools=TOOLS, model='sonnet'):
+def _codex_args(wt, work):
+    return [shutil.which('codex') or shutil.which('codex.cmd') or 'codex', 'exec', '--ephemeral', '--ignore-user-config',
+            '--ignore-rules', '--skip-git-repo-check', '-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=false',
+            '-c', 'windows.sandbox="unelevated"', '-C', str(wt), '--add-dir', str(work), '-o', str(work/'last-message.txt'), '-']
+
+
+def _agent(run, wt, work, prompt, judge=False):
     link = (wt/'.git').read_text(encoding='utf-8') if (wt/'.git').is_file() else ''
-    # No allow list: bare Read/Write in one reach every file on the PC (probed 2026-11-24). acceptEdits alone
-    # keeps both inside the worktree and the work folder, and refuses everything else.
-    args = [shutil.which('claude') or 'claude', '-p', '--model', model, '--tools', tools, '--permission-mode', 'acceptEdits',
-            '--strict-mcp-config', '--setting-sources', '', '--no-session-persistence', '--add-dir', str(work)]
+    args = ([shutil.which('claude') or 'claude', '-p', '--model', 'opus', '--tools', JUDGE_TOOLS, '--permission-mode', 'acceptEdits',
+             '--strict-mcp-config', '--setting-sources', '', '--no-session-persistence', '--add-dir', str(work)] if judge else _codex_args(wt, work))
     result = _sh(run, args, cwd=wt, env=_env(), input=prompt)
+    if link and (not (wt/'.git').is_file() or (wt/'.git').read_text(encoding='utf-8') != link):
+        raise _Fail('The agent changed the git link of its worktree.')
     if result.returncode:
         raise _Fail(f'The agent call failed (exit {result.returncode}).')
-    if link and (not (wt/'.git').is_file() or (wt/'.git').read_text(encoding='utf-8') != link):  # before any git command reads it
-        raise _Fail('The agent changed the git link of its worktree.')
     return result.stdout
 
 
@@ -459,18 +472,22 @@ def _check(run, wt, ctx, texts, info):
     for path in paths:
         _must(run, ['git', 'add', '--', path], cwd=wt)
     info['tree'] = _must(run, ['git', 'write-tree'], cwd=wt).strip()
-    added, code = [], []
+    added, all_added, code = [], [], []
     for path in paths:
         old = _run(run, ['git', 'show', f'origin/main:{path}'], cwd=wt)
         known = {line.strip() for line in old.stdout.splitlines()} if old.returncode == 0 else set()  # text already in main is not a leak
         diff = _run(run, ['git', 'diff', '--cached', '--unified=0', '--', path], cwd=wt).stdout
-        new = [line[1:] for line in diff.splitlines() if line.startswith('+') and not line.startswith('+++') and line[1:].strip() not in known]
+        lines = [line[1:] for line in diff.splitlines() if line.startswith('+') and not line.startswith('+++')]
+        all_added += lines
+        new = [line for line in lines if line.strip() not in known]
         added += new
         code += [(path, line) for line in new if path.endswith(('.py', '.ts', '.tsx'))]
     if _leak(added, texts, ctx['names']):
         return 'Added text matches private evidence; remove it and use invented text.', ''
-    if any(secret in '\n'.join(added) for secret in _secrets()):
+    if any(secret in '\n'.join(all_added) for secret in _secrets()):
         raise _Fail('Added text contains a value from a .env file.')
+    if any(secret in '\n'.join(all_added) for secret in _credential_text()):
+        raise _Fail('Added text contains local credential text.')
     if any(RISKY.search(line) for path, line in code):
         return 'Added code starts processes, opens network connections or runs text as code. Use none of these; fake such calls with monkeypatch.', ''
     uv = shutil.which('uv') or 'uv'
@@ -517,7 +534,18 @@ def _secrets():
         except OSError:
             continue
         values |= {value.strip().strip('"\'') for line in lines if '=' in line and not line.startswith('#') for value in [line.split('=', 1)[1]]}
-    return {value for value in values if len(value) >= 12}
+    return {value for value in values if len(value) >= 12}  # FIX_RUNS_ENABLED=1, DEBUG=1: short values are no secret and match everything
+
+
+def _credential_text():
+    home = Path.home()
+    values = set()
+    for path in [*(home/'.ssh').glob('*'), home/'.git-credentials', home/'.config'/'gh'/'hosts.yml']:
+        try:
+            values.update(line.strip() for line in path.read_text(encoding='utf-8', errors='replace').splitlines() if len(line.strip()) >= 20 and not line.lstrip().startswith(('-----', 'Host ', '#')))
+        except OSError:
+            continue
+    return values
 
 
 def _leak(added, texts, names):
