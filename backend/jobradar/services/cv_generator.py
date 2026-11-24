@@ -1401,9 +1401,7 @@ def exact_revision_plan(sources, instructions, unselected=(), skipped=None):
             documents.update(copies); changed.update(copies)
             continue
         if not selected:
-            unticked=next((path for path,text in others.items() if old in text.replace('
-','
-') or match_exact_pair({path:text},old,new)),None)
+            unticked=next((path for path,text in others.items() if old in text.replace('\r\n','\n') or match_exact_pair({path:text},old,new)),None)
             if not unticked: return None
             if skipped is not None: skipped.append(unticked)
             continue
