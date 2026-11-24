@@ -66,7 +66,7 @@ describe('compact CV generator popup (TASK-216)',()=>{
   it('renders the board popup into document.body, out of the sticky selection bar (TASK-328)',()=>{
     // At md+ the selection bar is sticky with z-index raised-1, a stacking context below the nav's
     // sticky layer, so the z-popup dialog inside it painted under the nav. A portal escapes it.
-    expect(appSource).toContain('{cvGeneratorJob===selected[0]&&createPortal(<CvGenerator compact job={selectedJobs[0]}')
+    expect(appSource).toContain('{cvGeneratorJob===selected[0]&&createPortal(<CvGenerator compact hideGenerate={boardPrepared(selected[0])} job={selectedJobs[0]}')
     expect(appSource).toContain("onClose={()=>setCvGeneratorJob(null)}/>,document.body)}")
   })
 
