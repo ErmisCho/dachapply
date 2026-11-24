@@ -3,7 +3,7 @@
 // through the pure helpers, and the wiring through App.tsx's source.
 import {describe,expect,it} from 'vitest'
 import {renderToStaticMarkup} from 'react-dom/server'
-import {CopyTexAction,DocumentTicks} from './App'
+import {CopyTexAction,CopyTextAction,DocumentTicks} from './App'
 import appSource from './App.tsx?raw'
 import {defaultDocuments,followRun,presentDocuments,runError,startedRuns,tickedDocuments,type GeneratedFile} from './cvModel'
 
@@ -75,6 +75,15 @@ describe('Copy TeX',()=>{
   })
 })
 
+describe('Copy text (TASK-409)',()=>{
+  const button=(copy:string[],busy=false)=>renderToStaticMarkup(<CopyTextAction documents={documents} copy={copy} busy={busy} onCopy={async()=>true}/>)
+  it('needs a ticked letter or message; a ticked CV alone is not enough',()=>{
+    for(const copy of [[],[tex('CV-DE')]]){expect(button(copy)).toContain('disabled=""');expect(button(copy)).toContain('title="Tick a letter or short message to copy"')}
+    for(const name of ['Anschreiben','Message'])expect(button([tex('CV-DE'),tex(name)])).not.toContain('disabled=""')
+    expect(button([tex('Anschreiben')],true)).toContain('title="Wait for the running task to finish"')
+  })
+})
+
 describe('wiring',()=>{
   const gen=appSource.slice(appSource.indexOf('export function CvGenerator'),appSource.indexOf('function BatchCvGenerator'))
   const batch=appSource.slice(appSource.indexOf('function BatchCvGenerator'),appSource.indexOf('type NoteTable'))
@@ -87,6 +96,10 @@ describe('wiring',()=>{
     expect(gen).toContain('ticked=followRun(ticked,run,done)')
     expect(gen).toContain('<CopyTexAction documents={copyTicked} busy={loading||revisionLoading||compileLoading} onCopy={copyDocuments}/>')
     expect(gen).not.toContain('create_cv:adjCv')
+  })
+  it('both popups copy the ticked letters as text',()=>{
+    expect(gen).toContain('body:{documents:copyTicked,plain:true}');expect(gen).toContain('onCopy={copyLetterText}/>')
+    expect(batch).toContain('body:{documents:rowTicks(row).copy,plain:true}');expect(batch).toContain('onCopy={()=>copyRowText(row)}/>')
   })
   it('bulk rows offer the same choice',()=>{
     expect(batch).toContain('<DocumentTicks {...rowTicks(row)}')

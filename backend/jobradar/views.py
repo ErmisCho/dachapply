@@ -50,6 +50,7 @@ from .services.draft_chat import ChatTurn, generate_followup_draft, profile_draf
 from .services.analytics import record_demo_click
 from .services.db_usage import is_owner as db_usage_is_owner
 from .services.failure_evidence import logs_dir
+from .services.letter_text import plain_text
 from .services.cv_generator import ARTIFACT_KEYS, _is_sent, _sent_paths, available_model_options, cloud_models_only, decode_correction_image, exact_revision_plan, generated_files, generation_preview, is_cv_owner, is_env_cv_owner, latest_generated_artifacts, latest_generated_sources, load_candidate_evidence, rename_generated_artifact, reveal_artifact_folder, uses_cloud_only, user_templates, validate_model_capability
 from .services import cv_tasks
 from .services.cv_tasks import _clipboard_parts, _clipboard_payload, cancel_cv_task, documents_clipboard_text, get_cv_task, get_cv_task_download, no_change_requested, rename_task_paths, start_cv_compile_task, start_cv_literal_task, start_cv_noop_task, start_cv_revision, start_cv_task, with_expected_seconds
@@ -2593,6 +2594,12 @@ def cv_documents_tex(request, job_id):
         documents=_selected_documents(request,job) or []
         if not documents:
             raise ValueError('Select at least one document.')
+        if request.data.get('plain') is True:  # TASK-409: letters as plain text, for an application form
+            letters=[(Path(row['tex']).name,*plain_text(Path(row['tex']).read_text(encoding='utf-8'))) for row in documents if row['kind'] != 'cv']
+            if not letters:
+                raise ValueError('Tick a letter or short message to copy as text.')
+            odd=[name for name,_,complete in letters if not complete]
+            return Response({'text':'\n\n-----\n\n'.join(text for _,text,_ in letters),'note':f"Greeting or closing not found, so check the copied text: {', '.join(odd)}" if odd else ''})
         text=documents_clipboard_text([row['tex'] for row in documents],job.url)
     except (OSError,ValueError) as exc:
         return Response({'detail':str(exc)}, status=400)
