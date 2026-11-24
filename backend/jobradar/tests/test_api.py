@@ -1005,6 +1005,8 @@ def test_exact_revision_plan_leaves_blocks_found_only_in_an_unticked_document(tm
     instructions='OLD:\ncv title\nNEW:\nnew title\n\nOLD:\nVienna, 15 September\nNEW:\nVienna, 12 October'
     skipped=[]
     assert exact_revision_plan([cv,None],instructions,[None,letter],skipped)=={str(cv):'new title\nshared\ncv body'} and skipped==[str(letter)]
+    letter_twice=tmp_path/'twice.tex'; letter_twice.write_text('only here\nonly here',encoding='utf-8')
+    assert exact_revision_plan([cv,None],'OLD:\nonly here\nNEW:\nx',[letter_twice])=={}  # more than once there is still only there
     # Only unticked blocks: nothing to change, and still no model call.
     assert exact_revision_plan([cv,None],'OLD:\nVienna, 15 September\nNEW:\nx',[letter])=={}
     assert exact_revision_plan([cv,None],instructions) is None
