@@ -153,13 +153,18 @@ def test_no_letter_ticked_leaves_every_letter_alone(env, monkeypatch):
     assert all(Path(path).with_suffix('.pdf').read_bytes() == b'%PDF-old' for path in (env.letter, env.other_letter, env.message))
 
 
-def test_an_exact_block_only_in_the_unticked_current_document_is_still_applied(env, monkeypatch):
-    # TASK-278 AC9, for a type with nothing ticked: two letters ticked, the block is in the current CV.
+@pytest.mark.parametrize('owner_of_block', ['cv_en', 'cv_de'])  # the job's current CV, and its other one
+def test_an_exact_block_in_an_unticked_document_changes_nothing(env, monkeypatch, owner_of_block):  # TASK-407
     _fake_pdflatex(monkeypatch)
-    response = env.post('revise-latest', instructions='OLD:\ntext of Owner-CV-EN\nNEW:\nnew English text', documents=[env.letter, env.other_letter])
-    assert response.status_code == 202 and env.full == []
+    path = getattr(env, owner_of_block)
+    before = {name: Path(getattr(env, name)).read_bytes() for name in ('cv_en', 'cv_de', 'letter', 'other_letter', 'message')}
+    response = env.post('revise-latest', instructions=f'OLD:\n{Path(path).read_text(encoding="utf-8")}\nNEW:\nnew text', documents=[env.letter, env.other_letter])
+    assert response.status_code == 202 and env.full == []  # no model call either
     _finish(env, response)
-    assert Path(env.cv_en).read_text(encoding='utf-8') == 'new English text' and Path(env.cv_de).read_text(encoding='utf-8') == 'text of Owner-CV-DE'
+    assert {name: Path(getattr(env, name)).read_bytes() for name in before} == before
+    note = f'Not changed: 1 edit is only in a document that is not ticked ({Path(path).name}).'
+    task = cv_tasks.get_cv_task(response.data['task_id'], env.owner.id)
+    assert task['stage'] == note and note in task['report']['main_changes']
 
 
 def test_several_recompiled_sent_documents_report_the_fresh_files_to_copy(env, monkeypatch):

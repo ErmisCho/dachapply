@@ -6,7 +6,7 @@ title: >-
 status: Done
 assignee: []
 created_date: '2026-10-12 12:03'
-updated_date: '2026-10-13 09:31'
+updated_date: '2026-11-24 11:50'
 labels:
   - cv
   - performance
@@ -51,4 +51,6 @@ Backend only (the UI already renders report.main_changes). New module services/l
 2026-10-13 AC9 reworded at the owner's request ('ok') to name the AC10 exception, then checked: exact-route tests untouched and passing; localhost deterministic + local-model edits verified.
 
 2026-10-13 after TASK-281 (#227) on the owner's localhost (ca296ad): deterministic revise endpoint 665 / 578 ms (was 1,074-2,247 ms), task ready 2.2-2.6 s incl. pdflatex; BEKO letter reverted byte-identical. AC1 now true as written.
+
+AC9 replaced by TASK-407 (owner, 2026-11-24): unticked documents are never changed.
 <!-- SECTION:NOTES:END -->

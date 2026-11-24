@@ -996,14 +996,17 @@ def test_multiline_and_bounded_wildcard_revision_plan_is_conservative(tmp_path):
     assert exact_revision_plan([cv],'OLD:\n\\begin{center}\n...\nNEW:\nreplacement') is None
 
 
-def test_exact_revision_plan_applies_blocks_found_only_in_the_unticked_document(tmp_path):
+def test_exact_revision_plan_leaves_blocks_found_only_in_an_unticked_document(tmp_path):  # TASK-407, was TASK-278 AC9
     from jobradar.services.cv_generator import exact_revision_plan
 
     cv,letter=tmp_path/'cv.tex',tmp_path/'letter.tex'
     cv.write_text('cv title\nshared\ncv body',encoding='utf-8',newline='\n')
     letter.write_text('Vienna, 15 September\nshared\nletter body',encoding='utf-8',newline='\n')
     instructions='OLD:\ncv title\nNEW:\nnew title\n\nOLD:\nVienna, 15 September\nNEW:\nVienna, 12 October'
-    assert exact_revision_plan([cv,None],instructions,[None,letter])=={str(cv):'new title\nshared\ncv body',str(letter):'Vienna, 12 October\nshared\nletter body'}
+    skipped=[]
+    assert exact_revision_plan([cv,None],instructions,[None,letter],skipped)=={str(cv):'new title\nshared\ncv body'} and skipped==[str(letter)]
+    # Only unticked blocks: nothing to change, and still no model call.
+    assert exact_revision_plan([cv,None],'OLD:\nVienna, 15 September\nNEW:\nx',[letter])=={}
     assert exact_revision_plan([cv,None],instructions) is None
     # The ticked document wins a block both contain; a block in neither still means full optimization.
     assert exact_revision_plan([cv,None],'OLD:\nshared\nNEW:\nchanged',[None,letter])=={str(cv):'cv title\nchanged\ncv body'}
@@ -1054,14 +1057,14 @@ def test_exact_revision_route_bypasses_ai_but_semantic_and_image_requests_do_not
     other_client=APIClient(); other_client.force_authenticate(other)
     assert other_client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/',{**base,'instructions':'OLD:\nOLD text\nNEW:\nNEW text'},format='json').status_code==404
 
-    # TASK-278: letter unticked, but a block only found in it is applied there and the letter compiled.
+    # TASK-407: letter unticked, so a block only found in it changes nothing there.
     letter=tmp_path/'letter.tex'; letter.write_text('Vienna, 15 September',encoding='utf-8')
     monkeypatch.setattr('jobradar.views.latest_generated_sources',lambda job,user,letter_key='':(str(cv),str(letter)))
     both=client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/',{**base,'instructions':'OLD:\nNEW text\nNEW:\nNEWER text\n\nOLD:\nVienna, 15 September\nNEW:\nVienna, 12 October'},format='json')
     assert both.status_code==202 and ai==[]
     args,kwargs=compiled[-1]
-    assert args[3:5]==(str(cv),str(letter)) and kwargs['source_updates']=={str(cv):'prefix NEWER text suffix',str(letter):'Vienna, 12 October'}
-    assert 'Also updated the letter: some blocks were only found there.' in kwargs['task_report']['main_changes']
+    assert args[3:5]==(str(cv),None) and kwargs['source_updates']=={str(cv):'prefix NEWER text suffix'}
+    assert 'Not changed: 1 edit is only in a document that is not ticked (letter.tex).' in kwargs['task_report']['main_changes']
     monkeypatch.setattr('jobradar.views.latest_generated_sources',lambda job,user,letter_key='':(str(cv),None))
 
     semantic=client.post(f'/api/jobs/{job.id}/cv-generation/revise-latest/',{**base,'instructions':'Make the profile more concise.'},format='json')

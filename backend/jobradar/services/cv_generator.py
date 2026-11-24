@@ -1347,9 +1347,9 @@ def latest_generated_artifacts(job, user=None, letter_key=''):
     return artifacts
 
 
-def exact_revision_plan(sources, instructions, unselected=()):
-    """`unselected`: the job's other document, not ticked. A block found only there is applied to it
-    (TASK-278) instead of sending the whole request to full optimization; ticked documents win."""
+def exact_revision_plan(sources, instructions, unselected=(), skipped=None):
+    """`unselected`: the job's documents that are not ticked. A block found only there changes nothing
+    (TASK-407; TASK-278 applied it) and is no reason for full optimization; `skipped` gets its path."""
     lines=(instructions or '').replace('\r\n','\n').split('\n')
     pairs=[]
     index=0
@@ -1400,14 +1400,16 @@ def exact_revision_plan(sources, instructions, unselected=()):
         if copies is not None:
             documents.update(copies); changed.update(copies)
             continue
-        selected=selected or others and match_exact_pair(others,old,new)
-        if not selected: return None
+        if not selected:
+            unticked=next((path for path,text in others.items() if match_exact_pair({path:text},old,new)),None)
+            if not unticked: return None
+            if skipped is not None: skipped.append(unticked)
+            continue
         path,start,end,replacement=selected
-        texts=documents if path in documents else others
-        if path and texts[path][start:end] != replacement:
-            texts[path]=texts[path][:start]+replacement+texts[path][end:]
+        if path and documents[path][start:end] != replacement:
+            documents[path]=documents[path][:start]+replacement+documents[path][end:]
             changed.add(path)
-    return {path:{**others,**documents}[path] for path in changed}
+    return {path:documents[path] for path in changed}
 
 
 def replace_every_copy(documents, old, new):
