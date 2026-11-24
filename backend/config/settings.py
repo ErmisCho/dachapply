@@ -153,6 +153,7 @@ def normalize_smtp_password(host, password):
 DEBUG = env_bool('DEBUG', True)
 DACHAPPLY_ENV = os.getenv('DACHAPPLY_ENV', 'local' if DEBUG else 'production')
 CODEX_CV_ENABLED = env_bool('CODEX_CV_ENABLED', DEBUG)
+FIX_RUNS_ENABLED = env_bool('FIX_RUNS_ENABLED', False)  # TASK-406.4: agent runs that open pull requests; local only
 CODEX_CV_OWNER_EMAIL = os.getenv('CODEX_CV_OWNER_EMAIL', 'ermis.chorinopoulos@gmail.com')
 # TASK-312: how many automatically prepared documents (services/application_prep's queue) generate at
 # once across all jobs. Each is one local model CLI run; manual Generate is not queued and not counted.

@@ -307,3 +307,13 @@ def test_later_family_closure_cannot_duplicate_an_interrupted_successor(store, c
     complete(other)
     triage.triage()
     assert len(tasks) == 3 and triage.triage() == []
+
+
+def test_unlink_lets_a_lost_task_be_filed_again(store, cli):  # TASK-406.4
+    ingest('lost')
+    [first] = triage.triage()
+    assert triage.triage() == []
+    cli[0].clear()  # its file was only in a worktree that is gone
+    triage.unlink(first['task_id'])
+    [again] = triage.triage()
+    assert again['action'] == 'create' and len(cli[0]) == 1
