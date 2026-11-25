@@ -375,6 +375,31 @@ def test_a_later_run_reuses_the_task_while_its_bug_pr_is_open(env, monkeypatch):
     assert states == {first['id']: ('closed', ''), second['id']: ('closed', '')}
 
 
+def test_a_third_run_still_reuses_the_first_runs_branch(env, monkeypatch):  # TASK-414, Codex review
+    env.fake.verdict = 'FAILURE'
+    first = go(env)
+    monkeypatch.setattr(error_triage, 'triage', lambda **kw: [])
+    go(env)
+    third = go(env)
+    assert third['state'] == 'failed' and 'FAILURE' in third['error'], third
+    assert third['task_id'] == 'TASK-9' and third['bug_pr_url'] == first['bug_pr_url'] and len(bug_prs(env)) == 1
+
+
+def test_a_stopped_runs_bug_pr_state_is_still_refreshed(env, monkeypatch):  # TASK-414, Codex review
+    env.fake.on['implement'] = lambda run: fix_runs.stop(run['id'])
+    run = go(env)
+    assert run['bug_pr_state'] == 'open'
+
+    def guarded(run, args, **kw):  # the real _run's rule, which the fake skips
+        if run.get('state') == 'stopped':
+            raise fix_runs._Stopped()
+        return env.fake(run, args, **kw)
+    monkeypatch.setattr(fix_runs, '_run', guarded)
+    fix_runs._checked.clear()
+    env.fake.pr_state = 'MERGED'
+    assert fix_runs.runs()[0]['bug_pr_state'] == 'merged'
+
+
 def test_judge_reasons_that_quote_private_evidence_are_not_kept(env):  # TASK-413
     env.fake.verdict = 'FAILURE'
     env.fake.criteria = [{'id': 'AC1', 'verdict': 'FAIL', 'reason': 'it still prints ' + TEX.splitlines()[0]}]

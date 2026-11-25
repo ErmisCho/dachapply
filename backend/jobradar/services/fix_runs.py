@@ -183,7 +183,7 @@ def runs():
         if (fix or run.get('bug_pr_state') == 'open') and time.time() - _checked.get(run['id'], 0) > 60:
             _checked[run['id']] = time.time()
             try:
-                done = _run(run, ['gh', 'pr', 'view', run['pr_url'] if fix else run['bug_pr_url'], '--json', 'state', '--jq', '.state'], cwd=error_triage.ROOT, timeout=30)
+                done = _run({**run, 'state': 'cleanup'}, ['gh', 'pr', 'view', run['pr_url'] if fix else run['bug_pr_url'], '--json', 'state', '--jq', '.state'], cwd=error_triage.ROOT, timeout=30)
                 if done.returncode == 0 and done.stdout.strip() in ('MERGED', 'CLOSED') and not fix:
                     run.update(bug_pr_state=done.stdout.strip().lower(), **({'task_id': ''} if done.stdout.strip() == 'CLOSED' else {}))
                     _save(run)
@@ -285,7 +285,7 @@ def _pipeline(run, signature, ctx, work):
     _step(run, 'triage')
     prior = next((r for r in _read() if r['signature'] == signature and r.get('bug_pr_state') == 'open' and r.get('task_id')), None)
     if prior:  # its backlog PR is still open: the same task, no second one
-        _must(run, ['git', 'fetch', 'origin', f'bug/{prior["id"]}'], cwd=wt)
+        _must(run, ['git', 'fetch', 'origin', prior.get('bug_branch') or f'bug/{prior["id"]}'], cwd=wt)
         _must(run, ['git', 'checkout', 'FETCH_HEAD', '--', prior['bug_file']], cwd=wt)
         ctx['reuse'] = prior
     run['task_id'] = task_id = prior['task_id'] if prior else _task(signature, wt)
@@ -347,7 +347,8 @@ def _bug_pr(run, ctx):
     try:
         if run['state'] in ('failed', 'stopped') and run.get('task_id'):
             prior = ctx.get('reuse')
-            run.update(bug_pr_url=prior['bug_pr_url'], bug_pr_state='open', bug_file=prior['bug_file']) if prior else run.update(_open_bug_pr(run, ctx))
+            run.update(bug_pr_url=prior['bug_pr_url'], bug_pr_state='open', bug_file=prior['bug_file'],
+                       bug_branch=prior.get('bug_branch') or f'bug/{prior["id"]}') if prior else run.update(_open_bug_pr(run, ctx))
             _save(run)
     except Exception:
         _log(run, 'The backlog pull request could not be opened.')  # fixed wording: the cause can carry text
@@ -391,7 +392,7 @@ def _open_bug_pr(run, ctx):
     url = next((line.strip() for line in reversed(out.splitlines()) if line.strip().startswith('http')), '')
     if not url:
         raise _Fail('gh gave no pull request URL.')
-    return {'bug_pr_url': url, 'bug_pr_state': 'open', 'bug_file': rel}
+    return {'bug_pr_url': url, 'bug_pr_state': 'open', 'bug_file': rel, 'bug_branch': branch}
 
 
 def _task(signature, wt):
