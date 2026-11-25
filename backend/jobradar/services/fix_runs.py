@@ -1,7 +1,8 @@
 """TASK-406.4: one supervised agent run that turns a group of failed documents into a pull request.
 
 A run is a dict: id, signature, state ('running', 'pr', 'merged', 'failed', 'stopped', 'interrupted'),
-step, started_at, finished_at (ISO or ''), log (last lines, a list), pr_url, task_id, error.
+step, started_at, finished_at (ISO or ''), log (last lines, a list), pr_url, task_id, error, and judge (why
+the judge refused, when it did).
 
 The evidence holds job-posting and model text (untrusted: prompt injection) and CV/letter text (private).
 So the agent gets file tools only, a minimal environment and no way to push; the app runs every check,
@@ -111,7 +112,7 @@ def _read():
             except (OSError, ValueError):
                 continue
             if run.get('state') == 'running' and run.get('process') != PROCESS:
-                run.update(state='interrupted', step='interrupted', finished_at=_now())
+                run.update(state='interrupted', step='interrupted', finished_at=_now(), task_id='')
                 _save(run)
             rows.append(run)
     return sorted(rows, key=lambda r: (r['started_at'], r['id']), reverse=True)
@@ -134,7 +135,7 @@ def _step(run, name):
 def _end(run, state, error=''):
     with _lock:
         if run['state'] == 'running':  # stop() may have ended it already
-            run.update(state=state, error=error, finished_at=_now())
+            run.update(state=state, error=error, finished_at=_now(), task_id=run['task_id'] if state == 'pr' else '')
             _save(run)
 
 
@@ -225,7 +226,7 @@ def stop(run_id):
         run = _live.get(run_id)
         if not run or run['state'] != 'running':
             raise ValueError('That run is not running.')
-        run.update(state='stopped', step='stopped', finished_at=_now())
+        run.update(state='stopped', step='stopped', finished_at=_now(), task_id='')
         _save(run)
         child = _children.get(run_id)
     if child:
@@ -300,6 +301,7 @@ def _pipeline(run, signature, ctx, work):
     answer = _agent(run, wt, work, _prompt('judge', **prompts, rubric_text=seal[1], diff=diff, result=info['summary']), JUDGE_TOOLS, 'opus')
     verdict = _verdict(answer)
     if verdict != 'PERFECT':
+        run['judge'] = _reasons(answer, texts, ctx['names'])
         raise _Fail(f'The judge verdict was {verdict if verdict in ("FAILURE", "SPEC-GAP") else "unreadable"}, not PERFECT.')
     if not rubric.is_file() or hashlib.sha256(rubric.read_bytes()).hexdigest() != seal[0]:
         raise _Fail('The rubric changed after it was sealed.')
@@ -418,6 +420,19 @@ def _seal(rubric):
     except (OSError, ValueError, AttributeError):
         raise _Fail('The plan step did not write a usable rubric.')
     return hashlib.sha256(raw).hexdigest(), text  # the judge sees this copy, not the file
+
+
+def _reasons(answer, texts, names):
+    """TASK-413: the judge's criteria that did not pass, one per line, so a refused run says why."""
+    try:
+        rows = json.loads(answer[answer.index('{'):answer.rindex('}') + 1]).get('criteria') or []
+    except (ValueError, AttributeError):
+        return 'The judge gave no readable reasons.'
+    lines = [' '.join(map(str, row.values())) if isinstance(row, dict) else str(row) for row in rows
+             if not (isinstance(row, dict) and str(row.get('verdict', '')).upper() == 'PASS')]
+    if _leak(lines, texts, names):  # the judge read the evidence; the run record must never hold it
+        return "The judge's reasons repeat private evidence, so they were not kept."
+    return '\n'.join(lines)[:4000]
 
 
 def _verdict(text):

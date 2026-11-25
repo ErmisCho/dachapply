@@ -55,6 +55,7 @@ class Fake:
         self.real, self.calls, self.prompts, self.envs = real, [], [], []
         self.write, self.repair_write = dict(GOOD), None
         self.red, self.greens, self.verdict, self.rubric, self.tamper, self.on, self.pr_state = 1, [0], 'PERFECT', True, False, {}, 'OPEN'
+        self.criteria = []
         self.evidence_seen, self.work = '', None
 
     def __call__(self, run, args, cwd=None, env=None, input=None, timeout=1800):
@@ -89,7 +90,7 @@ class Fake:
                 (self.work/'rubric.json').write_text('{"criteria": ["changed"]}', encoding='utf-8')
         if stage in self.on:
             self.on[stage](run)
-        return SimpleNamespace(returncode=0, stdout=json.dumps({'verdict': self.verdict, 'criteria': []}) if stage == 'judge' else 'ok')
+        return SimpleNamespace(returncode=0, stdout=json.dumps({'verdict': self.verdict, 'criteria': self.criteria}) if stage == 'judge' else 'ok')
 
     def claude_calls(self):
         return [c for c in self.calls if Path(c[0]).stem == 'claude']
@@ -291,6 +292,22 @@ def test_no_pr_when_a_check_fails(env, case, message):
         assert len(fake.claude_calls()) == 4
 
 
+def test_a_refused_run_keeps_the_judges_reasons_and_no_task_id(env):  # TASK-413
+    env.fake.verdict = 'FAILURE'
+    env.fake.criteria = [{'id': 'AC1', 'verdict': 'PASS', 'reason': 'fine'},
+                         {'id': 'AC2', 'verdict': 'FAIL', 'reason': 'the test only checks a mock, not the compile route'}]
+    run = go(env)
+    assert run['state'] == 'failed' and run['task_id'] == ''
+    assert 'the test only checks a mock' in run['judge'] and 'fine' not in run['judge']
+
+
+def test_judge_reasons_that_quote_private_evidence_are_not_kept(env):  # TASK-413
+    env.fake.verdict = 'FAILURE'
+    env.fake.criteria = [{'id': 'AC1', 'verdict': 'FAIL', 'reason': 'it still prints ' + TEX.splitlines()[0]}]
+    run = go(env)
+    assert 'Zorblax' not in json.dumps(run) and 'private evidence' in run['judge']
+
+
 def test_a_changed_file_that_is_not_staged_is_never_committed(env):
     env.fake.on['judge'] = lambda run: (env.fake.tree/'backend'/'jobradar'/'mod.py').write_text('evil = 1\n', encoding='utf-8')
     run = go(env)
@@ -342,6 +359,7 @@ def test_stop(env):
     env.fake.on['implement'] = lambda run: fix_runs.stop(run['id'])
     run = go(env)
     assert_no_pr(env, run, 'stopped')
+    assert run['task_id'] == ''  # TASK-413: its task file went with the worktree
     with pytest.raises(ValueError, match='not running'):
         fix_runs.stop(run['id'])
 

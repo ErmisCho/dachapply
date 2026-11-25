@@ -39,6 +39,11 @@ describe('failures page',()=>{
     expect(renderToStaticMarkup(<RunView run={{...run,state:'pr',pr_url:'https://github.com/o/r/pull/1'}}/>)).toContain('href="https://github.com/o/r/pull/1"')
     expect(renderToStaticMarkup(<RunView run={{...run,state:'pr',pr_url:'javascript:alert(1)'}}/>)).not.toContain('href')
   })
+  it('shows why the judge refused a run (TASK-413)',()=>{
+    const html=renderToStaticMarkup(<RunView run={{...run,state:'failed',judge:'AC2 FAIL the test only checks a mock'}}/>)
+    expect(html).toContain('Why the judge refused')
+    expect(html).toContain('AC2 FAIL the test only checks a mock')
+  })
   it('shows records with file text, and a gone file as such',()=>{
     const rec={id:'x',time:'2026-11-20T10:00:00Z',job_id:1,route:'r',provider:'p',model:'m',error:'boom',diagnostics:'diag',instructions:'',files:[{name:'a.tex',text:'\\documentclass'},{name:'b.tex',text:null}]}
     const html=renderToStaticMarkup(<FailuresView data={data([group()])} error="" open="a" records={[rec]} busy="" onOpen={()=>{}} onFix={()=>{}} onStop={()=>{}}/>)
