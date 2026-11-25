@@ -1,10 +1,10 @@
 ---
 id: TASK-406.4
 title: Start a fix run from the app that ends in a PR
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-23 23:31'
-updated_date: '2026-11-25 09:51'
+updated_date: '2026-11-25 13:26'
 labels: []
 dependencies: []
 parent_task_id: TASK-406
@@ -36,4 +36,6 @@ Design constraints found 2026-11-24: evidence contains posting and model text, s
 PR #446 (2041aa9). Real agent on a disposable clone with invented evidence and a planted instruction: two runs, neither followed it. Run 1 was stopped from the page and left nothing behind; run 2 ended failed with no PR because the judge refused it (the agent had removed an existing test case after the suite failed). Both before the fixes in e8c523f (stop gap, red means assertion, flaky rerun). Not seen yet: a run that ends in a real GitHub PR. Residual risk: the app runs agent-written tests as the owner. FIX_RUNS_ENABLED=1 on localhost since 2026-11-24 (owner decision).
 
 First real run from the app 2026-11-25 (run 20261125-100850-9c43, 24 min): plan, implement, checks passed, red check failed on old code as required, 2402 backend tests passed, then the judge (opus) answered FAILURE and no PR was opened. Its reasons were not kept and the page showed a task id that never existed; both fixed in TASK-413. Still open: a run that ends in a real GitHub PR.
+
+Seen for real 2026-11-25: a run started from the app ended in GitHub PR #462. It worked on the wrong task (stale TASK-413 link, fixed in TASK-414) and was closed by the owner. Owner decision: Done.
 <!-- SECTION:NOTES:END -->

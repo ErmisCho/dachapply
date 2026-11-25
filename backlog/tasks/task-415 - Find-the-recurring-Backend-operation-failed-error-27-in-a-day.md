@@ -1,9 +1,10 @@
 ---
 id: TASK-415
 title: Find the recurring 'Backend operation failed' error (27 in a day)
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-25 12:34'
+updated_date: '2026-11-25 13:26'
 labels: []
 dependencies: []
 priority: medium
@@ -22,3 +23,9 @@ The error collector holds 27 occurrences of one backend error group (operation 3
 - [ ] #2 A test reproduces it red, then green on the fix
 - [ ] #3 After the fix, no new occurrence of that group for one day of normal use (checked from the collector)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-25: the 27 occurrences are logger django.request (HTTP 500s), in bursts after idle gaps. No exception type or route was kept, so the cause is unknown. PR #460 (64ea209) now keeps '<exception class>@<view name>' for each 500; localhost runs it. Next: read the next occurrences from the collector and fix the named cause.
+<!-- SECTION:NOTES:END -->
