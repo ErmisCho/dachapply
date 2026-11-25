@@ -450,6 +450,19 @@ def test_a_bug_pr_merged_since_the_last_check_is_not_reused(env):  # TASK-414, C
     assert 'FAILURE' in second['error'] and not [c for c in env.fake.calls if c[:3] == ['git', 'fetch', 'origin'] and c[3:4] and c[3].startswith('bug/')]
 
 
+def test_a_failed_status_lookup_keeps_reusing_the_open_bug_pr(env, monkeypatch):  # TASK-414, Codex review
+    env.fake.verdict = 'FAILURE'
+    first = go(env)
+    real = env.fake.__call__
+
+    def flaky(run, args, **kw):  # gh cannot answer (network, auth)
+        return SimpleNamespace(returncode=1, stdout='') if list(args[:3]) == ['gh', 'pr', 'view'] else real(run, args, **kw)
+    monkeypatch.setattr(fix_runs, '_run', flaky)
+    monkeypatch.setattr(error_triage, 'triage', lambda **kw: [])
+    second = go(env)
+    assert second['task_id'] == 'TASK-9' and second['bug_pr_url'] == first['bug_pr_url'] and len(bug_prs(env)) == 1
+
+
 def test_a_task_that_only_a_failed_run_filed_is_filed_again(env, monkeypatch):
     calls, linked = [], {'id': 'TASK-8'}
 

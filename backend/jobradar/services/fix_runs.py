@@ -284,9 +284,11 @@ def _pipeline(run, signature, ctx, work):
     ctx['names'] = {name for name in ctx['names'] if _run(run, ['git', 'grep', '-qiwF', '-e', name, 'origin/main'], cwd=wt, timeout=60).returncode}
     _step(run, 'triage')
     prior = next((r for r in _read() if r['signature'] == signature and r.get('bug_pr_state') == 'open' and r.get('task_id')), None)
-    if prior and _run({**prior, 'state': 'cleanup'}, ['gh', 'pr', 'view', prior['bug_pr_url'], '--json', 'state', '--jq', '.state'],
-                      cwd=error_triage.ROOT, timeout=30).stdout.strip() != 'OPEN':
+    looked = prior and _run({**prior, 'state': 'cleanup'}, ['gh', 'pr', 'view', prior['bug_pr_url'], '--json', 'state', '--jq', '.state'],
+                            cwd=error_triage.ROOT, timeout=30)
+    if looked and looked.returncode == 0 and looked.stdout.strip() in ('MERGED', 'CLOSED'):
         prior = None  # runs() records the new state; triage finds the task on main or files a new one
+    # A lookup that failed keeps the reuse: a second task for one group is worse than a fetch that fails.
     if prior:  # its backlog PR is still open: the same task, no second one
         _must(run, ['git', 'fetch', 'origin', prior.get('bug_branch') or f'bug/{prior["id"]}'], cwd=wt)
         _must(run, ['git', 'checkout', 'FETCH_HEAD', '--', prior['bug_file']], cwd=wt)
