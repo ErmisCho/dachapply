@@ -58,6 +58,14 @@ def test_groups_count_state_and_run(logs):
 
 
 @pytest.mark.django_db
+def test_a_run_saved_without_a_pr_links_no_task(logs, monkeypatch):  # TASK-413: runs saved before the fix too
+    save(logs, 'one')
+    monkeypatch.setattr(fix_runs, 'runs', lambda: [{'id': 'r1', 'signature': SIG, 'state': 'failed', 'task_id': 'TASK-413'}])
+    group = client().get('/api/failures/').data['groups'][0]
+    assert group['task_id'] == '' and group['run']['task_id'] == ''
+
+
+@pytest.mark.django_db
 def test_files_inside_failed_only(logs):
     inside = logs/'failed'/'a.tex'
     inside.write_text('\documentclass', encoding='utf-8')

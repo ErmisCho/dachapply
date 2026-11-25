@@ -1,10 +1,10 @@
 ---
 id: TASK-406.1
 title: Save the evidence of every failed document
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-23 23:31'
-updated_date: '2026-11-24 06:39'
+updated_date: '2026-11-25 09:50'
 labels: []
 dependencies: []
 parent_task_id: TASK-406
@@ -31,4 +31,6 @@ Failed generations, readjusts and recompiles of CVs, letters and messages. Part 
 
 <!-- SECTION:NOTES:BEGIN -->
 PR #444 (1ac2603), CI green. Localhost runtime on 1ac2603 since 2026-11-24, health 200; collector on (private folder outside the checkouts, ACL owner/admins/SYSTEM), 0 occurrences so far. Hooks shown red on the old code; Codex findings fixed. Open: no real failure has gone through it on localhost yet.
+
+Verified for real on localhost 2026-11-25 (runtime 46a82dd), throwaway job 2104: a generation that failed with 'Select a CV template.' and a recompile that failed with 'LaTeX could not compile the CV: Undefined control sequence (line 82).' each wrote one record in .dachapply-logs/failures/; the compile record names its saved .tex and .log, both on disk.
 <!-- SECTION:NOTES:END -->

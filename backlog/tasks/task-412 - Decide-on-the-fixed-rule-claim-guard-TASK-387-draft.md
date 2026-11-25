@@ -1,9 +1,10 @@
 ---
 id: TASK-412
 title: Decide on the fixed-rule claim guard (TASK-387 draft)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-25 08:34'
+updated_date: '2026-11-25 09:48'
 labels: []
 dependencies: []
 priority: low
@@ -18,6 +19,12 @@ TASK-387 was archived on 2026-11-19 when the model self-review (TASK-385) shippe
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Measured: count of generated documents since 2026-11-19 containing a language level, certificate or tool not in the evidence
-- [ ] #2 Decision recorded: build on the draft branch, or close with the measured reason
+- [x] #1 Measured: count of generated documents since 2026-11-19 containing a language level, certificate or tool not in the evidence
+- [x] #2 Decision recorded: build on the draft branch, or close with the measured reason
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Measured 2026-11-25: the draft (branch draft/task-387-claim-guard) run over the 27 CVs and letters generated since 2026-11-19 (the owner's 6 base CVs counted as supported) flagged 0 unsupported certificates or language levels. A planted test showed gaps: it caught 'French C2' but missed 'Goethe-Zertifikat B2' and 'AWS-Certified'. Tool names were not measured (needs posting text). Decision (owner, 2026-11-25): close; the model self-review (TASK-385) stays the check. The draft branch is kept on GitHub.
+<!-- SECTION:NOTES:END -->

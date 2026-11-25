@@ -3,7 +3,7 @@ import {useCallback,useEffect,useRef,useState} from 'react'
 import {api} from './api/client'
 import {pollWhileVisible} from './appUtils'
 
-export type FixRun={id:string;signature:string;state:string;step?:string;started_at?:string;finished_at?:string;log?:string[];pr_url?:string;task_id?:string;error?:string}
+export type FixRun={id:string;signature:string;state:string;step?:string;started_at?:string;finished_at?:string;log?:string[];pr_url?:string;task_id?:string;error?:string;judge?:string}
 export type Group={signature:string;cause:string;class:string;count:number;last:string;job_ids:number[];task_id:string;state:string;run:FixRun|null}
 export type FailRecord={id:string;time:string;job_id:number|null;route:string;provider:string;model:string;error:string;diagnostics:string;instructions:string;files:{name:string;text:string|null}[]}
 export type FailuresData={groups:Group[];fix:{enabled:boolean;reason:string}}
@@ -20,6 +20,7 @@ const pre='mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bor
 export function RunView({run}:{run:FixRun}){const pr=safePr(run.pr_url)
   return <div className="mt-2 text-sm"><p className="break-words"><b>{stateLabel(run.state)}</b>{run.step&&<> · {run.step}</>}{elapsed(run)&&<> · {elapsed(run)}</>}</p>
     {run.error&&<p className="break-words text-red-700 dark:text-red-300" role="status">{run.error}</p>}
+    {run.judge&&<><h4 className="mt-1 font-medium">Why the judge refused</h4><pre className={pre}>{run.judge}</pre></>}
     {!!run.log?.length&&<pre className={pre} aria-label="Last log lines">{run.log.join('\n')}</pre>}
     {pr&&<p className="mt-1"><a className="break-all underline" href={pr} target="_blank" rel="noreferrer">{pr}</a></p>}</div>}
 
