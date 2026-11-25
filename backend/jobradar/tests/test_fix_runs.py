@@ -150,8 +150,12 @@ def assert_cleaned(env):  # nothing of a finished run stays on the PC
 
 def assert_no_pr(env, run, state='failed'):
     assert run['state'] == state, run
-    assert not [c for c in env.fake.calls if c[:3] == ['gh', 'pr', 'create'] or c[:2] == ['git', 'push']]
+    assert not [c for c in env.fake.calls if (c[:3] == ['gh', 'pr', 'create'] or c[:2] == ['git', 'push']) and any(a.startswith(('fix/', 'refs/heads/fix/')) for a in c)]  # a bug PR is allowed (TASK-414)
     assert_cleaned(env)
+
+
+def bug_prs(env):
+    return [c for c in env.fake.calls if c[:3] == ['gh', 'pr', 'create']]
 
 
 @pytest.mark.parametrize('setup, message', [
@@ -287,18 +291,88 @@ def test_no_pr_when_a_check_fails(env, case, message):
     assert_no_pr(env, run)
     assert message in run['error'], run['error']
     assert 'Zorblax' not in json.dumps(run) and 'verrastro' not in json.dumps(run).lower()
-    assert env.branches().split() == ['main']
+    # TASK-414: a task was filed unless the run died before triage; it goes out alone in a backlog PR, never a fix branch
+    assert env.branches().split() == ['bug/' + run['id'], 'main']
     if case in ('tests', 'empty', 'path', 'line'):  # two repairs, then it stops
         assert len(fake.claude_calls()) == 4
 
 
-def test_a_refused_run_keeps_the_judges_reasons_and_no_task_id(env):  # TASK-413
+def test_a_refused_run_keeps_the_judges_reasons(env):  # TASK-413
     env.fake.verdict = 'FAILURE'
     env.fake.criteria = [{'id': 'AC1', 'verdict': 'PASS', 'reason': 'fine'},
                          {'id': 'AC2', 'verdict': 'FAIL', 'reason': 'the test only checks a mock, not the compile route'}]
     run = go(env)
-    assert run['state'] == 'failed' and run['task_id'] == ''
+    assert run['state'] == 'failed'
     assert 'the test only checks a mock' in run['judge'] and 'fine' not in run['judge']
+
+
+def test_a_failed_run_sends_its_bug_task_in_a_backlog_only_pr(env):  # TASK-414
+    env.fake.verdict = 'FAILURE'
+    run = go(env)
+    assert run['state'] == 'failed' and 'FAILURE' in run['error']
+    assert run['task_id'] == 'TASK-9' and run['bug_pr_url'] == 'https://github.com/example/repo/pull/7' and run['bug_pr_state'] == 'open'
+    branch = 'bug/' + run['id']
+    assert git(env.origin, 'diff', '--name-only', 'main', branch).split('\n')[:-1] == ['backlog/tasks/task-9 - Bug.md']
+    assert [c for c in env.fake.calls if c[:2] == ['git', 'push']] == [['git', 'push', 'origin', f'refs/heads/{branch}:refs/heads/{branch}']]
+    creates = bug_prs(env)
+    assert len(creates) == 1 and creates[0][creates[0].index('--head') + 1] == branch
+    assert creates[0][creates[0].index('--title') + 1] == 'Backlog: bug for a failed-document group (TASK-9)'
+    assert run['id'] in creates[0][creates[0].index('--body') + 1] and 'Zorblax' not in ' '.join(creates[0])
+    assert git(env.repo, 'branch', '--format=%(refname:short)').split() == ['main'] and not list(env.repo.parent.glob('dachapply-fix-*'))
+
+
+@pytest.mark.parametrize('text', ['# task\nsee also notes\n', '# task\n' + TEX])
+def test_a_task_file_the_agent_edited_is_never_sent(env, text):  # TASK-414: it skips the fix PR's checks
+    env.fake.verdict = 'FAILURE'
+    env.fake.on['implement'] = lambda run: (env.fake.tree/'backlog'/'tasks'/'task-9 - Bug.md').write_text(text, encoding='utf-8')
+    run = go(env)
+    assert run['state'] == 'failed' and not run.get('bug_pr_url') and run['task_id'] == '' and not bug_prs(env)
+    assert 'Zorblax' not in git(env.origin, 'log', '--all', '-p')
+
+
+def test_a_stopped_run_sends_its_bug_task_too(env):  # TASK-414
+    env.fake.on['implement'] = lambda run: fix_runs.stop(run['id'])
+    run = go(env)
+    assert run['state'] == 'stopped' and run['task_id'] == 'TASK-9' and run['bug_pr_url'] and len(bug_prs(env)) == 1
+
+
+def test_a_run_with_a_fix_pr_opens_no_bug_pr(env):  # TASK-414
+    run = go(env)
+    assert run['state'] == 'pr' and 'bug_pr_url' not in run and len(bug_prs(env)) == 1
+    assert [b for b in env.branches().split() if b.startswith('bug/')] == []
+
+
+def test_a_failure_before_triage_opens_no_bug_pr(env, monkeypatch):  # TASK-414
+    monkeypatch.setattr(fix_runs, 'LIMIT', -1)
+    run = go(env)
+    assert run['task_id'] == '' and not bug_prs(env) and 'bug_pr_url' not in run
+
+
+def test_a_broken_bug_pr_step_changes_neither_outcome_nor_error(env, monkeypatch):  # TASK-414
+    env.fake.verdict = 'FAILURE'
+    real = env.fake.__call__
+
+    def spy(run, args, **kw):
+        return SimpleNamespace(returncode=1, stdout='boom') if args[:3] == ['gh', 'pr', 'create'] else real(run, args, **kw)
+    monkeypatch.setattr(fix_runs, '_run', spy)
+    run = go(env)
+    assert run['state'] == 'failed' and run['error'] == 'The judge verdict was FAILURE, not PERFECT.'
+    assert run['task_id'] == '' and 'bug_pr_url' not in run and any('backlog pull request' in line for line in run['log'])
+    assert git(env.repo, 'branch', '--format=%(refname:short)').split() == ['main']
+
+
+def test_a_later_run_reuses_the_task_while_its_bug_pr_is_open(env, monkeypatch):  # TASK-414
+    env.fake.verdict = 'FAILURE'
+    first = go(env)
+    filed = []
+    monkeypatch.setattr(error_triage, 'triage', lambda **kw: filed.append(kw) or [])
+    second = go(env)
+    assert not filed and second['task_id'] == 'TASK-9' and second['bug_pr_url'] == first['bug_pr_url'] and second['bug_pr_state'] == 'open'
+    assert len(bug_prs(env)) == 1  # no second PR for the same task
+    fix_runs._checked.clear()
+    env.fake.pr_state = 'CLOSED'
+    states = {r['id']: (r['bug_pr_state'], r['task_id']) for r in fix_runs.runs()}
+    assert states == {first['id']: ('closed', ''), second['id']: ('closed', '')}
 
 
 def test_judge_reasons_that_quote_private_evidence_are_not_kept(env):  # TASK-413
@@ -359,7 +433,7 @@ def test_stop(env):
     env.fake.on['implement'] = lambda run: fix_runs.stop(run['id'])
     run = go(env)
     assert_no_pr(env, run, 'stopped')
-    assert run['task_id'] == ''  # TASK-413: its task file went with the worktree
+    assert run['task_id'] == 'TASK-9' and run['bug_pr_url']  # TASK-414: the task file went out in a backlog PR
     with pytest.raises(ValueError, match='not running'):
         fix_runs.stop(run['id'])
 

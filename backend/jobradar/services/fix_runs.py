@@ -2,7 +2,8 @@
 
 A run is a dict: id, signature, state ('running', 'pr', 'merged', 'failed', 'stopped', 'interrupted'),
 step, started_at, finished_at (ISO or ''), log (last lines, a list), pr_url, task_id, error, and judge (why
-the judge refused, when it did).
+the judge refused, when it did). A run that ends without a fix PR but filed a bug task also has bug_pr_url,
+bug_pr_state ('open', 'merged', 'closed') and bug_file: a backlog-only PR that carries the task to the board (TASK-414).
 
 The evidence holds job-posting and model text (untrusted: prompt injection) and CV/letter text (private).
 So the agent gets file tools only, a minimal environment and no way to push; the app runs every check,
@@ -135,7 +136,7 @@ def _step(run, name):
 def _end(run, state, error=''):
     with _lock:
         if run['state'] == 'running':  # stop() may have ended it already
-            run.update(state=state, error=error, finished_at=_now(), task_id=run['task_id'] if state == 'pr' else '')
+            run.update(state=state, error=error, finished_at=_now(), task_id=run['task_id'])  # _bug_pr clears it when no PR carries the task
             _save(run)
 
 
@@ -178,11 +179,15 @@ def runs():
     """Every run, newest first."""
     rows = _read()
     for run in rows:  # a merged PR is noticed at most once a minute; never raises
-        if run['state'] == 'pr' and time.time() - _checked.get(run['id'], 0) > 60:
+        fix = run['state'] == 'pr'
+        if (fix or run.get('bug_pr_state') == 'open') and time.time() - _checked.get(run['id'], 0) > 60:
             _checked[run['id']] = time.time()
             try:
-                done = _run(run, ['gh', 'pr', 'view', run['pr_url'], '--json', 'state', '--jq', '.state'], cwd=error_triage.ROOT, timeout=30)
-                if done.returncode == 0 and done.stdout.strip() in ('MERGED', 'CLOSED'):
+                done = _run(run, ['gh', 'pr', 'view', run['pr_url'] if fix else run['bug_pr_url'], '--json', 'state', '--jq', '.state'], cwd=error_triage.ROOT, timeout=30)
+                if done.returncode == 0 and done.stdout.strip() in ('MERGED', 'CLOSED') and not fix:
+                    run.update(bug_pr_state=done.stdout.strip().lower(), **({'task_id': ''} if done.stdout.strip() == 'CLOSED' else {}))
+                    _save(run)
+                elif done.returncode == 0 and done.stdout.strip() in ('MERGED', 'CLOSED'):
                     run.update(state='merged' if done.stdout.strip() == 'MERGED' else 'failed', error='' if done.stdout.strip() == 'MERGED' else 'The pull request was closed.')
                     _save(run)
             except Exception:
@@ -226,7 +231,7 @@ def stop(run_id):
         run = _live.get(run_id)
         if not run or run['state'] != 'running':
             raise ValueError('That run is not running.')
-        run.update(state='stopped', step='stopped', finished_at=_now(), task_id='')
+        run.update(state='stopped', step='stopped', finished_at=_now())
         _save(run)
         child = _children.get(run_id)
     if child:
@@ -251,6 +256,7 @@ def _main(run, signature, ctx):
         _end(run, 'failed', f'Unexpected {type(exc).__name__}.')
     finally:
         shutil.rmtree(work, ignore_errors=True)
+        _bug_pr(run, ctx)  # needs the worktree, so before it goes
         try:  # this run's own worktree and local branch, whatever the end: it can hold private text
             root, wt, run = error_triage.ROOT, _worktree(run), {**run, 'state': 'cleanup'}
             if wt.exists():
@@ -277,8 +283,15 @@ def _pipeline(run, signature, ctx, work):
     # A word the repository already holds (Labs, Post, a company in a fixture) gives nothing away.
     ctx['names'] = {name for name in ctx['names'] if _run(run, ['git', 'grep', '-qiwF', '-e', name, 'origin/main'], cwd=wt, timeout=60).returncode}
     _step(run, 'triage')
-    run['task_id'] = task_id = _task(signature, wt)
-    texts = _copy_evidence(ctx['records'], work)  # private text, kept in memory: the agent can edit the copy
+    prior = next((r for r in _read() if r['signature'] == signature and r.get('bug_pr_state') == 'open' and r.get('task_id')), None)
+    if prior:  # its backlog PR is still open: the same task, no second one
+        _must(run, ['git', 'fetch', 'origin', f'bug/{prior["id"]}'], cwd=wt)
+        _must(run, ['git', 'checkout', 'FETCH_HEAD', '--', prior['bug_file']], cwd=wt)
+        ctx['reuse'] = prior
+    run['task_id'] = task_id = prior['task_id'] if prior else _task(signature, wt)
+    # The agent can edit files here; a backlog PR skips the diff checks, so it may only send the file as triage wrote it.
+    ctx['task_files'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (wt/'backlog'/'tasks').glob('task-*.md')} if task_id else {}
+    texts = ctx['texts'] = _copy_evidence(ctx['records'], work)  # private text, kept in memory: the agent can edit the copy
     rubric = work/'rubric.json'
     prompts = {'task': task_id, 'work': work, 'rubric': rubric}
     _step(run, 'plan')
@@ -326,6 +339,59 @@ def _pipeline(run, signature, ctx, work):
         raise _Fail('The branch was pushed but gh gave no pull request URL.')
     run['pr_url'] = url
     _end(run, 'pr')
+
+
+def _bug_pr(run, ctx):
+    """TASK-414: a run that ends without a fix PR still sends its bug task to the board, in a backlog-only PR.
+    Never raises and never touches the run's outcome or error."""
+    try:
+        if run['state'] in ('failed', 'stopped') and run.get('task_id'):
+            prior = ctx.get('reuse')
+            run.update(bug_pr_url=prior['bug_pr_url'], bug_pr_state='open', bug_file=prior['bug_file']) if prior else run.update(_open_bug_pr(run, ctx))
+            _save(run)
+    except Exception:
+        _log(run, 'The backlog pull request could not be opened.')  # fixed wording: the cause can carry text
+    finally:
+        if not run.get('bug_pr_url') and run['state'] != 'pr':
+            run['task_id'] = ''
+            _save(run)
+
+
+def _open_bug_pr(run, ctx):
+    wt, rid, tid, root = _worktree(run), run['id'], run['task_id'], error_triage.ROOT
+    src = next(iter((wt/'backlog'/'tasks').glob(f'{tid.lower()} - *')), None)
+    if not src:
+        return {}
+    title = f'Backlog: bug for a failed-document group ({tid})'
+    body = (f'Automated fix run {rid} filed {tid} but ended without a fix, so no code was changed. '
+            'This pull request only adds the backlog task.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)')
+    if ctx.get('task_files', {}).get(src.name) != hashlib.sha256(src.read_bytes()).hexdigest():
+        raise _Fail('The task file changed after triage.')
+    if _leak([title, body, src.read_text(encoding='utf-8', errors='replace')], ctx.get('texts', []), ctx['names']):
+        raise _Fail('The pull request wording matches private evidence.')
+    cleanup, bug, branch = {**run, 'state': 'cleanup'}, wt.parent/f'{wt.name}-bug', f'bug/{rid}'  # a stopped run starts no process
+
+    def sh(*args, cwd):
+        done = _run(cleanup, list(args), cwd=cwd, timeout=300)
+        if done.returncode:
+            raise _Fail(f'{args[0]} failed.')
+        return done.stdout
+    rel = f'backlog/tasks/{src.name}'
+    sh('git', 'worktree', 'add', '-b', branch, str(bug), 'origin/main', cwd=root)
+    try:
+        (bug/rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, bug/rel)
+        sh('git', 'add', '--', rel, cwd=bug)
+        sh('git', 'commit', '-m', title, cwd=bug)
+        sh('git', 'push', 'origin', f'refs/heads/{branch}:refs/heads/{branch}', cwd=bug)  # only the bug branch
+        out = sh('gh', 'pr', 'create', '--base', 'main', '--head', branch, '--title', title, '--body', body, cwd=bug)
+    finally:
+        _run(cleanup, ['git', 'worktree', 'remove', '--force', str(bug)], cwd=root, timeout=300)
+        _run(cleanup, ['git', 'branch', '-D', branch], cwd=root, timeout=60)
+    url = next((line.strip() for line in reversed(out.splitlines()) if line.strip().startswith('http')), '')
+    if not url:
+        raise _Fail('gh gave no pull request URL.')
+    return {'bug_pr_url': url, 'bug_pr_state': 'open', 'bug_file': rel}
 
 
 def _task(signature, wt):
