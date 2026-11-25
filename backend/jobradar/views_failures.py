@@ -54,6 +54,8 @@ def failure_groups(request):
             group['job_ids'].append(row.get('job_id'))
     for group in groups.values():
         run = newest.get(group['signature'])
+        if run and run.get('state') not in ('running', 'pr', 'merged'):
+            run = {**run, 'task_id': ''}  # TASK-413: its task file went with the worktree (also runs saved before the fix)
         group['run'], group['task_id'] = run, (run or {}).get('task_id') or ''
         group['state'] = run['state'] if run else {'actionable': 'new', 'unknown': 'look'}.get(group['class'], 'not_a_bug')
     return Response({'groups': list(groups.values()), 'fix': fix_runs.status()})
