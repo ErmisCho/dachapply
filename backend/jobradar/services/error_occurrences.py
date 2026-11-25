@@ -1,6 +1,7 @@
 """TASK-372.1: opt-in LOCAL collection; never retain messages, tracebacks or payloads."""
 import hashlib
 import logging
+import re
 import sqlite3
 import uuid
 from contextlib import closing
@@ -17,6 +18,8 @@ SOURCES = {
     'compile': 'Document compilation failed',
     'mailbox': 'Mailbox check failed',
 }
+# TASK-415: '<exception class>@<view name>', code identifiers only; anything else keeps the fixed word.
+KIND = re.compile(r'[A-Za-z_]\w{0,80}@[A-Za-z_][\w.:-]{0,150}')
 MAX_ROWS = 10000
 MAX_BATCH = 100
 _health = 'disabled'
@@ -86,7 +89,8 @@ def ingest(source, events, *, cursor=None):
                 # Fixed vocabulary is safer than attempting to redact arbitrary provider/CV text.
                 db.execute('INSERT INTO occurrences VALUES (?,?,?,?,?,?,?,?,0)',
                            (event_id, at, source, 'local', _digest(event.get('operation', event['id'])),
-                            'OperationFailed', SOURCES[source], 'occurrence:' + event_id))
+                            event['kind'] if KIND.fullmatch(str(event.get('kind', ''))) else 'OperationFailed',
+                            SOURCES[source], 'occurrence:' + event_id))
                 # TASK-372.2: adapters opt into fixed classifications; unknown failures need review.
                 classification = event.get('classification', 'unknown')
                 if classification not in ('cancelled', 'quota', 'transient', 'actionable', 'retry_exhausted'):
@@ -104,9 +108,9 @@ def ingest(source, events, *, cursor=None):
         return []
 
 
-def capture(source, identity=None, operation=None):
+def capture(source, identity=None, operation=None, kind=None):
     return ingest(source, [{'id': identity if identity is not None else uuid.uuid4().hex,
-                            'operation': operation, 'status': 'failed'}])
+                            'operation': operation, 'status': 'failed', 'kind': kind}])
 
 
 def unresolved(limit=100):
@@ -136,4 +140,8 @@ def progress(source):
 class OccurrenceHandler(logging.Handler):
     def emit(self, record):
         if record.levelno >= logging.ERROR:
-            capture('backend', operation=record.name)  # Never format msg, args, request or exc_info.
+            # Never format msg, args, request or exc_info: only the exception's class and the view's name.
+            exc = record.exc_info[1] if record.exc_info else None
+            match = getattr(getattr(record, 'request', None), 'resolver_match', None)
+            capture('backend', operation=record.name,
+                    kind=f'{type(exc).__name__ if exc else "NoException"}@{getattr(match, "view_name", "") or "unrouted"}')
