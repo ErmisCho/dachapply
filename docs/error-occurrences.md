@@ -49,8 +49,10 @@ id exists. Replay uses deterministic UUIDs scoped to source, not message hashes.
 Replay and separate identical errors are tested with concurrent writers.
 
 Records retain UTC collection time, local environment, source, hashed operation
-identity, fixed `OperationFailed` type and fixed source summary. Raw exception
-types/messages, tracebacks, prompts, candidate/CV text, mail bodies, credentials,
+identity, a type and fixed source summary. The type is `OperationFailed`, except
+for a backend HTTP 500, which keeps `<exception class>@<view name>` (code
+identifiers only, checked against a strict pattern; TASK-415), so a recurring 500
+can be traced to its view. Exception messages, tracebacks, prompts, candidate/CV text, mail bodies, credentials,
 sessions, request data, connection strings and filesystem paths are **never
 retained**. Arbitrary incoming fields are ignored rather than regex-redacted.
 An `occurrence:<uuid>` reference points to the sanitized local record itself;
@@ -117,8 +119,8 @@ these values after examining private evidence; the next triage detects it.
 There is no automatic escalation by count and no new classification UI.
 
 Signature = SHA-256 of source, environment, build digest (or unknown), operation
-digest and technical error type. Existing intake retains only `OperationFailed`,
-so this groups by the known technical boundary, not exception text. Different
+digest and technical error type (`OperationFailed`, or a 500's exception class and
+view name), so this groups by the known technical boundary, not exception text. Different
 operations/builds remain separate; unknown builds cannot be distinguished.
 For each group, the fingerprint of its unresolved rows/context is the persistent
 checkpoint. Only changed groups reach the CLI; resolved rows never participate.

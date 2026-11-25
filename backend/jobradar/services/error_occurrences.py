@@ -1,6 +1,7 @@
 """TASK-372.1: opt-in LOCAL collection; never retain messages, tracebacks or payloads."""
 import hashlib
 import logging
+import re
 import sqlite3
 import uuid
 from contextlib import closing
@@ -17,6 +18,8 @@ SOURCES = {
     'compile': 'Document compilation failed',
     'mailbox': 'Mailbox check failed',
 }
+# TASK-415: '<exception class>@<view name>', code identifiers only; anything else keeps the fixed word.
+KIND = re.compile(r'[A-Za-z_]\w{0,80}@[A-Za-z_][\w.:-]{0,150}')
 MAX_ROWS = 10000
 MAX_BATCH = 100
 _health = 'disabled'
@@ -55,7 +58,7 @@ def _connect():
     return db
 
 
-def ingest(source, events, *, cursor=None):
+def ingest(source, events, *, cursor=None, _kind=None):
     """Atomic bounded batch. Producer supplies stable event ids, distinct for separate failures.
 
     Cursor is an opaque source generation/offset token, hashed before storage. Neither source
@@ -86,7 +89,8 @@ def ingest(source, events, *, cursor=None):
                 # Fixed vocabulary is safer than attempting to redact arbitrary provider/CV text.
                 db.execute('INSERT INTO occurrences VALUES (?,?,?,?,?,?,?,?,0)',
                            (event_id, at, source, 'local', _digest(event.get('operation', event['id'])),
-                            'OperationFailed', SOURCES[source], 'occurrence:' + event_id))
+                            _kind if source == 'backend' and KIND.fullmatch(str(_kind or '')) else 'OperationFailed',
+                            SOURCES[source], 'occurrence:' + event_id))
                 # TASK-372.2: adapters opt into fixed classifications; unknown failures need review.
                 classification = event.get('classification', 'unknown')
                 if classification not in ('cancelled', 'quota', 'transient', 'actionable', 'retry_exhausted'):
@@ -136,4 +140,9 @@ def progress(source):
 class OccurrenceHandler(logging.Handler):
     def emit(self, record):
         if record.levelno >= logging.ERROR:
-            capture('backend', operation=record.name)  # Never format msg, args, request or exc_info.
+            # Never format msg, args, request or exc_info: only the exception's class and the view's name.
+            exc = record.exc_info[1] if record.exc_info else None
+            match = getattr(getattr(record, 'request', None), 'resolver_match', None)
+            # Set here only, never from event data: a producer's field could hold anything (Codex review).
+            ingest('backend', [{'id': uuid.uuid4().hex, 'operation': record.name, 'status': 'failed'}],
+                   _kind=f'{type(exc).__name__ if exc else "NoException"}@{getattr(match, "view_name", "") or "unrouted"}')

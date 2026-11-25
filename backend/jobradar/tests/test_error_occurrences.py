@@ -121,6 +121,29 @@ def test_real_500_capture(store, settings, db):
     assert [row['source'] for row in errors.unresolved()] == ['backend']
 
 
+def test_a_500_keeps_its_exception_class_and_route_only(store, settings, db):  # TASK-415
+    from django.test import Client
+    settings.ROOT_URLCONF = 'jobradar.tests.test_error_alerting'
+    assert Client(raise_request_exception=False).get('/boom/?token=secret').status_code == 500
+    row = errors.unresolved()[0]
+    assert row['error_type'] == 'RuntimeError@jobradar.tests.test_error_alerting.boom'
+    assert 'deliberate' not in json.dumps(row) and 'secret' not in json.dumps(row)
+
+
+def test_an_unreadable_kind_falls_back_to_the_fixed_word(store):  # TASK-415
+    handler = errors.OccurrenceHandler()
+    record = logging.LogRecord('django.request', logging.ERROR, '/x', 1, 'm', (), None)
+    record.request = SimpleNamespace(resolver_match=SimpleNamespace(view_name='bad name with spaces /private'))
+    handler.emit(record)
+    assert errors.unresolved()[0]['error_type'] == 'OperationFailed'
+
+
+def test_a_producer_cannot_set_the_kind(store):  # TASK-415, Codex review
+    errors.ingest('backend', [{'id': 'a', 'operation': 'x', 'status': 'failed', 'kind': 'Password@secret123'}])
+    errors.ingest('mailbox', [{'id': 'b', 'operation': 'x', 'status': 'failed'}], _kind='Password@secret123')
+    assert [row['error_type'] for row in errors.unresolved()] == ['OperationFailed', 'OperationFailed']
+
+
 def test_mailbox_returned_failure(store, settings, db, monkeypatch):
     from django.contrib.auth.models import User
     from jobradar.services import mailbox
