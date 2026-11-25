@@ -1,9 +1,10 @@
 ---
 id: TASK-406
 title: 'Use failed documents to improve the platform, up to a PR'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23 23:31'
+updated_date: '2026-11-25 13:26'
 labels: []
 dependencies: []
 priority: high
@@ -21,3 +22,9 @@ Owner request 2026-11-24: "are you saving the logs of the failed generated files
 - [ ] #1 All subtasks are Done
 - [ ] #2 One real failure was followed end to end on localhost: saved, grouped, shown, fixed by a started run, and left as a PR that was not merged by the run
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+All subtasks Done (406.1-406.4); verified on localhost 2026-11-25.
+<!-- SECTION:NOTES:END -->
