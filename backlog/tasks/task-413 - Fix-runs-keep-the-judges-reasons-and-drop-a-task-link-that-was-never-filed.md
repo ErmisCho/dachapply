@@ -1,7 +1,7 @@
 ---
 id: TASK-413
 title: 'Fix runs: keep the judge''s reasons and drop a task link that was never filed'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-25 09:35'
 labels: []

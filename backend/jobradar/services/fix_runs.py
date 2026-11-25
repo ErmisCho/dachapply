@@ -428,6 +428,8 @@ def _reasons(answer, texts, names):
         rows = json.loads(answer[answer.index('{'):answer.rindex('}') + 1]).get('criteria') or []
     except (ValueError, AttributeError):
         return 'The judge gave no readable reasons.'
+    if not isinstance(rows, list):  # a number or text would crash or split into characters
+        return 'The judge gave no readable reasons.'
     lines = [' '.join(map(str, row.values())) if isinstance(row, dict) else str(row) for row in rows
              if not (isinstance(row, dict) and str(row.get('verdict', '')).upper() == 'PASS')]
     if _leak(lines, texts, names):  # the judge read the evidence; the run record must never hold it

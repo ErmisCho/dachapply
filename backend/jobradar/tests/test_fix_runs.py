@@ -55,7 +55,7 @@ class Fake:
         self.real, self.calls, self.prompts, self.envs = real, [], [], []
         self.write, self.repair_write = dict(GOOD), None
         self.red, self.greens, self.verdict, self.rubric, self.tamper, self.on, self.pr_state = 1, [0], 'PERFECT', True, False, {}, 'OPEN'
-        self.criteria = []
+        self.criteria, self.raw = [], ''
         self.evidence_seen, self.work = '', None
 
     def __call__(self, run, args, cwd=None, env=None, input=None, timeout=1800):
@@ -90,7 +90,7 @@ class Fake:
                 (self.work/'rubric.json').write_text('{"criteria": ["changed"]}', encoding='utf-8')
         if stage in self.on:
             self.on[stage](run)
-        return SimpleNamespace(returncode=0, stdout=json.dumps({'verdict': self.verdict, 'criteria': self.criteria}) if stage == 'judge' else 'ok')
+        return SimpleNamespace(returncode=0, stdout=(self.raw or json.dumps({'verdict': self.verdict, 'criteria': self.criteria})) if stage == 'judge' else 'ok')
 
     def claude_calls(self):
         return [c for c in self.calls if Path(c[0]).stem == 'claude']
@@ -306,6 +306,20 @@ def test_judge_reasons_that_quote_private_evidence_are_not_kept(env):  # TASK-41
     env.fake.criteria = [{'id': 'AC1', 'verdict': 'FAIL', 'reason': 'it still prints ' + TEX.splitlines()[0]}]
     run = go(env)
     assert 'Zorblax' not in json.dumps(run) and 'private evidence' in run['judge']
+
+
+def test_an_unreadable_judge_answer_keeps_a_fixed_message_not_the_raw_text(env):  # TASK-413
+    env.fake.raw = 'I refuse, no braces here, quoxel plimbus'
+    run = go(env)
+    assert run['state'] == 'failed' and run['judge'] == 'The judge gave no readable reasons.'
+    assert 'quoxel' not in json.dumps(run)
+
+
+@pytest.mark.parametrize('criteria', ['7', '"all of it was wrong"'])
+def test_judge_criteria_that_are_not_a_list_keep_the_fixed_message(env, criteria):  # TASK-413
+    env.fake.raw = '{"verdict": "FAILURE", "criteria": ' + criteria + '}'
+    run = go(env)
+    assert run['state'] == 'failed' and run['judge'] == 'The judge gave no readable reasons.'
 
 
 def test_a_changed_file_that_is_not_staged_is_never_committed(env):
