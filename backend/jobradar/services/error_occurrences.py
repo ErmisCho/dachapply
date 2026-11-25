@@ -58,7 +58,7 @@ def _connect():
     return db
 
 
-def ingest(source, events, *, cursor=None):
+def ingest(source, events, *, cursor=None, _kind=None):
     """Atomic bounded batch. Producer supplies stable event ids, distinct for separate failures.
 
     Cursor is an opaque source generation/offset token, hashed before storage. Neither source
@@ -89,7 +89,7 @@ def ingest(source, events, *, cursor=None):
                 # Fixed vocabulary is safer than attempting to redact arbitrary provider/CV text.
                 db.execute('INSERT INTO occurrences VALUES (?,?,?,?,?,?,?,?,0)',
                            (event_id, at, source, 'local', _digest(event.get('operation', event['id'])),
-                            event['kind'] if KIND.fullmatch(str(event.get('kind', ''))) else 'OperationFailed',
+                            _kind if source == 'backend' and KIND.fullmatch(str(_kind or '')) else 'OperationFailed',
                             SOURCES[source], 'occurrence:' + event_id))
                 # TASK-372.2: adapters opt into fixed classifications; unknown failures need review.
                 classification = event.get('classification', 'unknown')
@@ -108,9 +108,9 @@ def ingest(source, events, *, cursor=None):
         return []
 
 
-def capture(source, identity=None, operation=None, kind=None):
+def capture(source, identity=None, operation=None):
     return ingest(source, [{'id': identity if identity is not None else uuid.uuid4().hex,
-                            'operation': operation, 'status': 'failed', 'kind': kind}])
+                            'operation': operation, 'status': 'failed'}])
 
 
 def unresolved(limit=100):
@@ -143,5 +143,6 @@ class OccurrenceHandler(logging.Handler):
             # Never format msg, args, request or exc_info: only the exception's class and the view's name.
             exc = record.exc_info[1] if record.exc_info else None
             match = getattr(getattr(record, 'request', None), 'resolver_match', None)
-            capture('backend', operation=record.name,
-                    kind=f'{type(exc).__name__ if exc else "NoException"}@{getattr(match, "view_name", "") or "unrouted"}')
+            # Set here only, never from event data: a producer's field could hold anything (Codex review).
+            ingest('backend', [{'id': uuid.uuid4().hex, 'operation': record.name, 'status': 'failed'}],
+                   _kind=f'{type(exc).__name__ if exc else "NoException"}@{getattr(match, "view_name", "") or "unrouted"}')

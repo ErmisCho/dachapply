@@ -138,6 +138,12 @@ def test_an_unreadable_kind_falls_back_to_the_fixed_word(store):  # TASK-415
     assert errors.unresolved()[0]['error_type'] == 'OperationFailed'
 
 
+def test_a_producer_cannot_set_the_kind(store):  # TASK-415, Codex review
+    errors.ingest('backend', [{'id': 'a', 'operation': 'x', 'status': 'failed', 'kind': 'Password@secret123'}])
+    errors.ingest('mailbox', [{'id': 'b', 'operation': 'x', 'status': 'failed'}], _kind='Password@secret123')
+    assert [row['error_type'] for row in errors.unresolved()] == ['OperationFailed', 'OperationFailed']
+
+
 def test_mailbox_returned_failure(store, settings, db, monkeypatch):
     from django.contrib.auth.models import User
     from jobradar.services import mailbox
