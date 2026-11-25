@@ -284,6 +284,9 @@ def _pipeline(run, signature, ctx, work):
     ctx['names'] = {name for name in ctx['names'] if _run(run, ['git', 'grep', '-qiwF', '-e', name, 'origin/main'], cwd=wt, timeout=60).returncode}
     _step(run, 'triage')
     prior = next((r for r in _read() if r['signature'] == signature and r.get('bug_pr_state') == 'open' and r.get('task_id')), None)
+    if prior and _run({**prior, 'state': 'cleanup'}, ['gh', 'pr', 'view', prior['bug_pr_url'], '--json', 'state', '--jq', '.state'],
+                      cwd=error_triage.ROOT, timeout=30).stdout.strip() != 'OPEN':
+        prior = None  # runs() records the new state; triage finds the task on main or files a new one
     if prior:  # its backlog PR is still open: the same task, no second one
         _must(run, ['git', 'fetch', 'origin', prior.get('bug_branch') or f'bug/{prior["id"]}'], cwd=wt)
         _must(run, ['git', 'checkout', 'FETCH_HEAD', '--', prior['bug_file']], cwd=wt)
@@ -353,7 +356,7 @@ def _bug_pr(run, ctx):
     except Exception:
         _log(run, 'The backlog pull request could not be opened.')  # fixed wording: the cause can carry text
     finally:
-        if not run.get('bug_pr_url') and run['state'] != 'pr':
+        if run.get('bug_pr_state') not in ('open', 'merged') and run['state'] != 'pr':
             run['task_id'] = ''
             _save(run)
 
@@ -371,13 +374,16 @@ def _open_bug_pr(run, ctx):
     if _leak([title, body, src.read_text(encoding='utf-8', errors='replace')], ctx.get('texts', []), ctx['names']):
         raise _Fail('The pull request wording matches private evidence.')
     cleanup, bug, branch = {**run, 'state': 'cleanup'}, wt.parent/f'{wt.name}-bug', f'bug/{rid}'  # a stopped run starts no process
+    rel = f'backlog/tasks/{src.name}'
+    on_main = _run(cleanup, ['git', 'show', f'origin/main:{rel}'], cwd=wt, timeout=60)
+    if on_main.returncode == 0 and on_main.stdout.replace('\r\n', '\n') == src.read_text(encoding='utf-8').replace('\r\n', '\n'):
+        return {'bug_pr_state': 'merged', 'bug_file': rel}  # already on the board
 
     def sh(*args, cwd):
         done = _run(cleanup, list(args), cwd=cwd, timeout=300)
         if done.returncode:
             raise _Fail(f'{args[0]} failed.')
         return done.stdout
-    rel = f'backlog/tasks/{src.name}'
     sh('git', 'worktree', 'add', '-b', branch, str(bug), 'origin/main', cwd=root)
     try:
         (bug/rel).parent.mkdir(parents=True, exist_ok=True)
@@ -401,9 +407,10 @@ def _task(signature, wt):
             task_id = proposal['task_id']
             if not task_id:
                 continue
-            if any((wt/'backlog'/'tasks').glob(f'{task_id.lower()} - *')):
+            marker = 'error-group:' + str(proposal.get('group', ''))
+            if any(marker in path.read_text(encoding='utf-8', errors='replace') for path in (wt/'backlog'/'tasks').glob(f'{task_id.lower()} - *')):
                 return task_id
-            error_triage.unlink(task_id)  # filed in the worktree of a run that opened no PR
+            error_triage.unlink(task_id)  # filed in the worktree of a run that opened no PR, or the id now names another task
             for again in error_triage.triage(operation=signature, root=wt):
                 if again['task_id']:
                     return again['task_id']
