@@ -66,6 +66,14 @@ def test_a_run_saved_without_a_pr_links_no_task(logs, monkeypatch):  # TASK-413:
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize('pr_state, shown', [('open', 'TASK-9'), ('merged', 'TASK-9'), ('closed', '')])
+def test_a_failed_run_with_a_backlog_pr_shows_its_task(logs, monkeypatch, pr_state, shown):  # TASK-414
+    save(logs, 'one')
+    monkeypatch.setattr(fix_runs, 'runs', lambda: [{'id': 'r1', 'signature': SIG, 'state': 'failed', 'task_id': 'TASK-9', 'bug_pr_state': pr_state}])
+    assert client().get('/api/failures/').data['groups'][0]['task_id'] == shown
+
+
+@pytest.mark.django_db
 def test_files_inside_failed_only(logs):
     inside = logs/'failed'/'a.tex'
     inside.write_text('\documentclass', encoding='utf-8')
