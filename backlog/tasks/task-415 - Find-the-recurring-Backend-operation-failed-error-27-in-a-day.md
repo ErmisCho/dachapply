@@ -4,7 +4,7 @@ title: Find the recurring 'Backend operation failed' error (27 in a day)
 status: In Progress
 assignee: []
 created_date: '2026-11-25 12:34'
-updated_date: '2026-11-25 13:26'
+updated_date: '2026-11-26 11:30'
 labels: []
 dependencies: []
 priority: medium
@@ -20,7 +20,7 @@ The error collector holds 27 occurrences of one backend error group (operation 3
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 The cause is named with the evidence that shows it
-- [ ] #2 A test reproduces it red, then green on the fix
+- [x] #2 A test reproduces it red, then green on the fix
 - [ ] #3 After the fix, no new occurrence of that group for one day of normal use (checked from the collector)
 <!-- AC:END -->
 
@@ -28,4 +28,6 @@ The error collector holds 27 occurrences of one backend error group (operation 3
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-25: the 27 occurrences are logger django.request (HTTP 500s), in bursts after idle gaps. No exception type or route was kept, so the cause is unknown. PR #460 (64ea209) now keeps '<exception class>@<view name>' for each 500; localhost runs it. Next: read the next occurrences from the collector and fix the named cause.
+
+2026-11-26: PR #460 named the group: OperationalError@jobradar.views_application_prep.application_prep_queue (10:13 UTC today, after an idle gap). Likely cause: the pool's 10 s wait for a connection ran out while Neon woke up. PR #465 (826606e) raises the pool timeout to 30 s and records the root of the exception chain (e.g. PoolTimeout), with two tests red on main and green on the fix; localhost runs it. AC1 stays open until an occurrence names the root, or a quiet day (AC3) supports the pool-wait cause. Check the collector after 2026-11-27 11:30.
 <!-- SECTION:NOTES:END -->
