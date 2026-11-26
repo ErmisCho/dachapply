@@ -168,3 +168,8 @@ def test_pooled_backend_checks_only_connections_idle_for_a_while(monkeypatch):
     clock[0] += pooled.RECENT
     pooled.check_unless_recent(conn)       # idle long enough for Neon to have dropped it
     assert conn.checks == 2
+
+
+def test_the_pool_waits_long_enough_for_a_sleeping_database_to_wake(monkeypatch):  # TASK-415
+    monkeypatch.setenv('DB_POOL', '1')
+    assert with_db_pool(parsed(), True)['OPTIONS']['pool']['timeout'] == 30

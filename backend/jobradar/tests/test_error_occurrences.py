@@ -187,3 +187,19 @@ def test_pipeline_retry_bookkeeping_is_not_a_new_failure(store, monkeypatch):
     application_prep._save(job, 1, lambda prep: prep.update(reason=application_prep.ANALYSING))
     application_prep._save(job, 1, lambda prep: prep.update(reason='Analysis failed: x. Press Retry.'))
     assert len(errors.unresolved()) == 2  # a genuine repeat failure after a new run is still captured
+
+
+def test_a_wrapped_database_error_records_its_root_cause(store):  # TASK-415: 500s on 2026-11-26 read only OperationalError
+    from django.db.utils import OperationalError
+    from psycopg_pool import PoolTimeout
+    try:
+        try:
+            raise PoolTimeout("couldn't get a connection after 10.00 sec")
+        except PoolTimeout as root:
+            raise OperationalError('wrapped') from root
+    except OperationalError as wrapped:
+        exc_info = (type(wrapped), wrapped, wrapped.__traceback__)
+    record = logging.LogRecord('django.request', logging.ERROR, '/x', 1, 'm', (), exc_info)
+    record.request = SimpleNamespace(resolver_match=SimpleNamespace(view_name='jobradar.views_application_prep.application_prep_queue'))
+    errors.OccurrenceHandler().emit(record)
+    assert errors.unresolved()[0]['error_type'] == 'PoolTimeout@jobradar.views_application_prep.application_prep_queue'

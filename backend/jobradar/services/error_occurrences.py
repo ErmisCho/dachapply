@@ -142,6 +142,10 @@ class OccurrenceHandler(logging.Handler):
         if record.levelno >= logging.ERROR:
             # Never format msg, args, request or exc_info: only the exception's class and the view's name.
             exc = record.exc_info[1] if record.exc_info else None
+            for _ in range(10):  # Django wraps driver errors; the root names the real failure (e.g. PoolTimeout)
+                if exc is None or exc.__cause__ is None:
+                    break
+                exc = exc.__cause__
             match = getattr(getattr(record, 'request', None), 'resolver_match', None)
             # Set here only, never from event data: a producer's field could hold anything (Codex review).
             ingest('backend', [{'id': uuid.uuid4().hex, 'operation': record.name, 'status': 'failed'}],

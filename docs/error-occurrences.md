@@ -50,7 +50,7 @@ Replay and separate identical errors are tested with concurrent writers.
 
 Records retain UTC collection time, local environment, source, hashed operation
 identity, a type and fixed source summary. The type is `OperationFailed`, except
-for a backend HTTP 500, which keeps `<exception class>@<view name>` (code
+for a backend HTTP 500, which keeps `<exception class>@<view name>` (the root of the exception's cause chain, so a wrapped database error reads e.g. `PoolTimeout`; code
 identifiers only, checked against a strict pattern; TASK-415), so a recurring 500
 can be traced to its view. Exception messages, tracebacks, prompts, candidate/CV text, mail bodies, credentials,
 sessions, request data, connection strings and filesystem paths are **never
