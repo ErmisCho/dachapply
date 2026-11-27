@@ -5,6 +5,7 @@ Hermetic: dj_database_url.parse only builds a dict and with_db_pool only edits i
 no pool object, nothing leaves the process. The latency criterion (AC1) and the idle-drop one (AC4)
 need the real Neon database and are measured there, not simulated here.
 """
+import json
 import threading
 import time
 from datetime import date as dt_date, datetime
@@ -173,3 +174,92 @@ def test_pooled_backend_checks_only_connections_idle_for_a_while(monkeypatch):
 def test_the_pool_waits_long_enough_for_a_sleeping_database_to_wake(monkeypatch):  # TASK-415
     monkeypatch.setenv('DB_POOL', '1')
     assert with_db_pool(parsed(), True)['OPTIONS']['pool']['timeout'] == 30
+
+
+def test_the_pool_has_room_for_a_documents_run_and_requests(monkeypatch):  # TASK-415
+    monkeypatch.setenv('DB_POOL', '1')
+    assert with_db_pool(parsed(), True)['OPTIONS']['pool']['max_size'] == 16
+
+
+class _Conn:
+    pass
+
+
+class _Pool:
+    """Stands in for psycopg_pool.ConnectionPool: one connection, then PoolTimeout like the real one."""
+    def __init__(self):
+        self.out = 0
+
+    def open(self):
+        pass
+
+    def getconn(self):
+        from psycopg_pool import PoolTimeout
+        if self.out:
+            raise PoolTimeout("couldn't get a connection after 30.00 sec")
+        self.out += 1
+        conn = _Conn()
+        conn._pool = self
+        return conn
+
+    def putconn(self, conn):
+        self.out -= 1
+
+    def get_stats(self):
+        return {'pool_max': 1, 'requests_waiting': 0}
+
+
+def _wrapper(pool):
+    from config.pooled_postgres import base as pooled
+
+    class Wrapper(pooled.DatabaseWrapper):
+        pass
+    Wrapper.pool = pool  # replaces the property: no real pool, no network
+    return Wrapper({'OPTIONS': {}, 'NAME': 'x', 'TIME_ZONE': None, 'CONN_HEALTH_CHECKS': False, 'CONN_MAX_AGE': 0, 'AUTOCOMMIT': True}, 'pooltest')
+
+
+def test_a_pool_timeout_records_who_holds_the_connections(tmp_path, settings, monkeypatch):  # TASK-415
+    from psycopg_pool import PoolTimeout
+    from config.pooled_postgres import base as pooled
+    monkeypatch.setattr(pooled, '_holders', {})
+    settings.ERROR_OCCURRENCE_LOCAL_DB = str(tmp_path / 'occurrences.sqlite3')
+    pool = _Pool()
+
+    returned = _wrapper(pool)
+    returned.connection = returned.get_new_connection({})
+    returned._close()  # back in the pool: must not be listed
+
+    def leak():  # a thread that ends without returning its connection
+        held = _wrapper(pool)
+        held.connection = held.get_new_connection({})
+    thread = threading.Thread(target=leak, name='leaky-worker')
+    thread.start()
+    thread.join()
+
+    with pytest.raises(PoolTimeout):
+        _wrapper(pool).get_new_connection({})
+
+    lines = (tmp_path / 'pool-timeouts.jsonl').read_text(encoding='utf-8').splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry['stats'] == {'pool_max': 1, 'requests_waiting': 0}
+    [holder] = entry['holders']
+    assert set(holder) == {'thread', 'alive', 'held_s', 'where'}  # code identifiers and numbers only
+    assert holder['thread'] == 'leaky-worker' and holder['alive'] is False
+    assert holder['where'][0].startswith('test_db_pool.leak:')
+
+
+def test_a_pool_timeout_writes_nothing_without_the_local_store(tmp_path, settings, monkeypatch):  # TASK-415
+    from psycopg_pool import PoolTimeout
+    from config.pooled_postgres import base as pooled
+    monkeypatch.setattr(pooled, '_holders', {})
+    settings.ERROR_OCCURRENCE_LOCAL_DB = ''
+    monkeypatch.chdir(tmp_path)
+    pool = _Pool()
+    held = _wrapper(pool)
+    held.connection = held.get_new_connection({})
+
+    with pytest.raises(PoolTimeout):
+        _wrapper(pool).get_new_connection({})
+
+    assert not list(tmp_path.rglob('pool-timeouts.jsonl'))  # cwd is tmp_path: nothing beside '' either

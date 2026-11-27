@@ -120,12 +120,14 @@ def with_db_pool(db, debug):
         # max_idle 240 s: close surplus idle connections before Neon's default 5-minute
         # scale-to-zero does. timeout 30 s (TASK-415): 10 s failed bursts of requests with
         # OperationalError while Neon woke after a long idle.
+        # max_size 16 (TASK-415): on 2026-11-27 all 8 stayed checked out for 30 s during a documents
+        # run (PoolTimeout); config/pooled_postgres logs the holders of the next one.
         # TASK-347: min_size 0, so the shrink task (one connection per max_idle tick) empties the pool
         # once the app idles. Measured 2026-10-30: with min_size 1 the mailbox loop's first wake after
         # an idle hour hit PoolTimeout (10 s), the replacement connection arriving only as getconn gave
         # up (cause not proven); a fresh Neon connect is 0.26-0.32 s, so an idle hour now ends in a
         # fresh connect. Active use still reuses warm connections, which is TASK-281's whole benefit.
-        db.setdefault('OPTIONS', {})['pool'] = {'min_size': 0, 'max_size': 8, 'max_idle': 240, 'timeout': 30}
+        db.setdefault('OPTIONS', {})['pool'] = {'min_size': 0, 'max_size': 16, 'max_idle': 240, 'timeout': 30}
     return db
 
 
